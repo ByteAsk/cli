@@ -1,0 +1,250 @@
+#!/bin/sh
+# byteask — ByteAsk AI coding agent CLI.
+# Thin wrapper over the engine so the client surface is fully ByteAsk-branded.
+set -eu
+
+VERSION="0.1.3"
+DEFAULT_GATEWAY="https://code.byteask.ai"
+export CODEX_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
+export CODEX_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
+export BYTEASK_CLIENT_VERSION="$VERSION"                # engine displays THIS (not its crate ver)
+SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ENGINE="$SELF_DIR/byteask-engine"
+
+# minimal JSON string-field extractor (no jq dependency on clients)
+_json() { grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed -E "s/.*:[[:space:]]*\"([^\"]*)\"/\1/"; }
+
+resolve_gateway() {
+  if [ -n "${BYTEASK_GATEWAY:-}" ]; then echo "$BYTEASK_GATEWAY"
+  elif [ -f "$CODEX_HOME/gateway" ]; then cat "$CODEX_HOME/gateway"
+  else echo "$DEFAULT_GATEWAY"; fi
+}
+
+# ---- auto-update check: cached ~hourly, fail-open, never blocks launch ----
+# State file holds:  last_check=<epoch>  latest=<ver>
+# No "dismissed" memory: a declined update is re-offered on every launch, so a
+# freshly published version keeps nudging until the user takes it.
+UPDATE_STATE="$CODEX_HOME/update-check"
+
+# version_gt A B  -> returns 0 if A > B (numeric, dot-separated), else 1.
+# POSIX component compare (macOS `sort` has no -V, so we cannot use it).
+version_gt() {
+  _a="$1"; _b="$2"
+  if [ "$_a" = "$_b" ]; then return 1; fi
+  while [ -n "$_a" ] || [ -n "$_b" ]; do
+    _ia=${_a%%.*}; _ib=${_b%%.*}
+    case "$_a" in *.*) _a=${_a#*.};; *) _a="";; esac
+    case "$_b" in *.*) _b=${_b#*.};; *) _b="";; esac
+    case "$_ia" in ''|*[!0-9]*) _ia=0;; esac
+    case "$_ib" in ''|*[!0-9]*) _ib=0;; esac
+    if [ "$_ia" -gt "$_ib" ]; then return 0; fi
+    if [ "$_ia" -lt "$_ib" ]; then return 1; fi
+  done
+  return 1
+}
+
+# Check the server for a newer version and (on a TTY) offer to update. Entirely
+# best-effort: any failure (offline, no /version, bad data) is swallowed so the
+# engine always launches. Opt out with BYTEASK_NO_UPDATE_CHECK=1.
+check_for_update() {
+  if [ -n "${BYTEASK_NO_UPDATE_CHECK:-}" ]; then return 0; fi
+  _uc_latest=""; _uc_last=0
+  if [ -f "$UPDATE_STATE" ]; then
+    while IFS='=' read -r _k _v; do
+      case "$_k" in
+        last_check) _uc_last=$_v;;
+        latest) _uc_latest=$_v;;
+      esac
+    done < "$UPDATE_STATE"
+  fi
+  case "$_uc_last" in ''|*[!0-9]*) _uc_last=0;; esac
+  _uc_now=$(date +%s 2>/dev/null || echo 0)
+  # Hit the network at most once per hour; cache the result. Fail-open. The
+  # short TTL means a new release is noticed within the hour on any launch.
+  if [ -z "$_uc_latest" ] || [ $(( _uc_now - _uc_last )) -ge 3600 ]; then
+    _uc_gw="$(resolve_gateway)"; _uc_gw="${_uc_gw%/}"
+    _uc_fetched=$(curl -fsS --max-time 2 "$_uc_gw/version" 2>/dev/null | head -n1 | tr -d '[:space:]') || _uc_fetched=""
+    if printf '%s' "$_uc_fetched" | grep -qE '^[0-9]+(\.[0-9]+)+$'; then
+      _uc_latest="$_uc_fetched"; _uc_last="$_uc_now"
+      mkdir -p "$CODEX_HOME" 2>/dev/null || true
+      printf 'last_check=%s\nlatest=%s\n' "$_uc_last" "$_uc_latest" > "$UPDATE_STATE" 2>/dev/null || true
+    fi
+  fi
+  if [ -z "$_uc_latest" ]; then return 0; fi
+  if ! version_gt "$_uc_latest" "$VERSION"; then return 0; fi   # not newer than installed
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf 'ByteAsk %s is available (you have %s). Update now? [y/N] ' "$_uc_latest" "$VERSION" >&2
+    read -r _uc_ans </dev/tty 2>/dev/null || _uc_ans=""
+    case "$_uc_ans" in
+      [yY]*)
+        _uc_gw="$(resolve_gateway)"; _uc_gw="${_uc_gw%/}"
+        printf 'Updating ByteAsk to %s ...\n' "$_uc_latest" >&2
+        # Install in place (over the running wrapper), then relaunch the fresh
+        # wrapper with the original args. The relaunch carries a no-recheck guard
+        # so a same-session update can never loop, even if the install no-ops.
+        if curl -fsSL "$_uc_gw/install.sh" | PREFIX="$SELF_DIR" sh; then
+          exec env BYTEASK_NO_UPDATE_CHECK=1 "$SELF_DIR/byteask" "$@"
+        fi
+        printf 'Update failed; continuing on %s.\n' "$VERSION" >&2
+        ;;
+      *) : ;;   # declined: continue now, re-offer next launch (no dismiss memory)
+    esac
+  else
+    printf 'ByteAsk %s is available (you have %s). Run: byteask --update\n' "$_uc_latest" "$VERSION" >&2
+  fi
+  return 0
+}
+
+do_login() {
+  GATEWAY="$(resolve_gateway)"; EMAIL=""; MODEL="${BYTEASK_MODEL:-gpt-5.4}"; AUTOCLICK=0; REF=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --gateway) GATEWAY="$2"; shift 2;;
+    --email) EMAIL="$2"; shift 2;;
+    --model) MODEL="$2"; shift 2;;
+    --ref=*) REF="${1#--ref=}"; shift;;
+    --auto-click) AUTOCLICK=1; shift;;
+    --interactive) shift;;   # onboarding entry: a no-op arg so callers invoke
+                             # do_login WITH args, replacing $@ (else a POSIX
+                             # function inherits the caller's args, e.g. a prompt)
+    *) echo "byteask login: unknown option $1" >&2; exit 2;;
+  esac; done
+  # Referral code (one-shot, first signup only): an explicit --ref= flag wins, then
+  # BYTEASK_REF, then the file install.sh wrote. Validated; cleared after sign-in.
+  [ -n "$REF" ] || REF="${BYTEASK_REF:-}"
+  if [ -z "$REF" ] && [ -f "$CODEX_HOME/referral" ]; then
+    REF="$(cat "$CODEX_HOME/referral" 2>/dev/null || echo '')"
+  fi
+  case "$REF" in *[!A-Za-z0-9_-]*) REF="" ;; esac
+  [ "${#REF}" -le 64 ] || REF=""
+  [ -n "$EMAIL" ] || { printf "Email: "; read -r EMAIL; }
+  GATEWAY="${GATEWAY%/}"
+  echo "Signing in to ByteAsk as $EMAIL ..."
+  body="{\"email\":\"$EMAIL\"}"
+  [ -n "$REF" ] && body="{\"email\":\"$EMAIL\",\"ref\":\"$REF\"}"
+  start=$(curl -fsS -X POST "$GATEWAY/auth/start" -H 'content-type: application/json' -d "$body")
+  poll=$(printf '%s' "$start" | _json poll_token)
+  link=$(printf '%s' "$start" | _json dev_magic_link)
+  [ -n "$poll" ] || { echo "sign-in failed: $start" >&2; exit 1; }
+  echo "  -> Check $EMAIL for a sign-in link and click it."
+  [ -n "$link" ] && echo "  -> (dev) link: $link"
+  # Dev mode (no email configured): the gateway returns the link, so complete sign-in automatically.
+  [ -n "$link" ] && curl -fsS "$link" >/dev/null 2>&1 && echo "  -> sign-in confirmed"
+  echo "  -> Waiting for confirmation ..."
+  token=""; i=0
+  while [ "$i" -lt 120 ]; do
+    r=$(curl -fsS -X POST "$GATEWAY/auth/poll" -H 'content-type: application/json' -d "{\"poll_token\":\"$poll\"}" || echo '{}')
+    [ "$(printf '%s' "$r" | _json status)" = approved ] && { token=$(printf '%s' "$r" | _json access_token); break; }
+    i=$((i+1)); sleep 1
+  done
+  [ -n "$token" ] || { echo "sign-in timed out" >&2; exit 1; }
+  mkdir -p "$CODEX_HOME"; printf '%s' "$GATEWAY" > "$CODEX_HOME/gateway"
+  cat > "$CODEX_HOME/config.toml" <<EOF
+model = "$MODEL"
+model_provider = "byteask"
+web_search = "live"
+
+[model_providers.byteask]
+name = "ByteAsk"
+base_url = "$GATEWAY/byteask/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "$token"
+
+[model_providers.byteask.http_headers]
+x-openai-actor-authorization = "byteask"
+EOF
+  rm -f "$CODEX_HOME/referral" 2>/dev/null || true   # one-shot: only the first signup is credited
+  echo "Signed in as $EMAIL. You're ready: byteask \"...\""
+}
+
+# ByteAsk mode-C auth is the experimental_bearer_token in config.toml — the
+# engine's own `logout` only clears its OAuth store (auth.json), which mode C
+# never writes, so it left the user still signed in. Strip the token line (back
+# to unsigned; the next `byteask` onboards) and drop any auth.json too. Reports
+# on the ACTUAL post-state so a read-only config can't fake a logout. Returns
+# non-zero only when a token was present but couldn't be removed.
+do_logout() {
+  _lo_cfg="$CODEX_HOME/config.toml"; _lo_had=0
+  if [ -f "$_lo_cfg" ] && grep -q 'experimental_bearer_token' "$_lo_cfg" 2>/dev/null; then
+    _lo_had=1
+    _lo_tmp="$_lo_cfg.logout.$$"
+    if grep -v 'experimental_bearer_token' "$_lo_cfg" > "$_lo_tmp" 2>/dev/null; then
+      mv "$_lo_tmp" "$_lo_cfg" 2>/dev/null || true
+    fi
+    rm -f "$_lo_tmp" 2>/dev/null || true
+  fi
+  rm -f "$CODEX_HOME/auth.json" 2>/dev/null || true   # also clear any engine OAuth store
+  if [ "$_lo_had" = 0 ]; then
+    echo "You're not signed in to ByteAsk."; return 0
+  elif grep -q 'experimental_bearer_token' "$_lo_cfg" 2>/dev/null; then
+    echo "Couldn't remove the saved token — check permissions on $_lo_cfg" >&2; return 1
+  fi
+  echo "Logged out of ByteAsk. Run 'byteask' to sign back in."; return 0
+}
+
+case "${1:-}" in
+  --version|-V|version) echo "byteask $VERSION"; exit 0;;
+  --update|update|upgrade)
+    echo "Updating ByteAsk CLI..."
+    _gw="$(resolve_gateway)"; _gw="${_gw%/}"
+    exec sh -c "curl -fsSL '$_gw/install.sh' | PREFIX='$SELF_DIR' sh";;
+  login)
+    shift
+    case " $* " in
+      *" --with-api-key "*|*" --api-key "*) exec "$ENGINE" login "$@";;  # bring-your-own-key path
+    esac
+    do_login "$@"; exit 0;;
+  logout)
+    _lc=0; do_logout || _lc=$?; exit "$_lc";;
+  --uninstall-gdb-bridge)
+    _gi="$HOME/.gdbinit"
+    _gm="# ===== ByteAsk GDB bridge (added by the byteask installer) ====="
+    if [ -f "$_gi" ] && grep -qF "$_gm" "$_gi" 2>/dev/null; then
+      sed -i.bak '/# ===== ByteAsk GDB bridge (added by the byteask installer) =====/,/# ===== end ByteAsk GDB bridge =====/d' "$_gi" \
+        && echo "Removed the ByteAsk gdb bridge block from $_gi (backup: $_gi.bak)."
+    else
+      echo "No ByteAsk gdb bridge block in $_gi; nothing to remove."
+    fi
+    exit 0;;
+esac
+
+# Non-blocking, cached, fail-open update check before launching the engine
+# (skipped for --version/--update/login, which exit in the case above). Args
+# are forwarded so an accepted in-line update can relaunch with them intact.
+check_for_update "$@" || true
+
+# Launch loop. Normally we just run the engine once. But the TUI's `/login` and
+# `/logout` can't hot-swap the startup-loaded token, so they drop a one-word marker
+# and exit; we read it here and (re)authenticate with the shell flow, then relaunch.
+# We run (not exec) the engine so we regain control after it exits to act on that.
+AUTH_REQ="$CODEX_HOME/.byteask-auth-request"
+rm -f "$AUTH_REQ" 2>/dev/null || true
+while : ; do
+  # Not signed in yet (mode-C default, no token). On an interactive terminal, onboard
+  # right here so a bare `byteask` just works like `claude`/`codex`: do_login prompts
+  # for the email and writes the token; then we launch. A non-interactive run can't
+  # prompt, so it keeps the one-line nudge instead of hanging on a read.
+  CFG="$CODEX_HOME/config.toml"
+  if grep -q '^model_provider = "byteask"' "$CFG" 2>/dev/null && ! grep -q 'experimental_bearer_token' "$CFG" 2>/dev/null; then
+    if [ -t 0 ] && [ -t 1 ]; then
+      echo "Welcome to ByteAsk — let's get you signed in (one time)."
+      # `--interactive` (a no-op flag) forces a WITH-args call so do_login does NOT
+      # inherit this script's "$@" (e.g. a `byteask "prompt"`); "$@" is preserved.
+      do_login --interactive
+    else
+      echo "You're not signed in to ByteAsk. Run:  byteask login --email you@company.com" >&2
+      exit 1
+    fi
+  fi
+
+  _rc=0; "$ENGINE" "$@" || _rc=$?
+
+  # No auth action requested -> propagate the engine's exit code and stop.
+  [ -f "$AUTH_REQ" ] || exit "$_rc"
+  _act=$(cat "$AUTH_REQ" 2>/dev/null || echo ""); rm -f "$AUTH_REQ" 2>/dev/null || true
+  case "$_act" in
+    logout*) _lc=0; do_logout || _lc=$?; exit "$_lc" ;;               # /logout: clear token, back to shell
+    login*)  do_login --interactive; set -- ; continue ;;            # /login: (re)auth, relaunch a fresh TUI
+    *)       exit "$_rc" ;;
+  esac
+done

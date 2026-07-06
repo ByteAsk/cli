@@ -1,0 +1,19 @@
+Copyright (c) 2026 ByteAsk. All rights reserved.
+
+This repository and its contents (the "Software"), including the installers,
+launcher scripts, and the distributed `byteask-engine` binaries, are proprietary
+and confidential.
+
+No license, express or implied, is granted to any person to use, copy, modify,
+merge, publish, distribute, sublicense, or sell copies of the Software, except
+under the terms of a separate written agreement with ByteAsk, or as required to
+run the ByteAsk service as intended by an authorized ByteAsk account holder.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+The distributed engine binary incorporates third-party open-source components,
+which remain licensed under their own terms. See THIRD_PARTY_NOTICES.md and the
+licenses/ directory. Those components' licenses govern only those components, not
+the Software as a whole.
