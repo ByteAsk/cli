@@ -3,7 +3,7 @@
 # Thin wrapper over the engine so the client surface is fully ByteAsk-branded.
 set -eu
 
-VERSION="0.1.3"
+VERSION="0.1.11"
 DEFAULT_GATEWAY="https://code.byteask.ai"
 export CODEX_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
 export CODEX_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
@@ -73,10 +73,10 @@ check_for_update() {
   if [ -z "$_uc_latest" ]; then return 0; fi
   if ! version_gt "$_uc_latest" "$VERSION"; then return 0; fi   # not newer than installed
   if [ -t 0 ] && [ -t 1 ]; then
-    printf 'ByteAsk %s is available (you have %s). Update now? [y/N] ' "$_uc_latest" "$VERSION" >&2
+    printf 'ByteAsk %s is available (you have %s). Update now? [Y/n] ' "$_uc_latest" "$VERSION" >&2
     read -r _uc_ans </dev/tty 2>/dev/null || _uc_ans=""
     case "$_uc_ans" in
-      [yY]*)
+      ""|[yY]*)   # Enter (default) or y -> update
         _uc_gw="$(resolve_gateway)"; _uc_gw="${_uc_gw%/}"
         printf 'Updating ByteAsk to %s ...\n' "$_uc_latest" >&2
         # Install in place (over the running wrapper), then relaunch the fresh
@@ -95,11 +95,1672 @@ check_for_update() {
   return 0
 }
 
+# ============================ BYOK (bring your own key) =====================
+# A user's own OpenAI/Anthropic/Gemini key (or ChatGPT subscription) so their
+# requests bill to THEIR account and never route through us. Keys + the managed
+# JWT live in ~/.byteask/byok-config.json (0600) which a local Python "sidecar"
+# (byok_sidecar.py, loopback only) reads; the engine points at the sidecar, which
+# routes per model: own-key -> provider direct; no key -> managed gateway (billed
+# as today). The engine holds NO secret in BYOK mode (JWT migrated to the sidecar
+# store), so a repo re-pointing base_url can't exfiltrate anything. Requires python3.
+BYOK_PORT="${BYOK_SIDECAR_PORT:-8799}"
+BYOK_CFG="$CODEX_HOME/byok-config.json"
+BYOK_SIDECAR="$CODEX_HOME/byok_sidecar.py"
+BYOK_MODELS="$CODEX_HOME/byteask_models.py"      # shared self-hosted-models helper
+
+_models_ready() {
+  [ -f "$BYOK_MODELS" ] || { echo "byteask: self-hosted models need the helper; run 'byteask --update'." >&2; return 1; }
+  command -v python3 >/dev/null 2>&1 || { echo "byteask: self-hosted models need python3 (not found on PATH)." >&2; return 1; }
+}
+
+# Re-merge the registry's self/* endpoints into the model catalog (idempotent +
+# atomic; never drops a base cloud model). Called at launch + after add/remove so
+# /model always reflects the registry, and a `byteask --update` (which re-fetches a
+# base catalog) can never permanently drop custom rows.
+_models_merge() {
+  [ -f "$BYOK_MODELS" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -f "$CODEX_HOME/models-catalog.json" ] || return 0
+  python3 "$BYOK_MODELS" merge-catalog "$BYOK_CFG" "$CODEX_HOME/models-catalog.json" 2>/dev/null || true
+}
+
+# True when at least one self-hosted endpoint is registered (cheap grep guard so the
+# merge/python spawn never touches the launch path for the 99% who have none).
+_has_self_endpoints() { [ -f "$BYOK_CFG" ] && grep -q '"endpoints"' "$BYOK_CFG" 2>/dev/null; }
+
+# Warn when the ACTIVE model is a self/<alias> that failed `byteask models test`'s
+# tool round-trip. Such a model can hold a conversation but never emits a structured
+# tool call, so every file edit / shell command / search silently no-ops — a failure
+# mode with nothing on screen explaining it. The verdict is recorded by models_test
+# (tools_ok); absent (never tested) stays silent rather than nagging. Once per process.
+_warn_self_tools() {
+  [ -n "${_SELFTOOLS_WARNED:-}" ] && return 0
+  _wst_model=$(_cfg_model)
+  case "$_wst_model" in self/*) : ;; *) return 0 ;; esac
+  _wst_alias=${_wst_model#self/}
+  [ -f "$BYOK_CFG" ] || return 0
+  _wst_ok=$(python3 "$BYOK_MODELS" get "$BYOK_CFG" "$_wst_alias" tools_ok 2>/dev/null) || return 0
+  [ "$_wst_ok" = false ] || return 0
+  echo "byteask: $_wst_model failed the tool round-trip — it can't make tool calls, so file edits," >&2
+  echo "  shell commands and code search will NOT work (plain questions still do). Re-check with:" >&2
+  echo "  byteask models test $_wst_alias" >&2
+  _SELFTOOLS_WARNED=1
+}
+
+# Merge/read the JSON config via python3 (BYOK requires python3 anyway, so no jq dep).
+_byok_py() { python3 - "$@"; }
+
+_byok_keys_count() {   # echo the number of keys set (0 if no config)
+  [ -f "$BYOK_CFG" ] || { echo 0; return; }
+  _byok_py "$BYOK_CFG" <<'PY' 2>/dev/null || echo 0
+import json,sys
+try: print(len((json.load(open(sys.argv[1])).get("keys") or {})))
+except Exception: print(0)
+PY
+}
+
+_byok_field() {   # $1=field -> stdout (jwt|local_token|gateway)
+  [ -f "$BYOK_CFG" ] || return 0
+  _byok_py "$BYOK_CFG" "$1" <<'PY' 2>/dev/null
+import json,sys
+try: print(json.load(open(sys.argv[1])).get(sys.argv[2]) or "")
+except Exception: print("")
+PY
+}
+
+# Merge fields into byok-config.json (0600). Args: key=value pairs; a "keys.<prov>"
+# path sets a provider key, plain names set a top-level field. Empty value deletes.
+_byok_merge() {
+  _byok_py "$BYOK_CFG" "$@" <<'PY'
+import json,sys,os
+path=sys.argv[1]
+try: cfg=json.load(open(path))
+except Exception: cfg={}
+if not isinstance(cfg,dict): cfg={}
+cfg.setdefault("keys",{})
+for pair in sys.argv[2:]:
+    k,_,v=pair.partition("=")
+    if k.startswith("keys."):
+        prov=k[5:]
+        if v: cfg["keys"][prov]=v
+        else: cfg["keys"].pop(prov,None)
+    else:
+        if v: cfg[k]=v
+        else: cfg.pop(k,None)
+os.makedirs(os.path.dirname(path),exist_ok=True)
+fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600); os.write(fd,json.dumps(cfg).encode()); os.close(fd)
+try: os.chmod(path,0o600)
+except Exception: pass
+PY
+}
+
+# Current JWT: from byok-config first (BYOK mode), else config.toml (managed).
+_byok_current_jwt() {
+  _j="$(_byok_field jwt)"
+  [ -n "$_j" ] && { echo "$_j"; return; }
+  sed -n 's/^experimental_bearer_token = "\(.*\)"$/\1/p' "$CODEX_HOME/config.toml" 2>/dev/null | head -n1
+}
+
+# Emails that have completed sign-in on THIS machine. Used to skip the referral-code
+# prompt on re-login: referrals only credit a brand-new signup, so a returning email
+# should never be asked. Persists across logout (logout does not clear it).
+_email_known()    { _ke="$CODEX_HOME/.known-emails"; [ -f "$_ke" ] && grep -qixF "$1" "$_ke" 2>/dev/null; }
+_email_remember() { _ke="$CODEX_HOME/.known-emails"; _email_known "$1" || printf '%s\n' "$1" >> "$_ke" 2>/dev/null || true; }
+
+# Authoritative "has this email signed in before?" via the gateway (works across
+# machines, unlike the local cache). Echoes: yes | no | (empty = couldn't tell).
+# Fail-open: any network error / older gateway without the route -> empty, and the
+# caller falls back to _email_known. curl -G --data-urlencode encodes '+','@' safely.
+_server_email_exists() {
+  _se_gw="$(resolve_gateway)"; _se_gw="${_se_gw%/}"
+  [ -n "$_se_gw" ] || return 0
+  _se_out=$(curl -fsS -m 3 -G --data-urlencode "email=$1" "$_se_gw/auth/account-exists" 2>/dev/null) || return 0
+  case "$_se_out" in
+    *'"exists"'*true*)  printf 'yes' ;;
+    *'"exists"'*false*) printf 'no' ;;
+  esac
+}
+# True (=> SKIP the referral prompt) when the email is a returning user. Prefers the
+# server's answer; falls back to the local cache when the gateway can't be reached.
+_email_returning() {
+  case "$(_server_email_exists "$1")" in
+    yes) return 0 ;;
+    no)  return 1 ;;
+    *)   _email_known "$1" ;;
+  esac
+}
+
+# One gateway probe per sign-in attempt. From a single /auth/account-exists call it
+# sets two globals: _EMAIL_BLOCK (the reason the address is refused, else empty) and
+# _EMAIL_EXISTS (yes|no|"" when the gateway can't be reached). Fail-open: any network
+# error leaves both empty -> allow, with /auth/start still the authoritative gate.
+_email_probe() {
+  _EMAIL_BLOCK=""; _EMAIL_EXISTS=""
+  _ep_gw="$(resolve_gateway)"; _ep_gw="${_ep_gw%/}"
+  [ -n "$_ep_gw" ] || return 0
+  _ep_out=$(curl -fsS -m 3 -G --data-urlencode "email=$1" "$_ep_gw/auth/account-exists" 2>/dev/null) || return 0
+  case "$_ep_out" in
+    *'"blocked"'*true*) _EMAIL_BLOCK="$(printf '%s' "$_ep_out" | _json error)"; return 0 ;;
+  esac
+  case "$_ep_out" in
+    *'"exists"'*true*)  _EMAIL_EXISTS="yes" ;;
+    *'"exists"'*false*) _EMAIL_EXISTS="no" ;;
+  esac
+}
+# True (0) => this email is a NEW signup, so the referral prompt should be shown. Reads
+# _EMAIL_EXISTS from the preceding _email_probe (local cache when the server was silent).
+_email_is_new() {
+  case "$_EMAIL_EXISTS" in
+    yes) return 1 ;;
+    no)  return 0 ;;
+    *)   if _email_known "$1"; then return 1; else return 0; fi ;;
+  esac
+}
+
+# Preserve the model line + catalog line across config rewrites.
+_cfg_model()   { sed -n 's/^model = "\(.*\)"$/\1/p' "$CODEX_HOME/config.toml" 2>/dev/null | head -n1; }
+_cfg_catalog() { grep -n '^model_catalog_json = ' "$CODEX_HOME/config.toml" 2>/dev/null | head -n1 | sed 's/^[0-9]*://'; }
+
+# A stable per-device token for the anonymous free trial. Minted once, persisted
+# 0600, sent as X-Anon-Id so the gateway can meter pre-login trial calls per device
+# (NOT per IP — a university shares one NAT). It's just a local file; resetting it
+# is possible and accepted for a short promo.
+# Is the anonymous free-trial promo currently on? Public gateway check; fail CLOSED
+# (any error / unreachable -> treat as OFF so we fall back to normal email onboarding).
+# BYTEASK_ANON_FORCE=1 forces on for tests without a live gateway.
+_anon_promo_on() {
+  [ "${BYTEASK_ANON_FORCE:-}" = 1 ] && return 0
+  _as=$(curl -fsS --max-time 4 "$(resolve_gateway)/byteask/anon-status" 2>/dev/null) || return 1
+  case "$_as" in *'"enabled":true'*|*'"enabled": true'*) return 0 ;; *) return 1 ;; esac
+}
+
+_anon_id_file() { echo "$CODEX_HOME/anon-id"; }
+_ensure_anon_id() {
+  _aif="$(_anon_id_file)"
+  if [ ! -s "$_aif" ]; then
+    _aid=$(python3 -c 'import secrets;print(secrets.token_hex(16))' 2>/dev/null \
+           || od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')
+    [ -n "$_aid" ] && { printf '%s' "$_aid" > "$_aif" 2>/dev/null; chmod 600 "$_aif" 2>/dev/null; }
+  fi
+  cat "$_aif" 2>/dev/null
+}
+
+# Managed config.toml (the today path). Shared by do_login, `byok off`, and do_logout.
+# An EMPTY token ($4) writes an UNSIGNED config (no experimental_bearer_token line at all,
+# not an empty one) so the launch-loop onboard check correctly sees "not signed in".
+# An unsigned config also carries an X-Anon-Id header so the gateway can meter the
+# anonymous free trial per device.
+write_managed_config() {  # $1=model $2=catalog_line $3=gateway $4=token (empty = unsigned)
+  {
+    cat <<EOF
+model = "$1"
+model_provider = "byteask"
+web_search = "live"
+$2
+
+[model_providers.byteask]
+name = "ByteAsk"
+base_url = "$3/byteask/v1"
+wire_api = "responses"
+requires_openai_auth = false
+EOF
+    [ -n "$4" ] && printf 'experimental_bearer_token = "%s"\n' "$4"
+    printf '\n[model_providers.byteask.http_headers]\nx-openai-actor-authorization = "byteask"\n'
+    # Terse-mode preference (durable across re-login): re-emit the saved level so a
+    # fresh config keeps it. Absent file = no header = the gateway's default (lite).
+    if [ -s "$CODEX_HOME/terse" ]; then printf 'x-byteask-terse = "%s"\n' "$(cat "$CODEX_HOME/terse")"; fi
+    # Unsigned config carries the anon-trial device token. `if` (not `&&`) so the
+    # function's exit status stays 0 when signed — a trailing false `&&` would make
+    # write_managed_config "fail" and the launch loop would re-onboard.
+    if [ -z "$4" ]; then printf 'X-Anon-Id = "%s"\n' "$(_ensure_anon_id)"; fi
+  } > "$CODEX_HOME/config.toml"
+}
+
+# BYOK config.toml: engine -> local sidecar, NO secret in the engine (JWT is in the
+# sidecar store). supports_websockets=false so the engine never sends previous_response_id
+# down a WS the local demux can't honor across providers (codex review).
+write_byok_config() {  # $1=model $2=catalog_line $3=local_token
+  cat > "$CODEX_HOME/config.toml" <<EOF
+model = "$1"
+model_provider = "byok-local"
+web_search = "live"
+$2
+
+[model_providers.byok-local]
+name = "ByteAsk (your key)"
+base_url = "http://127.0.0.1:$BYOK_PORT/byteask/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+
+[model_providers.byok-local.http_headers]
+X-BYOK-Token = "$3"
+x-openai-actor-authorization = "byteask"
+EOF
+  # Terse preference travels to BYOK configs too (durable across re-login).
+  if [ -s "$CODEX_HOME/terse" ]; then printf 'x-byteask-terse = "%s"\n' "$(cat "$CODEX_HOME/terse")" >> "$CODEX_HOME/config.toml"; fi
+}
+
+# Ensure the loopback sidecar is running + current. Lazy shared singleton: health
+# probe; (re)start if down or if byok_sidecar.py is newer than our start marker
+# (picks up a `byteask --update`). Returns non-zero if it can't come up.
+ensure_sidecar() {
+  [ -n "${BYOK_SKIP_SIDECAR:-}" ] && return 0   # test seam: skip the real spawn
+  [ -f "$BYOK_SIDECAR" ] || { echo "byteask: BYOK sidecar not installed; run 'byteask --update'." >&2; return 1; }
+  _pidf="$CODEX_HOME/byok-sidecar.pid"
+  if curl -fsS "http://127.0.0.1:$BYOK_PORT/healthz" >/dev/null 2>&1; then
+    [ -f "$_pidf" ] && [ "$_pidf" -nt "$BYOK_SIDECAR" ] && return 0   # healthy + current
+    kill "$(cat "$_pidf" 2>/dev/null)" 2>/dev/null || true            # stale -> restart
+    sleep 1
+  fi
+  command -v python3 >/dev/null 2>&1 || { echo "byteask: BYOK needs python3 (not found on PATH)." >&2; return 1; }
+  BYOK_SIDECAR_PORT="$BYOK_PORT" nohup python3 "$BYOK_SIDECAR" >"$CODEX_HOME/byok-sidecar.log" 2>&1 &
+  echo $! > "$_pidf"
+  _i=0; while [ "$_i" -lt 30 ]; do
+    curl -fsS "http://127.0.0.1:$BYOK_PORT/healthz" >/dev/null 2>&1 && return 0
+    sleep 0.1; _i=$((_i+1))
+  done
+  echo "byteask: BYOK sidecar didn't start (see $CODEX_HOME/byok-sidecar.log)." >&2; return 1
+}
+
+# Validate a key against the provider's own /models endpoint. 200 -> ok; a clear
+# 401/403 -> reject; anything else (offline/odd) -> warn but allow (surfaced later).
+validate_key() {  # $1=provider $2=key -> 0 ok/allow, 1 reject
+  case "$1" in
+    openai)    _u="https://api.openai.com/v1/models"; _h="Authorization: Bearer $2";;
+    anthropic) _u="https://api.anthropic.com/v1/models"; _h="x-api-key: $2";;
+    gemini)    _u="https://generativelanguage.googleapis.com/v1beta/models"; _h="x-goog-api-key: $2";;
+    *) return 0;;
+  esac
+  _extra=""; [ "$1" = anthropic ] && _extra="-H anthropic-version:2023-06-01"
+  _code=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 -H "$_h" $_extra "$_u" 2>/dev/null || echo 000)
+  case "$_code" in
+    2*) return 0;;
+    401|403) echo "  That $1 key was rejected by the provider (HTTP $_code)." >&2; return 1;;
+    *) echo "  Couldn't verify the $1 key right now (HTTP $_code) — saving it anyway." >&2; return 0;;
+  esac
+}
+
+# Enter/refresh BYOK: migrate JWT into the sidecar store, ensure a local token,
+# (re)start the sidecar, and flip config.toml to the byok-local provider.
+_byok_enter() {
+  _jwt="$(_byok_current_jwt)"
+  _lt="$(_byok_field local_token)"
+  if [ -z "$_lt" ]; then
+    _lt="$(_byok_py <<'PY'
+import secrets; print(secrets.token_hex(24))
+PY
+)"
+  fi
+  _gw="$(resolve_gateway)"; _gw="${_gw%/}"
+  _byok_merge "jwt=$_jwt" "local_token=$_lt" "gateway=$_gw"
+  ensure_sidecar || return 1
+  write_byok_config "$(_cfg_model)" "$(_cfg_catalog)" "$_lt"
+  return 0
+}
+
+# Prompt (hidden) + validate + store + activate ONE provider key. Returns 0/1 (NO
+# exit) so the source menu can loop on failure. Reused by `byok set` (CLI) + the menu.
+_byok_add_key() {   # $1=provider
+  _prov="$1"
+  [ -f "$BYOK_SIDECAR" ] || { echo "byteask: BYOK needs the sidecar; run 'byteask --update' first." >&2; return 1; }
+  command -v python3 >/dev/null 2>&1 || { echo "byteask: BYOK needs python3 (not found)." >&2; return 1; }
+  # Interactive TTY -> hidden prompt; piped stdin -> read it (scriptable).
+  if [ -t 0 ]; then
+    _ui_title "Add your $_prov key"
+    _ui_note "Hidden while you paste; saved locally (0600), never sent to ByteAsk"
+    _ui_gap
+    printf "  Paste key: "
+    # The engine's TUI can leave the terminal in bracketed-paste + raw mode after
+    # /login. On macOS Terminal that swallows the submit newline (paste wrapped in
+    # ESC[200~..ESC[201~, Enter arrives as CR not LF), so a plain hidden `read` hangs
+    # while Linux terminals deliver the newline fine. Disable bracketed paste + force
+    # canonical line-mode with CR->NL so Enter submits everywhere; then restore.
+    printf '\033[?2004l' 2>/dev/null
+    _KEY_STTY=$(stty -g 2>/dev/null)
+    stty -echo icanon icrnl 2>/dev/null
+    read -r _KEY
+    [ -n "$_KEY_STTY" ] && stty "$_KEY_STTY" 2>/dev/null || stty echo 2>/dev/null
+    echo
+  else
+    read -r _KEY
+  fi
+  [ -n "$_KEY" ] || { echo "No key entered." >&2; return 1; }
+  validate_key "$_prov" "$_KEY" || { _KEY=""; return 1; }
+  _byok_merge "keys.$_prov=$_KEY"; _KEY=""   # drop from shell memory
+  _byok_enter || return 1
+  echo "Saved your $_prov key."
+  return 0
+}
+
+# One-line per-provider state for the source menu + status.
+_byok_status_line() {
+  _byok_py "$BYOK_CFG" <<'PY' 2>/dev/null || echo "OpenAI=managed  Anthropic=managed  Gemini=managed"
+import json,sys
+try: keys=json.load(open(sys.argv[1])).get("keys") or {}
+except Exception: keys={}
+lbl={"openai":"OpenAI","anthropic":"Anthropic","gemini":"Gemini"}
+print("   ".join("%s: %s"%(lbl[p],"your key" if keys.get(p) else "managed") for p in ("openai","anthropic","gemini")))
+PY
+}
+
+# Per-provider menu verb: "change" if that key is already set, else "add". One python
+# call returns all three, space-separated (openai anthropic gemini), so the menu label
+# tells the user which providers are keyed without reading the Current: line.
+_byok_key_verbs() {
+  _byok_py "$BYOK_CFG" <<'PY' 2>/dev/null || echo "add add add"
+import json,sys
+try: keys=json.load(open(sys.argv[1])).get("keys") or {}
+except Exception: keys={}
+print(" ".join("change" if keys.get(p) else "add" for p in ("openai","anthropic","gemini")))
+PY
+}
+
+# Signed in iff a JWT exists AND (best-effort) is not expired. The exp claim is decoded
+# read-only via python (fail-safe: no python or undecodable -> treat as valid). An expired
+# token counts as signed-out so the launch loop re-onboards instead of hitting a 401.
+_is_signed_in() {
+  _si_jwt="$(_byok_current_jwt)"; [ -n "$_si_jwt" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 0
+  BYOK_JWT="$_si_jwt" python3 - <<'PY' 2>/dev/null
+import os, base64, json, time, sys
+try:
+    seg = os.environ["BYOK_JWT"].split(".")[1]; seg += "=" * (-len(seg) % 4)
+    exp = json.loads(base64.urlsafe_b64decode(seg)).get("exp")
+    sys.exit(1 if (exp and int(exp) < int(time.time())) else 0)   # expired -> signed-out
+except Exception:
+    sys.exit(0)   # undecodable -> assume valid (fail-safe)
+PY
+}
+
+# The MANAGED provider authenticates with `experimental_bearer_token` in config.toml —
+# that line IS the credential the engine sends. _is_signed_in reads byok-config.json
+# FIRST, so a managed config whose token line is missing still reports "signed in"
+# (and the settings screen shows the email), while every turn 401s with
+# "Sign in to continue — type /login." True == that broken state.
+_managed_missing_token() {
+  [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CODEX_HOME/config.toml" 2>/dev/null | head -n1)" = byteask ] \
+    || return 1
+  ! grep -q '^experimental_bearer_token = ' "$CODEX_HOME/config.toml" 2>/dev/null
+}
+
+# Interactive iff a real TTY, or BYOK_ASSUME_TTY is set (test seam: pipe menu input).
+_interactive() { [ -n "${BYOK_ASSUME_TTY:-}" ] || { [ -t 0 ] && [ -t 1 ]; }; }
+
+# True (exit 0) when the ACTIVE config needs a ByteAsk account to run; false (1) when it
+# is fully self-served and requires no sign-in. Mirrors the sidecar's _route_turn:
+#   managed provider (byteask)               -> needs us (our key, our bill)
+#   byok-local + model self/*                -> DIRECT to the user's box  -> no account
+#   byok-local + model auto                  -> always managed-forwards   -> needs us
+#   byok-local + cloud model w/ own key      -> DIRECT to the provider    -> no account
+#   byok-local + cloud model, no own key     -> managed-forwards          -> needs us
+#   any other provider (openai/subscription) -> engine owns its auth      -> not ours
+# If the user later picks a managed model in /model, the gateway's 401 login_required
+# asks for sign-in AT THAT REQUEST (never a silent failure) — see [[engine-401-vs-429-render]].
+_needs_byteask_signin() {
+  _nbs_prov=$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CODEX_HOME/config.toml" 2>/dev/null | head -n1)
+  case "$_nbs_prov" in
+    byteask)    return 0 ;;
+    byok-local) : ;;
+    *)          return 1 ;;
+  esac
+  _nbs_model="$(_cfg_model)"
+  case "$_nbs_model" in
+    self/*)  return 1 ;;   # the user's own server — pure-shell, no python needed
+    ""|auto) return 0 ;;   # auto is a managed-only concept
+  esac
+  # A cloud model: no account IFF the user holds their own key for its provider.
+  # Reuse the served translator predicates so the provider map can't drift from the
+  # sidecar. No python / unreadable store -> conservative "needs us" (never a silent
+  # launch that would 401 on the first turn).
+  command -v python3 >/dev/null 2>&1 || return 0
+  BYOK_MODEL="$_nbs_model" python3 - "$BYOK_CFG" "$CODEX_HOME" <<'PY'
+import json, sys, os
+model = os.environ.get("BYOK_MODEL", "")
+sys.path.insert(0, sys.argv[2])
+try:
+    import anthropic_translate, gemini_translate
+    if anthropic_translate.is_anthropic_model(model):  prov = "anthropic"
+    elif gemini_translate.is_gemini_model(model):      prov = "gemini"
+    else:                                              prov = "openai"
+except Exception:
+    sys.exit(1)   # can't classify -> treat as managed (account needed)
+try:
+    keys = json.load(open(sys.argv[1])).get("keys") or {}
+except Exception:
+    keys = {}
+sys.exit(0 if (keys.get(prov) or "").strip() else 1)   # exit 0 = own key = DIRECT
+PY
+  # python exit 0 (own key -> direct) => no account; nonzero => account needed.
+  [ "$?" = 0 ] && return 1 || return 0
+}
+
+# The signed-in email = the "sub" claim of the JWT (base64url middle segment). Best-effort
+# via python3; empty if unavailable (menu then shows a generic "signed in" line).
+_current_email() {
+  _ce_jwt="$(_byok_current_jwt)"; [ -n "$_ce_jwt" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  BYOK_JWT="$_ce_jwt" python3 - <<'PY' 2>/dev/null
+import os, base64, json
+try:
+    seg = os.environ["BYOK_JWT"].split(".")[1]
+    seg += "=" * (-len(seg) % 4)
+    print(json.loads(base64.urlsafe_b64decode(seg)).get("sub", "") or "")
+except Exception:
+    pass
+PY
+}
+
+byok_set() {   # $1=provider — the scriptable CLI command (exits on error)
+  _prov="$1"
+  case "$_prov" in openai|anthropic|gemini) ;; *)
+    echo "usage: byteask byok set <openai|anthropic|gemini> [--subscription]" >&2; exit 2;; esac
+  # ChatGPT subscription (OpenAI only): engine-native pure session, NOT the sidecar.
+  if [ "$_prov" = openai ] && { [ "${2:-}" = "--subscription" ] || [ "${2:-}" = "--sub" ]; }; then
+    byok_subscription; return; fi
+  _byok_add_key "$_prov" || exit 1
+  echo "Keyed providers bill to your account; other models use ByteAsk managed (counts toward your usage)."
+  echo "Relaunching..."; return 0
+}
+
+byok_status() {
+  _n="$(_byok_keys_count)"
+  if [ "$_n" = 0 ]; then echo "BYOK: off (all traffic is managed)."; return 0; fi
+  echo "BYOK: on. Keyed providers (billed to you):"
+  _byok_py "$BYOK_CFG" <<'PY' 2>/dev/null
+import json,sys
+try: keys=json.load(open(sys.argv[1])).get("keys") or {}
+except Exception: keys={}
+for p in ("openai","anthropic","gemini"):
+    print("  - %s: %s" % (p, "your key" if keys.get(p) else "managed"))
+PY
+  echo "  Un-keyed providers use ByteAsk managed (billed to you, counts toward your usage)."
+  if curl -fsS "http://127.0.0.1:$BYOK_PORT/healthz" >/dev/null 2>&1; then
+    echo "  sidecar: running on 127.0.0.1:$BYOK_PORT"
+  else echo "  sidecar: not running (starts on next launch)"; fi
+}
+
+byok_remove() {   # $1=provider
+  case "$1" in openai|anthropic|gemini) ;; *)
+    echo "usage: byteask byok remove <openai|anthropic|gemini>" >&2; exit 2;; esac
+  _byok_merge "keys.$1="
+  if [ "$(_byok_keys_count)" = 0 ]; then byok_off; else
+    _byok_enter || true; echo "Removed your $1 key."; fi
+}
+
+# Leave BYOK entirely: stop the sidecar, restore the managed config with the JWT.
+byok_off() {
+  _jwt="$(_byok_current_jwt)"; _gw="$(resolve_gateway)"; _gw="${_gw%/}"
+  [ "$(_byok_keys_count)" != 0 ] && _off_had_keys=1 || _off_had_keys=0
+  [ -f "$CODEX_HOME/byok-sidecar.pid" ] && kill "$(cat "$CODEX_HOME/byok-sidecar.pid" 2>/dev/null)" 2>/dev/null || true
+  rm -f "$CODEX_HOME/byok-sidecar.pid" 2>/dev/null || true
+  _byok_merge "keys.openai=" "keys.anthropic=" "keys.gemini="
+  # A self/* model needs the sidecar; on managed it would fail every turn — reset
+  # to the default cloud model (mirrors models_remove's active-model handling).
+  _off_model="$(_cfg_model)"
+  case "$_off_model" in self/*|"") _off_model="${BYTEASK_MODEL:-gpt-5.4}";; esac
+  write_managed_config "$_off_model" "$(_cfg_catalog)" "$_gw" "$_jwt"
+  if [ "$_off_had_keys" = 1 ]; then
+    echo "Switched to ByteAsk managed (billed to ByteAsk, /usage as normal)."
+  else
+    echo "You're on ByteAsk managed (billed to ByteAsk, /usage as normal)."
+  fi
+}
+
+# ChatGPT subscription (D13=A): a pure OpenAI-only session via the engine's own
+# login flow. Not the sidecar (its OAuth/refresh is engine-native).
+byok_subscription() {
+  echo "Sign in with your ChatGPT subscription (Plus/Pro/Business)."
+  echo "Note: OpenAI's own sign-in screen appears (its Codex OAuth app); your"
+  echo "subscription is used per OpenAI's terms. Anthropic/Gemini keys don't mix"
+  echo "into a subscription session — use API keys for that."
+  "$ENGINE" login || { echo "ChatGPT sign-in failed." >&2; exit 1; }
+  # Switch to the built-in OpenAI provider (engine auto-selects the ChatGPT backend
+  # for AuthMode::Chatgpt); leaves the sidecar untouched.
+  cat > "$CODEX_HOME/config.toml" <<EOF
+model = "$(_cfg_model)"
+model_provider = "openai"
+web_search = "live"
+$(_cfg_catalog)
+EOF
+  echo "ChatGPT subscription active (OpenAI-only session). 'byteask byok off' to return to managed."
+}
+
+do_byok() {
+  case "${1:-}" in
+    set)    shift; byok_set "$@";;
+    remove|rm) shift; byok_remove "$@";;
+    status|"") byok_status;;
+    off)    byok_off;;
+    *) echo "usage: byteask byok <set|status|remove|off> [provider]" >&2; exit 2;;
+  esac
+}
+
+# ===================== self-hosted / custom models (byteask models) =========
+# Point ByteAsk at the user's OWN OpenAI-compatible server (vLLM/TGI/SGLang/Ollama/
+# LM Studio/llama.cpp/DGX). The endpoint lives in the 0600 byok-config registry; the
+# sidecar routes self/<alias> DIRECT to their box; a slim catalog row makes it show
+# in /model. Their compute, their data — never billed, never through us. All the heavy
+# logic (atomic registry, catalog merge + slim template, discovery, wire probe, test)
+# is in the shared python helper so the sh + ps1 wrappers stay thin + identical.
+
+_self_hosted_howto() {
+  _ui_title "Other providers & your own hosted model"
+  _ui_note "A cloud provider with your own key (OpenRouter, Groq, DeepSeek, …):"
+  _ui_note "  byteask models add or --provider openrouter --key sk-...   (they bill you)"
+  _ui_note "Your OWN OpenAI-compatible server (vLLM/TGI/Ollama/LM Studio/DGX):"
+  _ui_note "  byteask models add my-model --url http://your-host:8000    (never billed)"
+  _ui_note "See providers:  byteask models providers"
+  _ui_gap
+}
+
+# True (silently) when the shared helper is new enough for preset subcommands (D13).
+_preset_helper_available() {
+  _pha=$(python3 "$BYOK_MODELS" version 2>/dev/null || echo 0)
+  case "$_pha" in ''|*[!0-9]*) return 1;; esac
+  [ "$_pha" -ge 2 ]
+}
+# Loud version gate for preset-using paths (installers fetch helpers fail-soft, so a
+# NEW wrapper can meet an OLD helper — say "update", don't crash on a missing subcommand).
+_require_preset_helper() {
+  _preset_helper_available && return 0
+  echo "byteask: provider presets need a newer helper — run 'byteask --update'." >&2
+  return 1
+}
+
+# Discover a server's model ids. Key rides BK_KEY (env, not argv — /proc/*/cmdline is
+# world-readable, 3A). On failure maps the helper's HTTP status to a tailored hint (4A)
+# and returns 1; on success echoes the ids (one per line).
+_discover_models() {   # $1=url  (uses KEY/CA/INS from caller scope)
+  _dm_err=$(mktemp 2>/dev/null || echo "/tmp/byteask-disc.$$")
+  _dm_ids=$(BK_KEY="$KEY" python3 "$BYOK_MODELS" discover "$1" "" "$CA" "$INS" 2>"$_dm_err")
+  _dm_rc=$?
+  _dm_msg=$(cat "$_dm_err" 2>/dev/null | tr '\n' ' '); rm -f "$_dm_err" 2>/dev/null
+  if [ "$_dm_rc" != 0 ] || [ -z "$_dm_ids" ]; then
+    case "$_dm_msg" in
+      *"HTTP 401"*|*"HTTP 403"*) echo "  the server rejected your key — check --key or your API key." >&2;;
+      *"HTTP 402"*)              echo "  your account needs credits before it can be used (402)." >&2;;
+      *"HTTP 404"*)              echo "  no /v1/models at $1 — check the URL, or pass --model <id>." >&2;;
+      *"HTTP "*)                 echo "  couldn't list models (${_dm_msg# }) — pass --model <id>." >&2;;
+      *)                         echo "  couldn't reach $1 — check the URL / network." >&2;;
+    esac
+    return 1
+  fi
+  printf '%s\n' "$_dm_ids"
+}
+
+# Interactive model picker (1B): shows up to 20 ids; on a bigger list (OpenRouter = 300+)
+# a substring typed at the prompt filters the already-fetched set in place (no refetch).
+# A pure number picks from the shown slice; an exact id is accepted verbatim. Echoes the id.
+_pick_from_ids() {   # $1 = newline-separated ids
+  _pfi="$1"
+  while :; do
+    _pfi_total=$(printf '%s\n' "$_pfi" | grep -c .)
+    _pfi_shown=$(printf '%s\n' "$_pfi" | grep . | head -20)
+    _i=1; printf '%s\n' "$_pfi_shown" | while IFS= read -r _m; do
+      printf '    %d) %s\n' "$_i" "$_m" >&2; _i=$((_i+1)); done
+    if [ "$_pfi_total" -gt 20 ]; then
+      printf '    … %d more — type a substring to filter, or the exact id\n' "$((_pfi_total-20))" >&2
+    fi
+    printf "  pick a number, or type a substring/exact id [1]: " >&2
+    read -r _pfi_in </dev/tty 2>/dev/null || _pfi_in=""
+    [ -z "$_pfi_in" ] && { printf '%s\n' "$_pfi_shown" | sed -n 1p; return 0; }
+    case "$_pfi_in" in
+      *[!0-9]*) ;;   # not a pure number → fall through to exact/substring
+      *) _pfi_sel=$(printf '%s\n' "$_pfi_shown" | sed -n "${_pfi_in}p")
+         [ -n "$_pfi_sel" ] && { printf '%s\n' "$_pfi_sel"; return 0; };;
+    esac
+    if printf '%s\n' "$_pfi" | grep -qxF -- "$_pfi_in"; then printf '%s\n' "$_pfi_in"; return 0; fi
+    _pfi_f=$(printf '%s\n' "$_pfi" | grep -iF -- "$_pfi_in" 2>/dev/null || true)
+    if [ -z "$_pfi_f" ]; then printf '  no id matches "%s".\n' "$_pfi_in" >&2; else _pfi="$_pfi_f"; fi
+  done
+}
+
+models_add() {   # <alias> [--provider P | --url U] [--model M] [--key K] [--wire W] [--ctx N]
+                 #          [--tools T] [--name D] [--ca-bundle P] [--insecure] [--header K=V] [--ollama]
+  _models_ready || return 1
+  _ma_alias="${1:-}"; [ $# -gt 0 ] && shift
+  case "$_ma_alias" in ""|-*) echo "usage: byteask models add <alias> --provider <id> | --url <endpoint>" >&2; return 2;; esac
+  _ma_alias="${_ma_alias#self/}"
+  # Seed the key from BK_KEY so a caller can pass it out-of-argv (/proc/*/cmdline is
+  # world-readable) — the same channel this function already uses to reach the helper.
+  # An explicit `--key` is parsed below and still wins.
+  U=""; MID=""; KEY="${BK_KEY:-}"; WIRE="auto"; WIRE_SET=0; CTX=""; TOOLS="auto"; DISP=""; CA=""; INS=""; HDRS=""
+  OLLAMA=0; PROVIDER=""; PROVIDER_ID=""; KIND="self"
+  while [ $# -gt 0 ]; do case "$1" in
+    --provider) PROVIDER="$2"; shift 2;;
+    --url) U="$2"; shift 2;;
+    --model) MID="$2"; shift 2;;
+    --key) KEY="$2"; shift 2;;
+    --wire) WIRE="$2"; WIRE_SET=1; shift 2;;
+    --ctx) CTX="$2"; shift 2;;
+    --tools) TOOLS="$2"; shift 2;;
+    --name) DISP="$2"; shift 2;;
+    --ca-bundle) CA="$2"; shift 2;;
+    --insecure) INS=1; shift;;
+    --header) HDRS="$HDRS
+$2"; shift 2;;
+    --ollama) OLLAMA=1; shift;;
+    *) echo "byteask models add: unknown option $1" >&2; return 2;;
+  esac; done
+  # --ollama is an alias for --provider ollama when the helper supports presets;
+  # on an older helper it degrades to the historical localhost default (no version gate).
+  if [ "$OLLAMA" = 1 ] && [ -z "$PROVIDER" ]; then
+    if _preset_helper_available; then PROVIDER="ollama"; else U="${U:-http://localhost:11434}"; fi
+  fi
+  # Resolve a provider preset → fills URL + wire + key env + kind. An explicit
+  # --url / --wire always wins (opencode's "override any preset" rule).
+  if [ -n "$PROVIDER" ]; then
+    _require_preset_helper || return 1
+    _pl=$(python3 "$BYOK_MODELS" preset "$PROVIDER" 2>/dev/null) || {
+      echo "byteask models add: unknown provider '$PROVIDER'. See: byteask models providers" >&2; return 2; }
+    _P_URL=$(printf '%s' "$_pl" | cut -d'|' -f2)
+    _P_WIRE=$(printf '%s' "$_pl" | cut -d'|' -f3)
+    _P_NEEDS=$(printf '%s' "$_pl" | cut -d'|' -f4)
+    _P_ENV=$(printf '%s' "$_pl" | cut -d'|' -f5)
+    KIND=$(printf '%s' "$_pl" | cut -d'|' -f6)
+    PROVIDER_ID="$PROVIDER"
+    [ -n "$U" ] || U="$_P_URL"                     # explicit --url wins
+    [ "$WIRE_SET" = 1 ] || WIRE="$_P_WIRE"         # explicit --wire wins; else pin (no billed probe)
+    # Key ladder for a needs-key (cloud) preset: --key → $ENV → hidden TTY prompt → error.
+    if [ "$_P_NEEDS" = 1 ] && [ -z "$KEY" ]; then
+      case "$_P_ENV" in ''|*[!A-Z0-9_]*) ;; *) eval "KEY=\${$_P_ENV:-}";; esac
+      if [ -z "$KEY" ] && [ -t 0 ] && [ -t 1 ]; then
+        printf "  %s API key (input hidden; Enter to abort): " "$PROVIDER" >&2
+        stty -echo 2>/dev/null || true; read -r KEY </dev/tty 2>/dev/null || KEY=""
+        stty echo 2>/dev/null || true; printf '\n' >&2
+      fi
+      if [ -z "$KEY" ]; then
+        echo "byteask models add: $PROVIDER needs an API key — pass --key, or set \$$_P_ENV." >&2
+        return 2
+      fi
+    fi
+  fi
+  [ -n "$U" ] || { echo "byteask models add: pass --provider <id> or --url <endpoint>." >&2; return 2; }
+  # Discover the server's model id if not given (kills the #1 misconfig: wrong id).
+  if [ -z "$MID" ]; then
+    echo "  probing $U for available models..." >&2
+    _ids=$(_discover_models "$U") || return 1
+    if [ -t 0 ] && [ -t 1 ]; then
+      MID=$(_pick_from_ids "$_ids")
+    elif [ "$KIND" = cloud ]; then
+      # A cloud provider lists many non-equivalent ids — never silently bind the first
+      # one in a script; make the caller name it (D10).
+      echo "byteask models add: $PROVIDER lists many models — pass --model <id>. For example:" >&2
+      printf '%s\n' "$_ids" | head -3 | sed 's/^/    /' >&2
+      return 2
+    else
+      MID=$(printf '%s\n' "$_ids" | sed -n 1p)   # a local box serves 1-2 models — first is right
+    fi
+    [ -n "$MID" ] || { echo "  no model selected." >&2; return 1; }
+    echo "  model: $MID" >&2
+  fi
+  # Auto-detect the wire only when it isn't already known (a preset pins it — 2A).
+  if [ "$WIRE" = auto ]; then
+    WIRE=$(BK_KEY="$KEY" python3 "$BYOK_MODELS" probe-wire "$U" "$MID" "" "$CA" "$INS" 2>/dev/null || echo chat)
+    echo "  wire: $WIRE" >&2
+  fi
+  # Build the endpoint JSON via python (env vars dodge shell quoting) + atomic save.
+  _ep=$(BK_URL="$U" BK_MID="$MID" BK_KEY="$KEY" BK_WIRE="$WIRE" BK_CTX="$CTX" BK_TOOLS="$TOOLS" \
+        BK_DISP="$DISP" BK_CA="$CA" BK_INS="$INS" BK_HDRS="$HDRS" BK_PID="$PROVIDER_ID" python3 - <<'PY'
+import os, json
+ep = {"base_url": os.environ["BK_URL"], "model_id": os.environ["BK_MID"],
+      "wire": os.environ.get("BK_WIRE") or "auto", "tools": os.environ.get("BK_TOOLS") or "auto"}
+if os.environ.get("BK_KEY"):  ep["api_key"] = os.environ["BK_KEY"]
+if os.environ.get("BK_CTX"):  ep["context_window"] = int(os.environ["BK_CTX"])
+if os.environ.get("BK_DISP"): ep["display_name"] = os.environ["BK_DISP"]
+if os.environ.get("BK_CA"):   ep["ca_bundle"] = os.environ["BK_CA"]
+if os.environ.get("BK_INS"):  ep["insecure"] = True
+if os.environ.get("BK_PID"):  ep["provider_id"] = os.environ["BK_PID"]
+hdrs = {}
+for ln in (os.environ.get("BK_HDRS") or "").splitlines():
+    ln = ln.strip()
+    if "=" in ln:
+        k, _, v = ln.partition("="); hdrs[k.strip()] = v.strip()
+if hdrs: ep["headers"] = hdrs
+print(json.dumps(ep))
+PY
+)
+  printf '%s' "$_ep" | python3 "$BYOK_MODELS" add "$BYOK_CFG" "$_ma_alias" >/dev/null \
+    || { echo "  failed to save the endpoint." >&2; return 1; }
+  # Force BYOK-local mode so the engine points at the sidecar — else self/<alias> would
+  # go to the managed gateway. (_byok_enter preserves the endpoints we just wrote.)
+  _byok_enter || echo "  (warning: couldn't start the local sidecar — run 'byteask' to retry)" >&2
+  _models_merge
+  # Honest copy per endpoint kind (D8): a cloud provider is NOT "your compute".
+  if [ "$KIND" = cloud ]; then
+    echo "Added self/$_ma_alias  ($MID via $PROVIDER). Runs on $PROVIDER's cloud under YOUR key — they bill you; agent loops consume credits."
+  else
+    echo "Added self/$_ma_alias  ($MID, wire=$WIRE). Your compute — never billed by ByteAsk."
+  fi
+  echo "Pick it in /model, or run:  byteask --model self/$_ma_alias"
+  # Consented smoke test (D11): discovery listing ≠ a working chat turn.
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf "  Run a quick test now (one request on your key)? [Y/n]: " >&2
+    read -r _mt_ans </dev/tty 2>/dev/null || _mt_ans=""
+    case "$_mt_ans" in
+      [Nn]*) echo "  Skipped. Test later:  byteask models test $_ma_alias" >&2;;
+      *)     models_test "$_ma_alias";;
+    esac
+  else
+    echo "Test it end-to-end:  byteask models test $_ma_alias"
+  fi
+}
+
+models_providers() {
+  _models_ready || return 1
+  _require_preset_helper || return 1
+  echo "Cloud providers — bring your own key (your key, the provider bills you):"
+  python3 "$BYOK_MODELS" presets 2>/dev/null | while IFS='|' read -r _pid _purl _pw _pn _pe _pk; do
+    [ "$_pk" = cloud ] && printf '  %-12s %s\n' "$_pid" "$_purl"
+  done
+  echo "Local servers — your compute, never billed:"
+  python3 "$BYOK_MODELS" presets 2>/dev/null | while IFS='|' read -r _pid _purl _pw _pn _pe _pk; do
+    [ "$_pk" = local ] && printf '  %-12s %s\n' "$_pid" "$_purl"
+  done
+  echo "Add one:  byteask models add <alias> --provider <id> [--key K] [--model ID]"
+}
+
+models_list() {
+  _models_ready || return 1
+  python3 "$BYOK_MODELS" list "$BYOK_CFG"
+  if [ "${1:-}" = --check ]; then
+    echo "  checking reachability..."
+    for _al in $(python3 "$BYOK_MODELS" list "$BYOK_CFG" --json 2>/dev/null \
+                 | python3 -c 'import sys,json; print(" ".join(json.load(sys.stdin).keys()))' 2>/dev/null); do
+      _u=$(python3 "$BYOK_MODELS" get "$BYOK_CFG" "$_al" base_url 2>/dev/null)
+      _k=$(python3 "$BYOK_MODELS" get "$BYOK_CFG" "$_al" api_key 2>/dev/null)
+      if BK_KEY="$_k" python3 "$BYOK_MODELS" discover "$_u" >/dev/null 2>&1; then
+        echo "    self/$_al: reachable"
+      else echo "    self/$_al: UNREACHABLE"; fi
+    done
+  fi
+}
+
+models_test() {
+  _models_ready || return 1
+  _mt="${1:-}"; _mt="${_mt#self/}"
+  [ -n "$_mt" ] || { echo "usage: byteask models test <alias>" >&2; return 2; }
+  python3 "$BYOK_MODELS" test "$BYOK_CFG" "$_mt"
+}
+
+models_remove() {
+  _models_ready || return 1
+  _mr="${1:-}"; _mr="${_mr#self/}"
+  [ -n "$_mr" ] || { echo "usage: byteask models remove <alias>" >&2; return 2; }
+  _res=$(python3 "$BYOK_MODELS" remove "$BYOK_CFG" "$_mr" 2>/dev/null || echo notfound)
+  # If it was the ACTIVE model, switch back to a safe cloud default (else the next
+  # launch has model=self/<gone> which fail-closes on every turn).
+  if [ "$(_cfg_model)" = "self/$_mr" ]; then
+    _def="${BYTEASK_MODEL:-gpt-5.4}"
+    sed -i.bak "s|^model = \"self/$_mr\"\$|model = \"$_def\"|" "$CODEX_HOME/config.toml" 2>/dev/null || true
+    rm -f "$CODEX_HOME/config.toml.bak" 2>/dev/null || true
+    echo "  (was your active model; switched to $_def)"
+  fi
+  _models_merge
+  case "$_res" in removed) echo "Removed self/$_mr.";; *) echo "No self-hosted model 'self/$_mr'.";; esac
+}
+
+do_models() {
+  case "${1:-}" in
+    add)          shift; models_add "$@";;
+    providers)    shift; models_providers "$@";;
+    list|ls)      shift; models_list "$@";;
+    test)         shift; models_test "$@";;
+    remove|rm)    shift; models_remove "$@";;
+    ""|help|--help|-h)
+      cat >&2 <<EOF
+Use a cloud provider with YOUR key (OpenRouter/Groq/DeepSeek/… — the provider bills you):
+  byteask models add <alias> --provider <id> [--key K] [--model ID]
+  byteask models providers                       list the known providers
+Use your OWN hosted model (vLLM/TGI/Ollama/LM Studio/DGX — never billed by ByteAsk):
+  byteask models add <alias> --url http://host:8000 [--model ID] [--key K] [--ollama]
+                             [--wire auto|responses|chat] [--ctx N] [--ca-bundle P] [--insecure]
+  byteask models list [--check]
+  byteask models test <alias>
+  byteask models remove <alias>
+Then pick self/<alias> in /model.
+EOF
+      ;;
+    *) echo "usage: byteask models <add|providers|list|test|remove>" >&2; exit 2;;
+  esac
+}
+
+# Numbered fallback (no real TTY / raw mode unavailable): print options, read a number.
+# Echoes the chosen 1-based index, or 0 to cancel.
+# Menu chrome — clean section title + dim helper lines. All to STDERR (fd 2), matching
+# _menu_pick's option rendering, so they sit directly above the menu and never leak into
+# a $(...) capture. ANSI: bold title, dim notes; degrade gracefully on dumb terminals.
+_ui_title() { printf '\n  \033[1m%s\033[0m\n' "$1" >&2; }
+_ui_note()  { printf '  \033[2m%s\033[0m\n' "$1" >&2; }
+_ui_gap()   { printf '\n' >&2; }
+
+_menu_pick_numbered() {
+  _mp_n=$#; _mp_j=1
+  for _mp_o in "$@"; do printf '  %d) %s\n' "$_mp_j" "$_mp_o" >&2; _mp_j=$((_mp_j+1)); done
+  printf '> ' >&2
+  read -r _mp_sel || _mp_sel=""
+  case "$_mp_sel" in
+    ''|q|Q) echo 0 ;;
+    *[!0-9]*) echo 0 ;;
+    *) if [ "$_mp_sel" -ge 1 ] 2>/dev/null && [ "$_mp_sel" -le "$_mp_n" ] 2>/dev/null; then echo "$_mp_sel"; else echo 0; fi ;;
+  esac
+}
+
+# Arrow-navigable single-select menu. Args = option labels. RENDERS to /dev/tty and
+# echoes the chosen 1-based index (0 = cancel) on stdout, so call it as $(_menu_pick ...).
+# Up/Down move; Enter/Space select; 1-9 jump-select; q/Esc cancel. Raw mode is always
+# restored via a trap (terminal never left broken); falls back to a number prompt if the
+# tty/raw mode isn't available (e.g. piped input in tests).
+_menu_pick() {
+  _mp_n=$#
+  # Reads keystrokes from STDIN (fd 0), renders to STDERR (fd 2, since stdout carries the
+  # return value through $(...)). Requires stdin to be a real tty; otherwise (pipe, tests)
+  # fall back to a numbered prompt that reads the same stdin.
+  [ -t 0 ] || { _menu_pick_numbered "$@"; return; }
+  _mp_saved=$(stty -g 2>/dev/null) || { _menu_pick_numbered "$@"; return; }
+  # -icrnl -inlcr so Enter reads as a literal CR (distinct from EOF, which reads empty).
+  stty -echo -icanon -icrnl -inlcr min 1 time 0 2>/dev/null || { _menu_pick_numbered "$@"; return; }
+  trap 'stty "$_mp_saved" 2>/dev/null' EXIT INT TERM
+  # Preserve exact control bytes: $(...) strips trailing newlines, so append+strip an X
+  # sentinel. That lets us tell EOF (empty) from Enter (CR or LF, terminal-dependent).
+  _mp_esc=$(printf '\033'); _mp_cr=$(printf '\rX'); _mp_cr=${_mp_cr%X}; _mp_nl=$(printf '\nX'); _mp_nl=${_mp_nl%X}
+  # Initial highlighted row (1-based) from _MENU_START; clamp to range, default 1.
+  _mp_i=${_MENU_START:-1}
+  { [ "$_mp_i" -ge 1 ] && [ "$_mp_i" -le "$_mp_n" ]; } 2>/dev/null || _mp_i=1
+  _mp_first=1
+  while : ; do
+    if [ "$_mp_first" = 1 ]; then _mp_first=0; else printf '\033[%dA' "$_mp_n" >&2; fi
+    _mp_j=1
+    for _mp_o in "$@"; do
+      if [ "$_mp_j" = "$_mp_i" ]; then printf '\r\033[K\033[1;36m> %s\033[0m\n' "$_mp_o" >&2
+      else printf '\r\033[K  %s\n' "$_mp_o" >&2; fi
+      _mp_j=$((_mp_j+1))
+    done
+    _mp_k=$(dd bs=1 count=1 2>/dev/null; printf X); _mp_k=${_mp_k%X}
+    case "$_mp_k" in
+      "$_mp_esc")
+        _mp_k2=$(dd bs=1 count=1 2>/dev/null)
+        _mp_k3=$(dd bs=1 count=1 2>/dev/null)
+        case "$_mp_k2$_mp_k3" in
+          '[A'|'OA') if [ "$_mp_i" -gt 1 ]; then _mp_i=$((_mp_i-1)); else _mp_i=$_mp_n; fi ;;
+          '[B'|'OB') if [ "$_mp_i" -lt "$_mp_n" ]; then _mp_i=$((_mp_i+1)); else _mp_i=1; fi ;;
+        esac ;;
+      ' '|"$_mp_cr"|"$_mp_nl") stty "$_mp_saved" 2>/dev/null; trap - EXIT INT TERM; echo "$_mp_i"; return ;;   # Enter/Space = select
+      '') stty "$_mp_saved" 2>/dev/null; trap - EXIT INT TERM; echo 0; return ;;   # EOF = cancel/done
+      q|Q) stty "$_mp_saved" 2>/dev/null; trap - EXIT INT TERM; echo 0; return ;;   # q = cancel
+      [1-9]) if [ "$_mp_k" -le "$_mp_n" ]; then stty "$_mp_saved" 2>/dev/null; trap - EXIT INT TERM; echo "$_mp_k"; return; fi ;;
+    esac
+  done
+}
+
+# ==================== persistent settings screen ============================
+# ONE anchored region — header, breadcrumb, menu, status line, footer — that
+# repaints over itself every frame (relative cursor-up + clear-to-EOL on
+# /dev/tty), so nothing ever stacks in scrollback. Design + every locked
+# decision: docs/menu-redesign-plan.md (D2 anchored region, D3 wipe-confirm,
+# D5 arrows/Enter/Esc only, §3.5 hardening, §3.6 frames/copy/tokens).
+#
+#   frame N     ByteAsk · Settings              (accent+bold)
+#               you@example.com · signed in     (dim)
+#               Keys: OpenAI managed · …        (dim)
+#               API keys                        (breadcrumb, bold)
+#               > OpenAI      add your key      (selected: accent)
+#                 …
+#               ✓ Saved your Gemini key         (status line)
+#               ↑↓ move · Enter select · Esc …  (dim footer)
+#   frame N+1:  ESC[{lines}A then repaint every line with \r ESC[K
+#
+# Runs in the PARENT shell (results via _SCR_* globals — a $() subshell would
+# strand traps/state, §3.5#1). Falls back to the sequential numbered flow on
+# ANY doubt: no tty, raw-mode failure, TERM=dumb, tiny window, or
+# BYTEASK_PLAIN_MENU=1 (the screen-reader-friendly linear path).
+_ESC=$(printf '\033'); _CR=$(printf '\rX'); _CR=${_CR%X}; _NL=$(printf '\nX'); _NL=${_NL%X}
+
+_scr_ok() {
+  [ -z "${BYTEASK_PLAIN_MENU:-}" ] || return 1
+  [ -t 0 ] && [ -t 1 ] || return 1
+  [ "${TERM:-dumb}" != dumb ] || return 1
+  ( : </dev/tty >/dev/tty ) 2>/dev/null || return 1
+  _sz=$(stty size </dev/tty 2>/dev/null) || return 1
+  _scr_rows=${_sz%% *}; _scr_cols=${_sz##* }
+  case "$_scr_rows$_scr_cols" in ''|*[!0-9]*) return 1;; esac
+  [ "$_scr_rows" -ge 16 ] && [ "$_scr_cols" -ge 40 ] || return 1
+}
+
+_scr_tokens() {   # glyphs by locale; color ladder truecolor→256→bold, NO_COLOR=plain
+  _G_OK='OK'; _G_X='x'; _G_DOT='-'; _G_BC='>'; _G_UD='Up/Down'
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) _G_OK='✓'; _G_X='✗'; _G_DOT='·'; _G_BC='›'; _G_UD='↑↓';;
+  esac
+  _C_A=''; _C_D=''; _C_R=''; _C_E=''; _C_B=''
+  if [ -z "${NO_COLOR:-}" ] && [ -t 1 ]; then
+    _C_B='\033[1m'; _C_D='\033[2m'; _C_E='\033[31m'; _C_R='\033[0m'
+    case "${COLORTERM:-}" in
+      *truecolor*|*24bit*) _C_A='\033[38;2;134;174;165m';;
+      *) if [ "$( (tput colors) 2>/dev/null || echo 8)" -ge 256 ] 2>/dev/null; then
+           _C_A='\033[38;5;109m'; else _C_A='\033[1m'; fi;;
+    esac
+  fi
+}
+
+_scr_init() {
+  # NB: exec is a special builtin — a redirection error would exit the shell,
+  # so _scr_ok probes /dev/tty first; no 2> here (it would PERSIST on fd2).
+  exec 3</dev/tty 4>/dev/tty
+  _SCR_STTY=$(stty -g <&3 2>/dev/null) || { exec 3<&- 4>&-; return 1; }
+  stty -echo -icanon -icrnl -inlcr min 1 time 0 <&3 2>/dev/null \
+    || { exec 3<&- 4>&-; return 1; }
+  _SCR_DRAWN=0; _SCR_ACTIVE=1; _SCR_RESIZED=0; _SCR_EXIT=0
+  _SCR_MSG=''; _SCR_MSGK=none
+  trap '_scr_cleanup; exit 130' INT TERM
+  trap '_scr_cleanup' EXIT
+  trap '_SCR_RESIZED=1' WINCH 2>/dev/null || true
+  printf '\033[?25l\033[?2004h' >&4      # hide cursor; bracketed paste markers ON
+  _scr_tokens
+}
+_scr_cleanup() {   # idempotent: modes restored, cursor shown+below region
+  [ "${_SCR_ACTIVE:-0}" = 1 ] || return 0
+  _SCR_ACTIVE=0
+  { printf '\033[?2004l\033[?25h'; } >&4 2>/dev/null || true
+  [ -n "${_SCR_STTY:-}" ] && stty "$_SCR_STTY" <&3 2>/dev/null || true
+  # Scope the error-suppression to the brace group: a bare `exec 3<&- 2>/dev/null`
+  # is a command-LESS exec, so the 2>/dev/null would PERSIST and swallow the
+  # wrapper's stderr for good (the exit summary + a later engine launch).
+  { exec 3<&-; } 2>/dev/null || true
+  { exec 4>&-; } 2>/dev/null || true
+}
+_scr_done() { _scr_cleanup; trap - INT TERM EXIT; trap - WINCH 2>/dev/null || true; }
+# Hand-off to a sequential wizard (models add / sign-in): erase the drawn region (so
+# it doesn't sit stacked behind the wizard's own linear output) and leave a one-line
+# breadcrumb; resume draws a FRESH region after (§3.5 T16, revised 2026-07-23 §10.1).
+_scr_suspend() {
+  if [ "$_SCR_DRAWN" -gt 0 ]; then
+    printf '\033[%dA\033[0J' "$_SCR_DRAWN" >&4 2>/dev/null || true
+  fi
+  printf '\033[?2004l\033[?25h' >&4 2>/dev/null || true
+  [ -n "${_SCR_STTY:-}" ] && stty "$_SCR_STTY" <&3 2>/dev/null || true
+  _SCR_DRAWN=0
+  case $_SCR_STATE in
+    selfhost) _sc_bc="Adding a hosted model";;
+    account)  _sc_bc="Signing you in";;
+    *)        _sc_bc="ByteAsk";;
+  esac
+  _scr_line dim "$_sc_bc"
+}
+_scr_resume() {
+  stty -echo -icanon -icrnl -inlcr min 1 time 0 <&3 2>/dev/null || true
+  printf '\033[?25l\033[?2004h' >&4 2>/dev/null || true
+}
+
+_scr_line() {   # $1=style $2=text -> one region row (truncated, never wraps)
+  _t=${2:-}; _max=$((_scr_cols - 2))
+  if [ ${#_t} -gt "$_max" ]; then
+    _t=$(printf '%s' "$_t" | cut -c1-"$_max")
+    # cut is byte-based, so on a narrow terminal it can slice a multibyte glyph
+    # (e.g. ·) in half -> a stray  . Drop any trailing partial sequence.
+    command -v iconv >/dev/null 2>&1 && _t=$(printf '%s' "$_t" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+  fi
+  case $1 in
+    title) printf '\r\033[K  %b%s%b\n' "${_C_A}${_C_B}" "$_t" "$_C_R" >&4;;
+    dim)   printf '\r\033[K  %b%s%b\n' "$_C_D" "$_t" "$_C_R" >&4;;
+    bold)  printf '\r\033[K  %b%s%b\n' "$_C_B" "$_t" "$_C_R" >&4;;
+    sel)   printf '\r\033[K%b> %s%b\n' "${_C_A}${_C_B}" "$_t" "$_C_R" >&4;;
+    norm)  printf '\r\033[K  %s\n' "$_t" >&4;;
+    ok)    printf '\r\033[K  %b%s%b %s\n' "$_C_A" "$_G_OK" "$_C_R" "$_t" >&4;;
+    err)   printf '\r\033[K  %b%s%b %s\n' "$_C_E" "$_G_X" "$_C_R" "$_t" >&4;;
+    blank) printf '\r\033[K\n' >&4;;
+  esac
+  _scr_n=$((_scr_n + 1))
+}
+
+_scr_provname() { case $1 in openai) echo OpenAI;; anthropic) echo Anthropic;; gemini) echo Gemini;; *) echo "$1";; esac; }
+
+# Content is computed ONCE per state change and cached (§3.2: arrow frames are
+# pure string redraws — no python/subprocess per keystroke).
+_scr_data() {
+  if _is_signed_in; then _D_SIGNED=1; else _D_SIGNED=''; fi
+  _D_EMAIL="$(_current_email)"; [ -n "$_D_EMAIL" ] || _D_EMAIL="not signed in"
+  set -- $(_byok_key_verbs); _D_VOA=${1:-add}; _D_VAN=${2:-add}; _D_VGE=${3:-add}
+  _D_NKEYS=$(_byok_keys_count)
+  _D_KEYED=''
+  [ "$_D_VOA" = change ] && _D_KEYED="openai"
+  [ "$_D_VAN" = change ] && _D_KEYED="${_D_KEYED:+$_D_KEYED }anthropic"
+  [ "$_D_VGE" = change ] && _D_KEYED="${_D_KEYED:+$_D_KEYED }gemini"
+  _pk_oa=managed; _pk_an=managed; _pk_ge=managed
+  [ "$_D_VOA" = change ] && _pk_oa=yours
+  [ "$_D_VAN" = change ] && _pk_an=yours
+  [ "$_D_VGE" = change ] && _pk_ge=yours
+  _D_KLINE="Keys: OpenAI $_pk_oa $_G_DOT Anthropic $_pk_an $_G_DOT Gemini $_pk_ge"
+  _D_SELF_LIST=''; _D_NSELF=0
+  if [ -f "$BYOK_MODELS" ] && command -v python3 >/dev/null 2>&1 && [ -f "$BYOK_CFG" ]; then
+    _D_SELF_LIST=$(python3 "$BYOK_MODELS" list "$BYOK_CFG" 2>/dev/null || true)
+    case $_D_SELF_LIST in
+      *self/*) _D_NSELF=$(printf '%s\n' "$_D_SELF_LIST" | grep -c 'self/' 2>/dev/null || echo 0);;
+      *) _D_SELF_LIST='';;
+    esac
+  fi
+}
+
+_scr_opts_count() { printf '%s\n' "$_SCR_OPTS" | grep -c '' 2>/dev/null || echo 0; }
+_scr_tag() { printf '%s\n' "$_SCR_OPTS" | sed -n "${1}p" | cut -d'|' -f1; }
+
+_scr_goto_keys() {
+  _SCR_MSGK=none; _SCR_MSG=''
+  _SCR_STATE=keys; _scr_data
+  _SCR_OPTS="openai|OpenAI      $_D_VOA your key
+anthropic|Anthropic   $_D_VAN your key
+gemini|Gemini      $_D_VGE your key"
+  [ "$_D_NKEYS" -gt 0 ] && _SCR_OPTS="$_SCR_OPTS
+remove|Remove a key"
+  _SCR_OPTS="$_SCR_OPTS
+selfhost|Your own hosted model $_G_DOT vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server
+managed|Use ByteAsk managed $_G_DOT 16 models incl. GPT, Claude & Gemini, 20% off API pricing
+done|Done"
+  _SCR_NOPT=$(_scr_opts_count)
+  # First run (no keys): bare Enter proceeds on managed. With keys: Done — a
+  # stray Enter can never mutate (§3.6).
+  if [ "$_D_NKEYS" = 0 ]; then _SCR_CUR=$((_SCR_NOPT - 1)); else _SCR_CUR=$_SCR_NOPT; fi
+}
+_scr_goto_account() {
+  _SCR_MSGK=none; _SCR_MSG=''
+  _SCR_STATE=account; _scr_data
+  _SCR_OPTS="keys|Manage keys & models
+email|Sign in with a different email
+done|Done"
+  _SCR_NOPT=3; _SCR_CUR=1
+}
+_scr_goto_remove() {
+  _SCR_MSGK=none; _SCR_MSG=''
+  _SCR_STATE=remove; _SCR_OPTS=''
+  for _p in $_D_KEYED; do
+    _SCR_OPTS="${_SCR_OPTS:+$_SCR_OPTS$_NL}$_p|$(_scr_provname "$_p")      (your key)"
+  done
+  _SCR_OPTS="${_SCR_OPTS:+$_SCR_OPTS$_NL}cancel|Cancel"
+  _SCR_NOPT=$(_scr_opts_count); _SCR_CUR=1
+}
+_scr_goto_selfhost() {
+  _SCR_MSGK=none; _SCR_MSG=''
+  _SCR_STATE=selfhost; _scr_data
+  _SCR_OPTS="add|Add a hosted model now
+back|Back"
+  _SCR_NOPT=2; _SCR_CUR=1
+}
+_scr_goto_provider() {   # navigable provider picker: presets first, then custom URL
+  _SCR_MSGK=none; _SCR_MSG=''
+  _SCR_STATE=provider; _SCR_OPTS=''
+  if _preset_helper_available; then
+    _pv_all=$(python3 "$BYOK_MODELS" presets 2>/dev/null)
+    for _pv_want in cloud local; do
+      _pv_rest=$_pv_all
+      while [ -n "$_pv_rest" ]; do
+        _pv_line=${_pv_rest%%"$_NL"*}
+        case $_pv_rest in *"$_NL"*) _pv_rest=${_pv_rest#*"$_NL"};; *) _pv_rest='';; esac
+        [ -z "$_pv_line" ] && continue
+        _pv_kind=$(printf '%s' "$_pv_line" | cut -d'|' -f6)
+        [ "$_pv_kind" = "$_pv_want" ] || continue
+        _pv_pid=$(printf '%s' "$_pv_line" | cut -d'|' -f1)
+        _pv_url=$(printf '%s' "$_pv_line" | cut -d'|' -f2)
+        _pv_lab=$(printf '%-12s%s' "$_pv_pid" "$_pv_url")
+        if [ "$_pv_want" = cloud ]; then _pv_lab="$_pv_lab  $_G_DOT they bill you"
+        else _pv_lab="$_pv_lab  $_G_DOT never billed"; fi
+        _SCR_OPTS="${_SCR_OPTS:+$_SCR_OPTS$_NL}$_pv_pid|$_pv_lab"
+      done
+    done
+  fi
+  _SCR_OPTS="${_SCR_OPTS:+$_SCR_OPTS$_NL}custom|Custom server $_G_DOT enter your own URL
+back|Back"
+  _SCR_NOPT=$(_scr_opts_count)
+  # default cursor on "custom" (2nd-to-last row) — bare Enter keeps the old
+  # muscle-memory of "Enter = use your own URL"; arrows still reach every preset.
+  _SCR_CUR=$((_SCR_NOPT - 1))
+}
+
+_scr_header() {
+  _scr_line title "ByteAsk $_G_DOT Settings"
+  if [ -n "$_D_SIGNED" ]; then _scr_line dim "$_D_EMAIL $_G_DOT signed in"
+  else _scr_line dim "not signed in $_G_DOT own keys & hosted models only"; fi
+  _scr_line dim "$_D_KLINE"
+  _scr_line blank
+}
+_scr_menu_rows() {
+  _mr_rest=$_SCR_OPTS; _mr_i=1
+  while [ -n "$_mr_rest" ]; do
+    _mr_line=${_mr_rest%%"$_NL"*}
+    case $_mr_rest in *"$_NL"*) _mr_rest=${_mr_rest#*"$_NL"};; *) _mr_rest='';; esac
+    _mr_lab=${_mr_line#*'|'}
+    if [ "$_mr_i" = "$_SCR_CUR" ]; then _scr_line sel "$_mr_lab"; else _scr_line norm "$_mr_lab"; fi
+    _mr_i=$((_mr_i + 1))
+  done
+}
+_scr_status_row() {
+  case $_SCR_MSGK in
+    ok)   _scr_line ok  "$_SCR_MSG";;
+    err)  _scr_line err "$_SCR_MSG";;
+    info) _scr_line dim "$_SCR_MSG";;
+    *)    _scr_line blank;;
+  esac
+}
+
+_scr_render() {
+  if [ "$_SCR_RESIZED" = 1 ]; then
+    _SCR_RESIZED=0
+    _sz=$(stty size <&3 2>/dev/null || echo "$_scr_rows $_scr_cols")
+    _scr_rows=${_sz%% *}; _scr_cols=${_sz##* }
+  fi
+  [ "$_SCR_DRAWN" -gt 0 ] && printf '\033[%dA' "$_SCR_DRAWN" >&4
+  _scr_n=0
+  _scr_header
+  case $_SCR_STATE in
+    keys)
+      _scr_line bold "API keys"
+      _scr_line dim "OpenAI, Anthropic, or Gemini $_G_DOT bring your own key, billed directly to you"
+      _scr_menu_rows; _scr_line blank; _scr_status_row
+      _scr_line dim "$_G_UD move $_G_DOT Enter select $_G_DOT Esc back";;
+    account)
+      _scr_line bold "Account"
+      _scr_menu_rows; _scr_line blank; _scr_status_row
+      _scr_line dim "$_G_UD move $_G_DOT Enter select $_G_DOT Esc close";;
+    remove)
+      _scr_line bold "API keys $_G_BC Remove"
+      _scr_menu_rows
+      _scr_line dim "Removing only deletes the saved key $_G_DOT add it again anytime"
+      _scr_status_row
+      _scr_line dim "$_G_UD move $_G_DOT Enter select $_G_DOT Esc back";;
+    selfhost)
+      _scr_line bold "API keys $_G_BC Your own hosted model"
+      if [ -n "$_D_SELF_LIST" ]; then
+        _sl_rest=$_D_SELF_LIST
+        while [ -n "$_sl_rest" ]; do
+          _sl_line=${_sl_rest%%"$_NL"*}
+          case $_sl_rest in *"$_NL"*) _sl_rest=${_sl_rest#*"$_NL"};; *) _sl_rest='';; esac
+          [ -n "$_sl_line" ] && _scr_line norm "$_sl_line"
+        done
+      else
+        _scr_line norm "No hosted models yet."
+      fi
+      _scr_menu_rows
+      _scr_line dim "A cloud provider with your key (they bill you), or your own server (never billed)"
+      _scr_status_row
+      _scr_line dim "$_G_UD move $_G_DOT Enter select $_G_DOT Esc back";;
+    provider)
+      _scr_line bold "API keys $_G_BC Your own hosted model $_G_BC Choose a provider"
+      _scr_menu_rows; _scr_line blank; _scr_status_row
+      _scr_line dim "$_G_UD move $_G_DOT Enter select $_G_DOT Esc back";;
+    prompt)
+      _scr_line bold "API keys $_G_BC $(_scr_provname "$_SCR_P")"
+      _scr_line norm "Paste your $(_scr_provname "$_SCR_P") API key (input stays hidden):"
+      _scr_status_row
+      _scr_line dim "Enter submit $_G_DOT empty Enter cancels";;
+    confirm)
+      _scr_line bold "API keys $_G_BC Use ByteAsk managed"
+      _scr_line norm "This removes your $_D_NKEYS saved key(s) ($_D_KEYED)."
+      _scr_status_row
+      _scr_line dim "y confirm $_G_DOT anything else cancels";;
+  esac
+  if [ "$_scr_n" -lt "$_SCR_DRAWN" ]; then printf '\033[0J' >&4; fi
+  _SCR_DRAWN=$_scr_n
+}
+
+# ---- input: arrows/Enter/Esc ONLY (D5). Paste bursts swallowed; CSI drained.
+_scr_swallow() {   # consume a paste burst; $1 = already-read head
+  _sw=$1; _sw_empty=0
+  stty min 0 time 1 <&3 2>/dev/null || true
+  while : ; do
+    case $_sw in *'201~'*) break;; esac
+    _c=$(dd bs=1024 count=1 <&3 2>/dev/null || true; printf X); _c=${_c%X}
+    if [ -z "$_c" ]; then
+      _sw_empty=$((_sw_empty + 1)); [ "$_sw_empty" -ge 2 ] && break
+    else
+      _sw_empty=0
+      _sw="$(printf '%s' "$_sw" | tail -c 8)$_c"   # keep a tail so 201~ split across reads still matches
+    fi
+  done
+  stty min 1 time 0 <&3 2>/dev/null || true
+}
+_scr_key() {   # PARENT-shell key read -> _KEY (+_KEY_N for repeats); never a subshell loop
+  _KEY=none; _KEY_N=1
+  _b=$(dd bs=1 count=1 <&3 2>/dev/null || true; printf X); _b=${_b%X}
+  if [ -z "$_b" ]; then
+    [ "$_SCR_RESIZED" = 1 ] && return 0           # WINCH interrupted the read
+    _b=$(dd bs=1 count=1 <&3 2>/dev/null || true; printf X); _b=${_b%X}
+    [ -z "$_b" ] && { _KEY=eof; return 0; }
+  fi
+  case $_b in
+    "$_NL"|"$_CR"|' ')
+      # burst-Enter guard (§3.5#4): an Enter with bytes right behind it is a paste
+      stty min 0 time 1 <&3 2>/dev/null || true
+      _p=$(dd bs=512 count=1 <&3 2>/dev/null || true; printf X); _p=${_p%X}
+      stty min 1 time 0 <&3 2>/dev/null || true
+      if [ -n "$_p" ]; then _scr_swallow "$_p"; _KEY=paste; else _KEY=enter; fi;;
+    "$_ESC")
+      stty min 0 time 1 <&3 2>/dev/null || true
+      _r=$(dd bs=64 count=1 <&3 2>/dev/null || true; printf X); _r=${_r%X}
+      stty min 1 time 0 <&3 2>/dev/null || true
+      if [ -z "$_r" ]; then _KEY=esc               # bare Esc (100ms window)
+      else
+        case $_r in
+          '[200~'*) _scr_swallow "$_r"; _KEY=paste;;
+          '[A'*|'OA'*|'[B'*|'OB'*)
+            # count arrows in the burst (held-key repeat arrives batched)
+            _n_up=0; _t=$_r
+            while case $_t in *'[A'*|*'OA'*) true;; *) false;; esac; do
+              case $_t in *'[A'*) _t=${_t#*'[A'};; *) _t=${_t#*'OA'};; esac
+              _n_up=$((_n_up + 1))
+            done
+            _n_dn=0; _t=$_r
+            while case $_t in *'[B'*|*'OB'*) true;; *) false;; esac; do
+              case $_t in *'[B'*) _t=${_t#*'[B'};; *) _t=${_t#*'OB'};; esac
+              _n_dn=$((_n_dn + 1))
+            done
+            if [ "$_n_up" -ge "$_n_dn" ] && [ "$_n_up" -gt 0 ]; then _KEY=up; _KEY_N=$((_n_up - _n_dn))
+            elif [ "$_n_dn" -gt 0 ]; then _KEY=down; _KEY_N=$((_n_dn - _n_up)); fi
+            [ "$_KEY_N" -lt 1 ] && _KEY_N=1;;
+          '['*)
+            # unknown CSI (modified arrows/Home/End/F-keys): drain to its final
+            # byte and drop — params must never leak as actions (§3.5, T19)
+            _dr=0
+            stty min 0 time 1 <&3 2>/dev/null || true
+            while [ "$_dr" -lt 3 ]; do
+              _j=$(dd bs=32 count=1 <&3 2>/dev/null || true; printf X); _j=${_j%X}
+              [ -z "$_j" ] && break; _dr=$((_dr + 1))
+            done
+            stty min 1 time 0 <&3 2>/dev/null || true
+            _KEY=none;;
+          *) _KEY=none;;
+        esac
+      fi;;
+    *)
+      # printable: IGNORED in the raw menu (D5) — but a burst behind it means paste
+      stty min 0 time 1 <&3 2>/dev/null || true
+      _p=$(dd bs=1024 count=1 <&3 2>/dev/null || true; printf X); _p=${_p%X}
+      stty min 1 time 0 <&3 2>/dev/null || true
+      if [ -n "$_p" ]; then _scr_swallow "$_p"; _KEY=paste; else _KEY=none; fi;;
+  esac
+}
+
+# ---- actions (helpers run with output CAPTURED into the status line, §3.5#3)
+_scr_add_key() {   # $1 = provider — the PROMPT state, in-region, under our traps
+  _prov=$1; _pn=$(_scr_provname "$_prov")
+  if [ ! -f "$BYOK_SIDECAR" ]; then
+    _SCR_MSGK=err; _SCR_MSG="BYOK needs the sidecar $_G_DOT run 'byteask --update' first"; return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    _SCR_MSGK=err; _SCR_MSG="BYOK needs python3 (not found on PATH)"; return 0
+  fi
+  _SCR_STATE=prompt; _SCR_P=$_prov; _SCR_MSG=''; _SCR_MSGK=none
+  _scr_render
+  printf '\033[?2004l\033[?25h  > ' >&4       # paste belongs HERE; show cursor
+  stty icanon -echo icrnl <&3 2>/dev/null || true
+  IFS= read -r _KEYIN <&3 || _KEYIN=''
+  stty -echo -icanon -icrnl -inlcr min 1 time 0 <&3 2>/dev/null || true
+  printf '\033[?25l\033[?2004h' >&4
+  _SCR_DRAWN=$((_SCR_DRAWN + 1))              # the prompt echo row joins the region
+  if [ -z "$_KEYIN" ]; then
+    _scr_goto_keys; _SCR_MSGK=info; _SCR_MSG="Cancelled"; return 0
+  fi
+  _scr_goto_keys
+  _SCR_MSGK=info; _SCR_MSG="Checking your key with $_pn..."
+  _scr_render                                  # visible during the (≤15s) validation
+  if _vout=$(validate_key "$_prov" "$_KEYIN" 2>&1); then
+    _byok_merge "keys.$_prov=$_KEYIN"; _KEYIN=''
+    if _eout=$(_byok_enter 2>&1); then
+      case $_vout in
+        *"saving it anyway"*) _pend_k=err; _pend_m="Couldn't verify the key right now $_G_DOT saved it anyway";;
+        *) _pend_k=ok; _pend_m="Saved your $_pn key";;
+      esac
+    else
+      _pend_k=err; _pend_m="Couldn't start the local helper $_G_DOT run 'byteask --update'"
+    fi
+  else
+    _KEYIN=''
+    _code=$(printf '%s' "$_vout" | sed -n 's/.*HTTP \([0-9][0-9]*\).*/\1/p' | head -n1)
+    _pend_k=err; _pend_m="$_pn rejected that key (HTTP ${_code:-401}) $_G_DOT check and paste again"
+  fi
+  # _scr_goto_keys clears _SCR_MSG internally — stash the result in temp vars
+  # first, refresh the screen (needs the just-saved key reflected), THEN assign
+  # so the clear can't wipe it (§10.2, revised after menu.sh caught the ordering).
+  _scr_goto_keys
+  _SCR_MSGK=$_pend_k; _SCR_MSG=$_pend_m
+}
+_scr_do_remove() {   # $1 = provider
+  _pn=$(_scr_provname "$1")
+  _rout=$(byok_remove "$1" 2>&1) || true
+  _scr_goto_keys
+  if [ "$_D_NKEYS" = 0 ]; then
+    _SCR_MSGK=ok; _SCR_MSG="Removed your $_pn key $_G_DOT no keys left, everything uses ByteAsk managed"
+  else
+    _SCR_MSGK=ok; _SCR_MSG="Removed your $_pn key"
+  fi
+}
+_scr_do_managed() {   # D3: confirm (drain + typed y) ONLY when keys exist
+  if [ "$_D_NKEYS" = 0 ]; then
+    _out=$(byok_off 2>&1) || true
+    _SCR_EXIT=1; return 0
+  fi
+  _SCR_STATE=confirm; _SCR_MSG=''; _SCR_MSGK=none
+  # drain any buffered input so a queued Enter can't blow through (§3.5#4)
+  stty min 0 time 1 <&3 2>/dev/null || true
+  while _junk=$(dd bs=512 count=1 <&3 2>/dev/null || true; printf X); _junk=${_junk%X}; [ -n "$_junk" ]; do :; done
+  stty min 1 time 0 <&3 2>/dev/null || true
+  _scr_render
+  _c=$(dd bs=1 count=1 <&3 2>/dev/null || true; printf X); _c=${_c%X}
+  case $_c in
+    y|Y)
+      _n=$_D_NKEYS
+      _out=$(byok_off 2>&1) || true
+      _scr_goto_keys
+      _SCR_MSGK=ok; _SCR_MSG="Switched to ByteAsk managed $_G_DOT $_n saved key(s) removed"
+      _SCR_EXIT=1;;
+    *) _scr_goto_keys; _SCR_MSGK=info; _SCR_MSG="Cancelled";;
+  esac
+}
+_scr_selfhost_finish() {   # $1=alias, $2.. = models_add args (provider/url + optional key)
+  _sf_al=$1; shift
+  _mrc=0
+  models_add "$_sf_al" "$@" || _mrc=$?
+  if [ "$_mrc" = 0 ]; then
+    _scr_resume; _scr_goto_selfhost
+    _SCR_MSGK=ok; _SCR_MSG="Added self/$_sf_al $_G_DOT pick it in /model"
+  else
+    _scr_resume; _scr_goto_selfhost
+    _SCR_MSGK=err; _SCR_MSG="Couldn't add it $_G_DOT details above"
+  fi
+}
+_scr_ask_name() {   # prompts Name; sets _al (empty = cancel)
+  printf '  %b%s Name it%b (e.g. my-dgx): ' "${_C_A}${_C_B}" "$_G_BC" "$_C_R" >&2
+  IFS= read -r _al <&3 || _al=''
+  _al=$(printf '%s' "$_al" | tr -d '[:space:]')
+}
+_scr_ask_key() {   # prompts optional API key (hidden input); sets _k (empty = skip)
+  printf '  %b%s API key, if needed%b (Enter to skip; input hidden): ' "${_C_A}${_C_B}" "$_G_BC" "$_C_R" >&2
+  stty -echo <&3 2>/dev/null || true
+  IFS= read -r _k <&3 || _k=''
+  stty echo <&3 2>/dev/null || true
+  printf '\n' >&2
+  _k=$(printf '%s' "$_k" | tr -d '[:space:]')
+}
+_scr_do_selfhost_add_preset() {   # $1 = provider id — name + optional key, provider already chosen
+  _pid=$1
+  _scr_suspend
+  _scr_ask_name
+  if [ -z "$_al" ]; then _scr_resume; _scr_goto_selfhost; _SCR_MSGK=info; _SCR_MSG="Cancelled"; return 0; fi
+  _scr_ask_key
+  if [ -n "$_k" ]; then _scr_selfhost_finish "$_al" --provider "$_pid" --key "$_k"
+  else _scr_selfhost_finish "$_al" --provider "$_pid"; fi
+  _k=''
+}
+_scr_do_selfhost_add_custom() {   # name + URL + optional key, then wizard hand-off
+  _scr_suspend
+  _scr_ask_name
+  if [ -z "$_al" ]; then _scr_resume; _scr_goto_selfhost; _SCR_MSGK=info; _SCR_MSG="Cancelled"; return 0; fi
+  printf '  %b%s Server URL%b (e.g. http://dgx-host:8000): ' "${_C_A}${_C_B}" "$_G_BC" "$_C_R" >&2
+  IFS= read -r _u <&3 || _u=''
+  _u=$(printf '%s' "$_u" | tr -d '[:space:]')
+  if [ -z "$_u" ]; then _scr_resume; _scr_goto_selfhost; _SCR_MSGK=info; _SCR_MSG="Cancelled"; return 0; fi
+  _scr_ask_key
+  if [ -n "$_k" ]; then _scr_selfhost_finish "$_al" --url "$_u" --key "$_k"
+  else _scr_selfhost_finish "$_al" --url "$_u"; fi
+  _k=''
+}
+_scr_do_login() {   # sign-in wizard hand-off; region resumes with the result
+  _scr_suspend
+  # SUBSHELL: do_login `exit 1`s on failure — contained here so a failed sign-in
+  # re-enters the screen instead of killing the wrapper (its writes are files).
+  if ( do_login --interactive ); then
+    _scr_resume; _scr_goto_keys
+    _SCR_MSGK=ok; _SCR_MSG="Signed in as $_D_EMAIL"
+  else
+    _scr_resume; _scr_goto_account
+    _SCR_MSGK=err; _SCR_MSG="Sign-in didn't complete"
+  fi
+}
+
+_scr_select() {   # Enter on the current row; returns 1 to leave the flow
+  _tag=$(_scr_tag "$_SCR_CUR")
+  case "$_SCR_STATE/$_tag" in
+    keys/openai|keys/anthropic|keys/gemini) _scr_add_key "$_tag";;
+    keys/remove)   _scr_goto_remove;;
+    keys/selfhost) _scr_goto_selfhost;;
+    keys/managed)  _scr_do_managed;;
+    keys/done)     return 1;;
+    account/keys)  _scr_goto_keys;;
+    account/email) _scr_do_login;;
+    account/done)  return 1;;
+    remove/cancel) _scr_goto_keys;;
+    remove/*)      _scr_do_remove "$_tag";;
+    selfhost/add)  _scr_goto_provider;;
+    selfhost/back) _scr_goto_keys;;
+    provider/custom) _scr_do_selfhost_add_custom;;
+    provider/back)    _scr_goto_selfhost;;
+    provider/*)       _scr_do_selfhost_add_preset "$_tag";;
+  esac
+  [ "$_SCR_EXIT" = 1 ] && return 1
+  return 0
+}
+
+_scr_settings() {   # $1 = entry screen (account|keys). 0 = ran (incl. fallback-worthy exit)
+  _scr_ok || return 1
+  _scr_init || return 1
+  _SCR_TOP=$1
+  case $1 in account) _scr_goto_account;; *) _scr_goto_keys;; esac
+  while : ; do
+    _scr_render
+    _scr_key
+    case $_KEY in
+      up)    _i=0; while [ "$_i" -lt "$_KEY_N" ]; do
+               if [ "$_SCR_CUR" -gt 1 ]; then _SCR_CUR=$((_SCR_CUR - 1)); else _SCR_CUR=$_SCR_NOPT; fi
+               _i=$((_i + 1)); done;;
+      down)  _i=0; while [ "$_i" -lt "$_KEY_N" ]; do
+               if [ "$_SCR_CUR" -lt "$_SCR_NOPT" ]; then _SCR_CUR=$((_SCR_CUR + 1)); else _SCR_CUR=1; fi
+               _i=$((_i + 1)); done;;
+      enter) if ! _scr_select; then
+               # an action-driven exit (e.g. managed wipe) set a status — paint
+               # it once so the confirmation lands in the final frame, not lost.
+               [ "$_SCR_EXIT" = 1 ] && _scr_render
+               break
+             fi;;
+      paste) _SCR_MSGK=info; _SCR_MSG="Paste ignored here $_G_DOT pick with arrows; paste at the key prompt";;
+      esc)   case $_SCR_STATE in
+               keys) if [ "$_SCR_TOP" = account ]; then _scr_goto_account; else break; fi;;
+               account) break;;
+               provider) _scr_goto_selfhost;;
+               *) _scr_goto_keys;;
+             esac;;
+      eof)   break;;
+      *) : ;;
+    esac
+  done
+  # final frame stays in scrollback; summary printed once below it (§3.6)
+  _scr_data 2>/dev/null || true
+  _sum=''
+  for _p in $_D_KEYED; do _sum="${_sum:+$_sum, }$(_scr_provname "$_p")"; done
+  [ -n "$_sum" ] || _sum="all managed"
+  # Print the summary on /dev/tty (fd 4) — the SAME channel the whole region drew
+  # on — BEFORE _scr_done closes it, so it lands in scrollback below the final
+  # frame regardless of where stdout/stderr are redirected (T17). Truncated to the
+  # region width like every other row so it can't wrap on a narrow terminal (T22).
+  _sumline="ByteAsk settings $_G_DOT keys: $_sum $_G_DOT hosted models: $_D_NSELF.  /login reopens."
+  _summax=$((_scr_cols - 2))
+  if [ ${#_sumline} -gt "$_summax" ]; then
+    _sumline=$(printf '%s' "$_sumline" | cut -c1-"$_summax")
+    command -v iconv >/dev/null 2>&1 && _sumline=$(printf '%s' "$_sumline" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null)
+  fi
+  printf '\r  %s\n' "$_sumline" >&4
+  _scr_done
+  return 0
+}
+
+# ---- sequential fallback (piped stdin, tests, dumb terminals, PLAIN_MENU) ----
+# This is the pre-redesign flow, kept byte-compatible for scripts + byok.sh —
+# plus the D3 managed-wipe confirm for behavior parity with the screen.
+_source_menu_seq() {
+  while : ; do
+    _ui_title "Set up your API keys"
+    _ui_note "Current:  $(_byok_status_line)"
+    _ui_note "Keyed providers bill to you; un-keyed ones use ByteAsk managed"
+    _ui_note "Up/Down + Enter, or type a number"
+    _ui_gap
+    if [ "$(_byok_keys_count)" = 0 ]; then _mp_start=6; else _mp_start=7; fi
+    set -- $(_byok_key_verbs); _v_oa=${1:-add}; _v_an=${2:-add}; _v_ge=${3:-add}
+    _choice=$(_MENU_START="$_mp_start" _menu_pick \
+      "OpenAI     - $_v_oa key" \
+      "Anthropic  - $_v_an key" \
+      "Gemini     - $_v_ge key" \
+      "Remove a key" \
+      "Use your own hosted model - vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server" \
+      "Use ByteAsk managed - 16 models incl. GPT, Claude & Gemini, 20% off API pricing" \
+      "Done")
+    case "$_choice" in
+      1) _byok_add_key openai    || true ;;
+      2) _byok_add_key anthropic || true ;;
+      3) _byok_add_key gemini    || true ;;
+      4) printf 'Remove which key? [openai/anthropic/gemini]: '; read -r _rp
+         case "$_rp" in openai|anthropic|gemini) byok_remove "$_rp" ;; *) echo "  (unknown provider)" ;; esac ;;
+      5) _self_hosted_howto ;;
+      6) _nk=$(_byok_keys_count)
+         if [ "$_nk" != 0 ]; then
+           printf 'This removes your %s saved key(s). Type y to confirm: ' "$_nk"; read -r _cf
+           case "$_cf" in y|Y) byok_off; return 0 ;; *) echo "  (cancelled)" ;; esac
+         else byok_off; return 0; fi ;;
+      *) return 0 ;;   # 7 (Done) or 0 (cancel / q / Esc)
+    esac
+  done
+}
+_account_seq() {
+  _ac_em="$(_current_email)"
+  _ui_title "ByteAsk account"
+  if [ -n "$_ac_em" ]; then _ui_note "Signed in as $_ac_em"; else _ui_note "Signed in"; fi
+  _ui_note "Up/Down + Enter, or type a number"
+  _ui_gap
+  _choice=$(_menu_pick "Change your key or plan" "Sign in with a different email")
+  case "$_choice" in 2) do_login --interactive ;; *) : ;; esac
+  _source_menu_seq
+}
+
+# Interactive source selection. Real TTY → the persistent settings screen;
+# anything else → the sequential numbered flow (scriptable + test path).
+do_source_menu() {
+  _interactive || return 0
+  if _scr_settings keys; then return 0; fi
+  _source_menu_seq
+}
+
+# `/login` + `byteask login`: EMAIL is compulsory (identity, every user), THEN the
+# settings screen. A signed-in user starts on the Account screen.
+do_account() {
+  if _is_signed_in; then
+    _interactive || return 0   # already signed in + non-interactive: nothing to do
+    if _scr_settings account; then return 0; fi
+    _account_seq
+  elif ! _needs_byteask_signin; then
+    # A self-served config (self/* or a cloud model with the user's own key) needs no
+    # account. Don't force email onboarding — open the keys/models screen so they can
+    # manage their setup or sign in by choice (selecting "Use ByteAsk managed" there
+    # routes to sign-in). This never fires for a managed/un-keyed config, so the normal
+    # email-first onboarding below is unchanged for everyone else.
+    _interactive || return 0
+    if _scr_settings keys; then return 0; fi
+    _source_menu_seq
+  else
+    # Say WHY we're asking. _is_signed_in is the only expiry-aware check in the wrapper:
+    # _current_email decodes the JWT's `sub` and ignores `exp`, so an expired user still
+    # sees their address everywhere and reads a silent jump to a fresh magic link as
+    # "I'm already signed in — why am I logging in again?" (real report 2026-07-23).
+    # A stored-but-rejected JWT means they WERE signed in; a missing one is a first run.
+    if [ -n "$(_byok_current_jwt)" ]; then
+      _ac_ex="$(_current_email)"
+      echo "Your ByteAsk session${_ac_ex:+ for $_ac_ex} has expired - signing in again."
+      _ac_ex=""
+    fi
+    do_login --interactive   # email first (compulsory); writes managed config + JWT
+    do_source_menu           # then choose source (no-op if non-interactive)
+  fi
+}
+
+# Finish registering a hosted model whose provider was already chosen in the engine's
+# in-TUI settings screen ($1 = preset id, or "custom" for a hand-entered URL).
+#
+# Only the name/URL/key prompts live here; `models_add` then does discovery, the wire
+# probe and the catalog merge. That machinery is `byteask_models.py`'s and is covered by
+# test/models.sh, so the TUI hands off rather than reimplementing it — and this path has
+# to leave the session anyway, since a new self/* row cannot reach /model without a
+# relaunch.
+# Register a hosted model whose fields were ALL collected in the engine's in-TUI
+# settings form ($1 = "<provider> <alias> <url-or-dash>"). Nothing is prompted here:
+# the point of the in-TUI form is that the shell never draws an input field.
+#
+# The API key deliberately does NOT travel in the marker — that file is written
+# world-readable, and this project already refuses to pass keys through argv for the
+# same reason (providers-plan D3A). The engine stages it in an owner-only sibling
+# file; read it once, delete it, and hand it to models_add via BK_KEY.
+do_register_model() {
+  _rm_p=${1%% *}; _rm_rest=${1#* }
+  _rm_al=${_rm_rest%% *}; _rm_u=${_rm_rest#* }
+  _rm_sec="$CODEX_HOME/.byteask-auth-secret"
+  _rm_k=''
+  if [ -f "$_rm_sec" ]; then
+    _rm_k=$(cat "$_rm_sec" 2>/dev/null || echo '')
+    rm -f "$_rm_sec" 2>/dev/null || true
+  fi
+  if [ -z "$_rm_al" ] || [ -z "$_rm_p" ]; then
+    echo "byteask: cancelled." >&2; _rm_k=''; return 0
+  fi
+  if [ "$_rm_p" = custom ]; then
+    [ -n "$_rm_u" ] && [ "$_rm_u" != "-" ] || { echo "byteask: cancelled (no server URL)." >&2; _rm_k=''; return 0; }
+    set -- "$_rm_al" --url "$_rm_u"
+  else
+    set -- "$_rm_al" --provider "$_rm_p"
+  fi
+  # BK_KEY, never argv: /proc/<pid>/cmdline is world-readable.
+  if [ -n "$_rm_k" ]; then
+    BK_KEY="$_rm_k" models_add "$@" || echo "byteask: couldn't add that model - details above." >&2
+  else
+    models_add "$@" || echo "byteask: couldn't add that model - details above." >&2
+  fi
+  _rm_k=''
+}
+
+do_add_model() {   # $1 = provider id, or "custom"
+  _am_p=$1
+  printf 'Name it (e.g. my-dgx): '
+  IFS= read -r _am_al || _am_al=''
+  _am_al=$(printf '%s' "$_am_al" | tr -d '[:space:]')
+  [ -n "$_am_al" ] || { echo "byteask: cancelled." >&2; return 0; }
+  if [ "$_am_p" = custom ]; then
+    printf 'Server URL (e.g. http://dgx-host:8000): '
+    IFS= read -r _am_u || _am_u=''
+    _am_u=$(printf '%s' "$_am_u" | tr -d '[:space:]')
+    [ -n "$_am_u" ] || { echo "byteask: cancelled." >&2; return 0; }
+    set -- "$_am_al" --url "$_am_u"
+  else
+    set -- "$_am_al" --provider "$_am_p"
+  fi
+  printf 'API key, if your server needs one (Enter to skip; input hidden): '
+  stty -echo 2>/dev/null || true
+  IFS= read -r _am_k || _am_k=''
+  stty echo 2>/dev/null || true
+  printf '\n'
+  _am_k=$(printf '%s' "$_am_k" | tr -d '[:space:]')
+  [ -n "$_am_k" ] && set -- "$@" --key "$_am_k"
+  _am_k=''
+  models_add "$@" || echo "byteask: couldn't add that model - details above." >&2
+}
+
 do_login() {
-  GATEWAY="$(resolve_gateway)"; EMAIL=""; MODEL="${BYTEASK_MODEL:-gpt-5.4}"; AUTOCLICK=0; REF=""
+  # Unconditional + safe under set -eu: _scr_tokens' first line defines every
+  # _C_*/_G_* var before any conditional runs, and the color ladder itself is
+  # gated on [ -t 1 ] internally (§10.3, 2026-07-23) — never emits raw escapes
+  # on a non-interactive run (e.g. `byteask login --email x@y </dev/null`).
+  _scr_tokens
+  GATEWAY="$(resolve_gateway)"; EMAIL=""; MODEL="${BYTEASK_MODEL:-gpt-5.4}"; AUTOCLICK=0; REF=""; EMAIL_HINT=0
   while [ $# -gt 0 ]; do case "$1" in
     --gateway) GATEWAY="$2"; shift 2;;
     --email) EMAIL="$2"; shift 2;;
+    # Pre-filled from the engine's in-TUI sign-in form. Unlike --email this stays
+    # re-promptable: if the gateway refuses the address (the .ac.in policy), we ask
+    # for a different one here instead of exiting the way an explicit --email must.
+    --email-hint) EMAIL="$2"; EMAIL_HINT=1; shift 2;;
     --model) MODEL="$2"; shift 2;;
     --ref=*) REF="${1#--ref=}"; shift;;
     --auto-click) AUTOCLICK=1; shift;;
@@ -116,71 +1777,184 @@ do_login() {
   fi
   case "$REF" in *[!A-Za-z0-9_-]*) REF="" ;; esac
   [ "${#REF}" -le 64 ] || REF=""
-  [ -n "$EMAIL" ] || { printf "Email: "; read -r EMAIL; }
   GATEWAY="${GATEWAY%/}"
-  echo "Signing in to ByteAsk as $EMAIL ..."
-  body="{\"email\":\"$EMAIL\"}"
-  [ -n "$REF" ] && body="{\"email\":\"$EMAIL\",\"ref\":\"$REF\"}"
-  start=$(curl -fsS -X POST "$GATEWAY/auth/start" -H 'content-type: application/json' -d "$body")
-  poll=$(printf '%s' "$start" | _json poll_token)
-  link=$(printf '%s' "$start" | _json dev_magic_link)
-  [ -n "$poll" ] || { echo "sign-in failed: $start" >&2; exit 1; }
-  echo "  -> Check $EMAIL for a sign-in link and click it."
+  # Whether the email came from --email (can't re-prompt) vs. asked interactively.
+  _email_was_arg=0; [ -n "$EMAIL" ] && [ "$EMAIL_HINT" = 0 ] && _email_was_arg=1
+  poll=""; link=""
+  # Sign-in loop: ask for the email, VALIDATE it (one gateway probe) BEFORE anything
+  # else, and on an unsupported / rejected address show the reason and re-ask for a
+  # different email instead of closing the session. Only ask for a referral code once
+  # the email is accepted.
+  while : ; do
+    [ -n "$EMAIL" ] || { printf '\n%b%s Email:%b ' "${_C_A}${_C_B}" "$_G_BC" "$_C_R"; read -r EMAIL || { echo >&2; exit 1; }; }
+    _email_probe "$EMAIL"
+    if [ -n "$_EMAIL_BLOCK" ]; then
+      printf '%b%s%b %s\n' "$_C_E" "$_G_X" "$_C_R" "$_EMAIL_BLOCK" >&2
+      { [ "$_email_was_arg" = 1 ] || [ ! -t 0 ] || [ ! -t 1 ]; } && exit 1
+      printf '%b%s%b %s\n' "$_C_E" "$_G_X" "$_C_R" "Please enter a different email." >&2
+      EMAIL=""; continue
+    fi
+    # First signup with no referral code yet — offer to enter one (interactive TTY only;
+    # skipped when a --ref / BYTEASK_REF / install-time code already set REF above, OR when
+    # this email has signed in before — referrals only credit a NEW signup, so a returning
+    # user is never asked). You and the referrer EACH get $10 once; validated + one-shot.
+    if [ -z "$REF" ] && [ -t 0 ] && [ -t 1 ] && _email_is_new "$EMAIL"; then
+      printf '%b%s Have a referral code?%b You both get $10 of usage (press Enter to skip): ' "${_C_A}${_C_B}" "$_G_BC" "$_C_R"
+      read -r _ref_in || _ref_in=""
+      REF="$(printf '%s' "$_ref_in" | tr -d '[:space:]')"
+      case "$REF" in *[!A-Za-z0-9_-]*) REF="" ;; esac
+      [ "${#REF}" -le 64 ] || REF=""
+    fi
+    printf '%bSigning in to ByteAsk as %s ...%b\n' "$_C_D" "$EMAIL" "$_C_R"
+    body="{\"email\":\"$EMAIL\"}"
+    [ -n "$REF" ] && body="{\"email\":\"$EMAIL\",\"ref\":\"$REF\"}"
+    start=$(curl -fsS -X POST "$GATEWAY/auth/start" -H 'content-type: application/json' -d "$body" || true)
+    poll=$(printf '%s' "$start" | _json poll_token)
+    link=$(printf '%s' "$start" | _json dev_magic_link)
+    [ -n "$poll" ] && break
+    # Sign-in didn't start. The unsupported-email case is caught up front by the probe
+    # (re-prompt above); anything reaching here is a network/other error -> show it and
+    # exit (don't loop on a transient failure). Surface the gateway's message if it sent
+    # one (probe was offline) rather than the raw body.
+    _err=$(printf '%s' "$start" | _json error)
+    [ -n "$_err" ] || _err="sign-in failed${start:+: $start}"
+    echo "$_err" >&2; exit 1
+  done
+  # The one actionable step in the whole wait — earns the strongest emphasis,
+  # not the weakest (§10.3, 2026-07-23).
+  printf '  %b-> Check %s for a sign-in link and click it.%b\n' "${_C_A}${_C_B}" "$EMAIL" "$_C_R"
   [ -n "$link" ] && echo "  -> (dev) link: $link"
   # Dev mode (no email configured): the gateway returns the link, so complete sign-in automatically.
   [ -n "$link" ] && curl -fsS "$link" >/dev/null 2>&1 && echo "  -> sign-in confirmed"
-  echo "  -> Waiting for confirmation ..."
+  printf '  %b-> Waiting for confirmation (up to 10 minutes) ...%b\n' "$_C_D" "$_C_R"
   token=""; i=0
-  while [ "$i" -lt 120 ]; do
+  while [ "$i" -lt 600 ]; do
     r=$(curl -fsS -X POST "$GATEWAY/auth/poll" -H 'content-type: application/json' -d "{\"poll_token\":\"$poll\"}" || echo '{}')
     [ "$(printf '%s' "$r" | _json status)" = approved ] && { token=$(printf '%s' "$r" | _json access_token); break; }
+    # Email delivery can lag and the link often lands in spam — nudge partway through so
+    # the wait doesn't look frozen (the poll token stays valid the whole window).
+    [ "$i" = 60 ] && printf '  %b-> Still waiting — the email can take a minute; check your spam folder.%b\n' "$_C_D" "$_C_R"
     i=$((i+1)); sleep 1
   done
-  [ -n "$token" ] || { echo "sign-in timed out" >&2; exit 1; }
+  if [ -z "$token" ]; then
+    echo "sign-in timed out (no confirmation after 10 minutes)." >&2
+    echo "  - If the email was slow, run 'byteask login' to send a fresh link." >&2
+    echo "  - Or skip email: 'byteask login --with-api-key' to use your own API key." >&2
+    exit 1
+  fi
   mkdir -p "$CODEX_HOME"; printf '%s' "$GATEWAY" > "$CODEX_HOME/gateway"
-  cat > "$CODEX_HOME/config.toml" <<EOF
-model = "$MODEL"
-model_provider = "byteask"
-web_search = "live"
-
-[model_providers.byteask]
-name = "ByteAsk"
-base_url = "$GATEWAY/byteask/v1"
-wire_api = "responses"
-requires_openai_auth = false
-experimental_bearer_token = "$token"
-
-[model_providers.byteask.http_headers]
-x-openai-actor-authorization = "byteask"
-EOF
+  # Model catalog: adds Claude (opus/sonnet) to /model with correct metadata. It
+  # REPLACES the engine's bundled catalog, so a bad file would break startup -- only
+  # reference it after the download validates. Fail-safe: on any failure skip it
+  # (Claude still routes via the gateway, just with a "metadata not found" warning).
+  CATALOG_LINE=""
+  if curl -fsSL --max-time 20 "$GATEWAY/models-catalog.json" -o "$CODEX_HOME/models-catalog.json.tmp" 2>/dev/null \
+     && grep -q '"models"' "$CODEX_HOME/models-catalog.json.tmp" 2>/dev/null; then
+    mv "$CODEX_HOME/models-catalog.json.tmp" "$CODEX_HOME/models-catalog.json"
+    CATALOG_LINE="model_catalog_json = \"$CODEX_HOME/models-catalog.json\""
+  else
+    rm -f "$CODEX_HOME/models-catalog.json.tmp" 2>/dev/null || true
+  fi
+  write_managed_config "$MODEL" "$CATALOG_LINE" "$GATEWAY" "$token"
   rm -f "$CODEX_HOME/referral" 2>/dev/null || true   # one-shot: only the first signup is credited
-  echo "Signed in as $EMAIL. You're ready: byteask \"...\""
+  _email_remember "$EMAIL"                           # so a future re-login skips the referral prompt
+  printf '%b%s%b Signed in as %s. You'"'"'re ready: byteask "..."\n' "$_C_A" "$_G_OK" "$_C_R" "$EMAIL"
 }
 
-# ByteAsk mode-C auth is the experimental_bearer_token in config.toml — the
-# engine's own `logout` only clears its OAuth store (auth.json), which mode C
-# never writes, so it left the user still signed in. Strip the token line (back
-# to unsigned; the next `byteask` onboards) and drop any auth.json too. Reports
-# on the ACTUAL post-state so a read-only config can't fake a logout. Returns
-# non-zero only when a token was present but couldn't be removed.
+# Full logout across ALL auth stores. ByteAsk auth lives in THREE places depending on
+# mode: managed = experimental_bearer_token in config.toml; BYOK = JWT+keys in
+# byok-config.json (+ a running sidecar holding them in memory); subscription/ApiKey =
+# auth.json. The old logout only cleared config.toml, so a BYOK user stayed signed in.
+# This clears every store, stops the sidecar, and resets to a managed + UNSIGNED config so
+# the next launch onboards. Reports on the ACTUAL post-state (_is_signed_in checks all
+# stores) so a read-only file can't fake a logout.
 do_logout() {
-  _lo_cfg="$CODEX_HOME/config.toml"; _lo_had=0
-  if [ -f "$_lo_cfg" ] && grep -q 'experimental_bearer_token' "$_lo_cfg" 2>/dev/null; then
-    _lo_had=1
-    _lo_tmp="$_lo_cfg.logout.$$"
-    if grep -v 'experimental_bearer_token' "$_lo_cfg" > "$_lo_tmp" 2>/dev/null; then
-      mv "$_lo_tmp" "$_lo_cfg" 2>/dev/null || true
-    fi
-    rm -f "$_lo_tmp" 2>/dev/null || true
+  _lo_was_signed=0; _is_signed_in && _lo_was_signed=1
+  # 1. Stop the BYOK sidecar (holds the user's keys + JWT in memory; keeps serving).
+  if [ -f "$CODEX_HOME/byok-sidecar.pid" ]; then
+    kill "$(cat "$CODEX_HOME/byok-sidecar.pid" 2>/dev/null)" 2>/dev/null || true
+    rm -f "$CODEX_HOME/byok-sidecar.pid" 2>/dev/null || true
   fi
-  rm -f "$CODEX_HOME/auth.json" 2>/dev/null || true   # also clear any engine OAuth store
-  if [ "$_lo_had" = 0 ]; then
-    echo "You're not signed in to ByteAsk."; return 0
-  elif grep -q 'experimental_bearer_token' "$_lo_cfg" 2>/dev/null; then
-    echo "Couldn't remove the saved token — check permissions on $_lo_cfg" >&2; return 1
+  # 2. Clear EVERY local credential store.
+  rm -f "$BYOK_CFG" 2>/dev/null || true                # byok-config.json (BYOK keys + JWT)
+  rm -f "$CODEX_HOME/auth.json" 2>/dev/null || true    # ChatGPT OAuth / `login --with-api-key`
+  # 3. Reset to managed + UNSIGNED (no token line) so the next launch forces sign-in.
+  _lo_model="$(_cfg_model)"; [ -n "$_lo_model" ] || _lo_model="${BYTEASK_MODEL:-gpt-5.4}"
+  _lo_gw="$(resolve_gateway)"; _lo_gw="${_lo_gw%/}"
+  write_managed_config "$_lo_model" "$(_cfg_catalog)" "$_lo_gw" ""
+  # 4. Report on the ACTUAL post-state.
+  if _is_signed_in; then
+    echo "Couldn't fully log out — check permissions on $CODEX_HOME" >&2; return 1
   fi
-  echo "Logged out of ByteAsk. Run 'byteask' to sign back in."; return 0
+  if [ "$_lo_was_signed" = 1 ]; then
+    echo "Logged out of ByteAsk. Run 'byteask' to sign back in."
+  else
+    echo "You're not signed in to ByteAsk."
+  fi
+  return 0
 }
+
+# ---- Terse mode: gateway-injected output-style floor (default-on lite) --------
+# `byteask terse [status|off|lite|full|ultra]`. The level rides an `x-byteask-terse`
+# header in config.toml's active http_headers block; the gateway appends the matching
+# style block to `instructions` (all providers, all clients, no rebuild). Persisted in
+# $CODEX_HOME/terse so it survives re-login. Takes effect on the next launch (the engine
+# reads config.toml at startup).
+_terse_level_now() {  # current level from config.toml, empty = gateway default (lite)
+  sed -n 's/^x-byteask-terse = "\(.*\)"$/\1/p' "$CODEX_HOME/config.toml" 2>/dev/null | head -n1
+}
+do_terse() {
+  case "${1:-status}" in
+    status|"")
+      _tl="$(_terse_level_now)"; [ -n "$_tl" ] || _tl="lite (default)"
+      echo "Terse mode: $_tl"
+      echo "  concise replies, code/commands/errors kept exact. Change:"
+      echo "  byteask terse off | lite | full | ultra"
+      return 0;;
+    off|lite|full|ultra) _tlvl="$1";;
+    -h|--help) echo "usage: byteask terse [status|off|lite|full|ultra]"; return 0;;
+    *) echo "byteask terse: unknown level '$1' (use off|lite|full|ultra|status)" >&2; return 2;;
+  esac
+  mkdir -p "$CODEX_HOME"; printf '%s' "$_tlvl" > "$CODEX_HOME/terse"
+  # In-place edit so it takes effect without a full config rewrite; the persist file
+  # above makes it durable across a future re-login.
+  if [ -f "$CODEX_HOME/config.toml" ]; then
+    python3 - "$CODEX_HOME/config.toml" "$_tlvl" <<'PY' 2>/dev/null || true
+import sys
+path, level = sys.argv[1], sys.argv[2]
+try:
+    lines = open(path).read().splitlines()
+except OSError:
+    sys.exit(0)
+out, in_hdrs = [], False
+for ln in lines:
+    s = ln.strip()
+    if s.startswith("[") and s.endswith("]"):
+        in_hdrs = s.endswith(".http_headers]")
+        out.append(ln)
+        if in_hdrs:
+            out.append('x-byteask-terse = "%s"' % level)
+        continue
+    if in_hdrs and s.lower().startswith("x-byteask-terse"):
+        continue  # drop any prior value; re-inserted at the section top
+    out.append(ln)
+open(path, "w").write("\n".join(out) + "\n")
+PY
+  fi
+  case "$_tlvl" in
+    off)   echo "Terse mode OFF — replies use the model's normal style." ;;
+    lite)  echo "Terse mode LITE (default) — concise; skips filler, keeps all code/technical detail exact." ;;
+    full)  echo "Terse mode FULL — tight, fragment-style replies; code/commands/errors kept verbatim." ;;
+    ultra) echo "Terse mode ULTRA — maximum terseness; code/commands/errors kept verbatim." ;;
+  esac
+  echo "  Takes effect on your next 'byteask' launch."
+  return 0
+}
+
+# Test/inspection seam: `BYTEASK_SOURCE_ONLY=1 . byteask` loads the functions
+# WITHOUT running the dispatch below (so a test can call write_managed_config etc.
+# without launching the engine). Zero cost when unset.
+if [ -n "${BYTEASK_SOURCE_ONLY:-}" ]; then return 0 2>/dev/null || exit 0; fi
 
 case "${1:-}" in
   --version|-V|version) echo "byteask $VERSION"; exit 0;;
@@ -191,11 +1965,38 @@ case "${1:-}" in
   login)
     shift
     case " $* " in
-      *" --with-api-key "*|*" --api-key "*) exec "$ENGINE" login "$@";;  # bring-your-own-key path
+      *" --with-api-key "*|*" --api-key "*) exec "$ENGINE" login "$@";;  # engine-native api-key path
     esac
-    do_login "$@"; exit 0;;
+    # `byteask login --email X` -> email flow + source menu; bare `byteask login` -> account menu.
+    if [ $# -gt 0 ]; then do_login "$@"; do_source_menu; else do_account; fi
+    exit 0;;
   logout)
     _lc=0; do_logout || _lc=$?; exit "$_lc";;
+  byok)
+    shift; _byok_sub="${1:-}"; do_byok "$@"
+    # `byok set/remove` reconfigure + want a fresh launch. Clear args at THIS level
+    # (a function's `set --` can't touch the caller's $@) then fall through to launch.
+    case "$_byok_sub" in set|remove|rm) set -- ;; *) exit 0;; esac;;
+  models)
+    shift; _mc=0; do_models "$@" || _mc=$?; exit "$_mc";;
+  terse)
+    shift; _tc=0; do_terse "$@" || _tc=$?; exit "$_tc";;
+  --help|-h)
+    # Intercept BEFORE the engine so wrapper-only commands (byok, models) are
+    # discoverable (R2-D3); then show the engine's own flags too.
+    cat >&2 <<EOF
+ByteAsk $VERSION
+  byteask                        launch (signs you in on first run)
+  byteask "<prompt>"             launch with an initial prompt (interactive TUI, needs a terminal)
+  byteask exec "<prompt>"        one-shot, non-interactive (for scripts / pipes / CI)
+  byteask login | logout         manage your ByteAsk sign-in
+  byteask byok <set|status|remove|off> [provider]   use your own OpenAI/Anthropic/Gemini key
+  byteask models <add|list|test|remove>             use your OWN hosted model (DGX/vLLM/Ollama)
+  byteask --update               update the CLI
+
+Engine options:
+EOF
+    exec "$ENGINE" --help;;
   --uninstall-gdb-bridge)
     _gi="$HOME/.gdbinit"
     _gm="# ===== ByteAsk GDB bridge (added by the byteask installer) ====="
@@ -220,31 +2021,166 @@ check_for_update "$@" || true
 AUTH_REQ="$CODEX_HOME/.byteask-auth-request"
 rm -f "$AUTH_REQ" 2>/dev/null || true
 while : ; do
+  # A secret staged by the engine's in-TUI form is consumed by do_register_model in the
+  # SAME iteration that stages it. Clear any leftover before handing control to the
+  # engine, so a crash between staging and the hand-off can never leave an API key
+  # sitting on disk into the next session.
+  rm -f "$CODEX_HOME/.byteask-auth-secret" 2>/dev/null || true
+
   # Not signed in yet (mode-C default, no token). On an interactive terminal, onboard
   # right here so a bare `byteask` just works like `claude`/`codex`: do_login prompts
   # for the email and writes the token; then we launch. A non-interactive run can't
   # prompt, so it keeps the one-line nudge instead of hanging on a read.
   CFG="$CODEX_HOME/config.toml"
-  if grep -q '^model_provider = "byteask"' "$CFG" 2>/dev/null && ! grep -q 'experimental_bearer_token' "$CFG" 2>/dev/null; then
+  # Force sign-in whenever a ByteAsk-owned provider (managed OR BYOK) is active but there's
+  # no valid session in ANY store. _is_signed_in checks config.toml token + byok-config JWT
+  # (and expiry), so a logged-out BYOK user is caught here too. Non-ByteAsk providers
+  # (openai/subscription, mode A/B) manage their own auth in the engine — left untouched.
+  _launch_prov=$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CFG" 2>/dev/null | head -n1)
+  # Self-heal a managed config that lost its token line. The engine only ever sends
+  # config.toml's experimental_bearer_token, but _is_signed_in reads byok-config.json
+  # first — so this state reports "signed in" everywhere and 401s on every turn, with
+  # no way out of the settings screen. If a live JWT is still in the BYOK store, put it
+  # back; otherwise fall through to onboarding below. No-op unless actually broken.
+  if _managed_missing_token && _is_signed_in; then
+    _heal_jwt="$(_byok_current_jwt)"
+    _heal_gw="$(resolve_gateway)"; _heal_gw="${_heal_gw%/}"
+    [ -n "$_heal_jwt" ] && write_managed_config "$(_cfg_model)" "$(_cfg_catalog)" "$_heal_gw" "$_heal_jwt"
+    _heal_jwt=""
+  fi
+  if [ "$_launch_prov" = byteask ] && ! _is_signed_in && [ ! -f "$CODEX_HOME/byok-config.json" ] \
+     && [ -t 0 ] && [ -t 1 ] && _anon_promo_on; then
+    # Managed provider, not signed in, no BYOK, TTY, AND the free-trial promo is ON:
+    # launch an UNSIGNED auto-only session so the user can try before signing up. The
+    # gateway meters it per device and walls them (429 -> "type /login") when spent.
+    # Promo OFF (default) falls through to the normal email onboarding below, so nothing
+    # changes for existing/normal operation.
+    write_managed_config "auto" "$(_cfg_catalog)" "$(resolve_gateway)" ""
+  elif _needs_byteask_signin && { ! _is_signed_in || _managed_missing_token; }; then
+    # The active config needs a ByteAsk account (managed model, un-keyed cloud model, or
+    # `auto`) but there's no valid session: force sign-in; do NOT clobber them into the
+    # anonymous trial. A SELF-SERVED config (self/* or a cloud model the user has their
+    # own key for) skips this entirely and launches unsigned — its traffic never touches
+    # us, so an account buys nothing. If they later switch to a managed model in /model,
+    # the gateway's 401 login_required asks for sign-in on that request.
     if [ -t 0 ] && [ -t 1 ]; then
       echo "Welcome to ByteAsk — let's get you signed in (one time)."
       # `--interactive` (a no-op flag) forces a WITH-args call so do_login does NOT
       # inherit this script's "$@" (e.g. a `byteask "prompt"`); "$@" is preserved.
-      do_login --interactive
+      do_account
     else
       echo "You're not signed in to ByteAsk. Run:  byteask login --email you@company.com" >&2
       exit 1
     fi
   fi
 
-  _rc=0; "$ENGINE" "$@" || _rc=$?
+  # BYOK mode: the engine points at the loopback sidecar, so make sure it's up +
+  # current before launching (lazy shared singleton; auto-restarts a stale one after
+  # an update). Fail-open: if it can't start, launch anyway and surface per-call errors.
+  if grep -q '^model_provider = "byok-local"' "$CFG" 2>/dev/null; then
+    ensure_sidecar || echo "byteask: BYOK sidecar unavailable — own-key models may fail this run." >&2
+  fi
+
+  # Linux: the engine sandboxes model-run shell commands with bubblewrap; if it isn't
+  # installed (install.sh tries, but couldn't — e.g. no sudo), run WITHOUT the sandbox so
+  # commands don't fail and the model doesn't spin trying to "fix bubblewrap". Skipped if
+  # you set your own sandbox flag; re-checked each launch, so a later bwrap install
+  # automatically restores the sandbox.
+  _SANDBOX_ARG=""
+  if [ "$(uname -s 2>/dev/null)" = Linux ] && ! command -v bwrap >/dev/null 2>&1; then
+    case " $* " in
+      *" --sandbox "*|*" -s "*|*" --dangerously-bypass-approvals-and-sandbox "*|*" --full-auto "*) ;;
+      *) _SANDBOX_ARG="--sandbox danger-full-access"
+         # Be honest that the sandbox is OFF: without bwrap, model-run commands are NOT
+         # confined (approval prompts still gate them). Warn once per process, not per relaunch.
+         if [ -z "${_SANDBOX_WARNED:-}" ]; then
+           echo "byteask: bubblewrap not found — running WITHOUT the shell sandbox; model-run commands are unrestricted. Install it to re-enable: sudo apt install bubblewrap" >&2
+           _SANDBOX_WARNED=1
+         fi ;;
+    esac
+  fi
+
+  # ripgrep: the model shells out to `rg` for code search. Without it the engine falls
+  # back to find/grep — searches get slower and the model burns extra turns on large
+  # repos, with nothing on screen explaining why. install.sh installs it best-effort,
+  # so this covers the case where that failed (no sudo, odd distro). Warn once per
+  # process, never fatal; re-checked each launch, so installing rg silences it.
+  if [ -z "${_RG_WARNED:-}" ] && ! command -v rg >/dev/null 2>&1; then
+    _rg_hint="see https://github.com/BurntSushi/ripgrep#installation"
+    if   command -v apt-get >/dev/null 2>&1; then _rg_hint="sudo apt install ripgrep"
+    elif command -v dnf     >/dev/null 2>&1; then _rg_hint="sudo dnf install ripgrep"
+    elif command -v pacman  >/dev/null 2>&1; then _rg_hint="sudo pacman -S ripgrep"
+    elif command -v apk     >/dev/null 2>&1; then _rg_hint="apk add ripgrep"
+    elif command -v brew    >/dev/null 2>&1; then _rg_hint="brew install ripgrep"
+    fi
+    echo "byteask: ripgrep (rg) not found — code search falls back to find/grep and will be slower. Install it: $_rg_hint" >&2
+    _RG_WARNED=1
+  fi
+
+  # Self-hosted models: keep the /model catalog in sync with the registry before the
+  # engine reads it (idempotent + atomic). This is what makes custom rows survive a
+  # `byteask --update` that re-fetched a base catalog. Gated so non-self users pay nothing.
+  _has_self_endpoints && _models_merge
+
+  # A self-hosted model that failed the tool round-trip can't run the agent loop: it
+  # answers prose but never emits a structured tool call, so edits/shell/search all
+  # silently do nothing. `byteask models test` records that verdict; repeat it here so
+  # the user isn't left guessing mid-session. Warn once per process, never fatal.
+  _warn_self_tools
+
+  # No terminal + a prompt/args -> the interactive TUI will fail with the engine's raw
+  # "stdin is not a terminal". Point at `exec` (the headless one-shot mode) first. Only
+  # for a leading non-flag arg (the `byteask "prompt"` shape); `exec` and flags pass through.
+  if [ ! -t 0 ] && [ "$#" -gt 0 ] && [ "$1" != exec ]; then
+    case "$1" in
+      -*) : ;;
+      *)  echo "byteask: no terminal detected — the interactive UI needs one." >&2
+          echo "  For non-interactive / scripted use, run:  byteask exec \"$1\"" >&2 ;;
+    esac
+  fi
+
+  _rc=0; "$ENGINE" $_SANDBOX_ARG "$@" || _rc=$?
+
+  # The engine's TUI can leave the terminal in raw / bracketed-paste mode on exit
+  # (notably the /login marker path). Reset it so EVERY shell prompt below (email,
+  # referral, key paste) submits on Enter across ALL terminals — a dirty terminal
+  # swallows the submit newline on macOS Terminal while Linux terminals tolerate it.
+  [ -t 0 ] && [ -t 1 ] && { stty sane 2>/dev/null; printf '\033[?2004l' 2>/dev/null; }
 
   # No auth action requested -> propagate the engine's exit code and stop.
   [ -f "$AUTH_REQ" ] || exit "$_rc"
   _act=$(cat "$AUTH_REQ" 2>/dev/null || echo ""); rm -f "$AUTH_REQ" 2>/dev/null || true
+  # Line 1 is the verb (login/logout). Line 2, when present, is a headless
+  # instruction from the engine's in-TUI settings screen: it already applied the
+  # change and just needs us to finish the job, WITHOUT painting a second menu on
+  # top of the one the user was already looking at.
+  #
+  # The verb deliberately stays `login` for these: this `case` exits outright on
+  # anything it does not recognise, so an engine newer than an installed wrapper
+  # must still lead with a known verb. Such a pairing then falls through to the
+  # old interactive screen below — degraded, but never a silent quit.
+  _detail=$(printf '%s\n' "$_act" | sed -n '2p')
   case "$_act" in
     logout*) _lc=0; do_logout || _lc=$?; exit "$_lc" ;;               # /logout: clear token, back to shell
-    login*)  do_login --interactive; set -- ; continue ;;            # /login: (re)auth, relaunch a fresh TUI
+    login*)
+      case "$_detail" in
+        relaunch)         : ;;                                       # already applied in-TUI; just restart
+        # Only the linear magic-link wizard — NOT do_account, whose first move for a
+        # signed-in user is the old _scr_settings screen, i.e. the very menu the
+        # in-TUI settings surface replaces. do_login `exit 1`s on failure, so keep it
+        # in a subshell (set -eu is on): a failed sign-in relaunches unsigned instead
+        # of dumping the user back to their shell. Config writes still persist.
+        signin)           ( do_login --interactive ) || true ;;
+        # Email already typed into the in-TUI form: pass it as a HINT, not as
+        # `--email`. `--email` marks it non-re-promptable, so a refused address
+        # (the .ac.in policy) would exit instead of asking for another one.
+        'signin '*)       ( do_login --interactive --email-hint "${_detail#signin }" ) || true ;;
+        'register-model '*) do_register_model "${_detail#register-model }" ;;
+        'add-model '*)    do_add_model "${_detail#add-model }" ;;     # older engine: provider only
+        'remove-model '*) models_remove "${_detail#remove-model }" ;; # also rebuilds the catalog
+        *)                do_account ;;                              # older engine: full legacy menu
+      esac
+      set -- ; continue ;;
     *)       exit "$_rc" ;;
   esac
 done
