@@ -18,6 +18,7 @@ for _arg in "$@"; do
     --ref=*) REF="${_arg#--ref=}" ;;
   esac
 done
+REF_GIVEN="$REF"                                  # kept so a REJECTED code can be reported
 case "$REF" in *[!A-Za-z0-9_-]*) REF="" ;; esac   # keep only a sane token (alnum/-/_)
 [ "${#REF}" -le 64 ] || REF=""                    # ... of reasonable length
 
@@ -426,17 +427,35 @@ $TOKEN_LINE
 x-openai-actor-authorization = "byteask"
 EOF
 
-VER="$("$BIN_DIR/byteask" --version 2>/dev/null || echo byteask)"
-NEED_PATH=0; case ":$PATH:" in *":$BIN_DIR:"*) ;; *) NEED_PATH=1 ;; esac
-printf '\n  \033[1;38;2;134;174;165m✓\033[0m %s installed  →  %s\n\n' "$VER" "$BIN_DIR/byteask"
-echo "  To start, just run:"
-printf '\n      \033[1;38;2;134;174;165mbyteask\033[0m\n\n'
-echo "  and you're in interactive mode — like  claude  or  codex."
-echo
-if [ "$NEED_PATH" = 1 ]; then
-  printf '  First add it to your PATH:  export PATH="%s:$PATH"\n' "$BIN_DIR"
-  echo "  (append that to ~/.bashrc or ~/.zshrc so it sticks)"
-  echo
+# Two lines on the happy path (docs/terminal-surfaces-plan.md I2, § 4 rule 7).
+# What was here before said "and you're in interactive mode -- like claude or
+# codex", which shipped a competitor's name AND the word `codex` in our own
+# success line (operating rule 4), and "New here? Sign in first: byteask login
+# --email ..." which contradicts the wrapper: `byteask` signs you in on first run.
+VER="$("$BIN_DIR/byteask" --version 2>/dev/null || true)"   # "byteask 0.1.11"
+VER="${VER##* }"
+case "$VER" in [0-9]*) ;; *) VER="" ;; esac                 # unknown -> just omit it
+printf '\n  \033[1;38;2;134;174;165m✓\033[0m ByteAsk %sinstalled\n' "${VER:+$VER }"
+printf '  Run:  \033[1;38;2;134;174;165mbyteask\033[0m\n'
+# The one failure worth two extra lines: `command not found` in the first minute.
+case ":$PATH:" in
+  *":$BIN_DIR:"*) ;;
+  *)
+    case "${SHELL:-}" in
+      */zsh)  _rc="~/.zshrc" ;;
+      */bash) _rc="~/.bashrc" ;;
+      *)      _rc="~/.profile" ;;
+    esac
+    printf '  Add %s to your PATH, then run: byteask\n' "$BIN_DIR"
+    printf '  echo '\''export PATH="%s:$PATH"'\'' >> %s\n' "$BIN_DIR" "$_rc"
+    ;;
+esac
+# A referral code was silently accepted and, worse, silently DISCARDED when it did
+# not validate -- so a friend who mistyped it credited nobody and neither side was
+# told. REF_GIVEN is the raw input; REF is what survived validation.
+if [ -n "$REF" ]; then
+  printf '  \033[1;38;2;134;174;165m✓\033[0m Referral code %s applied · $10 of usage after you sign in\n' "$REF"
+elif [ -n "$REF_GIVEN" ]; then
+  printf '  Referral code ignored · it can only contain letters, digits, - and _\n'
 fi
-echo "  New here? Sign in first:  byteask login --email you@company.com"
 echo

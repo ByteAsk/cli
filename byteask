@@ -3,7 +3,7 @@
 # Thin wrapper over the engine so the client surface is fully ByteAsk-branded.
 set -eu
 
-VERSION="0.1.11"
+VERSION="0.1.12"
 DEFAULT_GATEWAY="https://code.byteask.ai"
 export CODEX_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
 export CODEX_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
@@ -128,6 +128,38 @@ _models_merge() {
 # merge/python spawn never touches the launch path for the 99% who have none).
 _has_self_endpoints() { [ -f "$BYOK_CFG" ] && grep -q '"endpoints"' "$BYOK_CFG" 2>/dev/null; }
 
+# Stamp this account's model availability onto the local catalog, every launch.
+#
+# The base catalog is 709 KB and identical for everyone, so it is fetched ONCE at
+# sign-in and cached. Only the per-account part is dynamic, and it is tiny (~108 bytes):
+#   {"locked": ["claude-opus-5", ...], "inactive": ["..."]}
+# `locked` is a paywall an upgrade fixes; `inactive` is an operator supply decision that
+# applies to paying users too, so those rows are HIDDEN rather than advertised — offering
+# to sell an upgrade for a model we switched off would be telling a subscriber to buy
+# something they already own.
+#
+# Everything here is best-effort and silent. This sits on the launch path of a CLI people
+# run dozens of times a day, so:
+#   * a 4s cap, and no retry -- a slow gateway must not become a slow `byteask`;
+#   * any failure leaves the previous catalog exactly as it was (last-good wins);
+#   * no output on any path. The gateway is the real boundary and still refuses the turn,
+#     so the worst case is a row that looks available and says otherwise one click later.
+_models_access_merge() {
+  [ -f "$CODEX_HOME/models-catalog.json" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  _ma_tok="$(_byok_current_jwt 2>/dev/null)"
+  [ -n "$_ma_tok" ] || return 0
+  _ma_gw="$(resolve_gateway)"; _ma_gw="${_ma_gw%/}"
+  [ -n "$_ma_gw" ] || return 0
+  _acc="$CODEX_HOME/.model-access.json"
+  curl -fsSL --max-time 4 -H "Authorization: Bearer $_ma_tok" \
+       "$_ma_gw/byteask/v1/model-access" -o "$_acc.tmp" 2>/dev/null || {
+    rm -f "$_acc.tmp" 2>/dev/null; return 0; }
+  mv -f "$_acc.tmp" "$_acc" 2>/dev/null || { rm -f "$_acc.tmp" 2>/dev/null; return 0; }
+  python3 "$BYOK_MODELS" merge-access "$_acc" "$CODEX_HOME/models-catalog.json" 2>/dev/null || true
+}
+
 # Warn when the ACTIVE model is a self/<alias> that failed `byteask models test`'s
 # tool round-trip. Such a model can hold a conversation but never emits a structured
 # tool call, so every file edit / shell command / search silently no-ops — a failure
@@ -198,7 +230,81 @@ PY
 _byok_current_jwt() {
   _j="$(_byok_field jwt)"
   [ -n "$_j" ] && { echo "$_j"; return; }
+  _managed_token
+}
+
+# The managed credential, and ONLY that: the `experimental_bearer_token` line is
+# literally what the engine puts in the Authorization header. Keep this separate
+# from _byok_current_jwt -- that one answers "do we hold a JWT anywhere", which is
+# a different question, and reading byok-config.json first is what let a dead
+# managed token pass for a live session in the 2026-09-07 lockout.
+_managed_token() {
   sed -n 's/^experimental_bearer_token = "\(.*\)"$/\1/p' "$CODEX_HOME/config.toml" 2>/dev/null | head -n1
+}
+
+# Seconds until this JWT expires: negative when already expired, empty when it
+# cannot be decoded (no python3, malformed) so callers can tell "expired" apart
+# from "unknown" instead of collapsing both into one boolean.
+_jwt_ttl_left() {   # $1 = jwt
+  [ -n "${1:-}" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  BYOK_JWT="$1" python3 - <<'JWTTTL' 2>/dev/null || true
+import os, base64, json, time
+try:
+    seg = os.environ["BYOK_JWT"].split(".")[1]; seg += "=" * (-len(seg) % 4)
+    exp = json.loads(base64.urlsafe_b64decode(seg)).get("exp")
+    if exp: print(int(exp) - int(time.time()))
+except Exception:
+    pass
+JWTTTL
+}
+
+# Renew the managed session while it is still (or only just) valid.
+#
+# Runs on every launch, before the engine starts. Costs one HTTP round trip and
+# only when the token is inside the renewal window, so a daily user pays nothing
+# almost every launch and never sees an expiry.
+#
+# Silent and fail-open on every path except one: it NEVER writes a token it did
+# not get, and it keeps the existing config untouched on any error, so the worst
+# case is the status quo (the session ages one more launch). The gateway decides
+# who may renew -- bans and blocked domains are re-checked there, not here.
+_refresh_session_if_due() {
+  [ "${BYTEASK_NO_REFRESH:-}" = 1 ] && return 0
+  # Which store holds the credential in play: the managed provider sends
+  # config.toml's token; BYOK mode sends byok-config.json's jwt from the sidecar
+  # (which re-reads that file on every request, so an edit here is live at once).
+  case "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CODEX_HOME/config.toml" 2>/dev/null | head -n1)" in
+    byteask)    _rs_mode=managed; _rs_tok="$(_managed_token)" ;;
+    byok-local) _rs_mode=byok;    _rs_tok="$(_byok_field jwt)" ;;
+    *)          return 0 ;;
+  esac
+  [ -n "$_rs_tok" ] || return 0
+  _rs_left="$(_jwt_ttl_left "$_rs_tok")"
+  # Empty = undecodable (no python3, odd token). Do nothing: refreshing on a token
+  # we cannot read would hammer the gateway on every launch for every such client.
+  [ -n "$_rs_left" ] || return 0
+  # Renew inside the last week of life, or after expiry (the gateway's grace window
+  # decides how late is too late -- that policy belongs on the server, not baked
+  # into shipped wrappers that cannot be updated).
+  [ "$_rs_left" -lt 604800 ] || return 0
+  _rs_gw="$(resolve_gateway)"; _rs_gw="${_rs_gw%/}"; [ -n "$_rs_gw" ] || return 0
+  _rs_out=$(curl -fsS --connect-timeout 4 -m 8 -X POST "$_rs_gw/auth/refresh" \
+              -H "Authorization: Bearer $_rs_tok" \
+              -H 'content-type: application/json' -d '{}' 2>/dev/null) || {
+    _rs_tok=""; return 0; }
+  _rs_new=$(printf '%s' "$_rs_out" | _json access_token)
+  case "$_rs_new" in *.*.*) ;; *) _rs_tok=""; _rs_new=""; return 0 ;; esac
+  if [ "$_rs_mode" = byok ]; then
+    _byok_merge "jwt=$_rs_new" 2>/dev/null || true
+  else
+    # In place, never a regenerated file: a renewal must not cost the user their
+    # trusted projects, reasoning effort or MCP servers. A failed write is said
+    # out loud -- it will fail again next launch until the permissions are fixed.
+    _set_managed_token "$_rs_new" || _wmc_fail "$_rs_new"
+  fi
+  _rs_tok=""; _rs_new=""
+  return 0
 }
 
 # Emails that have completed sign-in on THIS machine. Used to skip the referral-code
@@ -290,7 +396,12 @@ _ensure_anon_id() {
 # not an empty one) so the launch-loop onboard check correctly sees "not signed in".
 # An unsigned config also carries an X-Anon-Id header so the gateway can meter the
 # anonymous free trial per device.
+# Returns NON-ZERO when the config was not persisted. Every caller must check:
+# this file holds the only credential the engine sends, so a write that quietly
+# fails turns into an unbreakable 401 loop that looks like a server outage.
 write_managed_config() {  # $1=model $2=catalog_line $3=gateway $4=token (empty = unsigned)
+  mkdir -p "$CODEX_HOME" 2>/dev/null || true
+  _wmc_tmp="$CODEX_HOME/.config.toml.tmp.$$"
   {
     cat <<EOF
 model = "$1"
@@ -313,14 +424,83 @@ EOF
     # function's exit status stays 0 when signed — a trailing false `&&` would make
     # write_managed_config "fail" and the launch loop would re-onboard.
     if [ -z "$4" ]; then printf 'X-Anon-Id = "%s"\n' "$(_ensure_anon_id)"; fi
-  } > "$CODEX_HOME/config.toml"
+  } > "$_wmc_tmp" || { rm -f "$_wmc_tmp" 2>/dev/null; _wmc_fail "$4"; return 1; }
+  _install_config "$_wmc_tmp" || { _wmc_fail "$4"; return 1; }
+  # Read back what actually landed. The credential is the whole point of this
+  # file; "the write returned 0" is not the same claim as "the token is there",
+  # and every caller downstream is about to tell the user they are signed in.
+  if [ -n "$4" ] && ! grep -qF "experimental_bearer_token = \"$4\"" "$CODEX_HOME/config.toml" 2>/dev/null; then
+    _wmc_fail "$4"; return 1
+  fi
+  return 0
+}
+
+# Put a finished temp file in place as config.toml. Rename, never truncate in
+# place: a rename needs write permission on the DIRECTORY only, so it succeeds
+# when config.toml itself is unwritable -- the exact state (a root-owned
+# config.toml under a user-owned ~/.byteask, left behind by one `sudo byteask`)
+# that silently swallowed every sign-in in the 2026-09-07 lockout. It is also
+# crash-atomic: a half-written config can never be observed. The one exception
+# is a config.toml that is a SYMLINK (dotfile managers): a rename would replace
+# the link with a plain file and quietly detach the user's dotfiles, so there we
+# copy through the link, which is what the old in-place write did.
+_install_config() {   # $1 = temp file; consumed on success AND on failure
+  _ic_cfg="$CODEX_HOME/config.toml"
+  if [ -L "$_ic_cfg" ]; then
+    cp "$1" "$_ic_cfg" 2>/dev/null || { rm -f "$1" 2>/dev/null; return 1; }
+    rm -f "$1" 2>/dev/null || true
+  else
+    mv -f "$1" "$_ic_cfg" 2>/dev/null || { rm -f "$1" 2>/dev/null; return 1; }
+  fi
+  return 0
+}
+
+# Replace ONLY the experimental_bearer_token line, keeping every other line that
+# the user or the engine has put in config.toml -- `[projects] trust_level`,
+# `model_reasoning_effort`, MCP servers, notify hooks. write_managed_config
+# regenerates the whole file and is the right tool for a sign-in; it is the wrong
+# tool for a renewal, which must be invisible. Returns non-zero unless the new
+# token is verifiably in place.
+_set_managed_token() {   # $1 = new token
+  [ -n "${1:-}" ] || return 1
+  _smt_cfg="$CODEX_HOME/config.toml"; _smt_tmp="$CODEX_HOME/.config.toml.tmp.$$"
+  grep -q '^experimental_bearer_token = ' "$_smt_cfg" 2>/dev/null || return 1
+  # ENVIRON, not -v: awk -v interprets backslash escapes in the value.
+  BYTEASK_NEW_TOKEN="$1" awk '
+    /^experimental_bearer_token = / { print "experimental_bearer_token = \"" ENVIRON["BYTEASK_NEW_TOKEN"] "\""; next }
+    { print }' "$_smt_cfg" > "$_smt_tmp" 2>/dev/null || { rm -f "$_smt_tmp" 2>/dev/null; return 1; }
+  chmod 600 "$_smt_tmp" 2>/dev/null || true
+  _install_config "$_smt_tmp" || return 1
+  grep -qF "experimental_bearer_token = \"$1\"" "$_smt_cfg" 2>/dev/null
+}
+
+# One place to explain a failed credential write, because the user cannot act on
+# "Permission denied" alone and this is the failure that locked a real account out
+# for six weeks.
+_wmc_fail() {   # $1 = token that failed to persist (empty = an unsigned write)
+  {
+    printf '\n'
+    if [ -n "$1" ]; then
+      printf 'byteask: could not save your sign-in to %s\n' "$CODEX_HOME/config.toml"
+    else
+      printf 'byteask: could not update %s\n' "$CODEX_HOME/config.toml"
+    fi
+    printf '  Nothing was changed, so this session is still using the old credential.\n'
+    printf '  Most often the file or directory is owned by root (one `sudo byteask` does it).\n'
+    printf '  Fix it with:  sudo chown -R "$(id -un)" %s\n' "$CODEX_HOME"
+    printf '  Then run:     byteask login\n'
+  } >&2
 }
 
 # BYOK config.toml: engine -> local sidecar, NO secret in the engine (JWT is in the
 # sidecar store). supports_websockets=false so the engine never sends previous_response_id
 # down a WS the local demux can't honor across providers (codex review).
 write_byok_config() {  # $1=model $2=catalog_line $3=local_token
-  cat > "$CODEX_HOME/config.toml" <<EOF
+  # Written through a temp file + rename for the same reason as
+  # write_managed_config: truncating config.toml in place fails outright when the
+  # file is root-owned, and a partial write bricks the next launch.
+  _wbc_tmp="$CODEX_HOME/.config.toml.tmp.$$"
+  cat > "$_wbc_tmp" <<EOF
 model = "$1"
 model_provider = "byok-local"
 web_search = "live"
@@ -338,7 +518,10 @@ X-BYOK-Token = "$3"
 x-openai-actor-authorization = "byteask"
 EOF
   # Terse preference travels to BYOK configs too (durable across re-login).
-  if [ -s "$CODEX_HOME/terse" ]; then printf 'x-byteask-terse = "%s"\n' "$(cat "$CODEX_HOME/terse")" >> "$CODEX_HOME/config.toml"; fi
+  if [ -s "$CODEX_HOME/terse" ]; then printf 'x-byteask-terse = "%s"\n' "$(cat "$CODEX_HOME/terse")" >> "$_wbc_tmp"; fi
+  chmod 600 "$_wbc_tmp" 2>/dev/null || true
+  _install_config "$_wbc_tmp" || { _wmc_fail ""; return 1; }
+  return 0
 }
 
 # Ensure the loopback sidecar is running + current. Lazy shared singleton: health
@@ -460,7 +643,17 @@ PY
 # read-only via python (fail-safe: no python or undecodable -> treat as valid). An expired
 # token counts as signed-out so the launch loop re-onboards instead of hitting a 401.
 _is_signed_in() {
-  _si_jwt="$(_byok_current_jwt)"; [ -n "$_si_jwt" ] || return 1
+  # On the managed provider the engine sends config.toml's token and nothing else,
+  # so that is the token whose expiry decides whether this machine has a session.
+  # Asking _byok_current_jwt here read byok-config.json FIRST, so a leftover BYOK
+  # jwt made an expired managed token report "signed in" forever -- the launch loop
+  # never re-onboarded and every turn 401'd (2026-09-07).
+  if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CODEX_HOME/config.toml" 2>/dev/null | head -n1)" = byteask ]; then
+    _si_jwt="$(_managed_token)"
+  else
+    _si_jwt="$(_byok_current_jwt)"
+  fi
+  [ -n "$_si_jwt" ] || return 1
   command -v python3 >/dev/null 2>&1 || return 0
   BYOK_JWT="$_si_jwt" python3 - <<'PY' 2>/dev/null
 import os, base64, json, time, sys
@@ -599,7 +792,10 @@ byok_off() {
   # to the default cloud model (mirrors models_remove's active-model handling).
   _off_model="$(_cfg_model)"
   case "$_off_model" in self/*|"") _off_model="${BYTEASK_MODEL:-gpt-5.4}";; esac
-  write_managed_config "$_off_model" "$(_cfg_catalog)" "$_gw" "$_jwt"
+  if ! write_managed_config "$_off_model" "$(_cfg_catalog)" "$_gw" "$_jwt"; then
+    echo "byteask: still on your own key — the managed config could not be written." >&2
+    return 1
+  fi
   if [ "$_off_had_keys" = 1 ]; then
     echo "Switched to ByteAsk managed (billed to ByteAsk, /usage as normal)."
   else
@@ -1155,7 +1351,7 @@ gemini|Gemini      $_D_VGE your key"
 remove|Remove a key"
   _SCR_OPTS="$_SCR_OPTS
 selfhost|Your own hosted model $_G_DOT vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server
-managed|Use ByteAsk managed $_G_DOT 16 models incl. GPT, Claude & Gemini, 20% off API pricing
+managed|Use ByteAsk managed $_G_DOT 20 models incl. GPT, Gemini & open models, 20% off API pricing
 done|Done"
   _SCR_NOPT=$(_scr_opts_count)
   # First run (no keys): bare Enter proceeds on managed. With keys: Done — a
@@ -1609,7 +1805,7 @@ _source_menu_seq() {
       "Gemini     - $_v_ge key" \
       "Remove a key" \
       "Use your own hosted model - vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server" \
-      "Use ByteAsk managed - 16 models incl. GPT, Claude & Gemini, 20% off API pricing" \
+      "Use ByteAsk managed - 20 models incl. GPT, Gemini & open models, 20% off API pricing" \
       "Done")
     case "$_choice" in
       1) _byok_add_key openai    || true ;;
@@ -1855,7 +2051,20 @@ do_login() {
   else
     rm -f "$CODEX_HOME/models-catalog.json.tmp" 2>/dev/null || true
   fi
-  write_managed_config "$MODEL" "$CATALOG_LINE" "$GATEWAY" "$token"
+  # A sign-in is only real once the credential is on disk. write_managed_config
+  # verifies that and returns non-zero otherwise; do NOT drop the check.
+  #
+  # This is the whole 2026-09-07 lockout: the marker path calls do_login as
+  # `( do_login ) || true`, and POSIX suppresses `set -e` for every command in an
+  # AND-OR list, so a failed config write did not abort anything. do_login sailed
+  # past it, printed "Signed in as ...", returned 0, and the launch loop restarted
+  # the engine on the OLD token. The user re-ran /login three times in 100 seconds,
+  # was congratulated every time, and stayed 401'd for six weeks.
+  if ! write_managed_config "$MODEL" "$CATALOG_LINE" "$GATEWAY" "$token"; then
+    printf '%b%s%b Sign-in did NOT complete — your credential could not be saved.\n' \
+      "$_C_E" "$_G_X" "$_C_R" >&2
+    exit 1
+  fi
   rm -f "$CODEX_HOME/referral" 2>/dev/null || true   # one-shot: only the first signup is credited
   _email_remember "$EMAIL"                           # so a future re-login skips the referral prompt
   printf '%b%s%b Signed in as %s. You'"'"'re ready: byteask "..."\n' "$_C_A" "$_G_OK" "$_C_R" "$EMAIL"
@@ -1881,9 +2090,13 @@ do_logout() {
   # 3. Reset to managed + UNSIGNED (no token line) so the next launch forces sign-in.
   _lo_model="$(_cfg_model)"; [ -n "$_lo_model" ] || _lo_model="${BYTEASK_MODEL:-gpt-5.4}"
   _lo_gw="$(resolve_gateway)"; _lo_gw="${_lo_gw%/}"
-  write_managed_config "$_lo_model" "$(_cfg_catalog)" "$_lo_gw" ""
-  # 4. Report on the ACTUAL post-state.
-  if _is_signed_in; then
+  # `|| true` on purpose: step 4 below re-reads the real post-state, and that check
+  # (not the write's own status) is what decides whether we claim to be logged out.
+  write_managed_config "$_lo_model" "$(_cfg_catalog)" "$_lo_gw" "" || true
+  # 4. Report on the ACTUAL post-state. Any token still on disk -- live OR expired --
+  # is a credential: an expired one is still renewable inside the gateway's grace
+  # window, so `_is_signed_in` (which treats expired as signed-out) is the wrong test.
+  if [ -n "$(_byok_current_jwt)" ]; then
     echo "Couldn't fully log out — check permissions on $CODEX_HOME" >&2; return 1
   fi
   if [ "$_lo_was_signed" = 1 ]; then
@@ -1982,21 +2195,34 @@ case "${1:-}" in
   terse)
     shift; _tc=0; do_terse "$@" || _tc=$?; exit "$_tc";;
   --help|-h)
-    # Intercept BEFORE the engine so wrapper-only commands (byok, models) are
-    # discoverable (R2-D3); then show the engine's own flags too.
+    # ONE help text (docs/terminal-surfaces-plan.md § 5.8, W-T5). This used to
+    # print a block and then `exec "$ENGINE" --help`, so `byteask --help` answered
+    # twice, in two styles -- and the engine's clap list advertises subcommands
+    # ByteAsk does not support plus `cloud  Browse tasks from Codex Cloud`, a brand
+    # leak into a user-facing surface (operating rule 4). Hiding those upstream
+    # subcommands is E-T9 and needs an engine rebuild; until then the wrapper
+    # answers and never hands off, which is why this exits instead of exec'ing.
     cat >&2 <<EOF
-ByteAsk $VERSION
-  byteask                        launch (signs you in on first run)
-  byteask "<prompt>"             launch with an initial prompt (interactive TUI, needs a terminal)
-  byteask exec "<prompt>"        one-shot, non-interactive (for scripts / pipes / CI)
-  byteask login | logout         manage your ByteAsk sign-in
-  byteask byok <set|status|remove|off> [provider]   use your own OpenAI/Anthropic/Gemini key
-  byteask models <add|list|test|remove>             use your OWN hosted model (DGX/vLLM/Ollama)
-  byteask --update               update the CLI
+ByteAsk $VERSION — an AI coding agent for your terminal
 
-Engine options:
+  byteask                           start (signs you in on first run)
+  byteask "<prompt>"                start with a prompt
+  byteask exec "<prompt>"           one answer, no UI — scripts and CI
+  byteask review                    review the working tree
+  byteask login | logout            sign in or out
+  byteask resume | fork             pick up an earlier session
+  byteask apply                     apply the last diff
+  byteask models <add|test|list>    use your own hosted model
+  byteask byok <set|status|remove>  use your own provider key
+  byteask mcp <add|list|remove>     manage MCP servers
+  byteask plugin <list|install>     manage plugins
+  byteask doctor                    check the install
+  byteask completion <shell>        shell completions
+  byteask --update                  update ByteAsk
+
+Options: -m <model> · --effort <low|medium|high|xhigh> · -C <dir>
 EOF
-    exec "$ENGINE" --help;;
+    exit 0;;
   --uninstall-gdb-bridge)
     _gi="$HOME/.gdbinit"
     _gm="# ===== ByteAsk GDB bridge (added by the byteask installer) ====="
@@ -2042,20 +2268,39 @@ while : ; do
   # first — so this state reports "signed in" everywhere and 401s on every turn, with
   # no way out of the settings screen. If a live JWT is still in the BYOK store, put it
   # back; otherwise fall through to onboarding below. No-op unless actually broken.
-  if _managed_missing_token && _is_signed_in; then
-    _heal_jwt="$(_byok_current_jwt)"
-    _heal_gw="$(resolve_gateway)"; _heal_gw="${_heal_gw%/}"
-    [ -n "$_heal_jwt" ] && write_managed_config "$(_cfg_model)" "$(_cfg_catalog)" "$_heal_gw" "$_heal_jwt"
-    _heal_jwt=""
+  if _managed_missing_token; then
+    # Heal only from a jwt that is actually LIVE. This used to be gated on
+    # `_is_signed_in`, which (before it was fixed to read the managed token) was
+    # just "byok-config.json has a jwt" -- so it would happily restore an expired
+    # one and hand the engine a credential guaranteed to 401.
+    _heal_jwt="$(_byok_field jwt)"
+    _heal_left="$(_jwt_ttl_left "$_heal_jwt")"
+    if [ -n "$_heal_jwt" ] && { [ -z "$_heal_left" ] || [ "$_heal_left" -gt 0 ]; }; then
+      _heal_gw="$(resolve_gateway)"; _heal_gw="${_heal_gw%/}"
+      write_managed_config "$(_cfg_model)" "$(_cfg_catalog)" "$_heal_gw" "$_heal_jwt" || true
+    fi
+    _heal_jwt=""; _heal_left=""
   fi
-  if [ "$_launch_prov" = byteask ] && ! _is_signed_in && [ ! -f "$CODEX_HOME/byok-config.json" ] \
+
+  # Renew the session BEFORE launching, so an ordinary user never reaches `exp`.
+  # A ByteAsk token used to be a hard 30-day fuse with no renewal path anywhere,
+  # which is the whole reason a real account sat 401'd for six weeks (2026-09-07).
+  _refresh_session_if_due
+
+  if [ "$_launch_prov" = byteask ] && _managed_missing_token && [ ! -f "$CODEX_HOME/byok-config.json" ] \
      && [ -t 0 ] && [ -t 1 ] && _anon_promo_on; then
-    # Managed provider, not signed in, no BYOK, TTY, AND the free-trial promo is ON:
-    # launch an UNSIGNED auto-only session so the user can try before signing up. The
-    # gateway meters it per device and walls them (429 -> "type /login") when spent.
-    # Promo OFF (default) falls through to the normal email onboarding below, so nothing
-    # changes for existing/normal operation.
-    write_managed_config "auto" "$(_cfg_catalog)" "$(resolve_gateway)" ""
+    # Managed provider, NO token at all, no BYOK, TTY, AND the free-trial promo is
+    # ON: launch an UNSIGNED auto-only session so the user can try before signing
+    # up. The gateway meters it per device and walls them (429 -> "type /login")
+    # when spent. Promo OFF (default) falls through to the normal email onboarding
+    # below, so nothing changes for existing/normal operation.
+    #
+    # The gate is _managed_missing_token, NOT `! _is_signed_in`: those differ for
+    # exactly one person, the signed-up user whose token went stale, and for them
+    # `! _is_signed_in` meant "delete the credential of a paying account and put
+    # them on the 5-query free trial, on `auto`, silently". Never downgrade someone
+    # who has an account; send them to sign-in instead.
+    write_managed_config "auto" "$(_cfg_catalog)" "$(resolve_gateway)" "" || true
   elif _needs_byteask_signin && { ! _is_signed_in || _managed_missing_token; }; then
     # The active config needs a ByteAsk account (managed model, un-keyed cloud model, or
     # `auto`) but there's no valid session: force sign-in; do NOT clobber them into the
@@ -2064,6 +2309,16 @@ while : ; do
     # us, so an account buys nothing. If they later switch to a managed model in /model,
     # the gateway's 401 login_required asks for sign-in on that request.
     if [ -t 0 ] && [ -t 1 ]; then
+      # Bound it. Sign-in writes a file, and a machine where that write cannot
+      # succeed (root-owned ~/.byteask, full disk) would otherwise re-enter this
+      # branch on every relaunch forever: sign in, appear to succeed, come back
+      # still signed out. Two tries, then say so and stop.
+      _AUTH_TRIES=$(( ${_AUTH_TRIES:-0} + 1 ))
+      if [ "$_AUTH_TRIES" -gt 2 ]; then
+        echo "byteask: signed in with the gateway, but this machine could not store the session." >&2
+        echo "  Fix the permissions above and run: byteask login" >&2
+        exit 1
+      fi
       echo "Welcome to ByteAsk — let's get you signed in (one time)."
       # `--interactive` (a no-op flag) forces a WITH-args call so do_login does NOT
       # inherit this script's "$@" (e.g. a `byteask "prompt"`); "$@" is preserved.
@@ -2121,6 +2376,11 @@ while : ; do
   # engine reads it (idempotent + atomic). This is what makes custom rows survive a
   # `byteask --update` that re-fetched a base catalog. Gated so non-self users pay nothing.
   _has_self_endpoints && _models_merge
+
+  # Per-user model availability: which models this account may not pick, and why.
+  # Runs every launch (the base catalog is fetched only at sign-in, which is why a new
+  # model never reached anyone who did not re-login).
+  _models_access_merge
 
   # A self-hosted model that failed the tool round-trip can't run the agent loop: it
   # answers prose but never emits a structured tool call, so edits/shell/search all

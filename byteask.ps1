@@ -8,7 +8,7 @@
 #
 # Behavior parity with byteask/cli/byteask is intentional - keep them in sync.
 
-$VERSION = '0.1.11'
+$VERSION = '0.1.12'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
 
 $CODEX_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
@@ -66,7 +66,7 @@ function Invoke-Logout {
   $model = Get-CfgLine '^model = "(.*)"$'
   if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' } }
   $gw = (Resolve-Gateway).TrimEnd('/')
-  Write-ManagedConfig $model (Get-CfgLine '^(model_catalog_json = .*)$') $gw ''
+  Write-ManagedConfig $model (Get-CfgLine '^(model_catalog_json = .*)$') $gw '' | Out-Null
   # 4. report on actual post-state
   if (Test-SignedIn) { Write-Err "Couldn't fully log out - check permissions on $CODEX_HOME"; return 1 }
   if ($wasSigned) { Write-Host "Logged out of ByteAsk. Run 'byteask' to sign back in." }
@@ -212,6 +212,35 @@ function Get-CurrentJwt {
   return (Get-CfgLine '^experimental_bearer_token = "(.*)"$')
 }
 
+# Renew the managed session before launching, so an ordinary user never reaches
+# `exp`. Silent and fail-open on every path: it never writes a token it did not
+# get, and any error leaves the existing config untouched.
+function Invoke-SessionRefresh {
+  if ($env:BYTEASK_NO_REFRESH -eq '1') { return }
+  $prov = Get-CfgLine '^model_provider = "(.*)"$'
+  if ($prov -eq 'byteask') { $tok = Get-ManagedToken }
+  elseif ($prov -eq 'byok-local') { $tok = Get-ByokField 'jwt' }
+  else { return }
+  if (-not $tok) { return }
+  $left = Get-JwtTtlLeft $tok
+  if ($null -eq $left) { return }        # undecodable: do not hammer the gateway
+  if ($left -ge 604800) { return }       # renew only inside the last week of life
+  $gw = (Resolve-Gateway).TrimEnd('/')
+  if (-not $gw) { return }
+  try {
+    $resp = Invoke-RestMethod -Method Post -Uri "$gw/auth/refresh" -TimeoutSec 8 `
+      -Headers @{ Authorization = "Bearer $tok" } -ContentType 'application/json' -Body '{}'
+  } catch { return }
+  $new = $resp.access_token
+  if (-not $new) { return }
+  if ($new.Split('.').Count -ne 3) { return }
+  if ($prov -eq 'byok-local') {
+    try { Invoke-ByokMerge @("jwt=$new") } catch { }
+  } else {
+    if (-not (Set-ManagedToken $new)) { Write-ConfigWriteFailure }
+  }
+}
+
 # Emails that have signed in on this machine (persists across logout). Used to
 # skip the referral prompt for a returning user - referrals only credit a NEW signup.
 function Test-EmailKnown([string]$Email) {
@@ -277,6 +306,61 @@ function Test-EmailNew([string]$Email, [string]$Exists) {
   }
 }
 
+# Write config.toml through a temp file + Move-Item, then read back what landed.
+# Returns $false when the config was NOT persisted; every caller must check.
+#
+# Two reasons, both learned from the 2026-09-07 lockout on the POSIX side: writing
+# in place fails outright when config.toml is owned by another account, and a write
+# whose result is never checked turns a failed sign-in into "Signed in as ..."
+# followed by an unbreakable 401 loop. A rename needs the DIRECTORY, not the file,
+# so this also succeeds in the case that used to fail.
+function Save-ConfigToml([string]$content, [string]$expectToken) {
+  $cfg = Join-Path $CODEX_HOME 'config.toml'
+  $tmp = "$cfg.tmp.$PID"
+  try {
+    New-Item -ItemType Directory -Force -Path $CODEX_HOME -ErrorAction SilentlyContinue | Out-Null
+    Set-Content -Path $tmp -Value $content -ErrorAction Stop
+    Move-Item -Force -Path $tmp -Destination $cfg -ErrorAction Stop
+  } catch {
+    Remove-Item -Force -ErrorAction SilentlyContinue $tmp
+    Write-ConfigWriteFailure
+    return $false
+  }
+  if ($expectToken) {
+    if (-not (Select-String -Path $cfg -Pattern ([regex]::Escape("experimental_bearer_token = `"$expectToken`"")) -Quiet)) {
+      Write-ConfigWriteFailure
+      return $false
+    }
+  }
+  return $true
+}
+
+# Replace ONLY the experimental_bearer_token line, keeping every other line the user
+# or the engine has put in config.toml (trusted projects, reasoning effort, MCP
+# servers). Write-ManagedConfig regenerates the whole file and is right for a
+# sign-in; a renewal must be invisible. Returns $false unless the new token landed.
+function Set-ManagedToken([string]$token) {
+  if (-not $token) { return $false }
+  $cfg = Join-Path $CODEX_HOME 'config.toml'
+  if (-not (Test-Path $cfg)) { return $false }
+  $lines = @(Get-Content $cfg -ErrorAction SilentlyContinue)
+  $hit = $false
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    if ($lines[$i] -match '^experimental_bearer_token = ') {
+      $lines[$i] = "experimental_bearer_token = `"$token`""; $hit = $true
+    }
+  }
+  if (-not $hit) { return $false }
+  return (Save-ConfigToml ($lines -join "`r`n") $token)
+}
+
+function Write-ConfigWriteFailure {
+  Write-Err ""
+  Write-Err ("byteask: could not save your sign-in to " + (Join-Path $CODEX_HOME 'config.toml'))
+  Write-Err "  Nothing was changed, so this session is still using the old credential."
+  Write-Err "  Check that the file is not read-only and that you own it, then run: byteask login"
+}
+
 function Write-ManagedConfig([string]$model, [string]$catalog, [string]$gateway, [string]$token) {
   # Empty $token => UNSIGNED (no experimental_bearer_token line) so the launch check onboards.
   $tokenLine = if ($token) { "experimental_bearer_token = `"$token`"" } else { "" }
@@ -297,7 +381,7 @@ $tokenLine
 x-openai-actor-authorization = "byteask"
 "@
   $cfg = Add-TersePref $cfg
-  Set-Content -Path (Join-Path $CODEX_HOME 'config.toml') -Value $cfg
+  return (Save-ConfigToml $cfg $token)
 }
 function Write-ByokConfig([string]$model, [string]$catalog, [string]$token) {
   $cfg = @"
@@ -318,7 +402,7 @@ X-BYOK-Token = "$token"
 x-openai-actor-authorization = "byteask"
 "@
   $cfg = Add-TersePref $cfg
-  Set-Content -Path (Join-Path $CODEX_HOME 'config.toml') -Value $cfg
+  return (Save-ConfigToml $cfg '')
 }
 
 # Terse mode: gateway-injected output-style floor (default-on lite). The level
@@ -431,7 +515,7 @@ function Invoke-ByokEnter {
   $gw = (Resolve-Gateway).TrimEnd('/')
   Invoke-ByokMerge @("jwt=$jwt", "local_token=$lt", "gateway=$gw")
   if (-not (Ensure-Sidecar)) { return $false }
-  Write-ByokConfig (Get-CfgLine '^model = "(.*)"$') (Get-CfgLine '^(model_catalog_json = .*)$') $lt
+  if (-not (Write-ByokConfig (Get-CfgLine '^model = "(.*)"$') (Get-CfgLine '^(model_catalog_json = .*)$') $lt)) { return $false }
   return $true
 }
 
@@ -465,8 +549,36 @@ print("  ".join("%s=%s"%(lbl[p],"your key" if keys.get(p) else "managed") for p 
 }
 
 # Signed in iff a JWT exists AND (best-effort) is not expired (exp claim, decoded read-only).
+# The managed credential and ONLY that: the experimental_bearer_token line is
+# literally what the engine puts in the Authorization header.
+function Get-ManagedToken {
+  return (Get-CfgLine '^experimental_bearer_token = "(.*)"$')
+}
+
+# Seconds until this JWT expires; $null when it cannot be decoded, so callers can
+# tell "expired" apart from "unknown" instead of collapsing both into one boolean.
+function Get-JwtTtlLeft([string]$jwt) {
+  if (-not $jwt) { return $null }
+  try {
+    $seg = $jwt.Split('.')[1].Replace('-','+').Replace('_','/')
+    switch ($seg.Length % 4) { 2 { $seg += '==' } 3 { $seg += '=' } }
+    $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($seg))
+    $exp = [regex]::Match($json, '"exp"\s*:\s*([0-9]+)').Groups[1].Value
+    if (-not $exp) { return $null }
+    return ([long]$exp - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+  } catch { return $null }
+}
+
 function Test-SignedIn {
-  $jwt = Get-CurrentJwt
+  # On the managed provider the engine sends config.toml's token and nothing else,
+  # so that is the token whose expiry decides whether this machine has a session.
+  # Get-CurrentJwt reads byok-config.json FIRST, so a leftover BYOK jwt made an
+  # expired managed token report "signed in" forever (2026-09-07).
+  if ((Get-CfgLine '^model_provider = "(.*)"$') -eq 'byteask') {
+    $jwt = Get-ManagedToken
+  } else {
+    $jwt = Get-CurrentJwt
+  }
   if (-not $jwt) { return $false }
   try {
     $seg = $jwt.Split('.')[1].Replace('-','+').Replace('_','/')
@@ -572,7 +684,10 @@ function Invoke-ByokOff {
   if ((-not $offModel) -or $offModel.StartsWith('self/')) {
     $offModel = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' }
   }
-  Write-ManagedConfig $offModel (Get-CfgLine '^(model_catalog_json = .*)$') $gw $jwt
+  if (-not (Write-ManagedConfig $offModel (Get-CfgLine '^(model_catalog_json = .*)$') $gw $jwt)) {
+    Write-Err "byteask: still on your own key - the managed config could not be written."
+    return
+  }
   if ($hadKeys) { Write-Host "Switched to ByteAsk managed (billed to ByteAsk, /usage as normal)." }
   else { Write-Host "You're on ByteAsk managed (billed to ByteAsk, /usage as normal)." }
 }
@@ -997,7 +1112,7 @@ function Enter-ScrKeys {
   $o += ,@('gemini',    ("Gemini      " + $script:ScrD.VGE + " your key"))
   if ($script:ScrD.NKeys -gt 0) { $o += ,@('remove', 'Remove a key') }
   $o += ,@('selfhost', ("Your own hosted model $($script:ScrG.dot) vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server"))
-  $o += ,@('managed',  ("Use ByteAsk managed $($script:ScrG.dot) 16 models incl. GPT, Claude & Gemini, 20% off API pricing"))
+  $o += ,@('managed',  ("Use ByteAsk managed $($script:ScrG.dot) 20 models incl. GPT, Gemini & open models, 20% off API pricing"))
   $o += ,@('done',     'Done')
   $script:ScrOpts = $o
   $script:ScrCur = if ($script:ScrD.NKeys -eq 0) { $o.Count - 1 } else { $o.Count }
@@ -1351,7 +1466,7 @@ function Show-SourceMenuSeq {
       "Gemini     - $($v[2]) key",
       "Remove one of your keys",
       "Use your own hosted model - vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server",
-      "Use ByteAsk managed - 16 models incl. GPT, Claude & Gemini, 20% off API pricing",
+      "Use ByteAsk managed - 20 models incl. GPT, Gemini & open models, 20% off API pricing",
       "Done") $start
     switch ($c) {
       1 { [void](Add-ByokKey 'openai') }
@@ -1586,7 +1701,13 @@ experimental_bearer_token = "$token"
 [model_providers.byteask.http_headers]
 x-openai-actor-authorization = "byteask"
 "@
-  Set-Content -Path (Join-Path $CODEX_HOME 'config.toml') -Value $cfg
+  # A sign-in is only real once the credential is on disk. Never announce success
+  # on an unverified write: that is precisely how a real account stayed 401'd for
+  # six weeks while every /login reported "Signed in as ..." (2026-09-07).
+  if (-not (Save-ConfigToml $cfg $token)) {
+    Write-Err "Sign-in did NOT complete - your credential could not be saved."
+    exit 1
+  }
   Remove-Item -Force -ErrorAction SilentlyContinue $refFile     # one-shot referral
   Add-KnownEmail $Email                                         # so a future re-login skips the referral prompt
   Write-Host "Signed in as $Email. You're ready: byteask `"...`""
@@ -1694,20 +1815,32 @@ switch -Regex ($cmd) {
     exit ([int]$trc)
   }
   '^(--help|-h)$' {
-    # Intercept BEFORE the engine so wrapper-only commands (byok, models) are
-    # discoverable (R2-D3); then show the engine's own flags too.
-    [Console]::Error.WriteLine("ByteAsk $VERSION")
-    [Console]::Error.WriteLine('  byteask                        launch (signs you in on first run)')
-    [Console]::Error.WriteLine('  byteask "<prompt>"             launch with an initial prompt (interactive, needs a terminal)')
-    [Console]::Error.WriteLine('  byteask exec "<prompt>"        one-shot, non-interactive (for scripts / pipes / CI)')
-    [Console]::Error.WriteLine('  byteask login | logout         manage your ByteAsk sign-in')
-    [Console]::Error.WriteLine('  byteask byok <set|status|remove|off> [provider]   use your own OpenAI/Anthropic/Gemini key')
-    [Console]::Error.WriteLine('  byteask models <add|list|test|remove>             use your OWN hosted model (DGX/vLLM/Ollama)')
-    [Console]::Error.WriteLine('  byteask --update               update the CLI')
+    # ONE help text, mirroring cli/byteask (docs/terminal-surfaces-plan.md sec 5.8,
+    # W-T5): the wrapper answers and never hands off to the engine's clap help,
+    # which answered a second time in a second style and advertised upstream-only
+    # subcommands incl. "Codex Cloud" (operating rule 4).
+    # This file must stay PURE ASCII (PowerShell 5.1 reads a no-BOM .ps1 as cp1252
+    # and an em-dash mis-decodes into a quote that terminates a string), so the
+    # documented fallbacks apply: `-` for both the em-dash and the `.` separator.
+    [Console]::Error.WriteLine("ByteAsk $VERSION - an AI coding agent for your terminal")
     [Console]::Error.WriteLine('')
-    [Console]::Error.WriteLine('Engine options:')
-    & $ENGINE --help
-    exit $LASTEXITCODE
+    [Console]::Error.WriteLine('  byteask                           start (signs you in on first run)')
+    [Console]::Error.WriteLine('  byteask "<prompt>"                start with a prompt')
+    [Console]::Error.WriteLine('  byteask exec "<prompt>"           one answer, no UI - scripts and CI')
+    [Console]::Error.WriteLine('  byteask review                    review the working tree')
+    [Console]::Error.WriteLine('  byteask login | logout            sign in or out')
+    [Console]::Error.WriteLine('  byteask resume | fork             pick up an earlier session')
+    [Console]::Error.WriteLine('  byteask apply                     apply the last diff')
+    [Console]::Error.WriteLine('  byteask models <add|test|list>    use your own hosted model')
+    [Console]::Error.WriteLine('  byteask byok <set|status|remove>  use your own provider key')
+    [Console]::Error.WriteLine('  byteask mcp <add|list|remove>     manage MCP servers')
+    [Console]::Error.WriteLine('  byteask plugin <list|install>     manage plugins')
+    [Console]::Error.WriteLine('  byteask doctor                    check the install')
+    [Console]::Error.WriteLine('  byteask completion <shell>        shell completions')
+    [Console]::Error.WriteLine('  byteask --update                  update ByteAsk')
+    [Console]::Error.WriteLine('')
+    [Console]::Error.WriteLine('Options: -m <model>  --effort <low|medium|high|xhigh>  -C <dir>')
+    exit 0
   }
 }
 
@@ -1744,13 +1877,19 @@ while ($true) {
   # first - so this state reports "signed in" everywhere and 401s on every turn, with no
   # way out of the settings screen. If a live JWT is still in the BYOK store, put it back;
   # otherwise fall through to sign-in below. No-op unless actually broken.
-  if ((Test-ManagedMissingToken) -and (Test-SignedIn)) {
-    $healJwt = Get-CurrentJwt
-    if ($healJwt) {
+  if (Test-ManagedMissingToken) {
+    # Heal only from a jwt that is actually LIVE. Gated on Test-SignedIn this would
+    # restore an EXPIRED one and hand the engine a credential guaranteed to 401.
+    $healJwt = Get-ByokField 'jwt'
+    $healLeft = Get-JwtTtlLeft $healJwt
+    if ($healJwt -and (($null -eq $healLeft) -or ($healLeft -gt 0))) {
       Write-ManagedConfig (Get-CfgLine '^model = "(.*)"$') (Get-CfgLine '^(model_catalog_json = .*)$') `
-        ((Resolve-Gateway).TrimEnd('/')) $healJwt
+        ((Resolve-Gateway).TrimEnd('/')) $healJwt | Out-Null
     }
   }
+  # Renew BEFORE the sign-in gate, so a session that is merely old repairs itself
+  # instead of sending the user back through email.
+  Invoke-SessionRefresh
   # Force sign-in only when the active config NEEDS a ByteAsk account (managed model,
   # un-keyed cloud model, or auto) and there's no valid session. A self-served config
   # (self/* or a cloud model with the user's own key) launches unsigned - its traffic

@@ -21,7 +21,7 @@ $asset = 'byteask-engine-windows-x86_64.exe'
 $BinDir = if ($env:PREFIX) { $env:PREFIX } else { Join-Path $env:LOCALAPPDATA 'Programs\ByteAsk' }
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
-Write-Host "[byteask] downloading ByteAsk CLI (windows/x86_64)..."
+Write-Host "[byteask] downloading the ByteAsk engine (windows/x86_64)..."
 $enginePath = Join-Path $BinDir 'byteask-engine.exe'
 # D3a - the release marker. Records WHICH release asset produced the engine on disk:
 # the asset name plus the sha256 of the COMPRESSED asset, i.e. exactly what
@@ -215,8 +215,17 @@ Set-Content -Path (Join-Path $BinDir 'byteask.cmd') -Value $cmd -NoNewline
 $ByteHome = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
 New-Item -ItemType Directory -Force -Path $ByteHome | Out-Null
 Set-Content -Path (Join-Path $ByteHome 'gateway') -Value $Gateway -NoNewline
-if ($env:BYTEASK_REF -and ($env:BYTEASK_REF -match '^[A-Za-z0-9_-]{1,64}$')) {
-  Set-Content -Path (Join-Path $ByteHome 'referral') -Value $env:BYTEASK_REF -NoNewline
+# A code used to be accepted -- and, worse, REJECTED -- in silence, so a friend who
+# mistyped it credited nobody and neither side was ever told. $refNote is printed
+# with the success block below. Single-quoted on purpose: "$10" would interpolate.
+$refNote = ''
+if ($env:BYTEASK_REF) {
+  if ($env:BYTEASK_REF -match '^[A-Za-z0-9_-]{1,64}$') {
+    Set-Content -Path (Join-Path $ByteHome 'referral') -Value $env:BYTEASK_REF -NoNewline
+    $refNote = '[OK] Referral code ' + $env:BYTEASK_REF + ' applied - $10 of usage after you sign in'
+  } else {
+    $refNote = 'Referral code ignored - it can only contain letters, digits, - and _'
+  }
 }
 
 # Carry an existing login token across updates (config.toml is rewritten below).
@@ -313,16 +322,20 @@ if ($IsWin) {
   }
 }
 
-$ver = try { & $enginePath --version 2>$null } catch { 'byteask' }
+# Two lines, mirroring install.sh (docs/terminal-surfaces-plan.md I2/I3/I5). What
+# was here said "and you're in interactive mode - like claude or codex", shipping a
+# competitor's name AND the word `codex` in our own success line (operating rule 4),
+# and "New here? Sign in first" -- which contradicts the wrapper: `byteask` signs you
+# in on first run. The version is the WRAPPER's (what a release is numbered by), not
+# the engine's crate version, so it is probed the way install.sh probes it.
+$ver = ''
+try { $ver = (& (Join-Path $BinDir 'byteask.cmd') --version 2>$null | Select-Object -First 1) } catch { $ver = '' }
+if ($ver) { $ver = ($ver -split '\s+')[-1] }
+if ($ver -notmatch '^[0-9]') { $ver = '' }
+$verPart = if ($ver) { "$ver " } else { '' }
 Write-Host ""
-Write-Host "  [OK] byteask installed  ->  $BinDir\byteask.cmd"
-Write-Host ""
-Write-Host "  To start, just run:"
-Write-Host ""
-Write-Host "      byteask"
-Write-Host ""
-Write-Host "  and you're in interactive mode - like  claude  or  codex."
-if ($pathNote) { Write-Host ""; Write-Host "  $pathNote" }
-Write-Host ""
-Write-Host "  New here? Sign in first:  byteask login --email you@company.com"
+Write-Host "  [OK] ByteAsk ${verPart}installed"
+Write-Host "  Run:  byteask"
+if ($pathNote) { Write-Host "  $pathNote" }
+if ($refNote)  { Write-Host "  $refNote" }
 Write-Host ""
