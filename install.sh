@@ -400,7 +400,7 @@ done
 
 # Engine skills: dropped into the user-skills dir (~/.byteask/skills/<name>/) that the
 # engine's `/skills` menu + mention discovery read. No rebuild. Add new skills here.
-for _sk in compress terse; do
+for _sk in compress; do
   mkdir -p "$HOME_DIR/skills/$_sk"
   if curl -fsSL -m 20 "$GATEWAY_URL/skills/$_sk/SKILL.md" -o "$HOME_DIR/skills/$_sk/SKILL.md.tmp" 2>/dev/null \
      && grep -q "^name: $_sk" "$HOME_DIR/skills/$_sk/SKILL.md.tmp" 2>/dev/null; then
@@ -428,9 +428,8 @@ x-openai-actor-authorization = "byteask"
 EOF
 
 # Two lines on the happy path (docs/terminal-surfaces-plan.md I2, § 4 rule 7).
-# What was here before said "and you're in interactive mode -- like claude or
-# codex", which shipped a competitor's name AND the word `codex` in our own
-# success line (operating rule 4), and "New here? Sign in first: byteask login
+# What was here before named a competitor in our own success line (operating
+# rule 4), and "New here? Sign in first: byteask login
 # --email ..." which contradicts the wrapper: `byteask` signs you in on first run.
 VER="$("$BIN_DIR/byteask" --version 2>/dev/null || true)"   # "byteask 0.1.11"
 VER="${VER##* }"

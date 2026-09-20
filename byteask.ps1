@@ -8,24 +8,126 @@
 #
 # Behavior parity with byteask/cli/byteask is intentional - keep them in sync.
 
-$VERSION = '0.1.12'
+$VERSION = '0.1.13'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
 
-$CODEX_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
-$env:CODEX_HOME = $CODEX_HOME
-$env:CODEX_BRAND = if ($env:BYTEASK_BRAND) { $env:BYTEASK_BRAND } else { 'ByteAsk' }
+$BYTEASK_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
+$env:BYTEASK_HOME = $BYTEASK_HOME
+$env:BYTEASK_BRAND = if ($env:BYTEASK_BRAND) { $env:BYTEASK_BRAND } else { 'ByteAsk' }
 $env:BYTEASK_CLIENT_VERSION = $VERSION       # engine displays THIS, not its crate version
 
 $SELF_DIR = $PSScriptRoot
 $ENGINE = Join-Path $SELF_DIR 'byteask-engine.exe'
-$UPDATE_STATE = Join-Path $CODEX_HOME 'update-check'
-$AUTH_REQ = Join-Path $CODEX_HOME '.byteask-auth-request'
+$UPDATE_STATE = Join-Path $BYTEASK_HOME 'update-check'
+$AUTH_REQ = Join-Path $BYTEASK_HOME '.byteask-auth-request'
 
 function Write-Err([string]$m) { [Console]::Error.WriteLine($m) }   # stderr, non-throwing
 
+# Legacy-engine shim (parity with _engine_compat in cli/byteask). Engines before the
+# BYTEASK_HOME rename read only the old variable names; given just BYTEASK_HOME they fall
+# back to a different home and look signed out, which an update that keeps the old engine
+# makes reachable. A new engine carries "BYTEASK_HOME points to " and no older one does.
+# The verdict is cached per engine file (path|size|mtime) in $BYTEASK_HOME\engine-compat.
+# Fail-safe: uncertain counts as legacy, which only ADDS the old names.
+function Test-EngineHasMarker([string]$Path) {
+  $marker = 'BYTEASK_HOME points to '
+  $latin1 = [Text.Encoding]::GetEncoding(28591)   # one char per byte, so offsets stay exact
+  $fs = $null
+  try {
+    $fs = [IO.File]::OpenRead($Path)
+    $buf = New-Object byte[] 1048576
+    $carry = ''
+    while (($n = $fs.Read($buf, 0, $buf.Length)) -gt 0) {
+      $chunk = $carry + $latin1.GetString($buf, 0, $n)
+      if ($chunk.IndexOf($marker, [StringComparison]::Ordinal) -ge 0) { return $true }
+      $keep = [Math]::Min($chunk.Length, $marker.Length - 1)
+      $carry = $chunk.Substring($chunk.Length - $keep)
+    }
+    return $false
+  } catch { return $false } finally { if ($fs) { $fs.Dispose() } }
+}
+function Set-EngineCompat {
+  if (-not (Test-Path -LiteralPath $ENGINE)) { return }
+  $id = ''
+  try {
+    $item = Get-Item -LiteralPath $ENGINE -ErrorAction Stop
+    $id = "$($item.FullName)|$($item.Length)|$($item.LastWriteTimeUtc.Ticks)"
+  } catch { $id = '' }
+  $cacheFile = Join-Path $BYTEASK_HOME 'engine-compat'
+  $kind = ''
+  if ($id -and (Test-Path -LiteralPath $cacheFile)) {
+    $line = "$(Get-Content -LiteralPath $cacheFile -TotalCount 1 -ErrorAction SilentlyContinue)"
+    if ($line -eq "$id|new") { $kind = 'new' } elseif ($line -eq "$id|legacy") { $kind = 'legacy' }
+  }
+  if (-not $kind) {
+    $kind = if (Test-EngineHasMarker $ENGINE) { 'new' } else { 'legacy' }
+    if ($id) {
+      try {
+        New-Item -ItemType Directory -Force -Path $BYTEASK_HOME -ErrorAction Stop | Out-Null
+        Set-Content -LiteralPath $cacheFile -Value "$id|$kind" -ErrorAction Stop
+      } catch { }
+    }
+  }
+  if ($kind -eq 'legacy') {
+    $env:CODEX_HOME = $BYTEASK_HOME; $env:CODEX_BRAND = $env:BYTEASK_BRAND
+  }
+}
+
+# Windows code integrity (2026-09-20). Smart App Control admits a binary signed by a
+# signer it trusts, or one Microsoft's reputation service already knows. Every ByteAsk
+# engine through 0.1.12 is unsigned, so under an ENFORCING policy the engine fails to
+# start and Windows explains it only in an event channel nobody reads - the user who
+# reported this had to correlate CodeIntegrity 3033/3077/3118 by hand. Say it here.
+#
+# Presence, not validity: whether a chain is TRUSTED is Windows' call and it is about
+# to make it. Reading the PE certificate-table directory also avoids
+# Get-AuthenticodeSignature, which hashes the whole 300+ MB engine on every launch.
+# Fail-safe direction is SILENCE - an unreadable header counts as signed, because a
+# false warning on a working install is worse than no warning.
+function Test-PeSigned([string]$Path) {
+  $fs = $null
+  try {
+    $fs = [IO.File]::OpenRead($Path)
+    $br = New-Object IO.BinaryReader $fs
+    $fs.Position = 0x3C
+    $peOff = $br.ReadUInt32()
+    $fs.Position = $peOff
+    if ($br.ReadUInt32() -ne 0x00004550) { return $true }     # no 'PE\0\0'
+    $fs.Position = $peOff + 24                                # 4 sig + 20 COFF = optional header
+    $magic = $br.ReadUInt16()
+    if     ($magic -eq 0x20B) { $ddStart = 112 }              # PE32+
+    elseif ($magic -eq 0x10B) { $ddStart = 96 }               # PE32
+    else { return $true }
+    $fs.Position = $peOff + 24 + $ddStart - 4
+    if ($br.ReadUInt32() -le 4) { return $false }             # no certificate directory at all
+    $fs.Position = $peOff + 24 + $ddStart + 32                # data directory 4
+    [void]$br.ReadUInt32()                                    # a FILE OFFSET here, not an RVA
+    return ($br.ReadUInt32() -gt 0)                           # size: 0 means unsigned
+  } catch { return $true } finally { if ($fs) { $fs.Dispose() } }
+}
+
+function Show-CodeIntegrityWarning {
+  if ($script:CiWarned) { return }
+  $state = $null
+  try {
+    $state = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' `
+                -Name VerifiedAndReputablePolicyState -ErrorAction Stop).VerifiedAndReputablePolicyState
+  } catch { return }
+  if ($state -ne 1) { return }                 # 0 = off, 1 = enforced, 2 = evaluation
+  if (-not (Test-Path -LiteralPath $ENGINE)) { return }
+  if (Test-PeSigned $ENGINE) { return }
+  $script:CiWarned = $true
+  Write-Err "byteask: Smart App Control is enforcing and this engine is not code-signed, so Windows may refuse to start it."
+  Write-Err "  A block is logged in Event Viewer under Code Integrity (events 3033 / 3077), not on screen."
+  Write-Err "  A signed Windows build is on the way. Two things that work today:"
+  Write-Err "    WSL2              install the Linux build inside WSL - it runs outside this policy"
+  Write-Err "    chat.byteask.ai   the web app, nothing to install"
+  Write-Err "  Turning Smart App Control off is not recommended: it cannot be turned back on without resetting Windows."
+}
+
 function Resolve-Gateway {
   if ($env:BYTEASK_GATEWAY) { return $env:BYTEASK_GATEWAY }
-  $f = Join-Path $CODEX_HOME 'gateway'
+  $f = Join-Path $BYTEASK_HOME 'gateway'
   if (Test-Path $f) { return ((Get-Content -Raw $f).Trim()) }
   return $DEFAULT_GATEWAY
 }
@@ -57,18 +159,18 @@ function Test-VersionGt([string]$a, [string]$b) {
 function Invoke-Logout {
   $wasSigned = Test-SignedIn
   # 1. stop the BYOK sidecar (holds keys + JWT in memory)
-  $pidf = Join-Path $CODEX_HOME 'byok-sidecar.pid'
+  $pidf = Join-Path $BYTEASK_HOME 'byok-sidecar.pid'
   if (Test-Path $pidf) { try { Stop-Process -Id ([int](Get-Content $pidf)) -ErrorAction SilentlyContinue } catch {}; Remove-Item -Force -ErrorAction SilentlyContinue $pidf }
   # 2. clear every credential store
   Remove-Item -Force -ErrorAction SilentlyContinue $BYOK_CFG
-  Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $CODEX_HOME 'auth.json')
+  Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $BYTEASK_HOME 'auth.json')
   # 3. reset to managed + UNSIGNED
   $model = Get-CfgLine '^model = "(.*)"$'
   if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' } }
   $gw = (Resolve-Gateway).TrimEnd('/')
   Write-ManagedConfig $model (Get-CfgLine '^(model_catalog_json = .*)$') $gw '' | Out-Null
   # 4. report on actual post-state
-  if (Test-SignedIn) { Write-Err "Couldn't fully log out - check permissions on $CODEX_HOME"; return 1 }
+  if (Test-SignedIn) { Write-Err "Couldn't fully log out - check permissions on $BYTEASK_HOME"; return 1 }
   if ($wasSigned) { Write-Host "Logged out of ByteAsk. Run 'byteask' to sign back in." }
   else { Write-Host "You're not signed in to ByteAsk." }
   return 0
@@ -82,9 +184,9 @@ function Invoke-Logout {
 # and the engine points at it, routing per model (own-key -> provider direct; no key
 # -> managed gateway). Requires python. KEEP THIS FILE PURE ASCII (PS 5.1 codepage).
 $BYOK_PORT = if ($env:BYOK_SIDECAR_PORT) { $env:BYOK_SIDECAR_PORT } else { '8799' }
-$BYOK_CFG = Join-Path $CODEX_HOME 'byok-config.json'
-$BYOK_SIDECAR = Join-Path $CODEX_HOME 'byok_sidecar.py'
-$BYOK_MODELS = Join-Path $CODEX_HOME 'byteask_models.py'   # shared self-hosted-models helper
+$BYOK_CFG = Join-Path $BYTEASK_HOME 'byok-config.json'
+$BYOK_SIDECAR = Join-Path $BYTEASK_HOME 'byok_sidecar.py'
+$BYOK_MODELS = Join-Path $BYTEASK_HOME 'byteask_models.py'   # shared self-hosted-models helper
 
 function Get-ModelsPython {
   foreach ($p in @('python3','python')) { if (Get-Command $p -ErrorAction SilentlyContinue) { return $p } }
@@ -109,10 +211,73 @@ function Read-HiddenLine([string]$prompt) {
 function Invoke-ModelsMerge {
   if (-not (Test-Path $BYOK_MODELS)) { return }
   $py = Get-ModelsPython; if (-not $py) { return }
-  $cat = Join-Path $CODEX_HOME 'models-catalog.json'
+  $cat = Join-Path $BYTEASK_HOME 'models-catalog.json'
   if (-not (Test-Path $cat)) { return }
   try { & $py $BYOK_MODELS merge-catalog $BYOK_CFG $cat 2>$null | Out-Null } catch {}
 }
+# Per-account model availability + the catalog version the server is serving now.
+# Silent and fail-open on every path: a failure leaves the local files exactly as they were.
+$script:MaFetched = $false
+function Invoke-ModelsAccessFetch {
+  $script:MaFetched = $false
+  $cat = Join-Path $BYTEASK_HOME 'models-catalog.json'
+  if (-not (Test-Path $cat)) { return }
+  $tok = Get-CurrentJwt
+  if (-not $tok) { return }
+  $gw = (Resolve-Gateway).TrimEnd('/')
+  if (-not $gw) { return }
+  $acc = Join-Path $BYTEASK_HOME '.model-access.json'
+  $tmp = "$acc.tmp"
+  try {
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 4 -Headers @{ Authorization = "Bearer $tok" } `
+      -Uri "$gw/byteask/v1/model-access" -OutFile $tmp -ErrorAction Stop | Out-Null
+    Move-Item -Force $tmp $acc -ErrorAction Stop
+    $script:MaFetched = $true
+  } catch {
+    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+  }
+}
+
+# Re-fetch the static catalog when the server says it changed. The catalog used to be
+# fetched only at sign-in, so a new model, a changed budget or a ROLLBACK reached nobody
+# who stayed signed in. The new file is moved into place only after it validates, and a
+# failure never blocks a launch.
+function Invoke-CatalogRefresh {
+  if (-not $script:MaFetched) { return }
+  $acc = Join-Path $BYTEASK_HOME '.model-access.json'
+  $want = ''
+  try {
+    $m = [regex]::Match((Get-Content -Raw $acc), '"catalog_version"\s*:\s*"([0-9a-f]{12})"')
+    if ($m.Success) { $want = $m.Groups[1].Value }
+  } catch { return }
+  if (-not $want) { return }
+  $verFile = Join-Path $BYTEASK_HOME '.catalog-version'
+  $have = ''
+  if (Test-Path $verFile) { try { $have = (Get-Content -Raw $verFile).Trim() } catch {} }
+  if ($want -eq $have) { return }
+  $gw = (Resolve-Gateway).TrimEnd('/')
+  $cat = Join-Path $BYTEASK_HOME 'models-catalog.json'
+  $tmp = "$cat.refresh.$PID"
+  try {
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 20 -Uri "$gw/models-catalog.json" -OutFile $tmp -ErrorAction Stop | Out-Null
+    $doc = (Get-Content -Raw $tmp) | ConvertFrom-Json
+    if ($doc.models -and @($doc.models).Count -gt 0) {
+      Move-Item -Force $tmp $cat -ErrorAction Stop
+      [System.IO.File]::WriteAllText($verFile, $want)
+    }
+  } catch {}
+  Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+}
+
+function Invoke-ModelsAccessMerge {
+  if (-not $script:MaFetched) { return }
+  if (-not (Test-Path $BYOK_MODELS)) { return }
+  $py = Get-ModelsPython; if (-not $py) { return }
+  $acc = Join-Path $BYTEASK_HOME '.model-access.json'
+  $cat = Join-Path $BYTEASK_HOME 'models-catalog.json'
+  try { & $py $BYOK_MODELS merge-access $acc $cat 2>$null | Out-Null } catch {}
+}
+
 function Test-HasSelfEndpoints {
   if (-not (Test-Path $BYOK_CFG)) { return $false }
   return (Select-String -Path $BYOK_CFG -Pattern '"endpoints"' -Quiet)
@@ -201,10 +366,28 @@ function Get-ByokKeyVerbs {
   return $parts
 }
 function Get-CfgLine([string]$pattern) {
-  $cfg = Join-Path $CODEX_HOME 'config.toml'
+  $cfg = Join-Path $BYTEASK_HOME 'config.toml'
   if (-not (Test-Path $cfg)) { return '' }
   $m = Select-String -Path $cfg -Pattern $pattern | Select-Object -First 1
   if ($m) { return $m.Matches[0].Groups[1].Value } else { return '' }
+}
+# Warn when the ACTIVE model is a self/<alias> that failed `byteask models test`'s tool
+# round-trip (parity with _warn_self_tools in cli/byteask). Such a model can hold a
+# conversation but never emits a structured tool call, so every file edit / shell command
+# / search silently no-ops, with nothing on screen explaining it. Absent (never tested)
+# stays silent rather than nagging. Once per process, never fatal.
+function Show-SelfToolsWarning {
+  if ($script:SelfToolsWarned) { return }
+  $model = Get-CfgLine '^model = "(.*)"$'
+  if (-not $model.StartsWith('self/')) { return }
+  $alias = $model.Substring(5)
+  if (-not (Test-Path $BYOK_CFG)) { return }
+  $ok = @(Invoke-ModelsPy @('get', $BYOK_CFG, $alias, 'tools_ok'))
+  if ($ok.Count -eq 0 -or "$($ok[0])".Trim() -ne 'false') { return }
+  Write-Err "byteask: $model failed the tool round-trip - it can't make tool calls, so file edits,"
+  Write-Err "  shell commands and code search will NOT work (plain questions still do). Re-check with:"
+  Write-Err "  byteask models test $alias"
+  $script:SelfToolsWarned = $true
 }
 function Get-CurrentJwt {
   $j = Get-ByokField 'jwt'
@@ -244,7 +427,7 @@ function Invoke-SessionRefresh {
 # Emails that have signed in on this machine (persists across logout). Used to
 # skip the referral prompt for a returning user - referrals only credit a NEW signup.
 function Test-EmailKnown([string]$Email) {
-  $ke = Join-Path $CODEX_HOME '.known-emails'
+  $ke = Join-Path $BYTEASK_HOME '.known-emails'
   if (-not (Test-Path $ke)) { return $false }
   $want = $Email.Trim().ToLowerInvariant()
   foreach ($line in (Get-Content $ke -ErrorAction SilentlyContinue)) {
@@ -254,7 +437,7 @@ function Test-EmailKnown([string]$Email) {
 }
 function Add-KnownEmail([string]$Email) {
   if (Test-EmailKnown $Email) { return }
-  $ke = Join-Path $CODEX_HOME '.known-emails'
+  $ke = Join-Path $BYTEASK_HOME '.known-emails'
   try { Add-Content -Path $ke -Value $Email -ErrorAction SilentlyContinue } catch { }
 }
 
@@ -315,10 +498,10 @@ function Test-EmailNew([string]$Email, [string]$Exists) {
 # followed by an unbreakable 401 loop. A rename needs the DIRECTORY, not the file,
 # so this also succeeds in the case that used to fail.
 function Save-ConfigToml([string]$content, [string]$expectToken) {
-  $cfg = Join-Path $CODEX_HOME 'config.toml'
+  $cfg = Join-Path $BYTEASK_HOME 'config.toml'
   $tmp = "$cfg.tmp.$PID"
   try {
-    New-Item -ItemType Directory -Force -Path $CODEX_HOME -ErrorAction SilentlyContinue | Out-Null
+    New-Item -ItemType Directory -Force -Path $BYTEASK_HOME -ErrorAction SilentlyContinue | Out-Null
     Set-Content -Path $tmp -Value $content -ErrorAction Stop
     Move-Item -Force -Path $tmp -Destination $cfg -ErrorAction Stop
   } catch {
@@ -341,7 +524,7 @@ function Save-ConfigToml([string]$content, [string]$expectToken) {
 # sign-in; a renewal must be invisible. Returns $false unless the new token landed.
 function Set-ManagedToken([string]$token) {
   if (-not $token) { return $false }
-  $cfg = Join-Path $CODEX_HOME 'config.toml'
+  $cfg = Join-Path $BYTEASK_HOME 'config.toml'
   if (-not (Test-Path $cfg)) { return $false }
   $lines = @(Get-Content $cfg -ErrorAction SilentlyContinue)
   $hit = $false
@@ -356,7 +539,7 @@ function Set-ManagedToken([string]$token) {
 
 function Write-ConfigWriteFailure {
   Write-Err ""
-  Write-Err ("byteask: could not save your sign-in to " + (Join-Path $CODEX_HOME 'config.toml'))
+  Write-Err ("byteask: could not save your sign-in to " + (Join-Path $BYTEASK_HOME 'config.toml'))
   Write-Err "  Nothing was changed, so this session is still using the old credential."
   Write-Err "  Check that the file is not read-only and that you own it, then run: byteask login"
 }
@@ -405,72 +588,24 @@ x-openai-actor-authorization = "byteask"
   return (Save-ConfigToml $cfg '')
 }
 
-# Terse mode: gateway-injected output-style floor (default-on lite). The level
-# rides an x-byteask-terse header the gateway reads to append a style block to
-# `instructions`. Persisted in CODEX_HOME/terse so it survives re-login. Parity
-# with the sh wrapper's do_terse. Pure ASCII (PS 5.1 codepage rule).
+# Token efficiency is built in: there is no `byteask terse` any more. It was a per-user
+# style setting nobody used; efficiency now lives in the engine and the gateway with no
+# setting at all. The gateway ignores and strips the old x-byteask-terse header, so nothing
+# is re-emitted here; the saved preference file is simply removed. Pure ASCII (PS 5.1 rule).
 function Add-TersePref([string]$cfg) {
-  # Re-emit the saved terse level when (re)writing config, so a re-login keeps it.
-  $pref = Join-Path $CODEX_HOME 'terse'
-  if (Test-Path $pref) {
-    $lvl = (Get-Content -Raw $pref -ErrorAction SilentlyContinue)
-    if ($lvl) { $lvl = $lvl.Trim() }
-    if ($lvl) { $cfg = $cfg + "`nx-byteask-terse = `"$lvl`"" }
+  $pref = Join-Path $BYTEASK_HOME 'terse'
+  if (Test-Path $pref) { Remove-Item -Force $pref -ErrorAction SilentlyContinue }
+  # Remove the installed terse skill, but only when it is ours.
+  $sk = Join-Path $BYTEASK_HOME 'skills\terse\SKILL.md'
+  if ((Test-Path $sk) -and (Select-String -Path $sk -SimpleMatch 'byteask terse <level>' -Quiet)) {
+    Remove-Item -Recurse -Force (Split-Path $sk) -ErrorAction SilentlyContinue
   }
   return $cfg
 }
-function Get-TerseLevelNow {
-  $cfg = Join-Path $CODEX_HOME 'config.toml'
-  if (-not (Test-Path $cfg)) { return '' }
-  $m = Select-String -Path $cfg -Pattern '^x-byteask-terse = "(.*)"$' | Select-Object -First 1
-  if ($m) { return $m.Matches[0].Groups[1].Value }
-  return ''
-}
-function Set-TerseConfig([string]$level) {
-  $cfg = Join-Path $CODEX_HOME 'config.toml'
-  if (-not (Test-Path $cfg)) { return }
-  $out = New-Object System.Collections.Generic.List[string]
-  $inHdrs = $false
-  foreach ($ln in (Get-Content -Path $cfg)) {
-    $s = $ln.Trim()
-    if ($s.StartsWith('[') -and $s.EndsWith(']')) {
-      $inHdrs = $s.EndsWith('.http_headers]')
-      $out.Add($ln)
-      if ($inHdrs) { $out.Add("x-byteask-terse = `"$level`"") }
-      continue
-    }
-    if ($inHdrs -and $s.ToLower().StartsWith('x-byteask-terse')) { continue }
-    $out.Add($ln)
-  }
-  Set-Content -Path $cfg -Value $out
-}
 function Invoke-Terse([string[]]$rest) {
-  $arg = if ($rest.Count -ge 1) { "$($rest[0])" } else { 'status' }
-  switch -Regex ($arg) {
-    '^(status)?$' {
-      $tl = Get-TerseLevelNow; if (-not $tl) { $tl = 'lite (default)' }
-      Write-Host "Terse mode: $tl"
-      Write-Host "  concise replies, code/commands/errors kept exact. Change:"
-      Write-Host "  byteask terse off | lite | full | ultra"
-      return 0
-    }
-    '^(off|lite|full|ultra)$' { }
-    '^(-h|--help)$' { Write-Host "usage: byteask terse [status|off|lite|full|ultra]"; return 0 }
-    default { Write-Err "byteask terse: unknown level '$arg' (use off|lite|full|ultra|status)"; return 2 }
-  }
-  if (-not (Test-Path $CODEX_HOME)) { New-Item -ItemType Directory -Force -Path $CODEX_HOME | Out-Null }
-  Set-Content -Path (Join-Path $CODEX_HOME 'terse') -Value $arg -NoNewline
-  Set-TerseConfig $arg
-  switch ($arg) {
-    'off'   { Write-Host "Terse mode OFF - replies use the model's normal style." }
-    'lite'  { Write-Host "Terse mode LITE (default) - concise; skips filler, keeps all code/technical detail exact." }
-    'full'  { Write-Host "Terse mode FULL - tight, fragment-style replies; code/commands/errors kept verbatim." }
-    'ultra' { Write-Host "Terse mode ULTRA - maximum terseness; code/commands/errors kept verbatim." }
-  }
-  Write-Host "  Takes effect on your next 'byteask' launch."
+  Write-Host "byteask: there is no terse setting any more - token efficiency is built in."
   return 0
 }
-
 function Test-SidecarHealth {
   try { $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$BYOK_PORT/healthz"; return $true }
   catch { return $false }
@@ -478,7 +613,7 @@ function Test-SidecarHealth {
 function Ensure-Sidecar {
   if ($env:BYOK_SKIP_SIDECAR) { return $true }
   if (-not (Test-Path $BYOK_SIDECAR)) { Write-Err "byteask: BYOK sidecar not installed; run 'byteask --update'."; return $false }
-  $pidf = Join-Path $CODEX_HOME 'byok-sidecar.pid'
+  $pidf = Join-Path $BYTEASK_HOME 'byok-sidecar.pid'
   if (Test-SidecarHealth) {
     if ((Test-Path $pidf) -and ((Get-Item $pidf).LastWriteTime -gt (Get-Item $BYOK_SIDECAR).LastWriteTime)) { return $true }
     try { Stop-Process -Id ([int](Get-Content $pidf -ErrorAction SilentlyContinue)) -ErrorAction SilentlyContinue } catch {}
@@ -595,7 +730,7 @@ function Test-SignedIn {
 # screen shows the email) while every turn 401s with "Sign in to continue - type /login".
 # True == that broken state.
 function Test-ManagedMissingToken {
-  $cfg = Join-Path $CODEX_HOME 'config.toml'
+  $cfg = Join-Path $BYTEASK_HOME 'config.toml'
   if (-not (Test-Path $cfg)) { return $false }
   $pm = Select-String -Path $cfg -Pattern '^model_provider = "(.*)"$' | Select-Object -First 1
   if (-not $pm -or $pm.Matches[0].Groups[1].Value -ne 'byteask') { return $false }
@@ -631,7 +766,7 @@ except Exception:
     print("managed")
 '@
   $env:BYTEASK_MODEL = $model
-  $out = Invoke-Py $code @($BYOK_CFG, $CODEX_HOME)
+  $out = Invoke-Py $code @($BYOK_CFG, $BYTEASK_HOME)
   Remove-Item Env:\BYTEASK_MODEL -ErrorAction SilentlyContinue
   if ($out -and ($out -join '').Trim() -eq 'direct') { return $false }
   return $true
@@ -642,9 +777,10 @@ function Test-MenuTty { if ($env:BYOK_ASSUME_TTY) { return $true }; return (Test
 function Invoke-ByokSet([string[]]$rest) {
   $prov = $rest[0]
   if (@('openai','anthropic','gemini') -notcontains $prov) {
-    Write-Err "usage: byteask byok set <openai|anthropic|gemini> [--subscription]"; exit 2 }
+    Write-Err "usage: byteask byok set <openai|anthropic|gemini> [--subscription [--device|--browser]]"; exit 2 }
   if ($prov -eq 'openai' -and (($rest -contains '--subscription') -or ($rest -contains '--sub'))) {
-    Invoke-ByokSubscription; return }
+    $transport = if ($rest -contains '--device') { '--device' } elseif ($rest -contains '--browser') { '--browser' } else { '' }
+    Invoke-ByokSubscription $transport; return }
   if (-not (Add-ByokKey $prov)) { exit 1 }
   Write-Host "Keyed providers bill to your account; other models use ByteAsk managed (counts toward your usage)."
   Write-Host "Relaunching..."
@@ -675,7 +811,7 @@ function Invoke-ByokRemove([string[]]$rest) {
 function Invoke-ByokOff {
   $jwt = Get-CurrentJwt; $gw = (Resolve-Gateway).TrimEnd('/')
   $hadKeys = (Get-ByokKeyCount) -ne 0
-  $pidf = Join-Path $CODEX_HOME 'byok-sidecar.pid'
+  $pidf = Join-Path $BYTEASK_HOME 'byok-sidecar.pid'
   if (Test-Path $pidf) { try { Stop-Process -Id ([int](Get-Content $pidf)) -ErrorAction SilentlyContinue } catch {}; Remove-Item -Force -ErrorAction SilentlyContinue $pidf }
   Invoke-ByokMerge @('keys.openai=','keys.anthropic=','keys.gemini=')
   # A self/* model needs the sidecar; on managed it would fail every turn - reset
@@ -692,18 +828,106 @@ function Invoke-ByokOff {
   else { Write-Host "You're on ByteAsk managed (billed to ByteAsk, /usage as normal)." }
 }
 
-function Invoke-ByokSubscription {
-  Write-Host "Sign in with your ChatGPT subscription (Plus/Pro/Business)."
-  Write-Host "Note: OpenAI's own sign-in screen appears; Anthropic/Gemini keys don't mix into a subscription session."
-  & $ENGINE login; if ($LASTEXITCODE -ne 0) { Write-Err "ChatGPT sign-in failed."; exit 1 }
+# Subscription config.toml: active provider = built-in openai (engine picks the
+# ChatGPT backend for AuthMode::Chatgpt), but the [model_providers.byteask] block
+# is RETAINED so the engine keeps the ByteAsk identity (I3: /usage, panes,
+# cpp_intrinsic, metering read the JWT by name, not from the active provider).
+# Written through Save-ConfigToml (temp + Move-Item + readback), never in place.
+# Returns $false when nothing was persisted; the caller must check.
+function Write-SubscriptionConfig([string]$model, [string]$catalog, [string]$gateway, [string]$jwt) {
+  $idBlock = ""
+  if ($jwt) {
+    $idBlock = @"
+
+
+[model_providers.byteask]
+name = "ByteAsk"
+base_url = "$gateway/byteask/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "$jwt"
+
+[model_providers.byteask.http_headers]
+x-openai-actor-authorization = "byteask"
+"@
+  }
   $cfg = @"
-model = "$(Get-CfgLine '^model = "(.*)"$')"
+model = "$model"
 model_provider = "openai"
 web_search = "live"
-$(Get-CfgLine '^(model_catalog_json = .*)$')
+$catalog$idBlock
 "@
-  Set-Content -Path (Join-Path $CODEX_HOME 'config.toml') -Value $cfg
+  # Save-ConfigToml's readback checks the token; the provider flip is verified here.
+  if (-not (Save-ConfigToml $cfg $jwt)) { return $false }
+  if (-not (Select-String -Path (Join-Path $BYTEASK_HOME 'config.toml') -Pattern '^model_provider = "openai"$' -Quiet)) { return $false }
+  return $true
+}
+
+function Invoke-ByokSubscription([string]$transport) {
+  Write-Host "Sign in with your ChatGPT subscription (Plus/Pro/Business)."
+  Write-Host "Note: OpenAI's own sign-in screen appears; Anthropic/Gemini keys don't mix into a subscription session."
+  # Capture identity + config BEFORE the rewrite so the retained block carries the account forward.
+  $jwt = Get-CurrentJwt
+  $model = Get-CfgLine '^model = "(.*)"$'; if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' } }
+  # I5: subscription sessions use the ChatGPT backend's OWN model list, so drop
+  # model_catalog_json (our catalog would 400 there). Empty => engine fetches OpenAI's.
+  $catalog = ''
+  $gw = (Resolve-Gateway).TrimEnd('/')
+  # Browser callback vs device-code. Device-code works with no local browser
+  # (SSH/headless); it needs enabling once in the user's ChatGPT security settings.
+  $headless = (-not $env:DISPLAY) -and ($env:SSH_CONNECTION -or $env:SSH_TTY)
+  $loginArg = switch ($transport) { '--device' { '--device-auth' } '--browser' { '' } default { if ($headless) { '--device-auth' } else { '' } } }
+  if ($loginArg) {
+    Write-Host "No local browser detected - using device-code sign-in. Enable it once in your ChatGPT security settings if this is your first device-code login."
+    & $ENGINE login $loginArg
+  } else { & $ENGINE login }
+  if ($LASTEXITCODE -ne 0) { Write-Err "ChatGPT sign-in failed."; exit 1 }
+  if (-not (Write-SubscriptionConfig $model $catalog $gw $jwt)) {
+    Write-Err "byteask: ChatGPT sign-in succeeded, but the config could not be saved."
+    exit 1
+  }
   Write-Host "ChatGPT subscription active (OpenAI-only session). 'byteask byok off' to return to managed."
+}
+
+# ByteAsk C/C++ methodology appended to a launched Claude session (Phase 2a).
+function Write-ClaudeMethod([string]$dest) {
+  $m = @"
+You are running in a session set up by ByteAsk, a C/C++-focused coding agent.
+Follow ByteAsk's engineering discipline:
+- Verify with sanitizers first: prefer ASan/UBSan/TSan and valgrind over reasoning
+  about memory bugs; a bug is not fixed until the sanitizer that caught it is clean.
+- Performance claims need a noise gate: never call a change a win from one run;
+  compare repeated runs and treat a difference inside the noise floor as no change.
+- On a live debugger, PROPOSE state-changing commands; do not run them unattended.
+- Ground low-level facts (ISA, protocols, MCU/FPGA/HFT specs) in real references,
+  not memory; cite the exact section/offset when you rely on it.
+- Keep changes surgical and match the surrounding code.
+"@
+  Set-Content -Path $dest -Value $m
+}
+
+# Launch the user's OWN, unmodified Claude Code (docs/claude-launcher-plan.md).
+# Legal delegation: ByteAsk never reads/handles the Claude credential; claude does
+# its own OAuth. Interactive by default; --headless uses -p (metered credits).
+function Invoke-ClaudeLauncher([string[]]$rest) {
+  if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+    Write-Err "byteask claude: Claude Code isn't installed."
+    Write-Err "  Install it, run 'claude login' (Claude manages its own sign-in), then retry."
+    return 127
+  }
+  $headless = $false
+  if ($rest.Count -ge 1 -and $rest[0] -eq '--headless') { $headless = $true; $rest = @($rest | Select-Object -Skip 1) }
+  $method = Join-Path $BYTEASK_HOME 'claude-launcher-method.md'
+  New-Item -ItemType Directory -Force -Path $BYTEASK_HOME -ErrorAction SilentlyContinue | Out-Null
+  Write-ClaudeMethod $method
+  $sys = Get-Content -Raw $method
+  if ($headless) {
+    Write-Err "Note: headless mode runs on Anthropic's metered Agent-SDK credits, not your flat subscription."
+    & claude -p --append-system-prompt $sys @rest
+  } else {
+    & claude --append-system-prompt $sys @rest
+  }
+  return $LASTEXITCODE
 }
 
 function Invoke-Byok([string[]]$rest) {
@@ -954,7 +1178,7 @@ function Remove-Model([string[]]$rest) {
   $cur = Get-CfgLine '^model = "(.*)"$'
   if ($cur -eq "self/$a") {
     $def = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' }
-    $cfgp = Join-Path $CODEX_HOME 'config.toml'
+    $cfgp = Join-Path $BYTEASK_HOME 'config.toml'
     (Get-Content $cfgp) -replace "^model = ""self/$a""$", "model = ""$def""" | Set-Content $cfgp
     Write-Host "  (was your active model; switched to $def)"
   }
@@ -1505,7 +1729,7 @@ function Show-SourceMenu {
 # engine stages it in an owner-only sibling file; read it once, delete it, pass by env.
 function Invoke-RegisterModel([string]$Spec) {
   $parts = ("$Spec".Trim() -split '\s+')
-  $secPath = Join-Path $CODEX_HOME '.byteask-auth-secret'
+  $secPath = Join-Path $BYTEASK_HOME '.byteask-auth-secret'
   $k = ''
   if (Test-Path $secPath) {
     try { $k = (Get-Content -Raw $secPath).Trim() } catch { $k = '' }
@@ -1605,7 +1829,7 @@ function Invoke-Login([string]$Email, [string]$Ref, [bool]$EmailIsHint = $false)
   $gateway = (Resolve-Gateway).TrimEnd('/')
   $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' }
   if (-not $Ref) { $Ref = $env:BYTEASK_REF }
-  $refFile = Join-Path $CODEX_HOME 'referral'
+  $refFile = Join-Path $BYTEASK_HOME 'referral'
   if (-not $Ref -and (Test-Path $refFile)) { $Ref = (Get-Content -Raw $refFile).Trim() }
   if ($Ref -and (($Ref -notmatch '^[A-Za-z0-9_-]+$') -or ($Ref.Length -gt 64))) { $Ref = '' }
   $emailWasArg = ([bool]$Email) -and (-not $EmailIsHint)
@@ -1657,7 +1881,10 @@ function Invoke-Login([string]$Email, [string]$Ref, [bool]$EmailIsHint = $false)
   for ($i = 0; $i -lt 600; $i++) {
     try {
       $r = Invoke-RestMethod -Uri "$gateway/auth/poll" -Method Post -Body (@{ poll_token = $poll } | ConvertTo-Json -Compress) -ContentType 'application/json' -ErrorAction Stop
-      if ($r.status -eq 'approved') { $token = $r.access_token; break }
+      # plan_notice is present ONLY when a partner-deal grant landed on this
+      # sign-in. The gateway authors the whole sentence; this wrapper only
+      # decides whether there is one and prints it.
+      if ($r.status -eq 'approved') { $token = $r.access_token; $planNotice = $r.plan_notice; break }
     } catch { }
     # Email delivery can lag and the link often lands in spam - nudge partway through so
     # the wait doesn't look frozen (the poll token stays valid the whole window).
@@ -1670,13 +1897,13 @@ function Invoke-Login([string]$Email, [string]$Ref, [bool]$EmailIsHint = $false)
     Write-Err "  - Or skip email: 'byteask login --with-api-key' to use your own API key."
     exit 1
   }
-  New-Item -ItemType Directory -Force -Path $CODEX_HOME | Out-Null
-  Set-Content -Path (Join-Path $CODEX_HOME 'gateway') -Value $gateway -NoNewline
+  New-Item -ItemType Directory -Force -Path $BYTEASK_HOME | Out-Null
+  Set-Content -Path (Join-Path $BYTEASK_HOME 'gateway') -Value $gateway -NoNewline
   # Model catalog: adds Claude (opus/sonnet) to /model with correct metadata. It
   # REPLACES the engine's bundled catalog, so only reference it after validating the
   # download. Fail-safe: skip on any failure (Claude still routes via the gateway).
   $catalogLine = ""
-  $catalogPath = (Join-Path $CODEX_HOME 'models-catalog.json')
+  $catalogPath = (Join-Path $BYTEASK_HOME 'models-catalog.json')
   $catalogTmp = "$catalogPath.tmp"
   try {
     Invoke-WebRequest -Uri "$gateway/models-catalog.json" -OutFile $catalogTmp -TimeoutSec 20 -UseBasicParsing -ErrorAction Stop
@@ -1711,11 +1938,33 @@ x-openai-actor-authorization = "byteask"
   Remove-Item -Force -ErrorAction SilentlyContinue $refFile     # one-shot referral
   Add-KnownEmail $Email                                         # so a future re-login skips the referral prompt
   Write-Host "Signed in as $Email. You're ready: byteask `"...`""
+  # A deal redeemed elsewhere switches on HERE, and this is the only moment the
+  # person is watching. Strip anything but printable ASCII: the value crosses the
+  # network, and a console is where trusting a remote string gets you escape
+  # injection. ASCII-only also keeps this file cp1252-safe (PowerShell 5.1 reads a
+  # no-BOM .ps1 as cp1252, and a stray non-ASCII byte can unbalance the whole file).
+  if ($planNotice) {
+    $clean = ($planNotice -replace '[^\x20-\x7E]', '')
+    if ($clean) { Write-Host $clean }
+  }
 }
 
-# Hourly, fail-open update check; on a console it offers y/N and installs in place.
+# Hourly, fail-open update check (mirrors check_for_update in cli/byteask). An interactive
+# TUI launch stays SILENT: the engine reads /version.json and tells the user itself (a
+# one-line notice, or a blocking prompt only below min_supported), so a wrapper line as
+# well was a double notice. A headless run (exec, redirected, CI) keeps ONE stderr line.
+# The wrapper never runs the updater on its own; `byteask --update` does that.
+function Test-LaunchesTui([object[]]$LaunchArgs) {
+  $first = if ($LaunchArgs -and $LaunchArgs.Count -gt 0) { "$($LaunchArgs[0])" } else { '' }
+  $headless = @('exec','e','review','login','logout','mcp','plugin','mcp-server','app-server',
+    'remote-control','app','completion','update','doctor','sandbox','debug','execpolicy','apply',
+    'a','queue','archive','unarchive','delete','migrate-rollouts','cloud','cloud-tasks',
+    'responses-api-proxy','stdio-to-uds','exec-server','features','agents','help')
+  return (-not ($headless -contains $first))
+}
 function Invoke-UpdateCheck {
   if ($env:BYTEASK_NO_UPDATE_CHECK) { return }
+  if ((Test-Interactive) -and (Test-LaunchesTui $script:LaunchArgs)) { return }
   $latest = ''; $last = 0
   if (Test-Path $UPDATE_STATE) {
     foreach ($line in Get-Content $UPDATE_STATE) {
@@ -1733,30 +1982,14 @@ function Invoke-UpdateCheck {
       $fetched = ("$(Invoke-RestMethod -Uri "$gw/version" -TimeoutSec 2 -ErrorAction Stop)").Trim()
       if ($fetched -match '^[0-9]+(\.[0-9]+)+$') {
         $latest = $fetched; $last = $now
-        New-Item -ItemType Directory -Force -Path $CODEX_HOME | Out-Null
+        New-Item -ItemType Directory -Force -Path $BYTEASK_HOME | Out-Null
         Set-Content -Path $UPDATE_STATE -Value "last_check=$last`nlatest=$latest"
       }
     } catch { }   # fail-open
   }
   if (-not $latest) { return }
   if (-not (Test-VersionGt $latest $VERSION)) { return }
-  if (Test-Interactive) {
-    Write-Host -NoNewline "ByteAsk $latest is available (you have $VERSION). Update now? [Y/n] "
-    $ans = Read-Host
-    if ($ans -eq '' -or $ans -match '^[yY]') {   # Enter (default) or y -> update
-      $gw = (Resolve-Gateway).TrimEnd('/')
-      Write-Host "Updating ByteAsk to $latest ..."
-      try {
-        $env:PREFIX = $SELF_DIR
-        Invoke-Expression (Invoke-RestMethod -Uri "$gw/install.ps1" -ErrorAction Stop)
-        $env:BYTEASK_NO_UPDATE_CHECK = '1'
-        & (Join-Path $SELF_DIR 'byteask.ps1') @script:LaunchArgs
-        exit $LASTEXITCODE
-      } catch { Write-Host "Update failed; continuing on $VERSION." }
-    }
-  } else {
-    Write-Host "ByteAsk $latest is available (you have $VERSION). Run: byteask --update"
-  }
+  Write-Err "ByteAsk $latest is available (you have $VERSION). Run: byteask --update"
 }
 
 # Test seam: `BYTEASK_PS_TEST=1` lets test/menu.tests.ps1 dot-source every
@@ -1766,6 +1999,8 @@ if ($env:BYTEASK_PS_TEST) { return }
 # ---- command dispatch (mirrors the sh case) --------------------------------
 $script:LaunchArgs = @($args)
 $cmd = if ($args.Count -gt 0) { "$($args[0])" } else { '' }
+# Every path below may start the engine except --version/--help, which never do.
+if ($cmd -notmatch '^(--version|-V|version|--help|-h)$') { Set-EngineCompat }
 
 switch -Regex ($cmd) {
   '^(--version|-V|version)$' { Write-Host "byteask $VERSION"; exit 0 }
@@ -1814,11 +2049,17 @@ switch -Regex ($cmd) {
     if ($null -eq $trc) { $trc = 0 }
     exit ([int]$trc)
   }
+  '^claude$' {
+    # Run the user's OWN Claude Code on their own subscription (legal delegation;
+    # ByteAsk never touches the Claude credential). docs/claude-launcher-plan.md
+    $rest = @($args | Select-Object -Skip 1)
+    exit (Invoke-ClaudeLauncher $rest)
+  }
   '^(--help|-h)$' {
     # ONE help text, mirroring cli/byteask (docs/terminal-surfaces-plan.md sec 5.8,
     # W-T5): the wrapper answers and never hands off to the engine's clap help,
     # which answered a second time in a second style and advertised upstream-only
-    # subcommands incl. "Codex Cloud" (operating rule 4).
+    # subcommands incl. an upstream cloud-tasks command (operating rule 4).
     # This file must stay PURE ASCII (PowerShell 5.1 reads a no-BOM .ps1 as cp1252
     # and an em-dash mis-decodes into a quote that terminates a string), so the
     # documented fallbacks apply: `-` for both the em-dash and the `.` separator.
@@ -1847,10 +2088,10 @@ switch -Regex ($cmd) {
 # Non-blocking, cached, fail-open update check before launching the engine.
 Invoke-UpdateCheck
 
-# Windows sandbox fallback. The engine sandboxes model-run shell commands with helper
-# exes (codex-windows-sandbox-setup.exe + codex-command-runner.exe) that this build does
-# NOT ship, so an enabled sandbox fails with "Windows cannot find
-# codex-windows-sandbox-setup.exe". Run WITHOUT the engine sandbox unless the user set
+# Windows sandbox fallback. The engine sandboxes model-run shell commands with upstream's
+# Windows sandbox helper exes (a sandbox-setup exe + a command-runner exe) that this build
+# does NOT ship, so an enabled sandbox fails with "Windows cannot find" the setup exe.
+# Run WITHOUT the engine sandbox unless the user set
 # their own sandbox flag: --sandbox danger-full-access makes the engine skip
 # get_platform_sandbox entirely (core/src/safety.rs), so no helper is ever spawned.
 # Mirrors the Linux no-bwrap fallback; approval prompts still gate command execution.
@@ -1867,9 +2108,9 @@ while ($true) {
   # SAME iteration that stages it. Clear any leftover before handing control to the engine,
   # so a crash between staging and the hand-off can never leave an API key on disk into the
   # next session.
-  Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $CODEX_HOME '.byteask-auth-secret')
+  Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $BYTEASK_HOME '.byteask-auth-secret')
 
-  $cfg = Join-Path $CODEX_HOME 'config.toml'
+  $cfg = Join-Path $BYTEASK_HOME 'config.toml'
   $prov = ''
   if (Test-Path $cfg) { $pm = Select-String -Path $cfg -Pattern '^model_provider = "(.*)"$' | Select-Object -First 1; if ($pm) { $prov = $pm.Matches[0].Groups[1].Value } }
   # Self-heal a managed config that lost its token line. The engine only ever sends
@@ -1924,13 +2165,34 @@ while ($true) {
 
   # Self-hosted models: keep the /model catalog in sync with the registry before the
   # engine reads it (idempotent + atomic; survives --update). Gated so non-self users pay nothing.
+  Invoke-ModelsAccessFetch
+  Invoke-CatalogRefresh
   if (Test-HasSelfEndpoints) { Invoke-ModelsMerge }
+  Invoke-ModelsAccessMerge
+
+  # A self-hosted model that failed the tool round-trip can't run the agent loop: it
+  # answers prose but never emits a structured tool call, so edits/shell/search all
+  # silently do nothing. Say so before launch instead of leaving the user guessing.
+  Show-SelfToolsWarning
+
+  # An unsigned engine under an enforcing Smart App Control policy never starts, and
+  # Windows says so only in an event log. Warn before the launch that will fail.
+  Show-CodeIntegrityWarning
 
   # No terminal + a prompt/args -> the interactive TUI fails with "stdin is not a terminal".
   # Point at `exec` (the headless one-shot mode) first. Only for a leading non-flag arg.
   if ([Console]::IsInputRedirected -and $script:LaunchArgs.Count -gt 0 -and $script:LaunchArgs[0] -ne 'exec' -and $script:LaunchArgs[0] -notlike '-*') {
     Write-Err "byteask: no terminal detected - the interactive UI needs one."
     Write-Err ("  For non-interactive / scripted use, run:  byteask exec """ + $script:LaunchArgs[0] + """")
+  }
+
+  # Subscription (openai) session: the ChatGPT backend rejects everything at
+  # ByteAsk's baked 0.1.0 (T0), so report a real upstream client version. 'auto' resolves in
+  # the engine to the real upstream client version stamped into the binary at build
+  # time (from the merged rust-v* git tag), so it tracks upstream on every rebuild
+  # with nothing to bump. A user-set concrete value still wins as a manual escape hatch.
+  if ((Test-Path $cfg) -and (Select-String -Path $cfg -Pattern '^model_provider = "openai"' -Quiet)) {
+    if (-not $env:BYTEASK_CODEX_VERSION_OVERRIDE) { $env:BYTEASK_CODEX_VERSION_OVERRIDE = 'auto' }
   }
 
   & $ENGINE @script:LaunchArgs
@@ -1961,6 +2223,12 @@ while ($true) {
     # Email already typed into the in-TUI form: pass it as a HINT so a refused address
     # re-prompts here instead of exiting the way an explicit --email must.
     elseif ($detail -like 'signin *') { Invoke-Login ($detail.Substring(7)).Trim() '' $true }
+    elseif ($detail -eq 'subscription chatgpt') { Invoke-ByokSubscription '' }
+    elseif ($detail -eq 'subscription claude') {
+      Write-Err "Claude subscription needs the ByteAsk engine build that includes the Anthropic module; not available yet."
+      Write-Err "Use an Anthropic API key meanwhile:  byteask byok set anthropic"
+    }
+    elseif ($detail -eq 'launch-claude') { [void](Invoke-ClaudeLauncher @()) }
     elseif ($detail -like 'register-model *') { Invoke-RegisterModel ($detail.Substring(15)) }
     elseif ($detail -like 'add-model *') { Invoke-AddModel ($detail.Substring(10)) }
     elseif ($detail -like 'remove-model *') { Remove-Model @($detail.Substring(13)) }

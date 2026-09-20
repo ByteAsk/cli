@@ -281,7 +281,7 @@ foreach ($f in @('byteask_errors.py','byok_sidecar.py','anthropic_translate.py',
 }
 
 # Engine skills -> the user-skills dir the engine's /skills menu reads. No rebuild.
-foreach ($sk in @('compress','terse')) {
+foreach ($sk in @('compress')) {
   $skDir = Join-Path (Join-Path $ByteHome 'skills') $sk
   New-Item -ItemType Directory -Force -Path $skDir | Out-Null
   $skTmp = (Join-Path $skDir 'SKILL.md') + '.tmp'
@@ -323,8 +323,7 @@ if ($IsWin) {
 }
 
 # Two lines, mirroring install.sh (docs/terminal-surfaces-plan.md I2/I3/I5). What
-# was here said "and you're in interactive mode - like claude or codex", shipping a
-# competitor's name AND the word `codex` in our own success line (operating rule 4),
+# was here named a competitor in our own success line (operating rule 4),
 # and "New here? Sign in first" -- which contradicts the wrapper: `byteask` signs you
 # in on first run. The version is the WRAPPER's (what a release is numbered by), not
 # the engine's crate version, so it is probed the way install.sh probes it.
