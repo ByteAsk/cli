@@ -8,7 +8,7 @@
 #
 # Behavior parity with byteask/cli/byteask is intentional - keep them in sync.
 
-$VERSION = '0.1.13'
+$VERSION = '0.1.14'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
 
 $BYTEASK_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
@@ -2192,7 +2192,7 @@ while ($true) {
   # time (from the merged rust-v* git tag), so it tracks upstream on every rebuild
   # with nothing to bump. A user-set concrete value still wins as a manual escape hatch.
   if ((Test-Path $cfg) -and (Select-String -Path $cfg -Pattern '^model_provider = "openai"' -Quiet)) {
-    if (-not $env:BYTEASK_CODEX_VERSION_OVERRIDE) { $env:BYTEASK_CODEX_VERSION_OVERRIDE = 'auto' }
+    if (-not $env:BYTEASK_REPORTED_VERSION) { $env:BYTEASK_REPORTED_VERSION = 'auto' }
   }
 
   & $ENGINE @script:LaunchArgs

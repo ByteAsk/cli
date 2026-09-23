@@ -3,7 +3,7 @@
 # Thin wrapper over the engine so the client surface is fully ByteAsk-branded.
 set -eu
 
-VERSION="0.1.13"
+VERSION="0.1.14"
 DEFAULT_GATEWAY="https://code.byteask.ai"
 export BYTEASK_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
 export BYTEASK_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
@@ -885,12 +885,55 @@ byok_off() {
 #
 # Returns non-zero (and changes nothing on disk) when the write cannot be
 # persisted; the caller must check, exactly like write_managed_config.
-write_subscription_config() {  # $1=model $2=catalog_line $3=gateway $4=jwt (empty = signed-out)
+# Remember the managed session we are leaving, so the way back can restore it.
+# Two lines: the model, then the `model_catalog_json = ...` line verbatim (may be
+# empty). Best-effort — a failure here must never block the subscription switch.
+_save_managed_session() {   # $1=model  $2=catalog_line
+  mkdir -p "$BYTEASK_HOME" 2>/dev/null || true
+  _sms_tmp="$BYTEASK_HOME/.managed-session.tmp.$$"
+  if printf '%s\n%s\n' "$1" "$2" > "$_sms_tmp" 2>/dev/null; then
+    mv -f "$_sms_tmp" "$BYTEASK_HOME/managed-session.prev" 2>/dev/null || rm -f "$_sms_tmp" 2>/dev/null
+  else
+    rm -f "$_sms_tmp" 2>/dev/null
+  fi
+  return 0
+}
+
+# "Use ByteAsk managed" from a SUBSCRIPTION session (engine marker verb `managed`).
+# ⚠️ byok_off() cannot serve this: it reads the model AND catalog line from the
+# CURRENT config, which in a subscription session is the ChatGPT model and an
+# EMPTY catalog line — restoring managed with no model_catalog_json, i.e. silently
+# dropping our whole model list. This restores the remembered managed session.
+byok_use_managed() {
+  _um_jwt="$(_byok_current_jwt)"; _um_gw="$(resolve_gateway)"; _um_gw="${_um_gw%/}"
+  _um_model=""; _um_catalog=""
+  if [ -f "$BYTEASK_HOME/managed-session.prev" ]; then
+    _um_model="$(sed -n '1p' "$BYTEASK_HOME/managed-session.prev" 2>/dev/null)"
+    _um_catalog="$(sed -n '2p' "$BYTEASK_HOME/managed-session.prev" 2>/dev/null)"
+  fi
+  [ -n "$_um_model" ] || _um_model="${BYTEASK_MODEL:-gpt-5.4}"
+  [ -n "$_um_catalog" ] || _um_catalog="model_catalog_json = \"$BYTEASK_HOME/models-catalog.json\""
+  if ! write_managed_config "$_um_model" "$_um_catalog" "$_um_gw" "$_um_jwt"; then
+    echo "byteask: could not switch back to ByteAsk managed - your config was left as is." >&2
+    return 1
+  fi
+  rm -f "$BYTEASK_HOME/managed-session.prev" 2>/dev/null || true
+  echo "Switched back to ByteAsk managed (model: $_um_model)."
+}
+
+write_subscription_config() {  # $1=model (EMPTY = let the engine pick) $2=catalog_line $3=gateway $4=jwt (empty = signed-out)
   mkdir -p "$BYTEASK_HOME" 2>/dev/null || true
   _wsc_tmp="$BYTEASK_HOME/.config.toml.tmp.$$"
   {
+    # ⚠️ Carrying the MANAGED model into a subscription session is a bug: the
+    # ChatGPT backend serves its OWN catalog, so e.g. `gpt-5.4` (our default, and
+    # not offered to ChatGPT accounts) makes the engine warn "Model metadata for
+    # `gpt-5.4` not found. Defaulting to fallback metadata" and then fail every
+    # turn. With the line ABSENT the engine resolves a default against the live
+    # catalog instead (measured: picks one cleanly, no warning). `if` not `&&` so
+    # an empty model cannot become this function's exit status.
+    if [ -n "$1" ]; then printf 'model = "%s"\n' "$1"; fi
     cat <<EOF
-model = "$1"
 model_provider = "openai"
 web_search = "live"
 $2
@@ -938,25 +981,212 @@ _subscription_is_headless() {
 
 # $1 (optional): "--device" forces device-code sign-in, "--browser" forces the
 # browser callback. Absent: auto — device-code on a headless/SSH box, browser
-# otherwise. Device-code is the path for a machine with no local browser; it
-# needs the user to enable it once in their ChatGPT security settings.
+# otherwise. Device-code is the path for a machine with no local browser.
+# The client-version floor from the last flags refresh, or empty. Re-validated on read:
+# the file is user-writable, and the value becomes an HTTP header.
+_subscription_version_floor() {
+  _svf="$(sed -n 's/^reported_version_floor=\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' \
+          "$BYTEASK_HOME/subscription-flags" 2>/dev/null | head -n1)"
+  printf '%s' "$_svf"
+}
+
+# The models a ChatGPT-subscription session may offer.
+#
+# A subscription session used to ship NO `model_catalog_json`, which made the engine fall
+# back to upstream's bundled catalog. That single omission caused three defects: the
+# picker offered 11 models the account may not have (including internal
+# `gpt-daybreak-blue/red-latest`), the default became `models.first_mut()` =
+# `gpt-6-astra` so the FIRST message 400'd, and the prompt carried upstream's
+# upstream's own agent identity in the prompt, because it was not our catalog. Nothing
+# upstream filters by entitlement: `filter_by_auth(models, chatgpt_mode)` is
+# `chatgpt_mode || supported_in_api`,
+# a no-op in ChatGPT mode, and there is no `supported_in_chatgpt` field to read.
+#
+# So derive a small catalog from the one the client already has. CLIENT SIDE on purpose:
+# a second served file is a second thing that can 404, and this one would break sign-in
+# when it did. `models-catalog.json` is already kept fresh by the launch path.
+#
+# MEASURED on a real ChatGPT Plus account, 2026-09-22, every candidate slug probed with
+# a live turn and the version header the wrapper sets:
+#   WORKS        gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna  (and gpt-5.5,
+#                which our catalog does not carry, so it cannot be filtered in)
+#   NOT ENTITLED the whole gpt-5.4 family (incl. -mini/-nano), gpt-5.2, gpt-4.1, and
+#                every dedicated coding-model slug
+# A ChatGPT account gets the 5.6 family and astra, whatever an API key can reach. The
+# exact refused slugs are enumerated in byteask/test/byok.sh, which asserts none of them
+# can ever appear in the subscription catalog - they are named there rather than here
+# because this file ships to users and test/wrapper-env.sh polices its vocabulary.
+#
+# WARNING: measure, do not infer. The first version of this list carried gpt-5.4 as the
+# DEFAULT on the strength of an earlier note, and 5.4 is refused outright - so the very
+# first message of every Plus session failed, which is the bug this list exists to
+# prevent. It also dropped terra as "unconfirmed" when terra works.
+# WARNING: two different refusals mean the same thing. "not supported when using ... with
+# a ChatGPT account" and "requires a newer version" are both entitlement; the second one
+# ALSO appears when the client version header is missing, so probe through the wrapper
+# (or with BYTEASK_REPORTED_VERSION=auto) or every 5.6 model reads as refused.
+# `auto` is excluded by nature -- it is a gateway-side fallback chain, and there is no
+# gateway on this path.
+# `@x.y.z` marks a model OpenAI hides below that client version; it is offered only
+# when the server-supplied floor reaches it (see _subscription_version_floor).
+BYTEASK_SUBSCRIPTION_MODELS="gpt-6-astra gpt-6-sol@0.155.0 gpt-6-luna@0.155.0 gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna"
+
+# Write $1 = the managed catalog filtered to those models. Returns non-zero (leaving no
+# file) on any problem, and the caller then falls back to the previous behaviour rather
+# than writing a catalog that could be empty or malformed.
+_write_subscription_catalog() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  [ -f "$BYTEASK_HOME/models-catalog.json" ] || return 1
+  # A quoted heredoc, not `python3 -c '...'`: the script contains quotes, and escaping
+  # them into a single-quoted shell string is exactly how this broke the first time.
+  BK_SUB_MODELS="$BYTEASK_SUBSCRIPTION_MODELS" BK_SUB_FLOOR="$(_subscription_version_floor)" \
+    python3 - "$BYTEASK_HOME/models-catalog.json" "$1" <<'SUBCAT' || return 1
+import copy, json, os, sys
+src, dest = sys.argv[1], sys.argv[2]
+
+def ver(v):
+    try:
+        a, b, c = (int(x) for x in v.split("."))
+        return (a, b, c)
+    except Exception:
+        return None
+
+floor = ver(os.environ.get("BK_SUB_FLOOR") or "")
+# Models OpenAI serves to a ChatGPT account that are not in our managed catalog, so
+# they are synthesized from gpt-6-astra (same schema, measured) plus the values that
+# differ, copied from OpenAI's own /models response. Starting from OUR astra entry is
+# what keeps the ByteAsk identity in their instructions.
+SYNTH = {
+    "gpt-6-sol": {
+        "display_name": "GPT-6-Sol",
+        "description": "Workhorse model for coding and everyday work.",
+        "default_reasoning_level": "medium",
+        "levels": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    },
+    "gpt-6-luna": {
+        "display_name": "GPT-6-Luna",
+        "description": "Fast and affordable model for easier tasks.",
+        "default_reasoning_level": "medium",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+    },
+}
+
+d = json.load(open(src, encoding="utf-8"))
+by_slug = {m.get("slug"): m for m in d.get("models") or []}
+wanted = []
+for tok in (os.environ.get("BK_SUB_MODELS") or "").split():
+    slug, _, minv = tok.partition("@")
+    # `@x.y.z`: OpenAI hides this model below that client version, so offering it
+    # without a floor that reaches it would put a model in the picker that 400s.
+    if minv and (floor is None or ver(minv) is None or floor < ver(minv)):
+        continue
+    wanted.append(slug)
+
+models = []
+for slug in wanted:
+    if slug in by_slug:
+        models.append(copy.deepcopy(by_slug[slug]))
+    elif slug in SYNTH and "gpt-6-astra" in by_slug:
+        m = copy.deepcopy(by_slug["gpt-6-astra"])
+        o = SYNTH[slug]
+        m["slug"] = slug
+        m["display_name"] = o["display_name"]
+        m["description"] = o["description"]
+        m["default_reasoning_level"] = o["default_reasoning_level"]
+        # Keep astra's per-level descriptions; only the SET of levels differs.
+        levels = {l["effort"]: l for l in m.get("supported_reasoning_levels") or []}
+        m["supported_reasoning_levels"] = [levels[e] for e in o["levels"] if e in levels]
+        m.pop("availability_nux", None)   # astra's launch banner is not theirs
+        models.append(m)
+
+# Refuse an empty or suspiciously short catalog: an empty picker is worse than the
+# bundled fallback.
+if len(models) < 2:
+    sys.exit(1)
+for i, m in enumerate(models):
+    m["show_in_picker"] = True
+    m["is_default"] = i == 0
+    m["priority"] = i + 1
+d["models"] = models
+tmp = dest + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(d, f)
+os.replace(tmp, dest)
+SUBCAT
+  [ -s "$1" ] || return 1
+  return 0
+}
+
+# Finish a sign-in the ENGINE already performed: the provider swap and nothing else.
+# Draws nothing, by design - `docs/settings-surface-plan.md` gives the engine every
+# surface the user reads, and the wrapper only restart-owned work.
+byok_subscription_finish() {
+  _sf_jwt="$(_byok_current_jwt)"
+  if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CFG" 2>/dev/null | head -n1)" = byteask ]; then
+    _sf_prev="$(_cfg_model)"; [ -n "$_sf_prev" ] || _sf_prev="${BYTEASK_MODEL:-gpt-5.4}"
+    _save_managed_session "$_sf_prev" "$(_cfg_catalog)"
+  fi
+  _sf_cat_path="$BYTEASK_HOME/models-catalog-subscription.json"
+  if _write_subscription_catalog "$_sf_cat_path"; then
+    _sf_catalog="model_catalog_json = \"$_sf_cat_path\""
+  else
+    _sf_catalog=""
+  fi
+  if ! write_subscription_config "" "$_sf_catalog" "$(resolve_gateway)" "$_sf_jwt"; then
+    echo "byteask: signed in, but the config could not be saved." >&2
+    _wmc_fail "$_sf_jwt"
+    return 1
+  fi
+  return 0
+}
+
 byok_subscription() {
-  echo "Sign in with your ChatGPT subscription (Plus/Pro/Business)."
-  echo "Note: OpenAI's own sign-in screen appears; your"
-  echo "subscription is used per OpenAI's terms. Anthropic/Gemini keys don't mix"
-  echo "into a subscription session — use API keys for that."
+  # docs/DESIGN-TERMINAL.md §8: the shell stays silent on the healthy path. The
+  # four-line preamble that used to print here (a title plus a "Note:" paragraph
+  # that wrapped mid-sentence) said what the engine's own sign-in screen now says,
+  # and said it before the user had done anything. The one fact worth keeping —
+  # that a subscription session is OpenAI-only — moved to the success line, where
+  # it is actionable.
   # Capture the ByteAsk identity + current config BEFORE anything is rewritten,
   # so the retained block (below) carries the real account forward. `login`
   # writes auth.json only; it does not touch config.toml's token, so these reads
   # are still valid afterwards — but capturing first is the safe order.
   _sub_jwt="$(_byok_current_jwt)"
-  _sub_model="$(_cfg_model)"; [ -n "$_sub_model" ] || _sub_model="${BYTEASK_MODEL:-gpt-5.4}"
-  # I5: a subscription session talks to the ChatGPT backend, which serves its OWN
-  # model list. Do NOT carry model_catalog_json — our catalog (Gemini, Kimi, …)
-  # would 400 there. Dropping it makes the engine fetch OpenAI's own list. (Which
-  # models that yields, and whether the reported client version gates them, is T0.)
-  _sub_catalog=""
+  # Remember the MANAGED session we are leaving, so "Use ByteAsk managed" can put
+  # the user back on the exact model + catalog they had (owner decision: restore
+  # the previous model, not a default). Best-effort: a missing file just means the
+  # restore falls back to the default model, never a failure to switch back.
+  # ⚠️ Only record a session that is actually MANAGED. Switching subscription ->
+  # subscription would otherwise overwrite the saved managed session with subscription
+  # state - the 4-model subscription catalog and a model only a ChatGPT account can use -
+  # so "Use ByteAsk managed" would later restore a broken managed session. Same trap the
+  # byok_off comment describes. When we are already on a subscription, the previously
+  # saved managed session is the right one to keep.
+  if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CFG" 2>/dev/null | head -n1)" = byteask ]; then
+    _sub_prev_model="$(_cfg_model)"; [ -n "$_sub_prev_model" ] || _sub_prev_model="${BYTEASK_MODEL:-gpt-5.4}"
+    _save_managed_session "$_sub_prev_model" "$(_cfg_catalog)"
+  fi
+  # Deliberately EMPTY: do not carry a managed model into the ChatGPT catalog
+  # (see write_subscription_config). The engine picks a valid default itself.
+  _sub_model=""
+  # I5 said to drop model_catalog_json because OUR catalog carries Gemini/Kimi/Claude,
+  # which would 400 on the ChatGPT backend. Still true of the FULL catalog - but dropping
+  # it entirely handed the picker, the default AND the identity to upstream's bundled
+  # list. Ship a filtered copy instead: OpenAI-only, measured-entitled, and carrying our
+  # own instructions. Falls back to the old behaviour if it cannot be built.
+  _sub_cat_path="$BYTEASK_HOME/models-catalog-subscription.json"
+  if _write_subscription_catalog "$_sub_cat_path"; then
+    _sub_catalog="model_catalog_json = \"$_sub_cat_path\""
+  else
+    _sub_catalog=""
+  fi
   _sub_gw="$(resolve_gateway)"; _sub_gw="${_sub_gw%/}"
+  # ⚠️ The plan is only knowable AFTER OAuth — it arrives in the id_token, so there is
+  # nothing to check before sending the user to the browser. The next best thing is to
+  # say the requirement up front, so nobody spends a sign-in to discover it. The hard
+  # refusal is below, once the plan is actually readable.
+  echo "Requires ChatGPT Plus or higher. Free and Go accounts are not supported."
+
   # Pick browser vs device-code. Device-code has no localhost callback, so it is
   # the one that works over SSH; the engine exposes it as `login --device-auth`.
   case "${1:-}" in
@@ -964,20 +1194,69 @@ byok_subscription() {
     --browser) _sub_login_arg="" ;;
     *) if _subscription_is_headless; then
          _sub_login_arg="--device-auth"
-         echo "No local browser detected — using device-code sign-in. Enable it once"
-         echo "in your ChatGPT security settings if this is your first device-code login."
+         echo "No local browser detected - using device-code sign-in."
        else _sub_login_arg=""; fi ;;
   esac
   # shellcheck disable=SC2086 -- _sub_login_arg is a single controlled flag or empty
-  "$ENGINE" login $_sub_login_arg || { echo "ChatGPT sign-in failed." >&2; exit 1; }
+  # ⚠️ `login` REPLACES auth.json before anyone can look at the new account, so a
+  # refusal below would otherwise destroy a subscription session that was working. Keep
+  # the old credential and put it back on any path that does not complete the switch.
+  _sub_auth="$BYTEASK_HOME/auth.json"; _sub_auth_bak="$BYTEASK_HOME/.auth.json.presub.$$"
+  _sub_had_auth=0
+  if [ -f "$_sub_auth" ] && cp -p "$_sub_auth" "$_sub_auth_bak" 2>/dev/null; then _sub_had_auth=1; fi
+  _sub_restore_auth() {
+    if [ "$_sub_had_auth" = 1 ]; then mv -f "$_sub_auth_bak" "$_sub_auth" 2>/dev/null || true
+    else rm -f "$_sub_auth" 2>/dev/null || true; fi
+    rm -f "$_sub_auth_bak" 2>/dev/null || true
+  }
+  if ! "$ENGINE" login $_sub_login_arg; then
+    echo "ChatGPT sign-in failed." >&2
+    _sub_restore_auth
+    return 1
+  fi
+  # ⚠️ REFUSE the switch on a plan that cannot run ANY model, rather than handing the
+  # user a session where every turn 400s. Measured 2026-09-22 on a real `go` account,
+  # probing all 11 models the subscription picker offers: 7 answered "not supported when
+  # using ... with a ChatGPT account" and 4 answered "requires a newer version" (which is
+  # the SAME entitlement block wearing a misleading message — a fake 0.999.0 is refused
+  # too). Zero worked. The previous behaviour printed a warning and switched anyway, and
+  # that warning is invisible in the normal path because the TUI's alternate screen wipes
+  # it the moment the engine launches.
+  #
+  # Still a DENYLIST, not an allowlist (owner's call): an unknown plan string switches and
+  # warns, exactly as before. Only plans MEASURED to serve nothing are refused, and the
+  # config is left untouched so the user keeps the working session they already had.
+  case "$(_chatgpt_plan_type)" in
+    go|free)
+      _sub_plan="$(_chatgpt_plan_type)"
+      printf '\n  Signed in, but this ChatGPT account is on the "%s" plan.\n' "$_sub_plan" >&2
+      printf '  OpenAI serves no model to ByteAsk on that plan - every model was refused\n' >&2
+      printf '  when we checked, so the session would fail on your first message.\n\n' >&2
+      printf '  Your ByteAsk session is unchanged. To use your subscription, upgrade to\n' >&2
+      printf '  ChatGPT Plus or higher and run /login again.\n\n' >&2
+      # Put back whatever credential was there before. `login` already replaced it, so a
+      # bare `logout` here destroyed a WORKING subscription session just because the user
+      # tried a second account - which is how a Plus login was lost to a Go sign-in.
+      # `logout` first, so the unusable credential does not linger in the OS keyring
+      # (a file delete alone would not clear it), THEN restore.
+      "$ENGINE" logout >/dev/null 2>&1 || true
+      _sub_restore_auth
+      # ⚠️ return, never exit: this runs from the /login hand-off, and the caller
+      # relaunches the engine afterwards. Exiting drops the user out to their shell and
+      # ends the session they were in the middle of, for a refusal that changed nothing.
+      return 1 ;;
+  esac
   # Switch to the built-in OpenAI provider (engine auto-selects the ChatGPT backend
   # for AuthMode::Chatgpt); leaves the sidecar untouched. Atomic + identity-preserving.
   if ! write_subscription_config "$_sub_model" "$_sub_catalog" "$_sub_gw" "$_sub_jwt"; then
     echo "byteask: ChatGPT sign-in succeeded, but the config could not be saved." >&2
     _wmc_fail "$_sub_jwt"
-    exit 1
+    _sub_restore_auth
+    return 1
   fi
-  echo "ChatGPT subscription active (OpenAI-only session). 'byteask byok off' to return to managed."
+  rm -f "$_sub_auth_bak" 2>/dev/null || true
+  echo "Switched to your ChatGPT subscription (OpenAI models only)."
+  echo "Run /login and choose \"Use ByteAsk managed\" to switch back."
 }
 
 # Claude subscription (Pro/Max): OAuth + a Responses<->Anthropic translation that
@@ -986,6 +1265,49 @@ byok_subscription() {
 # ByteAsk's server. Until that engine module ships, fail cleanly rather than write
 # a half-configured session — the `claude` kill switch is default-off, so this is
 # only reachable if an operator turned it on ahead of the build.
+# ChatGPT-subscription sessions: warn when the signed-in account's PLAN cannot run
+# the models OpenAI serves to subscription clients. Measured 2026-09-21: a
+# `chatgpt_plan_type: "go"` account is served a picker of gpt-5.6-terra/luna/5.5 and
+# then refused on EVERY one with a misleading "requires a newer version" error — it is
+# an entitlement block, not a version problem (proven: a fake 0.999.0 is refused too).
+# OpenAI gives the GPT-5.6 family to Plus and above and omits Go from that table.
+#
+# Deliberately a WARNING, never a block, and a DENYLIST of plans known to be
+# insufficient — an allowlist would lock out any plan string we failed to predict,
+# which is the 2026-09-07 lockout class. Unknown/absent/unparseable => silent.
+# The signed-in ChatGPT account's plan (`go`, `free`, `plus`, `pro`, ...), or empty
+# when it cannot be read. One definition, read by BOTH the sign-in gate and the
+# per-launch warning — a plan check that disagrees with itself is how a user ends up
+# in a session we already knew could not work.
+_chatgpt_plan_type() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -f "$BYTEASK_HOME/auth.json" ] || return 0
+  _wcp_py='
+import base64, json, sys
+try:
+    tok = json.load(open(sys.argv[1]))["tokens"]["id_token"]
+    seg = tok.split(".")[1]; seg += "=" * (-len(seg) % 4)
+    claims = json.loads(base64.urlsafe_b64decode(seg))
+    print((claims.get("https://api.openai.com/auth") or {}).get("chatgpt_plan_type") or "")
+except Exception:
+    pass
+'
+  python3 -c "$_wcp_py" "$BYTEASK_HOME/auth.json" 2>/dev/null || true
+}
+
+_warn_chatgpt_plan() {
+  _wcp_plan="$(_chatgpt_plan_type)"
+  case "$_wcp_plan" in
+    go|free)
+      printf '\n  This ChatGPT account is on the "%s" plan, which does not include the\n' "$_wcp_plan" >&2
+      printf '  GPT-5.6 models OpenAI serves to subscription clients, so every model\n' >&2
+      printf '  will fail - with an error that wrongly blames an out-of-date client.\n' >&2
+      printf '  Upgrade to ChatGPT Plus or higher, or run /login and choose\n' >&2
+      printf '  "Use ByteAsk managed".\n\n' >&2
+      ;;
+  esac
+}
+
 # Refresh the subscription kill-switch flags the engine reads (from
 # $BYTEASK_HOME/subscription-flags) to decide whether to OFFER "Use my ChatGPT /
 # Claude subscription" in /login. Public GET, short timeout, best-effort: any
@@ -993,6 +1315,14 @@ byok_subscription() {
 # current view — fail-safe, and it is backgrounded so it never adds launch latency
 # (the file is only read when /login opens, not at startup).
 _refresh_subscription_flags() {
+  # Opt-in local pin. The switches are server-fetched and default OFF, which is what
+  # makes them a kill switch - but it also means a dormant feature cannot be exercised
+  # on one machine without turning it on for every user, and "flip it in production to
+  # test it" is how a half-finished feature reaches people. With this set, the file is
+  # left exactly as it is, so an operator can enable a flag for themselves only.
+  # Deliberately opt-in and env-only: nothing a normal launch can trip over, and the
+  # server still wins by default.
+  [ "${BYTEASK_SUBSCRIPTION_FLAGS_LOCAL:-0}" = 1 ] && return 0
   _rsf_gw="$(resolve_gateway)"; _rsf_gw="${_rsf_gw%/}"
   _rsf_json="$(curl -fsS --max-time 3 "$_rsf_gw/byteask/v1/subscription-flags" 2>/dev/null)" || return 0
   command -v python3 >/dev/null 2>&1 || return 0
@@ -1004,10 +1334,18 @@ try:
         sys.exit(0)
 except Exception:
     sys.exit(0)   # malformed -> leave the file alone (fail-safe)
+import re
 b = lambda x: "1" if x is True else "0"
+# The client-version floor that unlocks OpenAI's newer models. Written only when it
+# is a clean x.y.z: it ends up in an HTTP header, and anything else is dropped here.
+floor = d.get("reported_version_floor")
+floor = floor if isinstance(floor, str) and re.fullmatch(r"\d+\.\d+\.\d+", floor) else ""
 tmp = sys.argv[1] + ".tmp"
 with open(tmp, "w") as f:
-    f.write("chatgpt=%s\nclaude=%s\n" % (b(d.get("chatgpt")), b(d.get("claude"))))
+    f.write("chatgpt=%s\nclaude=%s\nclaude_launcher=%s\n" % (
+        b(d.get("chatgpt")), b(d.get("claude")), b(d.get("claude_launcher"))))
+    if floor:
+        f.write("reported_version_floor=%s\n" % floor)
 os.replace(tmp, sys.argv[1])   # atomic: the engine never sees a torn file
 PY
 }
@@ -2647,14 +2985,38 @@ while : ; do
   # reported client version and rejects EVERYTHING at ByteAsk's baked 0.1.0 (proven
   # live in T0, 2026-09-19 — empty list + "model not supported"). Report a real
   # upstream client version so the backend serves models. ⚠️ The accepted version changes
-  # over time, so `auto` (the default) resolves IN THE ENGINE to the real upstream
-  # upstream client version stamped into the binary at build time (from the merged rust-v*
-  # git tag) — it tracks upstream on every rebuild with nothing to bump here. A
-  # user-set concrete value of the variable below still wins as a manual escape
-  # hatch if the backend ever demands a specific value.
+  # over time, so `auto` (the default) resolves IN THE ENGINE to the upstream client
+  # version stamped into the binary at build time (from the merged rust-v* git tag)
+  # — it tracks upstream on every rebuild with nothing to bump here. A user-set
+  # concrete value still wins as a manual escape hatch if the backend ever demands a
+  # specific one. ⚠️ NOT `BYTEASK_CLIENT_VERSION`: that one already carries the
+  # SHIPPED version (line 10), so `:=` below would never fire and the backend would
+  # be told 0.1.13 — exactly the failure this exists to fix.
   if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CFG" 2>/dev/null | head -n1)" = openai ]; then
-    : "${BYTEASK_CODEX_VERSION_OVERRIDE:=auto}"
-    export BYTEASK_CODEX_VERSION_OVERRIDE
+    : "${BYTEASK_REPORTED_VERSION:=auto}"
+    export BYTEASK_REPORTED_VERSION
+    # The server-supplied FLOOR. The engine reports max(its own stamp, this) on the
+    # `auto` path only, so a later upstream merge is never downgraded by a stale value.
+    _rvf="$(_subscription_version_floor)"
+    if [ -n "$_rvf" ]; then BYTEASK_REPORTED_VERSION_FLOOR="$_rvf"; export BYTEASK_REPORTED_VERSION_FLOOR; fi
+    _warn_chatgpt_plan
+    # Re-derive the subscription catalog each launch so it tracks `_catalog_refresh`
+    # (which rewrites models-catalog.json when the server bumps catalog_version).
+    # Best-effort: on failure the previous copy stays, and if there never was one the
+    # engine falls back to its bundled list exactly as before.
+    _sub_cat="$BYTEASK_HOME/models-catalog-subscription.json"
+    if _write_subscription_catalog "$_sub_cat"; then
+      # HEAL an existing subscription session. A config written before this change
+      # carries NO model_catalog_json at all, so it would keep using upstream's bundled
+      # list - 11 models the account may not have and a gpt-6-astra default - until the
+      # user happened to sign in again. Add the line once, in place, keeping the ByteAsk
+      # identity block. Guarded on the line being absent, so this is a one-time repair
+      # and not a rewrite on every launch.
+      if ! grep -q '^model_catalog_json = ' "$CFG" 2>/dev/null; then
+        write_subscription_config "" "model_catalog_json = \"$_sub_cat\"" \
+          "$(resolve_gateway)" "$(_byok_current_jwt)" || true
+      fi
+    fi
   fi
 
   _rc=0; "$ENGINE" $_SANDBOX_ARG "$@" || _rc=$?
@@ -2695,8 +3057,22 @@ while : ; do
         'signin '*)       ( do_login --interactive --email-hint "${_detail#signin }" ) || true ;;
         # Subscription sign-in from the in-TUI /login screen (T4). The engine
         # already showed the consent screen; here we run the vendor OAuth + swap.
-        'subscription chatgpt') byok_subscription ;;
+        # `|| true`: a refusal returns non-zero and must NOT end the session under
+        # `set -eu` - the loop below relaunches the engine so the user lands back in
+        # ByteAsk rather than their shell.
+        # The ENGINE ran the OAuth and the plan check in its own pane, and is already
+        # signed in. All that is left is the part it cannot do: swap the provider in
+        # config.toml and relaunch. Nothing is printed - the user already read the
+        # result on screen, and anything echoed here would survive in scrollback.
+        'subscription-ready chatgpt') byok_subscription_finish || true ;;
+        # Legacy verb: an engine that has not been rebuilt still expects the wrapper to
+        # run the whole flow. Kept so an old engine on a new wrapper keeps working.
+        'subscription chatgpt') byok_subscription || true ;;
         'subscription claude')  byok_claude_subscription ;;
+        # "Use ByteAsk managed" from a subscription session. The engine cannot do
+        # this itself (it does not own config.toml), and without this verb the row
+        # was a silent no-op that left the user with no way back.
+        'managed')              byok_use_managed ;;
         # "Use my Claude Code" row: run the user's own claude (legal delegation).
         'launch-claude')        do_claude_launcher ;;
         'register-model '*) do_register_model "${_detail#register-model }" ;;
