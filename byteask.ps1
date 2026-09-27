@@ -8,7 +8,7 @@
 #
 # Behavior parity with byteask/cli/byteask is intentional - keep them in sync.
 
-$VERSION = '0.1.14'
+$VERSION = '0.1.15'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
 
 $BYTEASK_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
@@ -264,6 +264,41 @@ function Invoke-CatalogRefresh {
     if ($doc.models -and @($doc.models).Count -gt 0) {
       Move-Item -Force $tmp $cat -ErrorAction Stop
       [System.IO.File]::WriteAllText($verFile, $want)
+    }
+  } catch {}
+  Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+}
+
+# The same refresh for a launch with NO ByteAsk sign-in (the anonymous trial); parity with
+# _catalog_refresh_unsigned in the sh launcher. The authenticated model-access fetch can
+# never serve it, so a served catalog change, a kill switch included, used to skip these
+# launches. A conditional GET against the static catalog's ETag: a 304 (which Windows
+# PowerShell 5.1 raises as an exception) or any failure keeps the local catalog; a 200 is
+# validated before it replaces it.
+function Invoke-CatalogRefreshUnsigned {
+  $cat = Join-Path $BYTEASK_HOME 'models-catalog.json'
+  if (-not (Test-Path $cat)) { return }
+  if (Get-CurrentJwt) { return }
+  $gw = (Resolve-Gateway).TrimEnd('/')
+  if (-not $gw) { return }
+  $tagFile = Join-Path $BYTEASK_HOME '.catalog-etag'
+  $tag = ''
+  if (Test-Path $tagFile) { try { $tag = (Get-Content -Raw $tagFile).Trim() } catch {} }
+  $headers = @{}
+  if ($tag) { $headers['If-None-Match'] = $tag }
+  $tmp = "$cat.refresh.$PID"
+  try {
+    $resp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 20 -Headers $headers `
+      -Uri "$gw/models-catalog.json" -OutFile $tmp -PassThru -ErrorAction Stop
+    if ([int]$resp.StatusCode -eq 200) {
+      $doc = (Get-Content -Raw $tmp) | ConvertFrom-Json
+      if ($doc.models -and @($doc.models).Count -gt 0) {
+        Move-Item -Force $tmp $cat -ErrorAction Stop
+        # The ETag goes back out as a header next launch, so keep it only when it looks like one.
+        $new = [string]($resp.Headers['ETag'] | Select-Object -First 1)
+        if ($new -match '^[A-Za-z0-9"/._:-]+$') { [System.IO.File]::WriteAllText($tagFile, $new) }
+        else { Remove-Item -Force $tagFile -ErrorAction SilentlyContinue }
+      }
     }
   } catch {}
   Remove-Item -Force $tmp -ErrorAction SilentlyContinue
@@ -544,6 +579,34 @@ function Write-ConfigWriteFailure {
   Write-Err "  Check that the file is not read-only and that you own it, then run: byteask login"
 }
 
+# The user's [features] settings from the CURRENT config.toml, re-emitted so a full rewrite
+# (sign-in, sign-out, a provider switch) keeps them; parity with _cfg_features_block in the
+# sh launcher. Without it every such write dropped them, `features.plugins = true` and the
+# `commit_attribution` opt-out included. [features] / [features.<name>] tables are copied
+# verbatim; root-level `features.<key> = ...` dotted keys move under a [features] header.
+# Empty when there are none. Call it BEFORE the new file is saved.
+function Get-ConfigFeaturesBlock {
+  $cfg = Join-Path $BYTEASK_HOME 'config.toml'
+  if (-not (Test-Path $cfg)) { return '' }
+  $seen = $false; $inFeat = $false
+  $dotted = New-Object System.Collections.Generic.List[string]
+  $tables = New-Object System.Collections.Generic.List[string]
+  foreach ($line in @(Get-Content $cfg -ErrorAction SilentlyContinue)) {
+    if ($line -match '^\s*\[') {
+      $seen = $true
+      $inFeat = ($line -match '^\s*\[+\s*features\s*(\]|\.)')
+      if ($inFeat) { $tables.Add(''); $tables.Add($line) }
+      continue
+    }
+    if ((-not $seen) -and ($line -match '^\s*features\s*\.\s*(.*)$')) { $dotted.Add($Matches[1]); continue }
+    if ($inFeat) { $tables.Add($line) }
+  }
+  $out = ''
+  if ($dotted.Count -gt 0) { $out += "`r`n`r`n[features]`r`n" + ($dotted -join "`r`n") }
+  if ($tables.Count -gt 0) { $out += "`r`n" + ($tables -join "`r`n") }
+  return $out
+}
+
 function Write-ManagedConfig([string]$model, [string]$catalog, [string]$gateway, [string]$token) {
   # Empty $token => UNSIGNED (no experimental_bearer_token line) so the launch check onboards.
   $tokenLine = if ($token) { "experimental_bearer_token = `"$token`"" } else { "" }
@@ -564,6 +627,7 @@ $tokenLine
 x-openai-actor-authorization = "byteask"
 "@
   $cfg = Add-TersePref $cfg
+  $cfg += (Get-ConfigFeaturesBlock)
   return (Save-ConfigToml $cfg $token)
 }
 function Write-ByokConfig([string]$model, [string]$catalog, [string]$token) {
@@ -585,6 +649,7 @@ X-BYOK-Token = "$token"
 x-openai-actor-authorization = "byteask"
 "@
   $cfg = Add-TersePref $cfg
+  $cfg += (Get-ConfigFeaturesBlock)
   return (Save-ConfigToml $cfg '')
 }
 
@@ -857,6 +922,7 @@ model_provider = "openai"
 web_search = "live"
 $catalog$idBlock
 "@
+  $cfg += (Get-ConfigFeaturesBlock)
   # Save-ConfigToml's readback checks the token; the provider flip is verified here.
   if (-not (Save-ConfigToml $cfg $jwt)) { return $false }
   if (-not (Select-String -Path (Join-Path $BYTEASK_HOME 'config.toml') -Pattern '^model_provider = "openai"$' -Quiet)) { return $false }
@@ -1330,16 +1396,19 @@ function Get-ScrProvName([string]$p) {
 
 function Enter-ScrKeys {
   $script:ScrState = 'keys'; Get-ScrData
+  # Managed first and marked recommended (owner, 2026-09-27); parity with _scr_goto_keys.
   $o = @()
+  $o += ,@('managed',  ("Use ByteAsk managed (recommended) $($script:ScrG.dot) 20 models incl. GPT, Gemini & open models, 20% off API pricing"))
   $o += ,@('openai',    ("OpenAI      " + $script:ScrD.VOA + " your key"))
   $o += ,@('anthropic', ("Anthropic   " + $script:ScrD.VAN + " your key"))
   $o += ,@('gemini',    ("Gemini      " + $script:ScrD.VGE + " your key"))
   if ($script:ScrD.NKeys -gt 0) { $o += ,@('remove', 'Remove a key') }
   $o += ,@('selfhost', ("Your own hosted model $($script:ScrG.dot) vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server"))
-  $o += ,@('managed',  ("Use ByteAsk managed $($script:ScrG.dot) 20 models incl. GPT, Gemini & open models, 20% off API pricing"))
   $o += ,@('done',     'Done')
   $script:ScrOpts = $o
-  $script:ScrCur = if ($script:ScrD.NKeys -eq 0) { $o.Count - 1 } else { $o.Count }
+  # First run (no keys): the cursor starts on managed. With keys: Done, so a stray Enter
+  # never removes them.
+  $script:ScrCur = if ($script:ScrD.NKeys -eq 0) { 1 } else { $o.Count }
 }
 function Enter-ScrAccount {
   $script:ScrState = 'account'; Get-ScrData
@@ -1690,7 +1759,7 @@ function Show-SourceMenuSeq {
       "Gemini     - $($v[2]) key",
       "Remove one of your keys",
       "Use your own hosted model - vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server",
-      "Use ByteAsk managed - 20 models incl. GPT, Gemini & open models, 20% off API pricing",
+      "Use ByteAsk managed (recommended) - 20 models incl. GPT, Gemini & open models, 20% off API pricing",
       "Done") $start
     switch ($c) {
       1 { [void](Add-ByokKey 'openai') }
@@ -1950,10 +2019,10 @@ x-openai-actor-authorization = "byteask"
 }
 
 # Hourly, fail-open update check (mirrors check_for_update in cli/byteask). An interactive
-# TUI launch stays SILENT: the engine reads /version.json and tells the user itself (a
-# one-line notice, or a blocking prompt only below min_supported), so a wrapper line as
-# well was a double notice. A headless run (exec, redirected, CI) keeps ONE stderr line.
-# The wrapper never runs the updater on its own; `byteask --update` does that.
+# TUI launch ASKS before the TUI starts: "Update now? [Y/n]" (owner, 2026-09-23). Enter or
+# y runs install.ps1 and relaunches with the original args; anything else continues and
+# the question comes back next launch. A headless run (exec, redirected, CI) never blocks
+# on a question, so it keeps ONE stderr line.
 function Test-LaunchesTui([object[]]$LaunchArgs) {
   $first = if ($LaunchArgs -and $LaunchArgs.Count -gt 0) { "$($LaunchArgs[0])" } else { '' }
   $headless = @('exec','e','review','login','logout','mcp','plugin','mcp-server','app-server',
@@ -1964,7 +2033,6 @@ function Test-LaunchesTui([object[]]$LaunchArgs) {
 }
 function Invoke-UpdateCheck {
   if ($env:BYTEASK_NO_UPDATE_CHECK) { return }
-  if ((Test-Interactive) -and (Test-LaunchesTui $script:LaunchArgs)) { return }
   $latest = ''; $last = 0
   if (Test-Path $UPDATE_STATE) {
     foreach ($line in Get-Content $UPDATE_STATE) {
@@ -1989,6 +2057,22 @@ function Invoke-UpdateCheck {
   }
   if (-not $latest) { return }
   if (-not (Test-VersionGt $latest $VERSION)) { return }
+  if ((Test-Interactive) -and (Test-LaunchesTui $script:LaunchArgs)) {
+    Write-Host -NoNewline "ByteAsk $latest is available (you have $VERSION). Update now? [Y/n] "
+    $ans = Read-Host
+    if ($ans -eq '' -or $ans -match '^[yY]') {   # Enter (default) or y -> update
+      $gw = (Resolve-Gateway).TrimEnd('/')
+      Write-Host "Updating ByteAsk to $latest ..."
+      try {
+        $env:PREFIX = $SELF_DIR
+        Invoke-Expression (Invoke-RestMethod -Uri "$gw/install.ps1" -ErrorAction Stop)
+        $env:BYTEASK_NO_UPDATE_CHECK = '1'
+        & (Join-Path $SELF_DIR 'byteask.ps1') @script:LaunchArgs
+        exit $LASTEXITCODE
+      } catch { Write-Host "Update failed; continuing on $VERSION." }
+    }
+    return   # declined: continue now, ask again next launch
+  }
   Write-Err "ByteAsk $latest is available (you have $VERSION). Run: byteask --update"
 }
 
@@ -2167,6 +2251,7 @@ while ($true) {
   # engine reads it (idempotent + atomic; survives --update). Gated so non-self users pay nothing.
   Invoke-ModelsAccessFetch
   Invoke-CatalogRefresh
+  Invoke-CatalogRefreshUnsigned
   if (Test-HasSelfEndpoints) { Invoke-ModelsMerge }
   Invoke-ModelsAccessMerge
 

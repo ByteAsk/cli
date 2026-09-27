@@ -3,7 +3,7 @@
 # Thin wrapper over the engine so the client surface is fully ByteAsk-branded.
 set -eu
 
-VERSION="0.1.14"
+VERSION="0.1.15"
 DEFAULT_GATEWAY="https://code.byteask.ai"
 export BYTEASK_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
 export BYTEASK_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
@@ -81,14 +81,14 @@ version_gt() {
 # /version, bad data) is swallowed so the engine always launches. Opt out with
 # BYTEASK_NO_UPDATE_CHECK=1.
 #
-# An interactive TUI launch stays SILENT: the engine reads /version.json and tells the
-# user itself (a one-line notice, or a blocking prompt only below min_supported), so a
-# wrapper line as well was a double notice -- one the TUI's alternate screen wiped anyway.
-# A headless run (exec, a pipe, CI) has no TUI to say it, so it keeps ONE stderr line.
-# The wrapper never runs the updater on its own; `byteask --update` does that.
+# An interactive TUI launch ASKS, before the TUI starts: "Update now? [Y/n]" (owner,
+# 2026-09-23). Enter or y runs the same updater as `byteask --update` and relaunches the
+# fresh wrapper with the original args; anything else continues on this version and the
+# question comes back next launch. The engine's own in-session notice alone was too
+# easy to miss and lagged a release by up to a day (it caches /version.json for 20 h).
+# A headless run (exec, a pipe, CI) never blocks on a question, so it keeps ONE line.
 check_for_update() {
   if [ -n "${BYTEASK_NO_UPDATE_CHECK:-}" ]; then return 0; fi
-  if [ -t 0 ] && [ -t 1 ] && _launches_tui "$@"; then return 0; fi
   _uc_latest=""; _uc_last=0
   if [ -f "$UPDATE_STATE" ]; then
     while IFS='=' read -r _k _v; do
@@ -113,6 +113,25 @@ check_for_update() {
   fi
   if [ -z "$_uc_latest" ]; then return 0; fi
   if ! version_gt "$_uc_latest" "$VERSION"; then return 0; fi   # not newer than installed
+  if [ -t 0 ] && [ -t 1 ] && _launches_tui "$@"; then
+    printf 'ByteAsk %s is available (you have %s). Update now? [Y/n] ' "$_uc_latest" "$VERSION" >&2
+    read -r _uc_ans </dev/tty 2>/dev/null || _uc_ans=""
+    case "$_uc_ans" in
+      ""|[yY]*)   # Enter (default) or y -> update
+        _uc_gw="$(resolve_gateway)"; _uc_gw="${_uc_gw%/}"
+        printf 'Updating ByteAsk to %s ...\n' "$_uc_latest" >&2
+        # Install in place (over the running wrapper), then relaunch the fresh wrapper
+        # with the original args. The relaunch carries a no-recheck guard so a
+        # same-session update can never loop, even if the install no-ops.
+        if curl -fsSL "$_uc_gw/install.sh" | PREFIX="$SELF_DIR" sh; then
+          exec env BYTEASK_NO_UPDATE_CHECK=1 "$SELF_DIR/byteask" "$@"
+        fi
+        printf 'Update failed; continuing on %s.\n' "$VERSION" >&2
+        ;;
+      *) : ;;   # declined: continue now, ask again next launch (no dismiss memory)
+    esac
+    return 0
+  fi
   printf 'ByteAsk %s is available (you have %s). Run: byteask --update\n' "$_uc_latest" "$VERSION" >&2
   return 0
 }
@@ -220,6 +239,43 @@ _catalog_refresh() {
     fi
   fi
   rm -f "$_cr_tmp" 2>/dev/null || true
+}
+
+# The same refresh for a launch with NO ByteAsk sign-in (the anonymous trial). The
+# authenticated `model-access` fetch above can never serve it, so a served catalog change,
+# a kill switch included, used to skip these launches entirely. A conditional GET against
+# the static catalog's ETag costs one small request per launch and downloads only when the
+# file changed. Same rules as above: silent, fail-soft, last-good wins, validated first.
+_catalog_refresh_unsigned() {
+  [ -f "$BYTEASK_HOME/models-catalog.json" ] || return 0
+  [ -z "$(_byok_current_jwt 2>/dev/null)" ] || return 0
+  command -v curl >/dev/null 2>&1 || return 0
+  _cu_gw="$(resolve_gateway)"; _cu_gw="${_cu_gw%/}"
+  [ -n "$_cu_gw" ] || return 0
+  _cu_tagf="$BYTEASK_HOME/.catalog-etag"
+  _cu_tag="$(cat "$_cu_tagf" 2>/dev/null || true)"
+  _cu_tmp="$BYTEASK_HOME/models-catalog.json.refresh.$$"
+  _cu_hdr="$BYTEASK_HOME/.catalog-headers.$$"
+  if [ -n "$_cu_tag" ]; then
+    _cu_code="$(curl -sSL --connect-timeout 4 --max-time 20 -H "If-None-Match: $_cu_tag" \
+      -D "$_cu_hdr" -o "$_cu_tmp" -w '%{http_code}' "$_cu_gw/models-catalog.json" 2>/dev/null)" || _cu_code=000
+  else
+    _cu_code="$(curl -sSL --connect-timeout 4 --max-time 20 \
+      -D "$_cu_hdr" -o "$_cu_tmp" -w '%{http_code}' "$_cu_gw/models-catalog.json" 2>/dev/null)" || _cu_code=000
+  fi
+  if [ "$_cu_code" = 200 ] \
+     && grep -q '"models"' "$_cu_tmp" 2>/dev/null \
+     && { ! command -v python3 >/dev/null 2>&1 || python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d.get("models"), list) and d["models"]' "$_cu_tmp" 2>/dev/null; }; then
+    if mv -f "$_cu_tmp" "$BYTEASK_HOME/models-catalog.json" 2>/dev/null; then
+      # The ETag goes back out as a header next launch, so keep it only when it looks like one.
+      _cu_new="$(sed -n 's/^[Ee][Tt][Aa][Gg]:[[:space:]]*//p' "$_cu_hdr" 2>/dev/null | tr -d '\r' | tail -n1)"
+      case "$_cu_new" in
+        ''|*[!A-Za-z0-9\"/._:-]*) rm -f "$_cu_tagf" 2>/dev/null || true ;;
+        *) printf '%s' "$_cu_new" > "$_cu_tagf" 2>/dev/null || true ;;
+      esac
+    fi
+  fi
+  rm -f "$_cu_tmp" "$_cu_hdr" 2>/dev/null || true
 }
 
 _models_access_merge() {
@@ -467,6 +523,35 @@ _ensure_anon_id() {
 # Returns NON-ZERO when the config was not persisted. Every caller must check:
 # this file holds the only credential the engine sends, so a write that quietly
 # fails turns into an unbreakable 401 loop that looks like a server outage.
+# The user's [features] settings from the CURRENT config.toml, re-emitted so a full
+# rewrite (sign-in, sign-out, a provider switch) keeps them. Without this every such write
+# silently dropped them, `features.plugins = true` and the `commit_attribution` opt-out
+# included. Both TOML forms: `[features]` / `[features.<name>]` tables are copied verbatim;
+# root-level `features.<key> = ...` dotted keys move under a `[features]` header, because
+# at the end of the new file they would belong to the table before them. Prints nothing
+# when there are none. Must run BEFORE the new file is installed.
+_cfg_features_block() {
+  [ -f "$BYTEASK_HOME/config.toml" ] || return 0
+  awk '
+    /^[[:space:]]*\[/ {
+      seen = 1
+      h = $0; sub(/^[[:space:]]*\[+[[:space:]]*/, "", h)
+      infeat = (h ~ /^features[[:space:]]*(\]|\.)/)
+      if (infeat) tables = tables "\n" $0 "\n"
+      next
+    }
+    !seen && /^[[:space:]]*features[[:space:]]*\./ {
+      line = $0; sub(/^[[:space:]]*features[[:space:]]*\.[[:space:]]*/, "", line)
+      dotted = dotted line "\n"
+      next
+    }
+    infeat { tables = tables $0 "\n" }
+    END {
+      if (dotted != "") printf "\n[features]\n%s", dotted
+      if (tables != "") printf "%s", tables
+    }' "$BYTEASK_HOME/config.toml" 2>/dev/null || true
+}
+
 write_managed_config() {  # $1=model $2=catalog_line $3=gateway $4=token (empty = unsigned)
   mkdir -p "$BYTEASK_HOME" 2>/dev/null || true
   _wmc_tmp="$BYTEASK_HOME/.config.toml.tmp.$$"
@@ -489,6 +574,7 @@ EOF
     # function's exit status stays 0 when signed — a trailing false `&&` would make
     # write_managed_config "fail" and the launch loop would re-onboard.
     if [ -z "$4" ]; then printf 'X-Anon-Id = "%s"\n' "$(_ensure_anon_id)"; fi
+    _cfg_features_block
   } > "$_wmc_tmp" || { rm -f "$_wmc_tmp" 2>/dev/null; _wmc_fail "$4"; return 1; }
   _install_config "$_wmc_tmp" || { _wmc_fail "$4"; return 1; }
   # Read back what actually landed. The credential is the whole point of this
@@ -582,6 +668,7 @@ supports_websockets = false
 X-BYOK-Token = "$3"
 x-openai-actor-authorization = "byteask"
 EOF
+  _cfg_features_block >> "$_wbc_tmp"
   # Terse preference travels to BYOK configs too (durable across re-login).
   chmod 600 "$_wbc_tmp" 2>/dev/null || true
   _install_config "$_wbc_tmp" || { _wmc_fail ""; return 1; }
@@ -954,6 +1041,7 @@ experimental_bearer_token = "$4"
 x-openai-actor-authorization = "byteask"
 EOF
     fi
+    _cfg_features_block
   } > "$_wsc_tmp" || { rm -f "$_wsc_tmp" 2>/dev/null; return 1; }
   _install_config "$_wsc_tmp" || return 1
   # Read back what landed. The provider flip is the whole point of this write;
@@ -1924,19 +2012,21 @@ _scr_tag() { printf '%s\n' "$_SCR_OPTS" | sed -n "${1}p" | cut -d'|' -f1; }
 _scr_goto_keys() {
   _SCR_MSGK=none; _SCR_MSG=''
   _SCR_STATE=keys; _scr_data
-  _SCR_OPTS="openai|OpenAI      $_D_VOA your key
+  # Managed first and marked recommended (owner, 2026-09-27): it is what almost every new
+  # user should pick, so it leads the list and a first-run bare Enter takes it.
+  _SCR_OPTS="managed|Use ByteAsk managed (recommended) $_G_DOT 20 models incl. GPT, Gemini & open models, 20% off API pricing
+openai|OpenAI      $_D_VOA your key
 anthropic|Anthropic   $_D_VAN your key
 gemini|Gemini      $_D_VGE your key"
   [ "$_D_NKEYS" -gt 0 ] && _SCR_OPTS="$_SCR_OPTS
 remove|Remove a key"
   _SCR_OPTS="$_SCR_OPTS
 selfhost|Your own hosted model $_G_DOT vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server
-managed|Use ByteAsk managed $_G_DOT 20 models incl. GPT, Gemini & open models, 20% off API pricing
 done|Done"
   _SCR_NOPT=$(_scr_opts_count)
-  # First run (no keys): bare Enter proceeds on managed. With keys: Done — a
-  # stray Enter can never mutate (§3.6).
-  if [ "$_D_NKEYS" = 0 ]; then _SCR_CUR=$((_SCR_NOPT - 1)); else _SCR_CUR=$_SCR_NOPT; fi
+  # First run (no keys): the cursor starts on managed, so bare Enter proceeds on it. With
+  # keys: Done — managed would then remove them, and a stray Enter can never mutate (§3.6).
+  if [ "$_D_NKEYS" = 0 ]; then _SCR_CUR=1; else _SCR_CUR=$_SCR_NOPT; fi
 }
 _scr_goto_account() {
   _SCR_MSGK=none; _SCR_MSG=''
@@ -2369,7 +2459,9 @@ _scr_settings() {   # $1 = entry screen (account|keys). 0 = ran (incl. fallback-
 
 # ---- sequential fallback (piped stdin, tests, dumb terminals, PLAIN_MENU) ----
 # This is the pre-redesign flow, kept byte-compatible for scripts + byok.sh —
-# plus the D3 managed-wipe confirm for behavior parity with the screen.
+# plus the D3 managed-wipe confirm for behavior parity with the screen. Its NUMBERS are
+# the interface here, so managed keeps row 6 (only labelled recommended) while the
+# interactive screen lists it first.
 _source_menu_seq() {
   while : ; do
     _ui_title "Set up your API keys"
@@ -2385,7 +2477,7 @@ _source_menu_seq() {
       "Gemini     - $_v_ge key" \
       "Remove a key" \
       "Use your own hosted model - vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server" \
-      "Use ByteAsk managed - 20 models incl. GPT, Gemini & open models, 20% off API pricing" \
+      "Use ByteAsk managed (recommended) - 20 models incl. GPT, Gemini & open models, 20% off API pricing" \
       "Done")
     case "$_choice" in
       1) _byok_add_key openai    || true ;;
@@ -2957,6 +3049,7 @@ while : ; do
   _retire_terse
   _models_access_fetch
   _catalog_refresh
+  _catalog_refresh_unsigned
   _has_self_endpoints && _models_merge
 
   # Per-user model availability: which models this account may not pick, and why.
