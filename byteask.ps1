@@ -885,7 +885,12 @@ function Invoke-ByokOff {
   if ((-not $offModel) -or $offModel.StartsWith('self/')) {
     $offModel = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' }
   }
-  if (-not (Write-ManagedConfig $offModel (Get-CfgLine '^(model_catalog_json = .*)$') $gw $jwt)) {
+  $catLine = Get-CfgLine '^(model_catalog_json = .*)$'
+  if (-not $catLine) {
+    $catPath = Join-Path $BYTEASK_HOME 'models-catalog.json'
+    if (Test-Path $catPath) { $catLine = 'model_catalog_json = "' + ($catPath -replace '\\','/') + '"' }
+  }
+  if (-not (Write-ManagedConfig $offModel $catLine $gw $jwt)) {
     Write-Err "byteask: still on your own key - the managed config could not be written."
     return
   }
@@ -916,11 +921,12 @@ experimental_bearer_token = "$jwt"
 x-openai-actor-authorization = "byteask"
 "@
   }
+  $modelLine = if ($model) { "model = `"$model`"`n" } else { '' }
+  $catalogLine = if ($catalog) { "$catalog`n" } else { '' }
   $cfg = @"
-model = "$model"
-model_provider = "openai"
+${modelLine}model_provider = "openai"
 web_search = "live"
-$catalog$idBlock
+$catalogLine$idBlock
 "@
   $cfg += (Get-ConfigFeaturesBlock)
   # Save-ConfigToml's readback checks the token; the provider flip is verified here.
@@ -934,7 +940,9 @@ function Invoke-ByokSubscription([string]$transport) {
   Write-Host "Note: OpenAI's own sign-in screen appears; Anthropic/Gemini keys don't mix into a subscription session."
   # Capture identity + config BEFORE the rewrite so the retained block carries the account forward.
   $jwt = Get-CurrentJwt
-  $model = Get-CfgLine '^model = "(.*)"$'; if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' } }
+  # Deliberately empty: do not carry a managed model into the ChatGPT catalog.
+  # The engine resolves a default against the live catalog instead.
+  $model = ''
   # I5: subscription sessions use the ChatGPT backend's OWN model list, so drop
   # model_catalog_json (our catalog would 400 there). Empty => engine fetches OpenAI's.
   $catalog = ''
