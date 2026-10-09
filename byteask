@@ -3,7 +3,7 @@
 # Thin wrapper over the engine so the client surface is fully ByteAsk-branded.
 set -eu
 
-VERSION="0.1.15"
+VERSION="0.1.16"
 DEFAULT_GATEWAY="https://code.byteask.ai"
 export BYTEASK_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
 export BYTEASK_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
@@ -206,7 +206,12 @@ _models_access_fetch() {
   _MA_FETCHED=0
   [ -f "$BYTEASK_HOME/models-catalog.json" ] || return 0
   command -v curl >/dev/null 2>&1 || return 0
-  _ma_tok="$(_byok_current_jwt 2>/dev/null)"
+  # The engine's own credential first: it is what every turn authenticates with, so it
+  # is the one known to be live. byok-config.json's `jwt` can be stale (2026-10-09: a
+  # signed-in Mac got 401 here on every launch while its turns worked, so it never got
+  # its overlay and saw every model). Fall back to it only with no managed token (BYOK).
+  _ma_tok="$(_managed_token 2>/dev/null)"
+  [ -n "$_ma_tok" ] || _ma_tok="$(_byok_current_jwt 2>/dev/null)"
   [ -n "$_ma_tok" ] || return 0
   _ma_gw="$(resolve_gateway)"; _ma_gw="${_ma_gw%/}"
   [ -n "$_ma_gw" ] || return 0

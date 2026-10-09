@@ -8,7 +8,7 @@
 #
 # Behavior parity with byteask/cli/byteask is intentional - keep them in sync.
 
-$VERSION = '0.1.15'
+$VERSION = '0.1.16'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
 
 $BYTEASK_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
@@ -222,7 +222,10 @@ function Invoke-ModelsAccessFetch {
   $script:MaFetched = $false
   $cat = Join-Path $BYTEASK_HOME 'models-catalog.json'
   if (-not (Test-Path $cat)) { return }
-  $tok = Get-CurrentJwt
+  # The engine's own credential first (see _models_access_fetch in the sh launcher): a
+  # stale byok-config.json jwt got 401 here on every launch, so the overlay never landed.
+  $tok = Get-ManagedToken
+  if (-not $tok) { $tok = Get-CurrentJwt }
   if (-not $tok) { return }
   $gw = (Resolve-Gateway).TrimEnd('/')
   if (-not $gw) { return }
