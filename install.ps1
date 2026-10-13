@@ -228,14 +228,7 @@ if ($env:BYTEASK_REF) {
   }
 }
 
-# Carry an existing login token across updates (config.toml is rewritten below).
-$prevToken = ''
 $cfgPath = Join-Path $ByteHome 'config.toml'
-if (Test-Path $cfgPath) {
-  $m = Select-String -Path $cfgPath -Pattern '^experimental_bearer_token = "(.*)"$'
-  if ($m) { $prevToken = $m.Matches[0].Groups[1].Value }
-}
-$tokenLine = if ($prevToken) { "experimental_bearer_token = `"$prevToken`"" } else { '' }
 # Model catalog: adds Claude (opus/sonnet) to /model with correct metadata (it
 # REPLACES the engine's bundled catalog, so only reference it after the download
 # validates). Fail-safe: skip on any failure (Claude still routes via the gateway).
@@ -293,7 +286,10 @@ foreach ($sk in @('compress')) {
   } catch { Remove-Item -Force -ErrorAction SilentlyContinue $skTmp }
 }
 
-$cfg = @"
+# On fresh install: write default config.toml. On updates: preserve existing config.toml
+# (keeps user's selected model, BYOK/subscription provider, [features], and login token).
+if (-not (Test-Path $cfgPath)) {
+  $cfg = @"
 model = "$Model"
 model_provider = "byteask"
 web_search = "live"
@@ -304,12 +300,27 @@ name = "ByteAsk"
 base_url = "$Gateway/byteask/v1"
 wire_api = "responses"
 requires_openai_auth = false
-$tokenLine
 
 [model_providers.byteask.http_headers]
 x-openai-actor-authorization = "byteask"
 "@
-Set-Content -Path $cfgPath -Value $cfg
+  Set-Content -Path $cfgPath -Value $cfg
+} elseif ($catalogLine -and -not (Select-String -Path $cfgPath -Pattern '^model_catalog_json' -Quiet)) {
+  # Upgrade from an older release lacking model_catalog_json: insert before the first table.
+  $lines = @(Get-Content $cfgPath -ErrorAction SilentlyContinue)
+  $inserted = $false
+  $newLines = New-Object System.Collections.Generic.List[string]
+  foreach ($line in $lines) {
+    if ((-not $inserted) -and ($line -match '^\s*\[')) {
+      $newLines.Add($catalogLine); $newLines.Add('')
+      $inserted = $true
+    }
+    $newLines.Add($line)
+  }
+  if (-not $inserted) { $newLines.Add($catalogLine) }
+  Set-Content -Path $cfgPath -Value ($newLines -join "`r`n")
+}
+
 
 # Add BinDir to the user PATH (Windows only; registry-backed, persists).
 $pathNote = ''

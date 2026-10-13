@@ -343,15 +343,7 @@ end
 # ===== end ByteAsk GDB bridge =====
 GDBINIT_BLOCK
 fi
-# Carry an existing login token across updates: config.toml holds it
-# (`byteask login` writes it here), and we rewrite config.toml below — so
-# without this an update would silently log the user out.
-PREV_TOKEN=""
-if [ -f "$HOME_DIR/config.toml" ]; then
-  PREV_TOKEN="$(sed -n 's/^experimental_bearer_token = "\(.*\)"$/\1/p' "$HOME_DIR/config.toml" | head -n1)"
-fi
-TOKEN_LINE=""
-[ -n "$PREV_TOKEN" ] && TOKEN_LINE="experimental_bearer_token = \"$PREV_TOKEN\""
+
 # Model catalog: adds Claude (opus/sonnet) to /model with correct metadata. It
 # REPLACES the engine's bundled catalog, so only reference it after the download
 # validates. Fail-safe: skip on any failure (Claude still routes via the gateway).
@@ -410,7 +402,10 @@ for _sk in compress; do
   fi
 done
 
-cat > "$HOME_DIR/config.toml" <<EOF
+# On fresh install: write default config.toml. On updates: preserve existing config.toml
+# (keeps user's selected model, BYOK/subscription provider, [features], and login token).
+if [ ! -f "$HOME_DIR/config.toml" ]; then
+  cat > "$HOME_DIR/config.toml" <<EOF
 model = "$MODEL"
 model_provider = "byteask"
 web_search = "live"
@@ -421,11 +416,20 @@ name = "ByteAsk"
 base_url = "$GATEWAY_URL/byteask/v1"
 wire_api = "responses"
 requires_openai_auth = false
-$TOKEN_LINE
 
 [model_providers.byteask.http_headers]
 x-openai-actor-authorization = "byteask"
 EOF
+elif [ -n "$CATALOG_LINE" ] && ! grep -q '^model_catalog_json' "$HOME_DIR/config.toml" 2>/dev/null; then
+  # Upgrade from an older release lacking model_catalog_json: insert before the first table.
+  _cfg_tmp="$HOME_DIR/.config.toml.tmp.$$"
+  awk -v catline="$CATALOG_LINE" '
+    !inserted && /^[[:space:]]*\[/ { print catline "\n"; inserted = 1 }
+    { print }
+    END { if (!inserted) print catline }
+  ' "$HOME_DIR/config.toml" > "$_cfg_tmp" 2>/dev/null && mv -f "$_cfg_tmp" "$HOME_DIR/config.toml" 2>/dev/null || rm -f "$_cfg_tmp" 2>/dev/null
+fi
+
 
 # Two lines on the happy path (docs/terminal-surfaces-plan.md I2, § 4 rule 7).
 # What was here before named a competitor in our own success line (operating
