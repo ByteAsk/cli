@@ -17,12 +17,17 @@ export BYTEASK_HOME="$TMP/home"; mkdir -p "$BYTEASK_HOME" "$TMP/bin"
 echo '{"models":[{"slug":"gpt-5.4"}]}' > "$BYTEASK_HOME/models-catalog.json"
 
 # stub curl: records the Authorization header it was given, answers the overlay.
+# The wrapper hands the header over on stdin (-H @-) so the token never appears on
+# the command line; a header given on argv is still recorded.
 cat > "$TMP/bin/curl" <<EOT
 #!/bin/sh
 _out=""; _auth=""
 while [ \$# -gt 0 ]; do case "\$1" in
   -o) _out="\$2"; shift 2;;
-  -H) case "\$2" in Authorization:*) _auth="\$2";; esac; shift 2;;
+  -H) case "\$2" in
+        @-) _auth="\$(grep '^Authorization:' | head -n1)";;
+        Authorization:*) _auth="\$2";;
+      esac; shift 2;;
   --max-time|-m) shift 2;;
   *) shift;;
 esac; done

@@ -340,6 +340,7 @@ case "$(printf '%s' "${BYTEASK_NO_TELEMETRY:-}" | tr '[:upper:]' '[:lower:]')" i
 esac
 
 HOME_DIR="${BYTEASK_HOME:-$HOME/.byteask}"; mkdir -p "$HOME_DIR"
+chmod 700 "$HOME_DIR" 2>/dev/null || true   # holds the session token and any provider keys
 printf '%s' "$GATEWAY_URL" > "$HOME_DIR/gateway"
 # Persist an optional referral code for the first `byteask login` (one-shot; the
 # wrapper deletes it after a successful sign-in). Best-effort.
@@ -451,7 +452,13 @@ if [ -f "$HOME_DIR/config.toml" ]; then
 fi
 case "$PREV_PROVIDER" in
   byok-local|openai) : ;;
-  *) cat > "$HOME_DIR/config.toml" <<EOF
+  *)
+# config.toml carries the bearer token, so it is born owner-only (umask in a
+# subshell) and moved into place, instead of being truncated in place with
+# whatever mode an earlier write left. A symlinked config (dotfile managers) is
+# written through the link, as before.
+_CFG="$HOME_DIR/config.toml"; _CFG_TMP="$HOME_DIR/.config.toml.tmp.$$"
+( umask 077; cat > "$_CFG_TMP" ) <<EOF
 model = "$MODEL"
 model_provider = "byteask"
 web_search = "live"
@@ -467,6 +474,11 @@ $TOKEN_LINE
 [model_providers.byteask.http_headers]
 x-openai-actor-authorization = "byteask"
 EOF
+if [ -L "$_CFG" ]; then
+  cat "$_CFG_TMP" > "$_CFG"; rm -f "$_CFG_TMP"; chmod 600 "$_CFG" 2>/dev/null || true
+else
+  mv -f "$_CFG_TMP" "$_CFG"
+fi
      ;;
 esac
 

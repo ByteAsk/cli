@@ -531,7 +531,10 @@ has "not signed in" "$OUT" "second logout is graceful (already logged out)"
 echo "== telemetry opt-out: the sidecar is started (or restarted once) with BYTEASK_NO_TELEMETRY =="
 # ensure_sidecar on its own, with the real curl: a web server stands in for /healthz
 # and a fake sidecar records the BYTEASK_NO_TELEMETRY it was started with.
-SCT="$TMP/sct"; mkdir -p "$SCT/web" "$SCT/home"; : > "$SCT/web/healthz"
+SCT="$TMP/sct"; mkdir -p "$SCT/web" "$SCT/home"
+# /healthz names the config the sidecar serves; ensure_sidecar only keeps a listener
+# that reports this install's path.
+printf '{"ok": true, "config": "%s"}\n' "$SCT/home/byok-config.json" > "$SCT/web/healthz"
 SCPORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
 ( cd "$SCT/web" && exec python3 -m http.server "$SCPORT" --bind 127.0.0.1 >/dev/null 2>&1 ) & SCSRV=$!
 cat > "$SCT/sidecar.py" <<'SC_EOF'
@@ -539,11 +542,14 @@ import os
 open(os.environ["SC_LOG"], "a").write("started NO_TELEMETRY=%s\n" % os.environ.get("BYTEASK_NO_TELEMETRY", ""))
 SC_EOF
 touch -d '2020-01-01' "$SCT/sidecar.py"
-for f in _no_telemetry ensure_sidecar; do awk "/^$f\\(\\) \\{/,/^\\}/" "$WRAP"; done > "$SCT/fns.sh"
+{ grep '^_json() \|^_sidecar_up() ' "$WRAP"   # one-line helpers
+  for f in _sidecar_identity_ok _sidecar_foreign _no_telemetry ensure_sidecar; do awk "/^$f\\(\\) \\{/,/^\\}/" "$WRAP"; done
+} > "$SCT/fns.sh"
 sc_run() {  # $1 = BYTEASK_NO_TELEMETRY for this launch ('' = not set)
   ( PATH="${PATH#"$BIN:"}"; unset BYOK_SKIP_SIDECAR BYTEASK_NO_TELEMETRY
     if [ -n "$1" ]; then BYTEASK_NO_TELEMETRY="$1"; export BYTEASK_NO_TELEMETRY; fi
     BYTEASK_HOME="$SCT/home"; BYOK_PORT="$SCPORT"; BYOK_SIDECAR="$SCT/sidecar.py"
+    BYOK_CFG="$SCT/home/byok-config.json"
     SC_LOG="$SCT/log"; export SC_LOG
     . "$SCT/fns.sh"; ensure_sidecar )
 }
