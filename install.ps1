@@ -113,8 +113,9 @@ function Expand-Variant($v, $src, $dst) {
 # already rewrite the asset. The digest's real value is catching corruption -
 # truncated transfers, caching proxies, mangled CDN objects - against which absence
 # carries no signal. Failing closed would instead brick installs on every flaky or
-# filtering network, break the code.byteask.ai fallback (which serves no SHA256SUMS)
-# and break every already-published release. Set BYTEASK_REQUIRE_SHA256=1 to make
+# filtering network, break the code.byteask.ai fallback whenever it serves an asset
+# without a matching SHA256SUMS (it has not always carried one; today it serves the
+# same file as GitHub), and break every older release. Set BYTEASK_REQUIRE_SHA256=1 to make
 # absence fatal too.
 function Get-Engine($base) {   # $true on success (including "already current")
   $man = Get-Manifest $base
