@@ -848,7 +848,9 @@ function Invoke-ByokSet([string[]]$rest) {
     Write-Err "usage: byteask byok set <openai|anthropic|gemini> [--subscription [--device|--browser]]"; exit 2 }
   if ($prov -eq 'openai' -and (($rest -contains '--subscription') -or ($rest -contains '--sub'))) {
     $transport = if ($rest -contains '--device') { '--device' } elseif ($rest -contains '--browser') { '--browser' } else { '' }
-    Invoke-ByokSubscription $transport; return }
+    Invoke-ByokSubscription $transport
+    if (-not $script:SubscriptionOk) { exit 1 }
+    return }
   if (-not (Add-ByokKey $prov)) { exit 1 }
   Write-Host "Keyed providers bill to your account; other models use ByteAsk managed (counts toward your usage)."
   Write-Host "Relaunching..."
@@ -919,9 +921,12 @@ experimental_bearer_token = "$jwt"
 x-openai-actor-authorization = "byteask"
 "@
   }
+  # An EMPTY model writes no `model =` line at all, so the engine resolves a default
+  # against the ChatGPT catalog. Carrying the managed model over (e.g. gpt-5.4, which
+  # ChatGPT accounts are not served) makes every turn of the session fail.
+  $modelLine = if ($model) { "model = `"$model`"`r`n" } else { '' }
   $cfg = @"
-model = "$model"
-model_provider = "openai"
+${modelLine}model_provider = "openai"
 web_search = "live"
 $catalog$idBlock
 "@
@@ -932,30 +937,279 @@ $catalog$idBlock
   return $true
 }
 
-function Invoke-ByokSubscription([string]$transport) {
-  Write-Host "Sign in with your ChatGPT subscription (Plus/Pro/Business)."
-  Write-Host "Note: OpenAI's own sign-in screen appears; Anthropic/Gemini keys don't mix into a subscription session."
-  # Capture identity + config BEFORE the rewrite so the retained block carries the account forward.
+# ---- ChatGPT subscription (parity with byok_subscription* in cli/byteask) ----------
+
+# Remember the managed session being left, so "Use ByteAsk managed" can restore the
+# exact model + catalog. Two lines: model, then the model_catalog_json line verbatim.
+# Best-effort: a failure here never blocks the switch.
+function Save-ManagedSession([string]$model, [string]$catalog) {
+  $dest = Join-Path $BYTEASK_HOME 'managed-session.prev'
+  $tmp = "$dest.tmp.$PID"
+  try {
+    New-Item -ItemType Directory -Force -Path $BYTEASK_HOME -ErrorAction SilentlyContinue | Out-Null
+    Set-Content -Path $tmp -Value @($model, $catalog) -ErrorAction Stop
+    Move-Item -Force -Path $tmp -Destination $dest -ErrorAction Stop
+  } catch { Remove-Item -Force -ErrorAction SilentlyContinue $tmp }
+}
+function Get-ActiveProvider { return (Get-CfgLine '^model_provider = "(.*)"$') }
+# Only record a session that is actually MANAGED: subscription -> subscription would
+# otherwise overwrite the saved managed session with ChatGPT-only state.
+function Save-ManagedSessionIfManaged {
+  if ((Get-ActiveProvider) -ne 'byteask') { return }
+  $prev = Get-CfgLine '^model = "(.*)"$'
+  if (-not $prev) { $prev = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' } }
+  Save-ManagedSession $prev (Get-CfgLine '^(model_catalog_json = .*)$')
+}
+
+# The client-version floor from the last flags refresh, or ''. Re-validated on read:
+# the file is user-writable and the value becomes an HTTP header.
+function Get-SubscriptionVersionFloor {
+  $f = Join-Path $BYTEASK_HOME 'subscription-flags'
+  if (-not (Test-Path $f)) { return '' }
+  foreach ($line in (Get-Content $f -ErrorAction SilentlyContinue)) {
+    if ($line -match '^reported_version_floor=(\d+\.\d+\.\d+)$') { return $Matches[1] }
+  }
+  return ''
+}
+
+# The models a ChatGPT-subscription session may offer (same measured list as the sh
+# wrapper; `@x.y.z` = offered only once the server-supplied floor reaches it).
+$BYTEASK_SUBSCRIPTION_MODELS = 'gpt-6-astra gpt-6-sol@0.155.0 gpt-6-luna@0.155.0 gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna'
+$SUBSCRIPTION_CATALOG_PY = @'
+import copy, json, os, sys
+src, dest = sys.argv[1], sys.argv[2]
+
+def ver(v):
+    try:
+        a, b, c = (int(x) for x in v.split("."))
+        return (a, b, c)
+    except Exception:
+        return None
+
+floor = ver(os.environ.get("BK_SUB_FLOOR") or "")
+SYNTH = {
+    "gpt-6-sol": {
+        "display_name": "GPT-6-Sol",
+        "description": "Workhorse model for coding and everyday work.",
+        "default_reasoning_level": "medium",
+        "levels": ["low", "medium", "high", "xhigh", "max", "ultra"],
+    },
+    "gpt-6-luna": {
+        "display_name": "GPT-6-Luna",
+        "description": "Fast and affordable model for easier tasks.",
+        "default_reasoning_level": "medium",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+    },
+}
+d = json.load(open(src, encoding="utf-8"))
+by_slug = {m.get("slug"): m for m in d.get("models") or []}
+wanted = []
+for tok in (os.environ.get("BK_SUB_MODELS") or "").split():
+    slug, _, minv = tok.partition("@")
+    if minv and (floor is None or ver(minv) is None or floor < ver(minv)):
+        continue
+    wanted.append(slug)
+models = []
+for slug in wanted:
+    if slug in by_slug:
+        models.append(copy.deepcopy(by_slug[slug]))
+    elif slug in SYNTH and "gpt-6-astra" in by_slug:
+        m = copy.deepcopy(by_slug["gpt-6-astra"])
+        o = SYNTH[slug]
+        m["slug"] = slug
+        m["display_name"] = o["display_name"]
+        m["description"] = o["description"]
+        m["default_reasoning_level"] = o["default_reasoning_level"]
+        levels = {l["effort"]: l for l in m.get("supported_reasoning_levels") or []}
+        m["supported_reasoning_levels"] = [levels[e] for e in o["levels"] if e in levels]
+        m.pop("availability_nux", None)
+        models.append(m)
+if len(models) < 2:
+    sys.exit(1)
+for i, m in enumerate(models):
+    m["show_in_picker"] = True
+    m["is_default"] = i == 0
+    m["priority"] = i + 1
+d["models"] = models
+tmp = dest + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(d, f)
+os.replace(tmp, dest)
+print("OK")
+'@
+# Write $dest = the managed catalog filtered to the subscription models. $true on
+# success; on any failure the previous file (if any) is left alone and the caller
+# falls back to writing no model_catalog_json.
+function Write-SubscriptionCatalog([string]$dest) {
+  $src = Join-Path $BYTEASK_HOME 'models-catalog.json'
+  if (-not (Test-Path $src)) { return $false }
+  $env:BK_SUB_MODELS = $BYTEASK_SUBSCRIPTION_MODELS
+  $env:BK_SUB_FLOOR = Get-SubscriptionVersionFloor
+  try { $out = Invoke-Py $SUBSCRIPTION_CATALOG_PY @($src, $dest) }
+  finally { Remove-Item Env:\BK_SUB_MODELS, Env:\BK_SUB_FLOOR -ErrorAction SilentlyContinue }
+  return (("$out".Trim() -eq 'OK') -and (Test-Path $dest) -and ((Get-Item $dest).Length -gt 0))
+}
+function Get-SubscriptionCatalogLine {
+  $p = Join-Path $BYTEASK_HOME 'models-catalog-subscription.json'
+  if (Write-SubscriptionCatalog $p) { return ('model_catalog_json = "' + ($p -replace '\\','/') + '"') }
+  return ''
+}
+
+# The signed-in ChatGPT account's plan (go, free, plus, pro, ...), or '' when it cannot
+# be read. One definition for both the sign-in gate and the per-launch warning.
+$CHATGPT_PLAN_PY = @'
+import base64, json, sys
+try:
+    tok = json.load(open(sys.argv[1]))["tokens"]["id_token"]
+    seg = tok.split(".")[1]; seg += "=" * (-len(seg) % 4)
+    claims = json.loads(base64.urlsafe_b64decode(seg))
+    print((claims.get("https://api.openai.com/auth") or {}).get("chatgpt_plan_type") or "")
+except Exception:
+    pass
+'@
+function Get-ChatgptPlanType {
+  $auth = Join-Path $BYTEASK_HOME 'auth.json'
+  if (-not (Test-Path $auth)) { return '' }
+  $out = Invoke-Py $CHATGPT_PLAN_PY @($auth)
+  return "$out".Trim()
+}
+# Plans measured to be served no model at all. A DENYLIST on purpose: an unknown plan
+# string switches (and works or fails on its own), it is never locked out.
+function Test-PlanUnsupported([string]$plan) { return (@('go','free') -contains $plan) }
+function Show-ChatgptPlanWarning {
+  $plan = Get-ChatgptPlanType
+  if (-not (Test-PlanUnsupported $plan)) { return }
+  Write-Err ""
+  Write-Err "  This ChatGPT account is on the ""$plan"" plan, which does not include the"
+  Write-Err "  GPT-5.6 models OpenAI serves to subscription clients, so every model"
+  Write-Err "  will fail - with an error that wrongly blames an out-of-date client."
+  Write-Err "  Upgrade to ChatGPT Plus or higher, or run /login and choose"
+  Write-Err "  ""Use ByteAsk managed""."
+  Write-Err ""
+}
+
+# Refresh the subscription kill-switch flags the engine reads when /login opens.
+# Public GET, best-effort, and cached for an hour so it costs nothing on most
+# launches (Windows PowerShell has no cheap background job for this). Any failure
+# leaves the existing file untouched. BYTEASK_SUBSCRIPTION_FLAGS_LOCAL=1 pins it.
+function Update-SubscriptionFlags {
+  if ($env:BYTEASK_SUBSCRIPTION_FLAGS_LOCAL -eq '1') { return }
+  $f = Join-Path $BYTEASK_HOME 'subscription-flags'
+  if ((Test-Path $f) -and ((Get-Item $f).LastWriteTime -gt (Get-Date).AddHours(-1))) { return }
+  try {
+    $gw = (Resolve-Gateway).TrimEnd('/')
+    $d = Invoke-RestMethod -UseBasicParsing -TimeoutSec 3 "$gw/byteask/v1/subscription-flags" -ErrorAction Stop
+    if ($null -eq $d -or $d -is [string] -or $d -is [array]) { return }
+    $b = { param($x) if ($x -eq $true) { '1' } else { '0' } }
+    $lines = @("chatgpt=$(& $b $d.chatgpt)", "claude=$(& $b $d.claude)", "claude_launcher=$(& $b $d.claude_launcher)")
+    $floor = "$($d.reported_version_floor)"
+    if ($floor -match '^\d+\.\d+\.\d+$') { $lines += "reported_version_floor=$floor" }
+    $tmp = "$f.tmp"
+    Set-Content -Path $tmp -Value $lines -ErrorAction Stop
+    Move-Item -Force -Path $tmp -Destination $f -ErrorAction Stop
+  } catch { }
+}
+
+# Finish a sign-in the ENGINE already performed (marker `subscription-ready chatgpt`):
+# the provider swap and nothing else. Prints nothing on success by design.
+function Invoke-ByokSubscriptionFinish {
   $jwt = Get-CurrentJwt
-  $model = Get-CfgLine '^model = "(.*)"$'; if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' } }
-  # I5: subscription sessions use the ChatGPT backend's OWN model list, so drop
-  # model_catalog_json (our catalog would 400 there). Empty => engine fetches OpenAI's.
-  $catalog = ''
+  Save-ManagedSessionIfManaged
+  $catalog = Get-SubscriptionCatalogLine
+  if (-not (Write-SubscriptionConfig '' $catalog (Resolve-Gateway).TrimEnd('/') $jwt)) {
+    Write-Err "byteask: signed in, but the config could not be saved."
+    return $false
+  }
+  return $true
+}
+
+# "Use ByteAsk managed" from a subscription session (marker `managed`). Invoke-ByokOff
+# cannot serve this: it reads the model and catalog from the CURRENT config, which in a
+# subscription session is the ChatGPT model and the filtered catalog.
+function Invoke-ByokUseManaged {
+  $jwt = Get-CurrentJwt; $gw = (Resolve-Gateway).TrimEnd('/')
+  $model = ''; $catalog = ''
+  $prevf = Join-Path $BYTEASK_HOME 'managed-session.prev'
+  if (Test-Path $prevf) {
+    $prev = @(Get-Content $prevf -ErrorAction SilentlyContinue)
+    if ($prev.Count -ge 1) { $model = "$($prev[0])".Trim() }
+    if ($prev.Count -ge 2) { $catalog = "$($prev[1])".Trim() }
+  }
+  if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' } }
+  if (-not $catalog) { $catalog = 'model_catalog_json = "' + ((Join-Path $BYTEASK_HOME 'models-catalog.json') -replace '\\','/') + '"' }
+  if (-not (Write-ManagedConfig $model $catalog $gw $jwt)) {
+    Write-Err "byteask: could not switch back to ByteAsk managed - your config was left as is."
+    return $false
+  }
+  Remove-Item -Force -ErrorAction SilentlyContinue $prevf
+  Write-Host "Switched back to ByteAsk managed (model: $model)."
+  return $true
+}
+
+# Full sign-in flow, run by the wrapper (`byteask byok set openai --subscription`, or
+# an engine that still sends the legacy `subscription chatgpt` marker). Sets
+# $script:SubscriptionOk instead of returning a value: `& $ENGINE login` writes to the
+# pipeline, so a return value would be mixed with its output. Never exits: from the
+# marker path the caller relaunches.
+function Invoke-ByokSubscription([string]$transport) {
+  $script:SubscriptionOk = $false
+  # Capture the ByteAsk identity and the managed session BEFORE anything is rewritten.
+  $jwt = Get-CurrentJwt
+  Save-ManagedSessionIfManaged
+  # A filtered OpenAI-only catalog that keeps ByteAsk's instructions; dropping the
+  # catalog entirely hands the picker and default to the engine's bundled list.
+  $catalog = Get-SubscriptionCatalogLine
   $gw = (Resolve-Gateway).TrimEnd('/')
-  # Browser callback vs device-code. Device-code works with no local browser
-  # (SSH/headless); it needs enabling once in the user's ChatGPT security settings.
+  Write-Host "Requires ChatGPT Plus or higher. Free and Go accounts are not supported."
+
+  # Browser callback vs device-code. Device-code works with no local browser (SSH).
   $headless = (-not $env:DISPLAY) -and ($env:SSH_CONNECTION -or $env:SSH_TTY)
   $loginArg = switch ($transport) { '--device' { '--device-auth' } '--browser' { '' } default { if ($headless) { '--device-auth' } else { '' } } }
-  if ($loginArg) {
-    Write-Host "No local browser detected - using device-code sign-in. Enable it once in your ChatGPT security settings if this is your first device-code login."
-    & $ENGINE login $loginArg
-  } else { & $ENGINE login }
-  if ($LASTEXITCODE -ne 0) { Write-Err "ChatGPT sign-in failed."; exit 1 }
-  if (-not (Write-SubscriptionConfig $model $catalog $gw $jwt)) {
-    Write-Err "byteask: ChatGPT sign-in succeeded, but the config could not be saved."
-    exit 1
+  if ($loginArg -and -not $transport) { Write-Host "No local browser detected - using device-code sign-in." }
+
+  # `login` REPLACES auth.json before the new account can be inspected, so keep the
+  # old credential and put it back on any path that does not complete the switch.
+  $auth = Join-Path $BYTEASK_HOME 'auth.json'
+  $authBak = Join-Path $BYTEASK_HOME ".auth.json.presub.$PID"
+  $hadAuth = $false
+  if (Test-Path $auth) { try { Copy-Item -Force $auth $authBak -ErrorAction Stop; $hadAuth = $true } catch { } }
+  $restoreAuth = {
+    if ($hadAuth) { Move-Item -Force $authBak $auth -ErrorAction SilentlyContinue }
+    else { Remove-Item -Force -ErrorAction SilentlyContinue $auth }
+    Remove-Item -Force -ErrorAction SilentlyContinue $authBak
   }
-  Write-Host "ChatGPT subscription active (OpenAI-only session). 'byteask byok off' to return to managed."
+
+  if ($loginArg) { & $ENGINE login $loginArg } else { & $ENGINE login }
+  if ($LASTEXITCODE -ne 0) { Write-Err "ChatGPT sign-in failed."; & $restoreAuth; $script:SubscriptionOk = $false; return }
+
+  # Refuse a plan that is served no model, rather than switching into a session where
+  # every turn fails. Log the unusable credential out (it may sit in the OS keyring),
+  # then restore whatever was there before. The ByteAsk session is untouched.
+  $plan = Get-ChatgptPlanType
+  if (Test-PlanUnsupported $plan) {
+    Write-Err ""
+    Write-Err "  Signed in, but this ChatGPT account is on the ""$plan"" plan."
+    Write-Err "  OpenAI serves no model to ByteAsk on that plan - every model was refused"
+    Write-Err "  when we checked, so the session would fail on your first message."
+    Write-Err ""
+    Write-Err "  Your ByteAsk session is unchanged. To use your subscription, upgrade to"
+    Write-Err "  ChatGPT Plus or higher and run /login again."
+    Write-Err ""
+    try { & $ENGINE logout *> $null } catch { }
+    & $restoreAuth
+    $script:SubscriptionOk = $false; return
+  }
+
+  # Empty model: let the engine pick a default from the ChatGPT catalog.
+  if (-not (Write-SubscriptionConfig '' $catalog $gw $jwt)) {
+    Write-Err "byteask: ChatGPT sign-in succeeded, but the config could not be saved."
+    & $restoreAuth
+    $script:SubscriptionOk = $false; return
+  }
+  Remove-Item -Force -ErrorAction SilentlyContinue $authBak
+  Write-Host "Switched to your ChatGPT subscription (OpenAI models only)."
+  Write-Host "Run /login and choose ""Use ByteAsk managed"" to switch back."
+  $script:SubscriptionOk = $true; return
 }
 
 # ByteAsk C/C++ methodology appended to a launched Claude session (Phase 2a).
@@ -2267,6 +2521,10 @@ while ($true) {
   # Windows says so only in an event log. Warn before the launch that will fail.
   Show-CodeIntegrityWarning
 
+  # Subscription kill-switch flags the engine reads when /login opens (parity with
+  # _refresh_subscription_flags). Cached for an hour; never blocks for more than 3s.
+  Update-SubscriptionFlags
+
   # No terminal + a prompt/args -> the interactive TUI fails with "stdin is not a terminal".
   # Point at `exec` (the headless one-shot mode) first. Only for a leading non-flag arg.
   if ([Console]::IsInputRedirected -and $script:LaunchArgs.Count -gt 0 -and $script:LaunchArgs[0] -ne 'exec' -and $script:LaunchArgs[0] -notlike '-*') {
@@ -2281,6 +2539,18 @@ while ($true) {
   # with nothing to bump. A user-set concrete value still wins as a manual escape hatch.
   if ((Test-Path $cfg) -and (Select-String -Path $cfg -Pattern '^model_provider = "openai"' -Quiet)) {
     if (-not $env:BYTEASK_REPORTED_VERSION) { $env:BYTEASK_REPORTED_VERSION = 'auto' }
+    # The server-supplied floor: the engine reports max(its own stamp, this) on the
+    # `auto` path only, so a stale value can never downgrade a newer build.
+    $rvf = Get-SubscriptionVersionFloor
+    if ($rvf) { $env:BYTEASK_REPORTED_VERSION_FLOOR = $rvf }
+    Show-ChatgptPlanWarning
+    # Re-derive the filtered catalog each launch so it tracks catalog refreshes. A
+    # config written before this existed has no model_catalog_json at all and keeps
+    # the engine's bundled list; add the line once (keeping the ByteAsk identity).
+    $subCat = Get-SubscriptionCatalogLine
+    if ($subCat -and -not (Select-String -Path $cfg -Pattern '^model_catalog_json = ' -Quiet)) {
+      [void](Write-SubscriptionConfig '' $subCat (Resolve-Gateway).TrimEnd('/') (Get-CurrentJwt))
+    }
   }
 
   & $ENGINE @script:LaunchArgs
@@ -2311,7 +2581,15 @@ while ($true) {
     # Email already typed into the in-TUI form: pass it as a HINT so a refused address
     # re-prompts here instead of exiting the way an explicit --email must.
     elseif ($detail -like 'signin *') { Invoke-Login ($detail.Substring(7)).Trim() '' $true }
+    # The ENGINE ran the OAuth and the plan check in its own pane and is already
+    # signed in; only the provider swap in config.toml is left. Prints nothing.
+    elseif ($detail -eq 'subscription-ready chatgpt') { [void](Invoke-ByokSubscriptionFinish) }
+    # Legacy verb: an engine that still expects the wrapper to run the whole flow.
+    # A refusal must not end the session: the loop relaunches the engine either way.
     elseif ($detail -eq 'subscription chatgpt') { Invoke-ByokSubscription '' }
+    # "Use ByteAsk managed" from a subscription session. The engine does not own
+    # config.toml; without this verb the row fell through to the legacy menu.
+    elseif ($detail -eq 'managed') { [void](Invoke-ByokUseManaged) }
     elseif ($detail -eq 'subscription claude') {
       Write-Err "Claude subscription needs the ByteAsk engine build that includes the Anthropic module; not available yet."
       Write-Err "Use an Anthropic API key meanwhile:  byteask byok set anthropic"
