@@ -354,6 +354,9 @@ function Invoke-Py([string]$Code, [string[]]$ExtraArgs) {
 }
 
 # JSON ops via python (BYOK requires python anyway - no jq/PS-JSON edge cases).
+# The pairs carry provider keys and the session JWT, so they reach python through the
+# environment (BYOK_PAIRS), never its command line, which other processes can read.
+# Written to a temp file and swapped in, so a reader never sees a torn file.
 $BYOK_MERGE_PY = @'
 import json,sys,os
 path=sys.argv[1]
@@ -361,7 +364,9 @@ try: cfg=json.load(open(path))
 except Exception: cfg={}
 if not isinstance(cfg,dict): cfg={}
 cfg.setdefault("keys",{})
-for pair in sys.argv[2:]:
+for pair in (os.environ.get("BYOK_PAIRS") or "").split("\n"):
+    pair=pair.rstrip("\r")
+    if not pair: continue
     k,_,v=pair.partition("=")
     if k.startswith("keys."):
         prov=k[5:]
@@ -370,16 +375,22 @@ for pair in sys.argv[2:]:
     else:
         if v: cfg[k]=v
         else: cfg.pop(k,None)
-os.makedirs(os.path.dirname(path),exist_ok=True)
-open(path,"w").write(json.dumps(cfg))
-try: os.chmod(path,0o600)
+os.makedirs(os.path.dirname(path) or ".",exist_ok=True)
+tmp=path+".tmp.%d"%os.getpid()
+fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+try: os.write(fd,json.dumps(cfg).encode())
+finally: os.close(fd)
+try: os.chmod(tmp,0o600)
 except Exception: pass
+os.replace(tmp,path)
 '@
 $BYOK_FIELD_PY = 'import json,sys' + "`n" + 'try: print(json.load(open(sys.argv[1])).get(sys.argv[2]) or "")' + "`n" + 'except Exception: print("")'
 $BYOK_COUNT_PY = 'import json,sys' + "`n" + 'try: print(len((json.load(open(sys.argv[1])).get("keys") or {})))' + "`n" + 'except Exception: print(0)'
 
 function Invoke-ByokMerge([string[]]$pairs) {
-  [void](Invoke-Py $BYOK_MERGE_PY (@($BYOK_CFG) + $pairs))
+  $env:BYOK_PAIRS = ($pairs -join "`n")
+  try { [void](Invoke-Py $BYOK_MERGE_PY @($BYOK_CFG)) }
+  finally { Remove-Item Env:\BYOK_PAIRS -ErrorAction SilentlyContinue }
 }
 function Get-ByokField([string]$name) {
   if (-not (Test-Path $BYOK_CFG)) { return '' }
@@ -678,21 +689,56 @@ function Test-SidecarHealth {
   try { $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$BYOK_PORT/healthz"; return $true }
   catch { return $false }
 }
+# True when the listener on $BYOK_PORT is a sidecar serving THIS install's config
+# (/healthz reports the config path it reads). Paths are compared case- and
+# slash-insensitively, since python may report `~/.byteask` with mixed separators.
+function Test-SidecarIdentity {
+  try {
+    $h = Invoke-RestMethod -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$BYOK_PORT/healthz" -ErrorAction Stop
+    if (-not $h -or -not $h.config) { return $false }
+    $norm = { param($p) ("$p" -replace '/', '\').TrimEnd('\').ToLowerInvariant() }
+    return ((& $norm $h.config) -eq (& $norm $BYOK_CFG))
+  } catch { return $false }
+}
+$script:SidecarForeign = $false
+function Write-SidecarForeign {
+  $script:SidecarForeign = $true
+  Write-Err "byteask: port $BYOK_PORT on 127.0.0.1 is answering, but not as this install's BYOK sidecar."
+  Write-Err "  Stop whatever is using that port, then start byteask again."
+}
 function Ensure-Sidecar {
+  $script:SidecarForeign = $false
   if ($env:BYOK_SKIP_SIDECAR) { return $true }
   if (-not (Test-Path $BYOK_SIDECAR)) { Write-Err "byteask: BYOK sidecar not installed; run 'byteask --update'."; return $false }
   $pidf = Join-Path $BYTEASK_HOME 'byok-sidecar.pid'
   if (Test-SidecarHealth) {
-    if ((Test-Path $pidf) -and ((Get-Item $pidf).LastWriteTime -gt (Get-Item $BYOK_SIDECAR).LastWriteTime)) { return $true }
+    if ((Test-SidecarIdentity) -and (Test-Path $pidf) -and ((Get-Item $pidf).LastWriteTime -gt (Get-Item $BYOK_SIDECAR).LastWriteTime)) { return $true }
     try { Stop-Process -Id ([int](Get-Content $pidf -ErrorAction SilentlyContinue)) -ErrorAction SilentlyContinue } catch {}
     Start-Sleep -Milliseconds 500
+    if (Test-SidecarHealth) {
+      # Still answering after we stopped our own: ours without a pid file (keep it),
+      # or some other listener, which the engine must never be pointed at.
+      if (Test-SidecarIdentity) { return $true }
+      Write-SidecarForeign; return $false
+    }
   }
   $py = Get-PyExe
   if (-not $py) { Write-Err "byteask: BYOK needs python (not found on PATH)."; return $false }
+  # Tell the sidecar exactly which config to read; it does not know BYTEASK_HOME and
+  # would otherwise fall back to ~/.byteask. Scoped to the child: restored right after.
+  $saved = @{ CODEX_HOME = $env:CODEX_HOME; BYOK_CONFIG_PATH = $env:BYOK_CONFIG_PATH }
   $env:BYOK_SIDECAR_PORT = $BYOK_PORT
-  $p = Start-Process -FilePath $py -ArgumentList $BYOK_SIDECAR -WindowStyle Hidden -PassThru
+  $env:CODEX_HOME = $BYTEASK_HOME
+  $env:BYOK_CONFIG_PATH = $BYOK_CFG
+  try {
+    $p = Start-Process -FilePath $py -ArgumentList "`"$BYOK_SIDECAR`"" -WindowStyle Hidden -PassThru
+  } finally {
+    $env:CODEX_HOME = $saved.CODEX_HOME
+    $env:BYOK_CONFIG_PATH = $saved.BYOK_CONFIG_PATH
+  }
   Set-Content -Path $pidf -Value $p.Id -NoNewline
-  for ($i = 0; $i -lt 30; $i++) { if (Test-SidecarHealth) { return $true }; Start-Sleep -Milliseconds 100 }
+  for ($i = 0; $i -lt 30; $i++) { if (Test-SidecarIdentity) { return $true }; Start-Sleep -Milliseconds 100 }
+  if (Test-SidecarHealth) { Write-SidecarForeign; return $false }
   Write-Err "byteask: BYOK sidecar didn't start."; return $false
 }
 
@@ -2234,7 +2280,12 @@ while ($true) {
 
   # BYOK mode: ensure the loopback sidecar is up + current before launching.
   if ((Test-Path $cfg) -and (Select-String -Path $cfg -Pattern '^model_provider = "byok-local"' -Quiet)) {
-    if (-not (Ensure-Sidecar)) { Write-Err "byteask: BYOK sidecar unavailable - own-key models may fail this run." }
+    if (-not (Ensure-Sidecar)) {
+      # The engine sends every turn (and the local token) to this port; never launch
+      # it against a listener that is not this install's sidecar.
+      if ($script:SidecarForeign) { exit 1 }
+      Write-Err "byteask: BYOK sidecar unavailable - own-key models may fail this run."
+    }
   }
 
   # ripgrep: the model shells out to `rg` for code search. Without it the engine falls

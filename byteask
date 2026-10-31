@@ -216,7 +216,9 @@ _models_access_fetch() {
   _ma_gw="$(resolve_gateway)"; _ma_gw="${_ma_gw%/}"
   [ -n "$_ma_gw" ] || return 0
   _acc="$BYTEASK_HOME/.model-access.json"
-  curl -fsSL --max-time 4 -H "Authorization: Bearer $_ma_tok" \
+  # The header goes in on stdin (`-H @-`), not argv: a token on curl's command line
+  # is readable by every local user through /proc/<pid>/cmdline.
+  printf 'Authorization: Bearer %s\n' "$_ma_tok" | curl -fsSL --max-time 4 -H @- \
        "$_ma_gw/byteask/v1/model-access" -o "$_acc.tmp" 2>/dev/null || {
     rm -f "$_acc.tmp" 2>/dev/null; return 0; }
   mv -f "$_acc.tmp" "$_acc" 2>/dev/null || { rm -f "$_acc.tmp" 2>/dev/null; return 0; }
@@ -331,27 +333,49 @@ PY
 
 # Merge fields into byok-config.json (0600). Args: key=value pairs; a "keys.<prov>"
 # path sets a provider key, plain names set a top-level field. Empty value deletes.
+#
+# The pairs carry provider keys and the session JWT, so they travel in the
+# environment (owner-readable only), never in python's argv: /proc/<pid>/cmdline is
+# world-readable. The write takes the same <config>.lock that byteask_models.py
+# holds, and replaces the file atomically, so a concurrent `byteask models add`
+# can't lose an endpoint and a reader never sees a torn file.
 _byok_merge() {
-  _byok_py "$BYOK_CFG" "$@" <<'PY'
+  BYOK_PAIRS="$(printf '%s\n' "$@")" python3 - "$BYOK_CFG" <<'PY'
 import json,sys,os
+try:
+    import fcntl
+except ImportError:
+    fcntl=None
 path=sys.argv[1]
-try: cfg=json.load(open(path))
-except Exception: cfg={}
-if not isinstance(cfg,dict): cfg={}
-cfg.setdefault("keys",{})
-for pair in sys.argv[2:]:
-    k,_,v=pair.partition("=")
-    if k.startswith("keys."):
-        prov=k[5:]
-        if v: cfg["keys"][prov]=v
-        else: cfg["keys"].pop(prov,None)
-    else:
-        if v: cfg[k]=v
-        else: cfg.pop(k,None)
-os.makedirs(os.path.dirname(path),exist_ok=True)
-fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600); os.write(fd,json.dumps(cfg).encode()); os.close(fd)
-try: os.chmod(path,0o600)
-except Exception: pass
+os.makedirs(os.path.dirname(path) or ".",exist_ok=True)
+lock=None
+if fcntl is not None:
+    lock=open(path+".lock","w")
+    fcntl.flock(lock,fcntl.LOCK_EX)
+try:
+    try: cfg=json.load(open(path))
+    except Exception: cfg={}
+    if not isinstance(cfg,dict): cfg={}
+    cfg.setdefault("keys",{})
+    for pair in (os.environ.get("BYOK_PAIRS") or "").split("\n"):
+        if not pair: continue
+        k,_,v=pair.partition("=")
+        if k.startswith("keys."):
+            prov=k[5:]
+            if v: cfg["keys"][prov]=v
+            else: cfg["keys"].pop(prov,None)
+        else:
+            if v: cfg[k]=v
+            else: cfg.pop(k,None)
+    tmp=path+".tmp.%d"%os.getpid()
+    fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+    try: os.write(fd,json.dumps(cfg).encode())
+    finally: os.close(fd)
+    try: os.chmod(tmp,0o600)
+    except Exception: pass
+    os.replace(tmp,path)
+finally:
+    if lock is not None: lock.close()
 PY
 }
 
@@ -418,8 +442,9 @@ _refresh_session_if_due() {
   # into shipped wrappers that cannot be updated).
   [ "$_rs_left" -lt 604800 ] || return 0
   _rs_gw="$(resolve_gateway)"; _rs_gw="${_rs_gw%/}"; [ -n "$_rs_gw" ] || return 0
-  _rs_out=$(curl -fsS --connect-timeout 4 -m 8 -X POST "$_rs_gw/auth/refresh" \
-              -H "Authorization: Bearer $_rs_tok" \
+  # Token header via stdin, never argv (see _models_access_fetch).
+  _rs_out=$(printf 'Authorization: Bearer %s\n' "$_rs_tok" | curl -fsS --connect-timeout 4 -m 8 \
+              -X POST "$_rs_gw/auth/refresh" -H @- \
               -H 'content-type: application/json' -d '{}' 2>/dev/null) || {
     _rs_tok=""; return 0; }
   _rs_new=$(printf '%s' "$_rs_out" | _json access_token)
@@ -560,6 +585,9 @@ _cfg_features_block() {
 write_managed_config() {  # $1=model $2=catalog_line $3=gateway $4=token (empty = unsigned)
   mkdir -p "$BYTEASK_HOME" 2>/dev/null || true
   _wmc_tmp="$BYTEASK_HOME/.config.toml.tmp.$$"
+  # The file carries the bearer token: create it owner-only BEFORE any content lands.
+  # The redirect below truncates it and keeps that mode.
+  ( umask 077; : > "$_wmc_tmp" ) 2>/dev/null || true
   {
     cat <<EOF
 model = "$1"
@@ -656,6 +684,7 @@ write_byok_config() {  # $1=model $2=catalog_line $3=local_token
   # write_managed_config: truncating config.toml in place fails outright when the
   # file is root-owned, and a partial write bricks the next launch.
   _wbc_tmp="$BYTEASK_HOME/.config.toml.tmp.$$"
+  ( umask 077; : > "$_wbc_tmp" ) 2>/dev/null || true   # owner-only from the first byte
   cat > "$_wbc_tmp" <<EOF
 model = "$1"
 model_provider = "byok-local"
@@ -683,22 +712,52 @@ EOF
 # Ensure the loopback sidecar is running + current. Lazy shared singleton: health
 # probe; (re)start if down or if byok_sidecar.py is newer than our start marker
 # (picks up a `byteask --update`). Returns non-zero if it can't come up.
+# True when the listener on $BYOK_PORT is a sidecar serving THIS install's config.
+# /healthz reports the config path the sidecar reads (protocol >= 2); anything that
+# answers without it, or with another path, is not ours to hand the engine to.
+_sidecar_identity_ok() {
+  _sio=$(curl -fsS --max-time 2 "http://127.0.0.1:$BYOK_PORT/healthz" 2>/dev/null) || return 1
+  [ "$(printf '%s' "$_sio" | _json config)" = "$BYOK_CFG" ]
+}
+_sidecar_up() { curl -fsS --max-time 2 "http://127.0.0.1:$BYOK_PORT/healthz" >/dev/null 2>&1; }
+
+_SIDECAR_FOREIGN=0
+_sidecar_foreign() {
+  _SIDECAR_FOREIGN=1
+  echo "byteask: port $BYOK_PORT on 127.0.0.1 is answering, but not as this install's BYOK sidecar." >&2
+  echo "  Stop whatever is using that port, then start byteask again." >&2
+  return 1
+}
+
 ensure_sidecar() {
+  _SIDECAR_FOREIGN=0
   [ -n "${BYOK_SKIP_SIDECAR:-}" ] && return 0   # test seam: skip the real spawn
   [ -f "$BYOK_SIDECAR" ] || { echo "byteask: BYOK sidecar not installed; run 'byteask --update'." >&2; return 1; }
   _pidf="$BYTEASK_HOME/byok-sidecar.pid"
-  if curl -fsS "http://127.0.0.1:$BYOK_PORT/healthz" >/dev/null 2>&1; then
-    [ -f "$_pidf" ] && [ "$_pidf" -nt "$BYOK_SIDECAR" ] && return 0   # healthy + current
-    kill "$(cat "$_pidf" 2>/dev/null)" 2>/dev/null || true            # stale -> restart
+  if _sidecar_up; then
+    if _sidecar_identity_ok && [ -f "$_pidf" ] && [ "$_pidf" -nt "$BYOK_SIDECAR" ]; then
+      return 0                                                        # ours, healthy + current
+    fi
+    kill "$(cat "$_pidf" 2>/dev/null)" 2>/dev/null || true            # stale/ours -> restart
     sleep 1
+    if _sidecar_up; then
+      # Still answering after we stopped our own: either ours without a pid file
+      # (keep it) or some other listener (never route the engine to it).
+      _sidecar_identity_ok && return 0
+      _sidecar_foreign; return 1
+    fi
   fi
   command -v python3 >/dev/null 2>&1 || { echo "byteask: BYOK needs python3 (not found on PATH)." >&2; return 1; }
-  BYOK_SIDECAR_PORT="$BYOK_PORT" nohup python3 "$BYOK_SIDECAR" >"$BYTEASK_HOME/byok-sidecar.log" 2>&1 &
+  # Tell the sidecar exactly which config to read. It does not know BYTEASK_HOME and
+  # would otherwise fall back to ~/.byteask, i.e. a different install's keys/token.
+  CODEX_HOME="$BYTEASK_HOME" BYOK_CONFIG_PATH="$BYOK_CFG" BYOK_SIDECAR_PORT="$BYOK_PORT" \
+    nohup python3 "$BYOK_SIDECAR" >"$BYTEASK_HOME/byok-sidecar.log" 2>&1 &
   echo $! > "$_pidf"
   _i=0; while [ "$_i" -lt 30 ]; do
-    curl -fsS "http://127.0.0.1:$BYOK_PORT/healthz" >/dev/null 2>&1 && return 0
+    _sidecar_identity_ok && return 0
     sleep 0.1; _i=$((_i+1))
   done
+  _sidecar_up && { _sidecar_foreign; return 1; }
   echo "byteask: BYOK sidecar didn't start (see $BYTEASK_HOME/byok-sidecar.log)." >&2; return 1
 }
 
@@ -711,8 +770,11 @@ validate_key() {  # $1=provider $2=key -> 0 ok/allow, 1 reject
     gemini)    _u="https://generativelanguage.googleapis.com/v1beta/models"; _h="x-goog-api-key: $2";;
     *) return 0;;
   esac
-  _extra=""; [ "$1" = anthropic ] && _extra="-H anthropic-version:2023-06-01"
-  _code=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 -H "$_h" $_extra "$_u" 2>/dev/null || echo 000)
+  _extra=""; [ "$1" = anthropic ] && _extra="anthropic-version: 2023-06-01"
+  # The key header goes in on stdin (`-H @-`), never argv: /proc/<pid>/cmdline is
+  # world-readable for as long as the request runs.
+  _code=$(printf '%s\n%s\n' "$_h" "$_extra" \
+            | curl -o /dev/null -s -w "%{http_code}" --max-time 15 -H @- "$_u" 2>/dev/null || echo 000)
   case "$_code" in
     2*) return 0;;
     401|403) echo "  That $1 key was rejected by the provider (HTTP $_code)." >&2; return 1;;
@@ -1016,6 +1078,7 @@ byok_use_managed() {
 write_subscription_config() {  # $1=model (EMPTY = let the engine pick) $2=catalog_line $3=gateway $4=jwt (empty = signed-out)
   mkdir -p "$BYTEASK_HOME" 2>/dev/null || true
   _wsc_tmp="$BYTEASK_HOME/.config.toml.tmp.$$"
+  ( umask 077; : > "$_wsc_tmp" ) 2>/dev/null || true   # carries the token: owner-only
   {
     # ⚠️ Carrying the MANAGED model into a subscription session is a bug: the
     # ChatGPT backend serves its OWN catalog, so e.g. `gpt-5.4` (our default, and
@@ -2926,6 +2989,11 @@ while : ; do
   # for the email and writes the token; then we launch. A non-interactive run can't
   # prompt, so it keeps the one-line nudge instead of hanging on a read.
   CFG="$BYTEASK_HOME/config.toml"
+  # Older wrappers and installers created config.toml (it holds the bearer token)
+  # with the default umask, often world-readable. Tighten it, and the home dir,
+  # on every launch: cheap, idempotent, best-effort.
+  { [ -f "$CFG" ] && chmod 600 "$CFG"; } 2>/dev/null || true
+  chmod 700 "$BYTEASK_HOME" 2>/dev/null || true
   # Force sign-in whenever a ByteAsk-owned provider (managed OR BYOK) is active but there's
   # no valid session in ANY store. _is_signed_in checks config.toml token + byok-config JWT
   # (and expiry), so a logged-out BYOK user is caught here too. Non-ByteAsk providers
@@ -3001,7 +3069,12 @@ while : ; do
   # current before launching (lazy shared singleton; auto-restarts a stale one after
   # an update). Fail-open: if it can't start, launch anyway and surface per-call errors.
   if grep -q '^model_provider = "byok-local"' "$CFG" 2>/dev/null; then
-    ensure_sidecar || echo "byteask: BYOK sidecar unavailable — own-key models may fail this run." >&2
+    if ! ensure_sidecar; then
+      # The engine is configured to send every turn (and the local token) to this
+      # port. If something else holds it, launching would hand that traffic to it.
+      [ "$_SIDECAR_FOREIGN" = 1 ] && exit 1
+      echo "byteask: BYOK sidecar unavailable — own-key models may fail this run." >&2
+    fi
   fi
 
   # Refresh the subscription kill-switch flags for the /login screen, in the
