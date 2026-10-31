@@ -137,8 +137,9 @@ _decompress() {  # $1 = variant, $2 = downloaded file, $3 = destination
 # manifest can already rewrite the asset — the digest's real value is catching
 # corruption: truncated transfers, caching proxies, mangled CDN objects. Against
 # those, absence carries no signal. Failing closed instead would brick installs
-# on every flaky/filtering network, break the code.byteask.ai fallback (which
-# serves no SHA256SUMS) and break every already-published release, which is a far
+# on every flaky/filtering network, break the code.byteask.ai fallback whenever it
+# is serving an asset without a matching SHA256SUMS (it has not always carried one;
+# today it serves the same file as GitHub), and break every older release, which is a far
 # larger and far likelier harm than the one it would prevent.
 # Set BYTEASK_REQUIRE_SHA256=1 to make absence fatal too (enterprise/paranoid).
 ENGINE_CURRENT=0      # 1 = the on-disk engine already matches the release

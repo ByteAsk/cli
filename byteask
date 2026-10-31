@@ -45,6 +45,11 @@ _engine_compat() {
   return 0
 }
 
+# Escape a value for use inside a JSON string literal: backslash and double quote are
+# escaped, and control characters (which no email or token legitimately carries) are
+# dropped, so user input can never break out of the string or add fields.
+_json_esc() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
 # minimal JSON string-field extractor (no jq dependency on clients)
 _json() { grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -1 | sed -E "s/.*:[[:space:]]*\"([^\"]*)\"/\1/"; }
 
@@ -1222,7 +1227,7 @@ SUBCAT
 # surface the user reads, and the wrapper only restart-owned work.
 byok_subscription_finish() {
   _sf_jwt="$(_byok_current_jwt)"
-  if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CFG" 2>/dev/null | head -n1)" = byteask ]; then
+  if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$BYTEASK_HOME/config.toml" 2>/dev/null | head -n1)" = byteask ]; then
     _sf_prev="$(_cfg_model)"; [ -n "$_sf_prev" ] || _sf_prev="${BYTEASK_MODEL:-auto}"
     _save_managed_session "$_sf_prev" "$(_cfg_catalog)"
   fi
@@ -1262,7 +1267,7 @@ byok_subscription() {
   # so "Use ByteAsk managed" would later restore a broken managed session. Same trap the
   # byok_off comment describes. When we are already on a subscription, the previously
   # saved managed session is the right one to keep.
-  if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CFG" 2>/dev/null | head -n1)" = byteask ]; then
+  if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$BYTEASK_HOME/config.toml" 2>/dev/null | head -n1)" = byteask ]; then
     _sub_prev_model="$(_cfg_model)"; [ -n "$_sub_prev_model" ] || _sub_prev_model="${BYTEASK_MODEL:-auto}"
     _save_managed_session "$_sub_prev_model" "$(_cfg_catalog)"
   fi
@@ -1769,9 +1774,19 @@ models_remove() {
   # launch has model=self/<gone> which fail-closes on every turn).
   if [ "$(_cfg_model)" = "self/$_mr" ]; then
     _def="${BYTEASK_MODEL:-auto}"
-    sed -i.bak "s|^model = \"self/$_mr\"\$|model = \"$_def\"|" "$BYTEASK_HOME/config.toml" 2>/dev/null || true
-    rm -f "$BYTEASK_HOME/config.toml.bak" 2>/dev/null || true
-    echo "  (was your active model; switched to $_def)"
+    # Exact string match, not a sed regex: an alias may contain `.`, `|` or other
+    # characters that are special in a pattern (and `sed -i` differs on BSD/GNU).
+    # Values go through ENVIRON, which (unlike awk -v) does not interpret escapes.
+    _mr_tmp="$BYTEASK_HOME/.config.toml.tmp.$$"
+    if ( umask 077; BK_OLD="model = \"self/$_mr\"" BK_NEW="model = \"$_def\"" \
+           awk '$0 == ENVIRON["BK_OLD"] { print ENVIRON["BK_NEW"]; next } { print }' \
+           "$BYTEASK_HOME/config.toml" > "$_mr_tmp" ) 2>/dev/null \
+       && _install_config "$_mr_tmp"; then
+      echo "  (was your active model; switched to $_def)"
+    else
+      rm -f "$_mr_tmp" 2>/dev/null || true
+      echo "  (it was your active model, but config.toml could not be updated; pick another in /model)" >&2
+    fi
   fi
   _models_merge
   case "$_res" in removed) echo "Removed self/$_mr.";; *) echo "No self-hosted model 'self/$_mr'.";; esac
@@ -2686,9 +2701,11 @@ do_login() {
       [ "${#REF}" -le 64 ] || REF=""
     fi
     printf '%bSigning in to ByteAsk as %s ...%b\n' "$_C_D" "$EMAIL" "$_C_R"
-    body="{\"email\":\"$EMAIL\"}"
-    [ -n "$REF" ] && body="{\"email\":\"$EMAIL\",\"ref\":\"$REF\"}"
-    start=$(curl -fsS -X POST "$GATEWAY/auth/start" -H 'content-type: application/json' -d "$body" || true)
+    # The email is free-form user input: escape it, so a quote in it cannot end the
+    # string or add fields. REF is already restricted to [A-Za-z0-9_-].
+    body="{\"email\":\"$(_json_esc "$EMAIL")\"}"
+    [ -n "$REF" ] && body="{\"email\":\"$(_json_esc "$EMAIL")\",\"ref\":\"$REF\"}"
+    start=$(curl -fsS --max-time 30 -X POST "$GATEWAY/auth/start" -H 'content-type: application/json' -d "$body" || true)
     poll=$(printf '%s' "$start" | _json poll_token)
     link=$(printf '%s' "$start" | _json dev_magic_link)
     [ -n "$poll" ] && break
@@ -2709,7 +2726,9 @@ do_login() {
   printf '  %b-> Waiting for confirmation (up to 10 minutes) ...%b\n' "$_C_D" "$_C_R"
   token=""; plan_notice=""; i=0
   while [ "$i" -lt 600 ]; do
-    r=$(curl -fsS -X POST "$GATEWAY/auth/poll" -H 'content-type: application/json' -d "{\"poll_token\":\"$poll\"}" || echo '{}')
+    # --max-time: one stalled connection must not freeze the 10-minute wait loop.
+    r=$(curl -fsS --max-time 15 -X POST "$GATEWAY/auth/poll" -H 'content-type: application/json' \
+          -d "{\"poll_token\":\"$(_json_esc "$poll")\"}" || echo '{}')
     # plan_notice is present ONLY when a partner-deal grant landed on this sign-in.
     # The gateway authors the whole sentence so the wording stays server-side; this
     # wrapper only decides whether there is one and prints it.
@@ -2843,7 +2862,10 @@ case "${1:-}" in
   --update|update|upgrade)
     echo "Updating ByteAsk CLI..."
     _gw="$(resolve_gateway)"; _gw="${_gw%/}"
-    exec sh -c "curl -fsSL '$_gw/install.sh' | PREFIX='$SELF_DIR' sh";;
+    # Values travel as environment variables, not spliced into the -c string, so an
+    # install path containing a quote (or a gateway URL with one) cannot break it.
+    exec env BYTEASK_INSTALL_URL="$_gw/install.sh" PREFIX="$SELF_DIR" \
+      sh -c 'curl -fsSL "$BYTEASK_INSTALL_URL" | sh';;
   login)
     shift
     case " $* " in
