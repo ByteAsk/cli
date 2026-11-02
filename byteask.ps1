@@ -8,7 +8,7 @@
 #
 # Behavior parity with byteask/cli/byteask is intentional - keep them in sync.
 
-$VERSION = '0.1.16'
+$VERSION = '0.2.0'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
 
 $BYTEASK_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
@@ -166,7 +166,7 @@ function Invoke-Logout {
   Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $BYTEASK_HOME 'auth.json')
   # 3. reset to managed + UNSIGNED
   $model = Get-CfgLine '^model = "(.*)"$'
-  if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' } }
+  if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'auto' } }
   $gw = (Resolve-Gateway).TrimEnd('/')
   Write-ManagedConfig $model (Get-CfgLine '^(model_catalog_json = .*)$') $gw '' | Out-Null
   # 4. report on actual post-state
@@ -597,7 +597,7 @@ function Get-ConfigFeaturesBlock {
   foreach ($line in @(Get-Content $cfg -ErrorAction SilentlyContinue)) {
     if ($line -match '^\s*\[') {
       $seen = $true
-      $inFeat = ($line -match '^\s*\[+\s*features\s*(\]|\.)')
+      $inFeat = ($line -match '^\s*\[+\s*(features|byteask_harness|mcp_servers)\s*(\]|\.)')
       if ($inFeat) { $tables.Add(''); $tables.Add($line) }
       continue
     }
@@ -886,7 +886,7 @@ function Invoke-ByokOff {
   # to the default cloud model (mirrors Remove-Model's active-model handling).
   $offModel = Get-CfgLine '^model = "(.*)"$'
   if ((-not $offModel) -or $offModel.StartsWith('self/')) {
-    $offModel = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' }
+    $offModel = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'auto' }
   }
   if (-not (Write-ManagedConfig $offModel (Get-CfgLine '^(model_catalog_json = .*)$') $gw $jwt)) {
     Write-Err "byteask: still on your own key - the managed config could not be written."
@@ -937,7 +937,7 @@ function Invoke-ByokSubscription([string]$transport) {
   Write-Host "Note: OpenAI's own sign-in screen appears; Anthropic/Gemini keys don't mix into a subscription session."
   # Capture identity + config BEFORE the rewrite so the retained block carries the account forward.
   $jwt = Get-CurrentJwt
-  $model = Get-CfgLine '^model = "(.*)"$'; if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' } }
+  $model = Get-CfgLine '^model = "(.*)"$'; if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'auto' } }
   # I5: subscription sessions use the ChatGPT backend's OWN model list, so drop
   # model_catalog_json (our catalog would 400 there). Empty => engine fetches OpenAI's.
   $catalog = ''
@@ -1246,7 +1246,7 @@ function Remove-Model([string[]]$rest) {
   $res = (& $py $BYOK_MODELS remove $BYOK_CFG $a 2>$null)
   $cur = Get-CfgLine '^model = "(.*)"$'
   if ($cur -eq "self/$a") {
-    $def = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' }
+    $def = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'auto' }
     $cfgp = Join-Path $BYTEASK_HOME 'config.toml'
     (Get-Content $cfgp) -replace "^model = ""self/$a""$", "model = ""$def""" | Set-Content $cfgp
     Write-Host "  (was your active model; switched to $def)"
@@ -1899,7 +1899,7 @@ function Invoke-Account {
 # asks for a different one instead of exiting the way an explicit --email must.
 function Invoke-Login([string]$Email, [string]$Ref, [bool]$EmailIsHint = $false) {
   $gateway = (Resolve-Gateway).TrimEnd('/')
-  $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'gpt-5.4' }
+  $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'auto' }
   if (-not $Ref) { $Ref = $env:BYTEASK_REF }
   $refFile = Join-Path $BYTEASK_HOME 'referral'
   if (-not $Ref -and (Test-Path $refFile)) { $Ref = (Get-Content -Raw $refFile).Trim() }
@@ -2136,6 +2136,29 @@ switch -Regex ($cmd) {
     if ($null -eq $trc) { $trc = 0 }
     exit ([int]$trc)
   }
+  '^context$' {
+    # ByteAsk Context (hosted code index) is its own service, reached as a remote MCP
+    # server. Opt-in: `connect` adds it and signs in (browser). Mirrors cli/byteask.
+    $ctxName = 'byteask-context'; $ctxUrl = 'https://context.byteask.ai/mcp'
+    $sub = if ($args.Count -gt 1) { [string]$args[1] } else { '' }
+    switch ($sub) {
+      'connect' {
+        Write-Host 'Sign in to ByteAsk Context in your browser to finish connecting.'
+        # `mcp add` starts the sign-in itself; an existing entry only needs `mcp login`.
+        & $ENGINE mcp get $ctxName *> $null
+        if ($LASTEXITCODE -eq 0) { & $ENGINE mcp login $ctxName; exit $LASTEXITCODE }
+        & $ENGINE mcp add $ctxName --url $ctxUrl
+        exit $LASTEXITCODE
+      }
+      'disconnect' { & $ENGINE mcp remove $ctxName; exit $LASTEXITCODE }
+      'status' { & $ENGINE mcp get $ctxName; exit $LASTEXITCODE }
+      default {
+        Write-Err 'usage: byteask context <connect|disconnect|status>'
+        Write-Err "  connect     add ByteAsk Context ($ctxUrl) and sign in"
+        exit 2
+      }
+    }
+  }
   '^claude$' {
     # Run the user's OWN Claude Code on their own subscription (legal delegation;
     # ByteAsk never touches the Claude credential). docs/claude-launcher-plan.md
@@ -2162,6 +2185,7 @@ switch -Regex ($cmd) {
     [Console]::Error.WriteLine('  byteask models <add|test|list>    use your own hosted model')
     [Console]::Error.WriteLine('  byteask byok <set|status|remove>  use your own provider key')
     [Console]::Error.WriteLine('  byteask mcp <add|list|remove>     manage MCP servers')
+    [Console]::Error.WriteLine('  byteask context connect           add ByteAsk Context (hosted code index)')
     [Console]::Error.WriteLine('  byteask plugin <list|install>     manage plugins')
     [Console]::Error.WriteLine('  byteask doctor                    check the install')
     [Console]::Error.WriteLine('  byteask completion <shell>        shell completions')

@@ -3,7 +3,7 @@
 # Thin wrapper over the engine so the client surface is fully ByteAsk-branded.
 set -eu
 
-VERSION="0.1.16"
+VERSION="0.2.0"
 DEFAULT_GATEWAY="https://code.byteask.ai"
 export BYTEASK_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
 export BYTEASK_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
@@ -528,7 +528,8 @@ _ensure_anon_id() {
 # Returns NON-ZERO when the config was not persisted. Every caller must check:
 # this file holds the only credential the engine sends, so a write that quietly
 # fails turns into an unbreakable 401 loop that looks like a server outage.
-# The user's [features] settings from the CURRENT config.toml, re-emitted so a full
+# The user's [features], [byteask_harness] and [mcp_servers.*] tables (0.2.0: `byteask context
+# connect` and `context auto-index` live there) from the CURRENT config.toml, re-emitted so a full
 # rewrite (sign-in, sign-out, a provider switch) keeps them. Without this every such write
 # silently dropped them, `features.plugins = true` and the `commit_attribution` opt-out
 # included. Both TOML forms: `[features]` / `[features.<name>]` tables are copied verbatim;
@@ -541,7 +542,7 @@ _cfg_features_block() {
     /^[[:space:]]*\[/ {
       seen = 1
       h = $0; sub(/^[[:space:]]*\[+[[:space:]]*/, "", h)
-      infeat = (h ~ /^features[[:space:]]*(\]|\.)/)
+      infeat = (h ~ /^(features|byteask_harness|mcp_servers)[[:space:]]*(\]|\.)/)
       if (infeat) tables = tables "\n" $0 "\n"
       next
     }
@@ -949,7 +950,7 @@ byok_off() {
   # A self/* model needs the sidecar; on managed it would fail every turn — reset
   # to the default cloud model (mirrors models_remove's active-model handling).
   _off_model="$(_cfg_model)"
-  case "$_off_model" in self/*|"") _off_model="${BYTEASK_MODEL:-gpt-5.4}";; esac
+  case "$_off_model" in self/*|"") _off_model="${BYTEASK_MODEL:-auto}";; esac
   if ! write_managed_config "$_off_model" "$(_cfg_catalog)" "$_gw" "$_jwt"; then
     echo "byteask: still on your own key — the managed config could not be written." >&2
     return 1
@@ -1003,7 +1004,7 @@ byok_use_managed() {
     _um_model="$(sed -n '1p' "$BYTEASK_HOME/managed-session.prev" 2>/dev/null)"
     _um_catalog="$(sed -n '2p' "$BYTEASK_HOME/managed-session.prev" 2>/dev/null)"
   fi
-  [ -n "$_um_model" ] || _um_model="${BYTEASK_MODEL:-gpt-5.4}"
+  [ -n "$_um_model" ] || _um_model="${BYTEASK_MODEL:-auto}"
   [ -n "$_um_catalog" ] || _um_catalog="model_catalog_json = \"$BYTEASK_HOME/models-catalog.json\""
   if ! write_managed_config "$_um_model" "$_um_catalog" "$_um_gw" "$_um_jwt"; then
     echo "byteask: could not switch back to ByteAsk managed - your config was left as is." >&2
@@ -1216,7 +1217,7 @@ SUBCAT
 byok_subscription_finish() {
   _sf_jwt="$(_byok_current_jwt)"
   if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CFG" 2>/dev/null | head -n1)" = byteask ]; then
-    _sf_prev="$(_cfg_model)"; [ -n "$_sf_prev" ] || _sf_prev="${BYTEASK_MODEL:-gpt-5.4}"
+    _sf_prev="$(_cfg_model)"; [ -n "$_sf_prev" ] || _sf_prev="${BYTEASK_MODEL:-auto}"
     _save_managed_session "$_sf_prev" "$(_cfg_catalog)"
   fi
   _sf_cat_path="$BYTEASK_HOME/models-catalog-subscription.json"
@@ -1256,7 +1257,7 @@ byok_subscription() {
   # byok_off comment describes. When we are already on a subscription, the previously
   # saved managed session is the right one to keep.
   if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CFG" 2>/dev/null | head -n1)" = byteask ]; then
-    _sub_prev_model="$(_cfg_model)"; [ -n "$_sub_prev_model" ] || _sub_prev_model="${BYTEASK_MODEL:-gpt-5.4}"
+    _sub_prev_model="$(_cfg_model)"; [ -n "$_sub_prev_model" ] || _sub_prev_model="${BYTEASK_MODEL:-auto}"
     _save_managed_session "$_sub_prev_model" "$(_cfg_catalog)"
   fi
   # Deliberately EMPTY: do not carry a managed model into the ChatGPT catalog
@@ -1761,7 +1762,7 @@ models_remove() {
   # If it was the ACTIVE model, switch back to a safe cloud default (else the next
   # launch has model=self/<gone> which fail-closes on every turn).
   if [ "$(_cfg_model)" = "self/$_mr" ]; then
-    _def="${BYTEASK_MODEL:-gpt-5.4}"
+    _def="${BYTEASK_MODEL:-auto}"
     sed -i.bak "s|^model = \"self/$_mr\"\$|model = \"$_def\"|" "$BYTEASK_HOME/config.toml" 2>/dev/null || true
     rm -f "$BYTEASK_HOME/config.toml.bak" 2>/dev/null || true
     echo "  (was your active model; switched to $_def)"
@@ -2626,7 +2627,7 @@ do_login() {
   # gated on [ -t 1 ] internally (§10.3, 2026-07-23) — never emits raw escapes
   # on a non-interactive run (e.g. `byteask login --email x@y </dev/null`).
   _scr_tokens
-  GATEWAY="$(resolve_gateway)"; EMAIL=""; MODEL="${BYTEASK_MODEL:-gpt-5.4}"; AUTOCLICK=0; REF=""; EMAIL_HINT=0
+  GATEWAY="$(resolve_gateway)"; EMAIL=""; MODEL="${BYTEASK_MODEL:-auto}"; AUTOCLICK=0; REF=""; EMAIL_HINT=0
   while [ $# -gt 0 ]; do case "$1" in
     --gateway) GATEWAY="$2"; shift 2;;
     --email) EMAIL="$2"; shift 2;;
@@ -2780,7 +2781,7 @@ do_logout() {
   rm -f "$BYOK_CFG" 2>/dev/null || true                # byok-config.json (BYOK keys + JWT)
   rm -f "$BYTEASK_HOME/auth.json" 2>/dev/null || true    # ChatGPT OAuth / `login --with-api-key`
   # 3. Reset to managed + UNSIGNED (no token line) so the next launch forces sign-in.
-  _lo_model="$(_cfg_model)"; [ -n "$_lo_model" ] || _lo_model="${BYTEASK_MODEL:-gpt-5.4}"
+  _lo_model="$(_cfg_model)"; [ -n "$_lo_model" ] || _lo_model="${BYTEASK_MODEL:-auto}"
   _lo_gw="$(resolve_gateway)"; _lo_gw="${_lo_gw%/}"
   # `|| true` on purpose: step 4 below re-reads the real post-state, and that check
   # (not the write's own status) is what decides whether we claim to be logged out.
@@ -2857,6 +2858,55 @@ case "${1:-}" in
   terse)
     echo "byteask: there is no terse setting any more - token efficiency is built in." >&2
     exit 0;;
+  context)
+    # ByteAsk Context (hosted code index, https://byteask.ai/context) is its own service,
+    # reached as a remote MCP server. Opt-in: `connect` adds it and signs in (browser).
+    shift; _ctx_name="byteask-context"; _ctx_url="https://context.byteask.ai/mcp"
+    case "${1:-}" in
+      connect)
+        echo "Sign in to ByteAsk Context in your browser to finish connecting."
+        # `mcp add` starts the sign-in itself; an existing entry (e.g. a sign-in that did
+        # not finish) only needs `mcp login`.
+        if "$ENGINE" mcp get "$_ctx_name" >/dev/null 2>&1; then
+          exec "$ENGINE" mcp login "$_ctx_name"
+        fi
+        exec "$ENGINE" mcp add "$_ctx_name" --url "$_ctx_url";;
+      disconnect)
+        exec "$ENGINE" mcp remove "$_ctx_name";;
+      status)
+        exec "$ENGINE" mcp get "$_ctx_name";;
+      auto-index)
+        # Pre-approval for indexing (engine: [byteask_harness] context_auto_index): when a
+        # task starts in a repository ByteAsk has not indexed, the harness starts indexing it in
+        # the background instead of asking (exec runs never ask; they continue without it).
+        case "${2:-}" in
+          on) _ctx_ai=true;; off) _ctx_ai=false;;
+          *) echo "usage: byteask context auto-index <on|off>" >&2; exit 2;;
+        esac
+        _ctx_cfg="$BYTEASK_HOME/config.toml"; _ctx_tmp="$BYTEASK_HOME/.config.toml.tmp.$$"
+        mkdir -p "$BYTEASK_HOME" 2>/dev/null || true
+        # Replace the key inside [byteask_harness], or add it (and the table) at the end.
+        BYTEASK_AI="$_ctx_ai" awk '
+          /^[[:space:]]*\[/ { if (intab && !done) { print "context_auto_index = " ENVIRON["BYTEASK_AI"]; done = 1 }
+                               intab = ($0 ~ /^[[:space:]]*\[byteask_harness\][[:space:]]*$/) }
+          intab && /^[[:space:]]*context_auto_index[[:space:]]*=/ { if (!done) { print "context_auto_index = " ENVIRON["BYTEASK_AI"]; done = 1 }; next }
+          { print }
+          END { if (!done) { if (!intab) printf "\n[byteask_harness]\n"; print "context_auto_index = " ENVIRON["BYTEASK_AI"] } }
+        ' "$_ctx_cfg" > "$_ctx_tmp" 2>/dev/null || { [ -f "$_ctx_cfg" ] || : > "$_ctx_tmp"; }
+        [ -s "$_ctx_tmp" ] || printf '[byteask_harness]\ncontext_auto_index = %s\n' "$_ctx_ai" > "$_ctx_tmp"
+        _install_config "$_ctx_tmp" || { echo "byteask: could not update $_ctx_cfg" >&2; exit 1; }
+        if [ "$_ctx_ai" = true ]; then
+          echo "ByteAsk Context: unindexed repositories are now indexed in the background when a task starts."
+        else
+          echo "ByteAsk Context: indexing asks first again (exec runs continue without it)."
+        fi
+        exit 0;;
+      *)
+        echo "usage: byteask context <connect|disconnect|status|auto-index on|off>" >&2
+        echo "  connect          add ByteAsk Context ($_ctx_url) and sign in" >&2
+        echo "  auto-index on    index an unindexed repository without asking" >&2
+        exit 2;;
+    esac;;
   claude)
     # Run the user's OWN Claude Code on their own subscription (legal delegation;
     # ByteAsk never touches the Claude credential). docs/claude-launcher-plan.md
@@ -2882,6 +2932,7 @@ ByteAsk $VERSION — an AI coding agent for your terminal
   byteask models <add|test|list>    use your own hosted model
   byteask byok <set|status|remove>  use your own provider key
   byteask claude [args]             run your own Claude Code (your subscription)
+  byteask context connect           add ByteAsk Context (hosted code index)
   byteask mcp <add|list|remove>     manage MCP servers
   byteask plugin <list|install>     manage plugins
   byteask doctor                    check the install

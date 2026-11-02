@@ -9,7 +9,7 @@ $Bundle  = if ($env:BUNDLE_URL) { $env:BUNDLE_URL.TrimEnd('/') } else { 'https:/
 # Engine binaries come from GitHub Releases (latest published release); code.byteask.ai is a fallback.
 $EngineUrl = if ($env:ENGINE_URL) { $env:ENGINE_URL.TrimEnd('/') } else { 'https://github.com/ByteAsk/cli/releases/latest/download' }
 $Gateway = if ($env:GATEWAY_URL) { $env:GATEWAY_URL.TrimEnd('/') } else { 'https://code.byteask.ai' }
-$Model   = if ($env:MODEL) { $env:MODEL } else { 'gpt-5.4' }
+$Model   = if ($env:MODEL) { $env:MODEL } else { 'auto' }
 $IsWin   = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
 
 if (-not [Environment]::Is64BitOperatingSystem) {

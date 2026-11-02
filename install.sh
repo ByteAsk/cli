@@ -7,7 +7,7 @@ BUNDLE_URL="${BUNDLE_URL:-https://code.byteask.ai}"
 # stays a fallback so a GitHub hiccup or a not-yet-uploaded asset can't break installs.
 ENGINE_URL="${ENGINE_URL:-https://github.com/ByteAsk/cli/releases/latest/download}"; ENGINE_URL="${ENGINE_URL%/}"
 GATEWAY_URL="${GATEWAY_URL:-https://code.byteask.ai}"; GATEWAY_URL="${GATEWAY_URL%/}"
-MODEL="${MODEL:-gpt-5.4}"
+MODEL="${MODEL:-auto}"
 
 # Optional referral code: `curl ... | sh -s -- --ref=CODE` (passed as a positional
 # arg) or BYTEASK_REF=CODE. Persisted below so the first `byteask login` credits the
