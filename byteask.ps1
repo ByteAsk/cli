@@ -8,7 +8,7 @@
 #
 # Behavior parity with byteask/cli/byteask is intentional - keep them in sync.
 
-$VERSION = '0.2.0'
+$VERSION = '0.2.3'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
 
 $BYTEASK_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
@@ -313,7 +313,13 @@ function Invoke-ModelsAccessMerge {
   $py = Get-ModelsPython; if (-not $py) { return }
   $acc = Join-Path $BYTEASK_HOME '.model-access.json'
   $cat = Join-Path $BYTEASK_HOME 'models-catalog.json'
-  try { & $py $BYOK_MODELS merge-access $acc $cat 2>$null | Out-Null } catch {}
+  # Own keys unlock their provider's paywalled rows only while BYOK is the active
+  # provider (mirrors the sh _models_access_merge).
+  if ((Get-CfgLine '^model_provider = "(.*)"$') -eq 'byok-local') {
+    try { & $py $BYOK_MODELS merge-access $acc $cat $BYOK_CFG 2>$null | Out-Null } catch {}
+  } else {
+    try { & $py $BYOK_MODELS merge-access $acc $cat 2>$null | Out-Null } catch {}
+  }
 }
 
 function Test-HasSelfEndpoints {

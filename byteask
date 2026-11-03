@@ -3,7 +3,7 @@
 # Thin wrapper over the engine so the client surface is fully ByteAsk-branded.
 set -eu
 
-VERSION="0.2.0"
+VERSION="0.2.3"
 DEFAULT_GATEWAY="https://code.byteask.ai"
 export BYTEASK_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
 export BYTEASK_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
@@ -286,7 +286,13 @@ _catalog_refresh_unsigned() {
 _models_access_merge() {
   [ "$_MA_FETCHED" = 1 ] || return 0
   command -v python3 >/dev/null 2>&1 || return 0
-  python3 "$BYOK_MODELS" merge-access "$BYTEASK_HOME/.model-access.json" "$BYTEASK_HOME/models-catalog.json" 2>/dev/null || true
+  # Own keys unlock their provider's paywalled rows, but ONLY while BYOK is the active
+  # provider: keys can outlive it (subscription -> "Use ByteAsk managed" keeps them), and
+  # on managed those turns reach the gateway, whose gate refuses them.
+  _ma_cfg=""
+  [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$BYTEASK_HOME/config.toml" 2>/dev/null | head -n1)" = byok-local ] \
+    && _ma_cfg="$BYOK_CFG"
+  python3 "$BYOK_MODELS" merge-access "$BYTEASK_HOME/.model-access.json" "$BYTEASK_HOME/models-catalog.json" "$_ma_cfg" 2>/dev/null || true
 }
 
 # Warn when the ACTIVE model is a self/<alias> that failed `byteask models test`'s
