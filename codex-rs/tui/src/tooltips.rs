@@ -11,14 +11,14 @@ const IS_WINDOWS: bool = cfg!(target_os = "windows");
 
 const APP_TOOLTIP: &str = "Try the **Desktop app**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true";
 const MACOS_APP_TOOLTIP: &str =
-    "Run `codex app` to open the Desktop app (it installs on macOS if needed).";
+    "Run `byteask app` to open the Desktop app (it installs on macOS if needed).";
 const LINUX_APP_TOOLTIP: &str = "Try the **Desktop app** on Linux: install it from https://learn.chatgpt.com/docs/linux/linux-app and run 'chatgpt'.";
 const FAST_TOOLTIP: &str =
     "*New* Use **/fast** to enable our fastest inference with increased plan usage.";
 const OTHER_TOOLTIP: &str = "*New* Build faster with the **Desktop app**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true";
-const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with Codex.";
+const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with ByteAsk.";
 const FREE_GO_TOOLTIP: &str =
-    "*New* For a limited time, Codex is included in your plan for free – let’s build together.";
+    "*New* For a limited time, ByteAsk is included in your plan for free – let’s build together.";
 
 const RAW_TOOLTIPS: &str = include_str!("../assets/tooltips.txt");
 
@@ -26,7 +26,19 @@ lazy_static! {
     static ref TOOLTIPS: Vec<&'static str> = RAW_TOOLTIPS
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|line| {
+            if line.is_empty() || line.starts_with('#') {
+                return false;
+            }
+            if !IS_MACOS && !IS_WINDOWS && line.contains("byteask app") {
+                return false;
+            }
+            true
+        })
+        // Upstream's platform app tooltip. Unreachable in practice — byteask's
+        // get_tooltip returns its own tip before pick_tooltip is ever called —
+        // but kept so MACOS_APP_TOOLTIP stays live and upstream's
+        // desktop_app_tooltip_uses_supported_platform_launcher test still holds.
         .chain(if IS_MACOS {
             Some(MACOS_APP_TOOLTIP)
         } else {
@@ -48,8 +60,28 @@ fn experimental_tooltips() -> Vec<&'static str> {
         .collect()
 }
 
-/// Pick a random tooltip to show to the user when starting Codex.
+/// ByteAsk's own startup tips: the gdb bridge plus the key slash commands.
+const BYTEASK_TIPS: [&str; 4] = [
+    "To attach ByteAsk to your live gdb session, run `byteask-bridge` in gdb",
+    "Redeem a voucher with `/voucher <code>`",
+    "Show your referral code with `/referral-code`",
+    "Set your own API key or hosted model with `/login`",
+];
+
+/// The tip at `index`, wrapping so callers can pass any number.
+fn byteask_startup_tip(index: usize) -> &'static str {
+    BYTEASK_TIPS[index % BYTEASK_TIPS.len()]
+}
+
+/// Pick a random tooltip to show to the user when starting ByteAsk.
+#[allow(unreachable_code, unused_variables, unused_mut)]
 pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Option<String> {
+    // byteask: one tip per session, like upstream. This used to print all four
+    // every launch, which stacked a four-line block above the composer on every
+    // start and made the session header read as clutter. The full set still
+    // rotates in the composer footer (`byteask_marketing::hint_for`), so nothing
+    // is lost by showing one here. Upstream promo tips stay disabled below.
+    return Some(byteask_startup_tip(rand::rng().random_range(0..BYTEASK_TIPS.len())).to_string());
     let mut rng = rand::rng();
 
     if let Some(announcement) = announcement::fetch_announcement_tip(plan) {
@@ -169,22 +201,16 @@ pub(crate) mod announcement {
 
     /// Prewarm the cache of the announcement tip.
     pub(crate) fn prewarm(http_client_factory: HttpClientFactory) {
-        if ANNOUNCEMENT_TIP.get().is_some() {
-            return;
-        }
-        tokio::spawn(async move {
-            let announcement_tip = fetch_announcement_tip_text(http_client_factory).await;
-            let _ = ANNOUNCEMENT_TIP.set(announcement_tip);
-        });
+        // byteask: upstream announcement tips disabled (no OpenAI/GPT promos).
+        // Signature still matches upstream so lib.rs's call site is unchanged.
+        let _ = (http_client_factory, &ANNOUNCEMENT_TIP);
+        let _ = fetch_announcement_tip_text;
     }
 
-    /// Fetch the announcement tip, return None if the prewarm is not done yet.
+    /// Fetch the announcement tip. Disabled for ByteAsk.
     pub(crate) fn fetch_announcement_tip(plan: Option<PlanType>) -> Option<String> {
-        ANNOUNCEMENT_TIP
-            .get()
-            .cloned()
-            .flatten()
-            .and_then(|raw| parse_announcement_tip_toml(&raw, plan))
+        let _ = (plan, &ANNOUNCEMENT_TIP, parse_announcement_tip_toml as fn(&str, Option<PlanType>) -> Option<String>);
+        None
     }
 
     #[derive(Debug, Deserialize)]
@@ -387,7 +413,7 @@ mod tests {
             assert_eq!(paid_app_tooltip(), Some(tooltip));
         } else if IS_MACOS {
             let tooltip = tooltip.expect("macOS should advertise the desktop app");
-            insta::assert_snapshot!(tooltip, @"Run `codex app` to open the Desktop app (it installs on macOS if needed).");
+            insta::assert_snapshot!(tooltip, @"Run `byteask app` to open the Desktop app (it installs on macOS if needed).");
             assert_eq!(paid_app_tooltip(), Some(APP_TOOLTIP));
         } else if IS_WINDOWS {
             assert_eq!(tooltip, None);
@@ -536,7 +562,7 @@ from_date = "2000-01-01"
 # target_oses optionally restricts the announcement to operating systems like ["macos", "windows"].
 
 [[announcements]]
-content = "Welcome to Codex! Check out the new onboarding flow."
+content = "Welcome to ByteAsk! Check out the new onboarding flow."
 from_date = "2024-10-01"
 to_date = "2024-10-15"
 target_app = "cli"

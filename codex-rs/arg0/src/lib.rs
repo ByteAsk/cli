@@ -11,6 +11,7 @@ use codex_exec_server::CODEX_ARG0_EXEC_HELPER_ARG1;
 use codex_exec_server::CODEX_FS_HELPER_ARG1;
 use codex_install_context::InstallContext;
 use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
+use codex_sandboxing::landlock::LEGACY_LINUX_SANDBOX_ARG0;
 use codex_utils_home_dir::find_codex_home;
 #[cfg(target_os = "windows")]
 use codex_windows_sandbox::CODEX_WINDOWS_SANDBOX_ARG1;
@@ -21,7 +22,13 @@ use tempfile::TempDir;
 const APPLY_PATCH_ARG0: &str = "apply_patch";
 const MISSPELLED_APPLY_PATCH_ARG0: &str = "applypatch";
 #[cfg(unix)]
-const EXECVE_WRAPPER_ARG0: &str = "codex-execve-wrapper";
+const EXECVE_WRAPPER_ARG0: &str = "byteask-execve-wrapper";
+/// Pre-rebrand name, still dispatched so an alias from an older running engine works.
+#[cfg(unix)]
+const LEGACY_EXECVE_WRAPPER_ARG0: &str = "codex-execve-wrapper";
+/// Per-session alias dirs under `$BYTEASK_HOME/tmp/arg0/`. The janitor removes any
+/// unlocked dir there regardless of prefix, so stale `codex-arg0*` dirs go too.
+const ARG0_TEMP_DIR_PREFIX: &str = "byteask-arg0";
 const LOCK_FILENAME: &str = ".lock";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -67,7 +74,7 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
         .unwrap_or("");
 
     #[cfg(unix)]
-    if exe_name == EXECVE_WRAPPER_ARG0 {
+    if exe_name == EXECVE_WRAPPER_ARG0 || exe_name == LEGACY_EXECVE_WRAPPER_ARG0 {
         let mut args = std::env::args();
         let _ = args.next();
         let file = match args.next() {
@@ -92,7 +99,7 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
         }
     }
 
-    if exe_name == CODEX_LINUX_SANDBOX_ARG0 {
+    if exe_name == CODEX_LINUX_SANDBOX_ARG0 || exe_name == LEGACY_LINUX_SANDBOX_ARG0 {
         // Safety: [`run_main`] never returns.
         codex_linux_sandbox::run_main();
     } else if exe_name == APPLY_PATCH_ARG0 || exe_name == MISSPELLED_APPLY_PATCH_ARG0 {
@@ -157,6 +164,10 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     // This modifies the environment, which is not thread-safe, so do this
     // before creating any threads/the Tokio runtime.
     load_dotenv();
+
+    if let Ok(codex_home) = find_codex_home() {
+        remove_legacy_home_state(codex_home.as_path());
+    }
 
     let (path_entry_guard, updated_path_env_var) = prepare_path_env_var_with_aliases(
         InstallContext::current(),
@@ -294,6 +305,28 @@ fn build_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     Ok(builder.build()?)
 }
 
+/// Pre-rebrand files that no current ByteAsk component writes. Real homes still carry them:
+/// the system skills installer only clears its directory when it runs, and it runs lazily.
+const LEGACY_HOME_FILES: [&str; 4] = [
+    "skills/.system/.codex-system-skills.marker",
+    "skills/.system/openai-docs/scripts/fetch-codex-manual.mjs",
+    "skills/.system/openai-docs/references/codex-self-knowledge.md",
+    "skills/.system/imagegen/references/codex-network.md",
+];
+/// Pre-rebrand connector caches, now written under `cache/byteask_apps_*`.
+const LEGACY_HOME_DIRS: [&str; 2] = ["cache/codex_apps_tools", "cache/codex_apps_server_info"];
+
+/// ByteAsk: remove pre-rebrand state from an existing home on every launch, before any
+/// entry point (TUI or `exec`) runs. Best effort: failures never block startup.
+pub(crate) fn remove_legacy_home_state(codex_home: &Path) {
+    for file in LEGACY_HOME_FILES {
+        let _ = std::fs::remove_file(codex_home.join(file));
+    }
+    for dir in LEGACY_HOME_DIRS {
+        let _ = std::fs::remove_dir_all(codex_home.join(dir));
+    }
+}
+
 const ILLEGAL_ENV_VAR_PREFIX: &str = "CODEX_";
 
 /// Load env vars from ~/.codex/.env.
@@ -347,7 +380,7 @@ fn prepare_path_entry_for_codex_aliases(
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
-                    "Refusing to create helper binaries under temporary dir {temp_root:?} (codex_home: {codex_home:?})"
+                    "Refusing to create helper binaries under temporary dir {temp_root:?} (BYTEASK_HOME: {codex_home:?})"
                 ),
             ));
         }
@@ -371,7 +404,7 @@ fn prepare_path_entry_for_codex_aliases(
     }
 
     let temp_dir = tempfile::Builder::new()
-        .prefix("codex-arg0")
+        .prefix(ARG0_TEMP_DIR_PREFIX)
         .tempdir_in(&temp_root)?;
     let path = temp_dir.path();
 
@@ -651,7 +684,7 @@ mod tests {
     fn linux_sandbox_exe_path_prefers_codex_linux_sandbox_alias() -> std::io::Result<()> {
         let temp_dir = TempDir::new()?;
         let lock_file = create_lock(temp_dir.path())?;
-        let alias_path = temp_dir.path().join("codex-linux-sandbox");
+        let alias_path = temp_dir.path().join("byteask-linux-sandbox");
         let path_entry = Arg0PathEntryGuard::new(
             temp_dir,
             lock_file,
@@ -805,6 +838,70 @@ mod tests {
         janitor_cleanup(root.path())?;
 
         assert!(!dir.exists());
+        Ok(())
+    }
+
+    /// Homes upgraded from the pre-rebrand engine hold stale `codex-arg0*` dirs; the
+    /// janitor must clear those as well as its own `byteask-arg0*` ones.
+    #[test]
+    fn janitor_removes_stale_legacy_codex_arg0_dirs() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let legacy = root.path().join("codex-arg0AbCd12");
+        fs::create_dir(&legacy)?;
+        create_lock(&legacy)?;
+        fs::write(legacy.join("codex-linux-sandbox"), b"")?;
+
+        janitor_cleanup(root.path())?;
+
+        assert!(!legacy.exists());
+        assert_eq!(super::ARG0_TEMP_DIR_PREFIX, "byteask-arg0");
+        Ok(())
+    }
+
+    /// Real homes carry pre-rebrand state that a fresh install never creates. The system
+    /// skills installer runs lazily, so it cannot be relied on to clear the old marker and
+    /// files; every launch removes them up front, together with the old connector caches.
+    #[test]
+    fn legacy_home_state_is_removed_and_everything_else_kept() -> std::io::Result<()> {
+        let home = tempfile::tempdir()?;
+        let home = home.path();
+        let legacy_files = [
+            "skills/.system/.codex-system-skills.marker",
+            "skills/.system/openai-docs/scripts/fetch-codex-manual.mjs",
+            "skills/.system/openai-docs/references/codex-self-knowledge.md",
+            "skills/.system/imagegen/references/codex-network.md",
+        ];
+        for file in legacy_files {
+            let path = home.join(file);
+            fs::create_dir_all(path.parent().expect("parent"))?;
+            fs::write(&path, b"legacy")?;
+        }
+        for dir in ["cache/codex_apps_tools/x", "cache/codex_apps_server_info/y"] {
+            fs::create_dir_all(home.join(dir))?;
+        }
+        let kept = [
+            "skills/.system/.byteask-system-skills.marker",
+            "skills/.system/openai-docs/SKILL.md",
+            "skills/my-skill/SKILL.md",
+            "cache/byteask_apps_tools/z.json",
+            "config.toml",
+        ];
+        for file in kept {
+            let path = home.join(file);
+            fs::create_dir_all(path.parent().expect("parent"))?;
+            fs::write(&path, b"keep")?;
+        }
+
+        super::remove_legacy_home_state(home);
+
+        for file in legacy_files {
+            assert!(!home.join(file).exists(), "{file} should be removed");
+        }
+        assert!(!home.join("cache/codex_apps_tools").exists());
+        assert!(!home.join("cache/codex_apps_server_info").exists());
+        for file in kept {
+            assert!(home.join(file).is_file(), "{file} must be kept");
+        }
         Ok(())
     }
 }

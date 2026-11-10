@@ -118,6 +118,13 @@ pub struct Model {
     pub default_service_tier: Option<String>,
     // Only one model should be marked as default.
     pub is_default: bool,
+    /// Why this account cannot select the model, if it cannot. `None` = selectable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_reason: Option<String>,
+    /// Menu grouping label for the two-level `/model` picker (e.g. "OpenAI").
+    /// `None` = a direct-select row at the top level (used for `auto`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picker_group: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

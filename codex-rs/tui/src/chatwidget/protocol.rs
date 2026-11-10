@@ -146,6 +146,12 @@ impl ChatWidget {
                 self.refresh_skills_for_current_cwd(/*force_reload*/ true);
             }
             ServerNotification::ModelRerouted(_) => {}
+            // ByteAsk Context's turn-0 pack: the one line when it could not be added.
+            ServerNotification::ContextPack(notification) => {
+                if let Some(message) = notification.message {
+                    self.add_info_message(message, /*hint*/ None);
+                }
+            }
             ServerNotification::ModelVerification(notification) => {
                 self.on_app_server_model_verification(&notification.verifications)
             }
@@ -360,6 +366,7 @@ impl ChatWidget {
                 self.on_patch_apply_begin(file_update_changes_to_display(changes));
             }
             item @ ThreadItem::McpToolCall { .. } => self.on_mcp_tool_call_started(item),
+            item @ ThreadItem::DynamicToolCall { .. } => self.on_dynamic_tool_call_started(item),
             ThreadItem::WebSearch(item) => {
                 self.on_web_search_begin(item.id);
             }

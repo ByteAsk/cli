@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/permissions.rs
-assertion_line: 610
 expression: "setup.replace(&chat.config.cwd.display().to_string(), \"[CWD]\")"
 ---
 • Setting up sandbox... (0s)

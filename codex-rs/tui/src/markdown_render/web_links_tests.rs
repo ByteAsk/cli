@@ -49,23 +49,23 @@ fn supporting_terminals_render_only_the_styled_label_and_keep_its_target() {
     ] {
         let display = WebLinkDisplay::for_terminal(&terminal(name), /*term*/ None);
         for (markdown, label) in [
-            ("[label](https://example.com)", "label".cyan().underlined()),
+            ("[label](https://example.com)", "label".fg(crate::style::accent_color()).underlined()),
             (
                 "[`label`](https://example.com)",
-                "label".cyan().underlined(),
+                "label".fg(crate::style::accent_color()).underlined(),
             ),
             (
                 "[**label**](https://example.com)",
-                "label".cyan().bold().underlined(),
+                "label".fg(crate::style::accent_color()).bold().underlined(),
             ),
             (
                 "[*label*](https://example.com)",
-                "label".cyan().italic().underlined(),
+                "label".fg(crate::style::accent_color()).italic().underlined(),
             ),
-            ("[<b>](https://example.com)", "<b>".cyan().underlined()),
+            ("[<b>](https://example.com)", "<b>".fg(crate::style::accent_color()).underlined()),
             (
                 "[https://example.com](https://example.com)",
-                "https://example.com".cyan().underlined(),
+                "https://example.com".fg(crate::style::accent_color()).underlined(),
             ),
         ] {
             let label_width = label.width();

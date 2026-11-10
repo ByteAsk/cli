@@ -83,6 +83,13 @@
         "isDefault": {
           "type": "boolean"
         },
+        "lockedReason": {
+          "description": "Why this account cannot select the model, if it cannot. `None` = selectable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "model": {
           "type": "string"
         },
@@ -103,6 +110,13 @@
             }
           ],
           "description": "Multi-agent runtime declared by this model, when available."
+        },
+        "pickerGroup": {
+          "description": "Menu grouping label for the two-level `/model` picker (e.g. \"OpenAI\"). `None` = a direct-select row at the top level (used for `auto`).",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "serviceTiers": {
           "default": [],

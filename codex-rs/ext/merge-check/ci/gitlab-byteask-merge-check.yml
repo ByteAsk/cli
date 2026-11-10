@@ -1,0 +1,48 @@
+# ByteAsk merge check for GitLab. Include from the PROTECTED base branch's
+# .gitlab-ci.yml, require the commit status "ByteAsk merge check" (pipelines must succeed /
+# external status checks), and give the `byteask-signer` runner tag to a protected runner that
+# only runs protected jobs. Tested against a local fake GitLab only.
+#
+# run   - runs the branch's code; no key.
+# sign  - git plumbing only; holds the runner key (a protected CI/CD variable file).
+# gate  - verifies signed results with the enterprise server; posts a commit status and a
+#         merge-request note with the perf card. GitLab approvals carry no commit, so a NOT RUN
+#         blocks here unless your pipeline passes --approvals from its own approval step.
+stages: [byteask-run, byteask-sign, byteask-gate]
+
+byteask-run:
+  stage: byteask-run
+  tags: [byteask-ci]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - git fetch --no-tags origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - byteask checks run --base "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" --head HEAD --out run.json
+  artifacts:
+    paths: [run.json]
+
+byteask-sign:
+  stage: byteask-sign
+  tags: [byteask-signer]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - git fetch --no-tags origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - >
+      byteask checks sign --base "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" --head HEAD
+      --report run.json --key "$BYTEASK_RUNNER_KEY_FILE"
+      --enterprise https://byteask.corp.example --cache /srv/byteask/merge-cache
+
+byteask-gate:
+  stage: byteask-gate
+  tags: [byteask-signer]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - git fetch --no-tags origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - >
+      byteask checks gate --base "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" --head HEAD
+      --cache /srv/byteask/merge-cache --enterprise https://byteask.corp.example
+      --token-file "$BYTEASK_ENTERPRISE_TOKEN_FILE"
+      --gitlab-api "$CI_API_V4_URL" --gitlab-project "$CI_PROJECT_ID" --gitlab-mr "$CI_MERGE_REQUEST_IID"
+      --gitlab-token-env BYTEASK_GITLAB_TOKEN

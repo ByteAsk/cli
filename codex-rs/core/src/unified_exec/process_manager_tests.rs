@@ -393,7 +393,7 @@ async fn network_denial_fallback_message_names_sandbox_network_proxy() {
 
     assert_eq!(
         message,
-        "Network access was denied by the Codex sandbox network proxy."
+        "Network access was denied by the ByteAsk sandbox network proxy."
     );
 }
 
@@ -626,4 +626,55 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
         (pruned.map(|entry| entry.process_id), store.processes.len()),
         (None, MAX_UNIFIED_EXEC_PROCESSES)
     );
+}
+
+// ---- ByteAsk: wait instead of poll ---------------------------------------
+
+#[test]
+fn a_poll_without_a_tty_waits_at_least_three_minutes_by_default() {
+    use crate::unified_exec::DEFAULT_EMPTY_POLL_MIN_MS;
+    use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
+    use crate::unified_exec::empty_poll_floor_ms_with;
+    let default = byteask_output_reducers::Policy::default();
+    assert_eq!(empty_poll_floor_ms_with(&default, /*tty*/ false), DEFAULT_EMPTY_POLL_MIN_MS);
+    assert_eq!(DEFAULT_EMPTY_POLL_MIN_MS, 180_000);
+    // A TTY session may be an interactive program: upstream's floor stays.
+    assert_eq!(empty_poll_floor_ms_with(&default, /*tty*/ true), MIN_EMPTY_YIELD_TIME_MS);
+    // The served policy tunes it; the brake restores upstream's behaviour.
+    let tuned = byteask_output_reducers::Policy::from_catalog_json(
+        r#"{"byteask_efficiency":{"numbers":{"empty_poll_min_ms":120000}}}"#,
+    );
+    assert_eq!(empty_poll_floor_ms_with(&tuned, /*tty*/ false), 120_000);
+    let braked = byteask_output_reducers::Policy::from_catalog_json(
+        r#"{"byteask_efficiency":{"brake":true,"numbers":{"empty_poll_min_ms":120000}}}"#,
+    );
+    assert_eq!(empty_poll_floor_ms_with(&braked, /*tty*/ false), MIN_EMPTY_YIELD_TIME_MS);
+}
+
+#[test]
+fn a_first_wait_without_a_tty_is_at_least_thirty_seconds_by_default() {
+    use crate::unified_exec::DEFAULT_FIRST_YIELD_MIN_MS;
+    use crate::unified_exec::exec_yield_time_with;
+    let default = byteask_output_reducers::Policy::default();
+    assert_eq!(DEFAULT_FIRST_YIELD_MIN_MS, 30_000);
+    assert_eq!(exec_yield_time_with(&default, 1_000, /*tty*/ false), 30_000);
+    assert_eq!(exec_yield_time_with(&default, 20_000, /*tty*/ false), 30_000);
+    // Never above the cap: upstream's 30 s, or the policy's first_yield_ms.
+    assert_eq!(
+        exec_yield_time_with(&default, 999_999, /*tty*/ false),
+        crate::unified_exec::MAX_YIELD_TIME_MS
+    );
+    let raised = byteask_output_reducers::Policy::from_catalog_json(
+        r#"{"byteask_efficiency":{"numbers":{"first_yield_ms":120000,"first_yield_min_ms":15000}}}"#,
+    );
+    assert_eq!(exec_yield_time_with(&raised, 1_000, /*tty*/ false), 15_000);
+    assert_eq!(exec_yield_time_with(&raised, 90_000, /*tty*/ false), 90_000);
+    // With a TTY, or under the brake, the model's value stands (as upstream on non-Windows).
+    if !cfg!(windows) {
+        assert_eq!(exec_yield_time_with(&default, 1_000, /*tty*/ true), 1_000);
+        let braked = byteask_output_reducers::Policy::from_catalog_json(
+            r#"{"byteask_efficiency":{"brake":true}}"#,
+        );
+        assert_eq!(exec_yield_time_with(&braked, 1_000, /*tty*/ false), 1_000);
+    }
 }

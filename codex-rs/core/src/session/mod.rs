@@ -217,6 +217,7 @@ use codex_protocol::error::Result as CodexResult;
 #[cfg(test)]
 use codex_protocol::exec_output::StreamOutput;
 
+mod byteask_gate;
 mod code_mode_warning;
 pub(crate) mod context_window;
 mod environment;
@@ -2896,7 +2897,7 @@ impl Session {
         let Ok(native_cwd) = cwd.to_abs_path() else {
             warn!(
                 cwd = %cwd,
-                "request_permissions interactive approval requires a cwd native to the Codex host"
+                "request_permissions interactive approval requires a cwd native to the ByteAsk host"
             );
             return Some(RequestPermissionsResponse {
                 permissions: RequestPermissionProfile::default(),
@@ -3439,6 +3440,60 @@ impl Session {
         Ok(world_state)
     }
 
+    /// ByteAsk: at the start of a turn, if this thread's prompt cache has certainly
+    /// expired, mask old bulky tool outputs in the LIVE history (the rollout is untouched).
+    /// Returns the bytes removed. A no-op unless the policy switches it on.
+    pub(crate) async fn byteask_cold_slim_if_due(&self) -> usize {
+        let thread = format!("{:?}", self.thread_id);
+        let idle = crate::byteask_compaction::touch(&thread, std::time::Instant::now());
+        let policy = byteask_output_reducers::policy::active();
+        let Some(cold_after) = policy.number("cold_after_secs").filter(|_| policy.flag("cold_slim"))
+        else {
+            return 0;
+        };
+        if !crate::byteask_compaction::is_cold(idle, cold_after) {
+            return 0;
+        }
+        let protect = policy
+            .number("cold_protect_tokens")
+            .and_then(|t| usize::try_from(t).ok())
+            .unwrap_or(40_000)
+            .saturating_mul(4);
+        let mut state = self.state.lock().await;
+        let items: Vec<ResponseItem> = state.history.raw_items().cloned().collect();
+        // Worth it only for a real saving (opencode uses 20K tokens for the same decision).
+        let plan = crate::byteask_compaction::cold_slim_plan(&items, protect, 2_000, 80_000);
+        if plan.is_empty() {
+            return 0;
+        }
+        let before: usize = plan
+            .iter()
+            .map(|(i, text)| {
+                serde_json::to_string(&items[*i]).map_or(0, |s| s.len()).saturating_sub(text.len())
+            })
+            .sum();
+        let replacements = plan
+            .into_iter()
+            .map(|(i, text)| (i, crate::byteask_compaction::with_output_text(&items[i], &text)))
+            .collect();
+        state.history.byteask_mask_outputs(replacements);
+        crate::tools::handlers::byteask_files::note_compaction();
+        before
+    }
+
+    /// ByteAsk: the tools array of the turn's last working call, i.e. exactly what the
+    /// provider's prompt cache holds in front of the history. `None` when no step ran yet.
+    pub(crate) async fn byteask_last_known_tool_specs(
+        &self,
+    ) -> Option<Arc<[codex_tools::ToolSpec]>> {
+        let turn_state = {
+            let active_turn = self.active_turn.lock().await;
+            active_turn.as_ref().map(|active_turn| Arc::clone(&active_turn.turn_state))
+        }?;
+        let step = turn_state.lock().await.last_known_step_context.clone()?;
+        Some(step.tool_router.model_visible_specs())
+    }
+
     /// Retains the step captured for execution.
     pub(crate) async fn set_last_known_step_context(&self, step_context: &Arc<StepContext>) {
         let turn_state = {
@@ -3745,6 +3800,9 @@ impl Session {
         items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,
     ) {
+        // ByteAsk: whatever was read before is no longer guaranteed to be in context
+        // (this also covers rollback and thread replacement, not only compaction).
+        crate::tools::handlers::byteask_files::note_compaction();
         let mut state = self.state.lock().await;
         state.replace_history(items, reference_context_item);
     }
@@ -3756,6 +3814,7 @@ impl Session {
         world_state_baseline: Option<Arc<WorldState>>,
         metadata: CompactedHistoryMetadata,
     ) {
+        crate::tools::handlers::byteask_files::note_compaction();
         for envelope in &mut items {
             Self::assign_missing_response_item_id(&mut envelope.item);
         }
@@ -3954,6 +4013,9 @@ impl Session {
             contextual_user_sections.push(recommended_plugins.render_fragment());
         }
         let context_contributors = self.services.extensions.context_contributors().to_vec();
+        // ByteAsk Context: fragments that differ between workspaces stay out of the prefix.
+        let byteask_context = crate::byteask_context::gated(&turn_context.config);
+        let byteask_prefix = crate::byteask_context::shapes_prefix(&turn_context.config);
         for contributor in &context_contributors {
             for fragment in contributor
                 .contribute_thread_context(
@@ -3962,6 +4024,11 @@ impl Session {
                 )
                 .await
             {
+                if byteask_prefix
+                    && crate::byteask_context::drops_prompt_fragment(&fragment.content_kind().0)
+                {
+                    continue;
+                }
                 match fragment.slot() {
                     PromptSlot::ContextWindow => {
                         context_window_hints.push(fragment.text().to_string());
@@ -3970,6 +4037,14 @@ impl Session {
                         developer_sections.push(fragment.into());
                     }
                 }
+            }
+        }
+        // ByteAsk Context: the instruction, after the C/C++ guidance.
+        if byteask_context && !separate_guardian_developer_message {
+            let text = crate::byteask_context::instructions(&turn_context.config);
+            if !text.is_empty() {
+                developer_sections
+                    .push(crate::context::ByteAskContextInstructions(text).render_fragment());
             }
         }
         for contributor in &context_contributors {

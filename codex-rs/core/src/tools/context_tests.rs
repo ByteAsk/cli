@@ -413,6 +413,7 @@ fn exec_command_tool_output_formats_truncated_response() {
         original_token_count: Some(10),
         output_omitted_bytes: None,
         hook_command: None,
+        wait_note: None,
     };
     assert_eq!(
         output.log_output(),
@@ -470,6 +471,7 @@ fn exec_command_tool_output_reserves_metadata_budget_and_preserves_policy_units(
             original_token_count: Some(123),
             output_omitted_bytes: None,
             hook_command: None,
+            wait_note: None,
         }
         .to_response_item("call-42", &payload);
 
@@ -514,6 +516,7 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
         original_token_count: Some(42_000),
         output_omitted_bytes: NonZeroUsize::new(/*n*/ 123_456),
         hook_command: None,
+        wait_note: None,
     };
     let expected_header = "Chunk ID: abc123\nWall time: 1.2500 seconds\nProcess exited with code 0\nOriginal token count: 42000\nOutput:\n";
     assert_eq!(
@@ -542,4 +545,200 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
     assert!(text.contains("Original token count: 42000"));
     assert!(text.contains("Warning: truncated output (original token count: 42000)"));
     assert_eq!(text.matches(&marker).count(), 1);
+}
+
+// ---- ByteAsk token efficiency ------------------------------
+
+fn byteask_exec_output(raw: Vec<u8>) -> ExecCommandToolOutput {
+    ExecCommandToolOutput {
+        event_call_id: "call-eff".to_string(),
+        chunk_id: "c1".to_string(),
+        wall_time: std::time::Duration::from_millis(10),
+        raw_output: raw,
+        truncation_policy: TruncationPolicy::Tokens(10_000),
+        max_output_tokens: None,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: None,
+        output_omitted_bytes: None,
+        hook_command: None,
+        wait_note: None,
+    }
+}
+
+#[test]
+fn byteask_plain_output_is_untouched_byte_for_byte() {
+    let raw = "plain line\n".repeat(200).into_bytes();
+    let out = byteask_exec_output(raw.clone());
+    let upstream = TruncationPolicy::Tokens(10_000);
+    let (text, policy, footer) =
+        out.byteask_reduce_with(upstream, &byteask_output_reducers::Policy::default());
+    assert_eq!(text.as_bytes(), raw.as_slice());
+    assert_eq!(policy, upstream);
+    assert_eq!(footer, "");
+}
+
+#[test]
+fn byteask_colour_codes_are_stripped_and_the_output_is_tagged() {
+    let raw = format!("\u{1b}[31merror\u{1b}[0m here\n{}", "filler\n".repeat(200));
+    let out = byteask_exec_output(raw.into_bytes());
+    let (text, _policy, footer) = out.byteask_reduce_with(
+        TruncationPolicy::Tokens(10_000),
+        &byteask_output_reducers::Policy::default(),
+    );
+    assert!(text.starts_with("error here\n"));
+    assert!(footer.contains("[byteask: ansi"), "footer was: {footer}");
+    // The serialized text ends with the sentinel, which is what later passes key on.
+    assert!(byteask_output_reducers::is_reduced(&out.response_text()));
+}
+
+#[test]
+fn byteask_a_lower_budget_is_never_applied_without_a_spilled_original() {
+    // No spill directory is initialised in this test process, so the write fails and
+    // the upstream budget MUST be kept: no lossy cut without a recoverable original.
+    let raw = "0123456789 abcdefghij\n".repeat(4_000).into_bytes(); // ~88 KB
+    let out = byteask_exec_output(raw);
+    let upstream = TruncationPolicy::Tokens(10_000);
+    let eff = byteask_output_reducers::Policy {
+        exec_budget_tokens: Some(4_000),
+        ..byteask_output_reducers::Policy::default()
+    };
+    // The spill directory is process-wide and another test may have set it, so BOTH
+    // outcomes are asserted: this test must never pass by checking nothing.
+    let spill_available = byteask_output_reducers::spill::dir().is_some_and(std::path::Path::is_dir);
+    let (_text, policy, footer) = out.byteask_reduce_with(upstream, &eff);
+    if spill_available {
+        assert_eq!(policy, TruncationPolicy::Tokens(4_000));
+        assert!(footer.contains("trimmed") && footer.contains("saved at"), "footer: {footer}");
+    } else {
+        assert_eq!(policy, upstream);
+        assert_eq!(footer, "");
+    }
+}
+
+#[test]
+fn byteask_the_brake_switches_everything_off() {
+    let raw = format!("\u{1b}[31mx\u{1b}[0m\n{}", "filler\n".repeat(200));
+    let out = byteask_exec_output(raw.clone().into_bytes());
+    let eff = byteask_output_reducers::Policy::from_catalog_json(
+        r#"{"byteask_efficiency":{"brake":true,"budgets":{"exec":4000}}}"#,
+    );
+    let (text, _policy, footer) = out.byteask_reduce_with(TruncationPolicy::Tokens(10_000), &eff);
+    assert_eq!(text, raw);
+    assert_eq!(footer, "");
+}
+
+fn byteask_all_reducers_on() -> byteask_output_reducers::Policy {
+    let mut p = byteask_output_reducers::Policy::default();
+    for name in byteask_output_reducers::policy::DARK_REDUCERS {
+        p.enabled.insert((*name).to_string());
+    }
+    p
+}
+
+fn byteask_cargo_test_log() -> String {
+    let mut s = String::from("running 80 tests\n");
+    for i in 0..80 {
+        s.push_str(&format!("test module::case_number_{i} ... ok\n"));
+    }
+    s.push_str("\ntest result: ok. 80 passed; 0 failed\n");
+    s
+}
+
+#[test]
+fn byteask_a_lossy_reducer_is_undone_when_the_original_cannot_be_spilled() {
+    let raw = byteask_cargo_test_log();
+    let mut out = byteask_exec_output(raw.clone().into_bytes());
+    out.hook_command = Some("cargo test".to_string());
+    let spill_available = byteask_output_reducers::spill::dir().is_some_and(std::path::Path::is_dir);
+    let (text, policy, footer) =
+        out.byteask_reduce_with(TruncationPolicy::Tokens(10_000), &byteask_all_reducers_on());
+    assert_eq!(policy, TruncationPolicy::Tokens(10_000));
+    if spill_available {
+        assert!(text.len() < raw.len() / 3, "the passing-test lines became a count");
+        assert!(text.contains("test result: ok. 80 passed"));
+        assert!(footer.contains("tests") && footer.contains("saved at"), "footer: {footer}");
+    } else {
+        assert_eq!(text, raw, "content was removed with no recoverable original");
+        assert_eq!(footer, "");
+    }
+}
+
+#[test]
+fn byteask_family_reducers_need_a_positive_command_match() {
+    let raw = byteask_cargo_test_log();
+    for command in [None, Some("bash -lc 'cat test.log'"), Some("cargo test && cat x")] {
+        let mut out = byteask_exec_output(raw.clone().into_bytes());
+        out.hook_command = command.map(str::to_string);
+        let (text, _policy, footer) =
+            out.byteask_reduce_with(TruncationPolicy::Tokens(10_000), &byteask_all_reducers_on());
+        assert_eq!(text, raw, "{command:?}");
+        assert_eq!(footer, "", "{command:?}");
+    }
+}
+
+#[test]
+fn byteask_search_output_is_regrouped_losslessly_by_default() {
+    let mut raw = String::new();
+    for i in 0..60 {
+        raw.push_str(&format!("crates/long/path/to/a/module/file_a.rs:{i}:    let value_{i} = compute();\n"));
+    }
+    let mut out = byteask_exec_output(raw.clone().into_bytes());
+    out.hook_command = Some("rg -n compute".to_string());
+    let (text, _policy, footer) = out.byteask_reduce_with(
+        TruncationPolicy::Tokens(10_000),
+        &byteask_output_reducers::Policy::default(),
+    );
+    assert_eq!(text.matches("file_a.rs").count(), 1);
+    assert!(text.contains("\n59:    let value_59 = compute();\n"));
+    assert!(footer.contains("search-group"), "footer was: {footer}");
+    // The same bytes through a command that could be printing a file: untouched.
+    out.hook_command = Some("cat matches.txt".to_string());
+    let (text, _policy, _footer) = out.byteask_reduce_with(
+        TruncationPolicy::Tokens(10_000),
+        &byteask_output_reducers::Policy::default(),
+    );
+    assert_eq!(text, raw);
+}
+
+#[test]
+fn byteask_the_compact_header_keeps_what_the_model_acts_on() {
+    let mut out = byteask_exec_output(b"hi\n".to_vec());
+    out.wall_time = std::time::Duration::from_millis(1234);
+    assert_eq!(out.byteask_compact_header(), "[exit 0 | 1.2s]");
+    out.exit_code = None;
+    out.process_id = Some(7);
+    assert_eq!(
+        out.byteask_compact_header(),
+        "[running | 1.2s]\nProcess running with session ID 7"
+    );
+    // The token count appears only when something was cut.
+    out.original_token_count = Some(50);
+    assert!(!out.byteask_compact_header().contains("Original token count"));
+    out.original_token_count = Some(500_000);
+    assert!(out.byteask_compact_header().contains("Original token count: 500000"));
+}
+
+#[test]
+fn byteask_a_wait_floor_note_follows_the_session_line() {
+    // When a wait floor, not the model, set the wait on a running command, both
+    // header forms say how long it waited and that waits end when the command exits.
+    let mut out = byteask_exec_output(b"building\n".to_vec());
+    out.wall_time = std::time::Duration::from_secs(60);
+    out.exit_code = None;
+    out.process_id = Some(7);
+    out.wait_note = Some(crate::unified_exec::wait_floor_note(out.wall_time));
+    assert_eq!(
+        out.byteask_compact_header(),
+        "[running | 60.0s]\nProcess running with session ID 7\nWaited 60s: a running command \
+         without a TTY is waited on at least that long; every wait ends as soon as the command exits."
+    );
+    // Whichever header form the active policy selects, the note follows the session line.
+    let header = out.response_header();
+    assert!(
+        header.contains("Process running with session ID 7\nWaited 60s:"),
+        "{header}"
+    );
+    out.wait_note = None;
+    assert!(!out.byteask_compact_header().contains("Waited"));
 }

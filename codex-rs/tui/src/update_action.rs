@@ -5,22 +5,25 @@ use codex_install_context::InstallMethod;
 #[cfg(any(not(debug_assertions), test))]
 use codex_install_context::StandalonePlatform;
 
-/// Update action the CLI should perform after the TUI exits.
+/// Detected installation method. Upstream uses this to pick a per-manager
+/// update command; ByteAsk runs `byteask --update` for all of them (see
+/// [`UpdateAction::command_args`]), so these variants now only record HOW the
+/// user installed, not what to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g @openai/codex@latest`.
+    /// Installed as a global npm package.
     NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
+    /// Installed as a global bun package.
     BunGlobalLatest,
     /// Update via `vp install -g @openai/codex@latest`.
     VitePlusGlobalLatest,
     /// Update via `pnpm add -g @openai/codex@latest`.
     PnpmGlobalLatest,
-    /// Update via `brew upgrade codex`.
+    /// Installed via Homebrew.
     BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
+    /// Installed by the standalone Unix install script.
     StandaloneUnix,
-    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
+    /// Installed by the standalone Windows install script.
     StandaloneWindows,
 }
 
@@ -42,30 +45,21 @@ impl UpdateAction {
     }
 
     /// Returns the list of command-line arguments for invoking the update.
+    ///
+    /// ByteAsk has ONE update path regardless of how the user installed: the
+    /// wrapper's `byteask --update`, which re-runs install.sh, preserves the
+    /// login token, and works identically for the curl, pip and npm installs
+    /// (the pip/npm packages are thin launchers over the same runtime).
+    ///
+    /// The upstream per-manager commands are deliberately NOT used here. Every
+    /// one of them installs a DIFFERENT product over a ByteAsk install:
+    /// `npm install -g @openai/codex`, `brew upgrade --cask codex`, and the
+    /// `chatgpt.com/codex/install.sh` standalone script all fetch OpenAI's
+    /// Codex. Running any of them would replace the user's byteask binary.
+    /// The variant is still detected and reported (`from_install_context`);
+    /// only the command it maps to changes.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
-        match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
-            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
-            UpdateAction::StandaloneUnix => (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
-                ],
-            ),
-            UpdateAction::StandaloneWindows => (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
-                ],
-            ),
-        }
+        ("byteask", &["--update"])
     }
 
     /// Returns string representation of the command-line arguments for invoking the update.
@@ -152,29 +146,32 @@ mod tests {
         );
     }
 
+    /// Every install method must resolve to ByteAsk's own update path.
+    ///
+    /// This replaces an upstream test that asserted the per-manager commands.
+    /// The regression it guards is specific and severe: those commands
+    /// (`npm install -g @openai/codex`, the `chatgpt.com/codex` installers)
+    /// fetch OpenAI's Codex, so an upstream merge that reintroduces them would
+    /// make a ByteAsk update silently replace the user's binary with a
+    /// different product.
     #[test]
-    fn standalone_update_commands_rerun_latest_installer() {
-        assert_eq!(
-            UpdateAction::StandaloneUnix.command_args(),
-            (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
-                ][..],
-            )
-        );
-        assert_eq!(
-            UpdateAction::StandaloneWindows.command_args(),
-            (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
-                ][..],
-            )
-        );
+    fn every_install_method_updates_via_the_byteask_wrapper() {
+        for action in [
+            UpdateAction::NpmGlobalLatest,
+            UpdateAction::BunGlobalLatest,
+            UpdateAction::VitePlusGlobalLatest,
+            UpdateAction::PnpmGlobalLatest,
+            UpdateAction::BrewUpgrade,
+            UpdateAction::StandaloneUnix,
+            UpdateAction::StandaloneWindows,
+        ] {
+            assert_eq!(action.command_args(), ("byteask", &["--update"][..]));
+            let rendered = action.command_str();
+            assert_eq!(rendered, "byteask --update");
+            assert!(
+                !rendered.contains("codex") && !rendered.contains("chatgpt"),
+                "update command leaks the upstream product: {rendered}"
+            );
+        }
     }
 }

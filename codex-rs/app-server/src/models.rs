@@ -63,6 +63,8 @@ fn model_from_preset(preset: ModelPreset) -> Model {
             .collect(),
         default_service_tier: preset.default_service_tier,
         is_default: preset.is_default,
+        locked_reason: preset.locked_reason,
+        picker_group: preset.picker_group,
     }
 }
 

@@ -97,7 +97,7 @@ impl LocalThreadStore {
                 LineageRepresentation::PlainForReference => {
                     let outside_codex_home = || ThreadStoreError::InvalidRequest {
                         message: format!(
-                            "rollout path `{}` must be in Codex home directory",
+                            "rollout path `{}` must be in ByteAsk home directory",
                             rollout_path.display()
                         ),
                     };

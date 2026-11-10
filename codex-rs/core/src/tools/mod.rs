@@ -1,4 +1,6 @@
 mod approvals;
+pub(crate) mod byteask_loop;
+pub(crate) mod byteask_patch_echo;
 pub(crate) mod code_mode;
 pub(crate) mod context;
 mod control_tool_analytics;
@@ -79,8 +81,17 @@ pub(crate) fn requested_tool_mode(turn_context: &TurnContext, model_info: &Model
 
 pub(crate) fn effective_tool_mode(turn_context: &TurnContext, model_info: &ModelInfo) -> ToolMode {
     let requested_tool_mode = requested_tool_mode(turn_context, model_info);
+    // ByteAsk never ships `codex-code-mode-host` (release builds `-p codex-cli`
+    // only), so `code_mode_available` is always false. Upstream degrades only
+    // `CodeMode` → `Direct` here and lets `CodeModeOnly` fail CLOSED — which broke
+    // every `code_mode_only` model (gpt-6-astra, gpt-5.6-{sol,terra,luna}) the
+    // instant the model list carries that field unstripped, e.g. a ChatGPT
+    // subscription session that uses OpenAI's own catalog (our managed catalog
+    // pops `tool_mode`, so managed already runs these models via Direct — proving
+    // Direct is a safe landing). Degrade both, so the host being absent means
+    // "use Direct tools", never "the model is unusable".
     if !turn_context.code_mode_available
-        && requested_tool_mode == ToolMode::CodeMode
+        && matches!(requested_tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly)
         && !turn_context.config.code_mode.disable_in_process_fallback
     {
         ToolMode::Direct

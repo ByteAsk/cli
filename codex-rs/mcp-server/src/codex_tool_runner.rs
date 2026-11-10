@@ -82,7 +82,7 @@ pub async fn run_codex_tool_session(
         Ok(res) => res,
         Err(e) => {
             let result = CallToolResult::error(vec![ContentBlock::text(format!(
-                "Failed to start Codex session: {e}"
+                "Failed to start ByteAsk session: {e}"
             ))]);
             outgoing.send_response(id.clone(), result);
             return;
@@ -251,6 +251,7 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::AuthRecoveryCompleted(_)
                     | EventMsg::GuardianWarning(_)
                     | EventMsg::ModelVerification(_)
+                    | EventMsg::ContextPack(_)
                     | EventMsg::SafetyBuffering(_)
                     | EventMsg::TurnModerationMetadata(_) => {
                         continue;
@@ -387,7 +388,7 @@ async fn run_codex_tool_session_inner(
             Err(e) => {
                 let result = create_call_tool_result_with_thread_id(
                     thread_id,
-                    format!("Codex runtime error: {e}"),
+                    format!("ByteAsk runtime error: {e}"),
                     Some(true),
                 );
                 active_turns.finish(&request_id, || {

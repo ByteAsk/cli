@@ -3244,6 +3244,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         success: Some(true),
         error: None,
         duration: Some(Duration::from_millis(5)),
+        host_executed: false,
     });
 
     assert_eq!(

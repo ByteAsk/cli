@@ -4,6 +4,7 @@
 // For both modes, any other output must be written to stderr.
 #![deny(clippy::print_stdout)]
 
+mod agent_run;
 mod cli;
 mod event_processor;
 mod event_processor_with_human_output;
@@ -117,6 +118,9 @@ pub use exec_events::CollabToolCallItem;
 pub use exec_events::CollabToolCallStatus;
 pub use exec_events::CommandExecutionItem;
 pub use exec_events::CommandExecutionStatus;
+pub use exec_events::DynamicToolCallContent;
+pub use exec_events::DynamicToolCallItem;
+pub use exec_events::DynamicToolCallStatus;
 pub use exec_events::ErrorItem;
 pub use exec_events::FileChangeItem;
 pub use exec_events::FileUpdateChange;
@@ -164,7 +168,8 @@ use uuid::Uuid;
 use crate::cli::Command as ExecCommand;
 use crate::event_processor::EventProcessor;
 
-const DEFAULT_ANALYTICS_ENABLED: bool = true;
+// ByteAsk: analytics are off unless the user turns them on.
+const DEFAULT_ANALYTICS_ENABLED: bool = false;
 const EXEC_DEFAULT_LOG_FILTER: &str = "error,opentelemetry_sdk=off,opentelemetry_otlp=off";
 
 enum InitialOperation {
@@ -217,6 +222,8 @@ struct ExecRunArgs {
     images: Vec<PathBuf>,
     json_mode: bool,
     last_message_file: Option<PathBuf>,
+    max_turns: Option<u32>,
+    agent_run: agent_run::AgentRun,
     model_provider: Option<String>,
     oss: bool,
     output_schema_path: Option<PathBuf>,
@@ -245,7 +252,7 @@ fn exec_stderr_env_filter() -> EnvFilter {
 
 pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     if let Err(err) = set_default_originator("codex_exec".to_string()) {
-        tracing::warn!(?err, "Failed to set codex exec originator override {err:?}");
+        tracing::warn!(?err, "Failed to set byteask exec originator override {err:?}");
     }
 
     let Cli {
@@ -262,6 +269,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         json: json_mode,
         prompt,
         output_schema: output_schema_path,
+        max_turns,
         mut config_overrides,
     } = cli;
     let mut shared = shared.into_inner();
@@ -553,13 +561,14 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: true,
         client_name: "codex_exec".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: codex_login::default_client::reported_client_version(),
         experimental_api: true,
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     };
-    run_exec_session(ExecRunArgs {
+    let agent_run = agent_run::AgentRun::new(config.cwd.as_path(), last_message_file.clone());
+    let result = run_exec_session(ExecRunArgs {
         in_process_start_args,
         state_db,
         command,
@@ -570,6 +579,8 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         images,
         json_mode,
         last_message_file,
+        max_turns,
+        agent_run: agent_run.clone(),
         model_provider,
         oss,
         output_schema_path,
@@ -579,7 +590,11 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         thread_source: thread_source.map(Into::into).unwrap_or(ThreadSource::User),
     })
     .instrument(exec_span)
-    .await
+    .await;
+    if result.is_err() {
+        agent_run.write_checks();
+    }
+    result
 }
 
 async fn build_exec_config<BuildConfig, BuildFuture>(
@@ -669,6 +684,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         images,
         json_mode,
         last_message_file,
+        max_turns,
+        agent_run,
         model_provider,
         oss,
         output_schema_path,
@@ -677,6 +694,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         stderr_with_ansi,
         thread_source,
     } = args;
+    // Installed first so a SIGTERM during startup is still handled.
+    let mut sigterm_rx = agent_run::watch_sigterm(agent_run.clone());
 
     let mut event_processor: Box<dyn EventProcessor> = match json_mode {
         true => Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone())),
@@ -941,7 +960,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         event_processor.process_warning(message);
     }
 
-    info!("Codex initialized with event: {session_configured:?}");
+    info!("ByteAsk initialized with event: {session_configured:?}");
 
     let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<()>();
     tokio::spawn(async move {
@@ -1039,6 +1058,14 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     // exit with a non-zero status for automation-friendly signaling.
     let mut error_seen = false;
     let mut interrupt_channel_open = true;
+    let mut sigterm_channel_open = true;
+    let mut sigterm_seen = false;
+    // `--max-turns` budget. One "turn" is one model response: the
+    // agent emits exactly one token-usage update per completed response
+    // (`should_emit_token_count` in core's turn loop), which is the only signal
+    // exec sees for "the model spoke again".
+    let mut model_responses: u32 = 0;
+    let mut max_turns_stop_sent = false;
     let primary_thread_id_for_requests = primary_thread_id.to_string();
     loop {
         let server_event = tokio::select! {
@@ -1064,6 +1091,29 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 }
                 continue;
             }
+            maybe_sigterm = sigterm_rx.recv(), if sigterm_channel_open => {
+                if maybe_sigterm.is_none() {
+                    sigterm_channel_open = false;
+                    continue;
+                }
+                sigterm_seen = true;
+                if let Err(err) = send_request_with_response::<TurnInterruptResponse>(
+                    &client,
+                    ClientRequest::TurnInterrupt {
+                        request_id: request_ids.next(),
+                        params: TurnInterruptParams {
+                            thread_id: primary_thread_id_for_requests.clone(),
+                            turn_id: task_id.clone(),
+                        },
+                    },
+                    "turn/interrupt",
+                )
+                .await
+                {
+                    warn!("turn/interrupt failed after SIGTERM: {err}");
+                }
+                continue;
+            }
             maybe_event = client.next_event() => maybe_event,
         };
 
@@ -1077,6 +1127,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             }
             InProcessServerEvent::ServerNotification(notification) => {
                 let mut notification = *notification;
+                agent_run.observe(&notification, &primary_thread_id_for_requests);
                 if let ServerNotification::Error(payload) = &notification {
                     if payload.thread_id == primary_thread_id_for_requests
                         && payload.turn_id == task_id
@@ -1095,6 +1146,12 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                 {
                     error_seen = true;
                 }
+
+                let is_model_response = is_model_response_notification(
+                    &notification,
+                    &primary_thread_id_for_requests,
+                    &task_id,
+                );
 
                 if should_process_notification(
                     &notification,
@@ -1125,6 +1182,29 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         }
                     }
                 }
+
+                if is_model_response && let Some(limit) = max_turns {
+                    model_responses = model_responses.saturating_add(1);
+                    if model_responses >= limit && !max_turns_stop_sent {
+                        max_turns_stop_sent = true;
+                        event_processor.process_warning(max_turns_reached_message(limit));
+                        if let Err(err) = send_request_with_response::<TurnInterruptResponse>(
+                            &client,
+                            ClientRequest::TurnInterrupt {
+                                request_id: request_ids.next(),
+                                params: TurnInterruptParams {
+                                    thread_id: primary_thread_id_for_requests.clone(),
+                                    turn_id: task_id.clone(),
+                                },
+                            },
+                            "turn/interrupt",
+                        )
+                        .await
+                        {
+                            warn!("turn/interrupt failed while enforcing --max-turns: {err}");
+                        }
+                    }
+                }
             }
             InProcessServerEvent::Lagged { skipped } => {
                 let message = lagged_event_warning_message(skipped);
@@ -1138,6 +1218,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         warn!("in-process app-server shutdown failed: {err}");
     }
     event_processor.print_final_output();
+    if sigterm_seen {
+        agent_run.write_stopped();
+        std::process::exit(agent_run::SIGTERM_EXIT_CODE);
+    }
+    agent_run.write_checks();
     if error_seen {
         std::process::exit(1);
     }
@@ -1452,6 +1537,9 @@ fn should_process_notification(
         ServerNotification::ModelVerification(notification) => {
             notification.thread_id == thread_id && notification.turn_id == turn_id
         }
+        ServerNotification::ContextPack(notification) => {
+            notification.thread_id == thread_id && notification.turn_id == turn_id
+        }
         ServerNotification::ThreadTokenUsageUpdated(notification) => {
             notification.thread_id == thread_id && notification.turn_id == turn_id
         }
@@ -1512,6 +1600,33 @@ async fn maybe_backfill_turn_completed_items(
             warn!("thread/read failed while backfilling turn items for turn completion: {err}");
         }
     }
+}
+
+/// Whether this notification marks one completed model response on the turn
+/// exec is driving, i.e. one unit of the `--max-turns` budget.
+///
+/// Core emits exactly one `TokenCount` per response cycle, so counting these is
+/// counting model responses; item notifications are not usable as the unit,
+/// since one response can produce several parallel tool calls or none at all.
+fn is_model_response_notification(
+    notification: &ServerNotification,
+    thread_id: &str,
+    turn_id: &str,
+) -> bool {
+    matches!(
+        notification,
+        ServerNotification::ThreadTokenUsageUpdated(payload)
+            if payload.thread_id == thread_id && payload.turn_id == turn_id
+    )
+}
+
+/// The message shown when the `--max-turns` budget stops a run.
+fn max_turns_reached_message(limit: u32) -> String {
+    format!(
+        "stopped after {limit} model {}: --max-turns limit reached. \
+         The task may be unfinished; re-run with a higher --max-turns to continue.",
+        if limit == 1 { "turn" } else { "turns" }
+    )
 }
 
 /// Returns true only when `exec` can safely recover missing turn items from

@@ -7812,3 +7812,28 @@ fn plugin_install_error_preserves_store_io_sub_error_type() {
         Some("failed_to_copy_plugin_file".to_string())
     );
 }
+
+/// ByteAsk: with the plugins feature off (the default), the curated marketplace sync entry
+/// point must not start: no clone, no sha file, no lock file in the home.
+#[test]
+fn curated_repo_sync_does_not_start_when_plugins_are_disabled() {
+    CURATED_REPO_SYNC_STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    let tmp = TempDir::new().unwrap();
+    let config = PluginsConfigInput::new(
+        unrestricted_config_layer_stack(),
+        "openai".to_string(),
+        /*plugins_enabled*/ false,
+        /*remote_plugin_enabled*/ true,
+        "https://chatgpt.com".to_string(),
+        test_http_client_factory(),
+    );
+    let manager = Arc::new(test_plugins_manager(tmp.path().to_path_buf()));
+
+    manager.maybe_start_curated_repo_sync_for_config(
+        &config, /*on_effective_plugins_changed*/ None,
+    );
+
+    assert!(!CURATED_REPO_SYNC_STARTED.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!tmp.path().join(".tmp/plugins").exists());
+    assert!(!tmp.path().join(".tmp/plugins.sha").exists());
+}

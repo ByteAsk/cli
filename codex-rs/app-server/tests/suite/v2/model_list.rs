@@ -34,6 +34,7 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
     Model {
         id: preset.id.clone(),
         model: preset.model.clone(),
+        locked_reason: preset.locked_reason.clone(),
         upgrade: preset.upgrade.as_ref().map(|upgrade| upgrade.id.clone()),
         upgrade_info: preset.upgrade.as_ref().map(|upgrade| ModelUpgradeInfo {
             model: upgrade.id.clone(),
@@ -78,6 +79,7 @@ fn model_from_preset(preset: &ModelPreset) -> Model {
             .collect(),
         default_service_tier: preset.default_service_tier.clone(),
         is_default: preset.is_default,
+        picker_group: preset.picker_group.clone(),
     }
 }
 

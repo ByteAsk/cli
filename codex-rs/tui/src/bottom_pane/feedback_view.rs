@@ -272,7 +272,7 @@ pub(crate) fn should_show_feedback_connectivity_details(
 }
 
 fn gutter() -> Span<'static> {
-    "▌ ".cyan()
+    "▌ ".fg(crate::style::accent_color())
 }
 
 fn feedback_title_and_placeholder(category: FeedbackCategory) -> (String, String) {
@@ -333,7 +333,10 @@ pub(crate) fn feedback_success_cell(
         Some(url) if feedback_audience == FeedbackAudience::OpenAiEmployee => {
             lines.extend([
                 "".into(),
-                Line::from(vec!["  ".into(), url.cyan().underlined()]),
+                Line::from(vec![
+                    "  ".into(),
+                    url.fg(crate::style::accent_color()).underlined(),
+                ]),
                 "".into(),
                 Line::from("  Share this and add some info about your problem:"),
                 Line::from(vec![
@@ -345,7 +348,10 @@ pub(crate) fn feedback_success_cell(
         Some(url) => {
             lines.extend([
                 "".into(),
-                Line::from(vec!["  ".into(), url.cyan().underlined()]),
+                Line::from(vec![
+                    "  ".into(),
+                    url.fg(crate::style::accent_color()).underlined(),
+                ]),
                 "".into(),
                 Line::from(vec![
                     "  Or mention your thread ID ".into(),
@@ -567,7 +573,7 @@ pub(crate) fn feedback_upload_consent_params(
             super::SelectionItem {
                 name: "Yes".to_string(),
                 description: Some(
-                    "Share the current Codex session logs and diagnostics with the team for troubleshooting."
+                    "Share the current ByteAsk session logs and diagnostics with the team for troubleshooting."
                         .to_string(),
                 ),
                 actions: vec![yes_action],

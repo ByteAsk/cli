@@ -18,6 +18,7 @@ use codex_http_client::ClientRouteClass;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use codex_http_client::RouteAwareClientPool;
 use codex_install_context::InstallContext;
+#[cfg(test)]
 use codex_install_context::InstallMethod;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use http::Method;
@@ -39,9 +40,12 @@ use super::network;
 use super::npm_global_root_check;
 use super::run_command;
 
-const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+/// The engine's update-check cache (tui `updates_cache`).
+const VERSION_FILE_NAME: &str = "byteask-version.json";
+/// ByteAsk's own update feed, the same one the startup check reads. Never GitHub or
+/// Homebrew: those described upstream releases, not what a ByteAsk user can install.
+const DEFAULT_VERSION_FEED_URL: &str = "https://code.byteask.ai/version.json";
+const VERSION_FEED_URL_ENV: &str = "BYTEASK_VERSION_URL";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
@@ -115,7 +119,12 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
     match fetch_latest_version(&install_context) {
         Ok(latest_version) => {
             details.push(format!("latest version: {latest_version}"));
-            if is_newer(&latest_version, env!("CARGO_PKG_VERSION")) == Some(true) {
+            // Compare the CLIENT release version, not this crate's. The engine crate
+            // version (0.1.0, workspace-pinned) and the shipped client release
+            // (v0.1.10 on ByteAsk/cli) are different version spaces, so comparing the
+            // crate version against the release feed reported "newer version is
+            // available" on every run, including the newest build.
+            if is_newer(&latest_version, codex_tui::version::display_version()) == Some(true) {
                 details.push("latest version status: newer version is available".to_string());
             } else {
                 details.push("latest version status: current version is not older".to_string());
@@ -411,12 +420,14 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
     match std::fs::read_to_string(version_file) {
         Ok(contents) => match serde_json::from_str::<VersionInfo>(&contents) {
             Ok(info) => {
-                details.push(format!("cached latest version: {}", info.latest_version));
+                if let Some(latest_version) = info.latest_version {
+                    details.push(format!("cached latest version: {latest_version}"));
+                }
+                if let Some(min_supported) = info.min_supported {
+                    details.push(format!("cached minimum supported version: {min_supported}"));
+                }
                 if let Some(last_checked_at) = info.last_checked_at {
                     details.push(format!("last checked at: {last_checked_at}"));
-                }
-                if let Some(dismissed_version) = info.dismissed_version {
-                    details.push(format!("dismissed version: {dismissed_version}"));
                 }
             }
             Err(err) => details.push(format!("version cache parse: {err}")),
@@ -428,58 +439,45 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
     }
 }
 
+/// What `byteask doctor` tells the user to run to update.
+///
+/// One answer for every install method, because ByteAsk has one update path:
+/// the wrapper's `byteask --update` (it re-runs install.sh and preserves the
+/// login token; the pip and npm packages are thin launchers over that same
+/// runtime). Upstream returned a per-manager command here, which for a ByteAsk
+/// user was both a brand leak and actively wrong advice -- following
+/// `npm install -g @openai/codex` installs a different product over their
+/// install. The detected method is still reported separately in the same
+/// check's details, so nothing diagnostic is lost by collapsing the label.
 fn update_action_label(context: &InstallContext) -> &'static str {
-    match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::VitePlus => "vp install -g @openai/codex",
-        InstallMethod::Pnpm => "pnpm add -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
-        InstallMethod::Standalone { .. } => "standalone installer",
-        InstallMethod::Other => "manual or unknown",
-    }
+    let _ = context;
+    "byteask --update"
 }
 
-fn fetch_latest_version(context: &InstallContext) -> Result<String, String> {
-    match &context.method {
-        InstallMethod::Brew => fetch_homebrew_cask_version(),
-        InstallMethod::Npm
-        | InstallMethod::Bun
-        | InstallMethod::VitePlus
-        | InstallMethod::Pnpm
-        | InstallMethod::Standalone { .. }
-        | InstallMethod::Other => fetch_latest_github_release_version(),
-    }
+/// One feed for every install method: ByteAsk updates the same way however it was
+/// installed (`byteask --update`).
+fn fetch_latest_version(_context: &InstallContext) -> Result<String, String> {
+    let url = std::env::var(VERSION_FEED_URL_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_VERSION_FEED_URL.to_string());
+    let body = run_command("curl", ["-fsSL", "--max-time", "5", url.as_str()])?;
+    latest_version_from_feed(&body)
 }
 
-fn fetch_latest_github_release_version() -> Result<String, String> {
+/// `{"latest":"X.Y.Z", ...}`; unknown fields ignored.
+fn latest_version_from_feed(body: &str) -> Result<String, String> {
     #[derive(Deserialize)]
-    struct ReleaseInfo {
-        tag_name: String,
+    struct VersionFeed {
+        latest: Option<String>,
     }
 
-    let info = http_get_json::<ReleaseInfo>(GITHUB_LATEST_RELEASE_URL)?;
-    info.tag_name
-        .strip_prefix("rust-v")
-        .map(str::to_string)
-        .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
-}
-
-fn fetch_homebrew_cask_version() -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
-        version: String,
-    }
-
-    http_get_json::<HomebrewCaskInfo>(HOMEBREW_CASK_API_URL).map(|info| info.version)
-}
-
-fn http_get_json<T>(url: &str) -> Result<T, String>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    let body = run_command("curl", ["-fsSL", "--max-time", "5", url])?;
-    serde_json::from_str::<T>(&body).map_err(|err| err.to_string())
+    serde_json::from_str::<VersionFeed>(body)
+        .map_err(|err| format!("malformed version feed: {err}"))?
+        .latest
+        .map(|latest| latest.trim().to_string())
+        .filter(|latest| parse_version(latest).is_some())
+        .ok_or_else(|| "version feed has no valid `latest`".to_string())
 }
 
 fn is_newer(latest: &str, current: &str) -> Option<bool> {
@@ -499,11 +497,12 @@ fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
 
 #[derive(Deserialize)]
 struct VersionInfo {
-    latest_version: String,
+    #[serde(default)]
+    latest_version: Option<String>,
+    #[serde(default)]
+    min_supported: Option<String>,
     #[serde(default)]
     last_checked_at: Option<String>,
-    #[serde(default)]
-    dismissed_version: Option<String>,
 }
 
 #[cfg(test)]
@@ -621,6 +620,19 @@ mod tests {
         .expect("staged app metadata should be created");
     }
 
+    /// Doctor reads ByteAsk's own feed, never GitHub's release tag or a Homebrew cask.
+    #[test]
+    fn latest_version_comes_from_the_byteask_feed() {
+        assert_eq!(
+            latest_version_from_feed(r#"{"latest":" 0.1.13 ","min_supported":"0.1.10","x":1}"#),
+            Ok("0.1.13".to_string())
+        );
+        assert!(latest_version_from_feed(r#"{"min_supported":"0.1.10"}"#).is_err());
+        assert!(latest_version_from_feed(r#"{"latest":"soon"}"#).is_err());
+        assert!(latest_version_from_feed("not json").is_err());
+        assert!(DEFAULT_VERSION_FEED_URL.starts_with("https://code.byteask.ai/"));
+    }
+
     #[test]
     fn is_newer_compares_plain_semver() {
         assert_eq!(is_newer("1.2.4", "1.2.3"), Some(true));
@@ -628,28 +640,27 @@ mod tests {
         assert_eq!(is_newer("1.2.3-beta.1", "1.2.2"), None);
     }
 
+    /// `byteask doctor` must recommend ByteAsk's update path for every detected
+    /// install method, and must never print a command that installs the
+    /// upstream product instead.
     #[test]
-    fn update_action_labels_install_contexts() {
-        assert_eq!(
-            update_action_label(&InstallContext {
-                method: InstallMethod::Npm,
+    fn update_action_label_is_the_byteask_wrapper_for_every_method() {
+        for method in [
+            InstallMethod::Npm,
+            InstallMethod::Bun,
+            InstallMethod::Pnpm,
+            InstallMethod::Brew,
+            InstallMethod::Other,
+        ] {
+            let label = update_action_label(&InstallContext {
+                method,
                 package_layout: None,
-            }),
-            "npm install -g @openai/codex"
-        );
-        assert_eq!(
-            update_action_label(&InstallContext {
-                method: InstallMethod::Pnpm,
-                package_layout: None,
-            }),
-            "pnpm add -g @openai/codex"
-        );
-        assert_eq!(
-            update_action_label(&InstallContext {
-                method: InstallMethod::Other,
-                package_layout: None,
-            }),
-            "manual or unknown"
-        );
+            });
+            assert_eq!(label, "byteask --update");
+            assert!(
+                !label.contains("codex"),
+                "doctor would tell the user to install the upstream product: {label}"
+            );
+        }
     }
 }

@@ -595,6 +595,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         .await;
 
     let remote_model = ModelInfo {
+        locked_reason: None,
         slug: REMOTE_MODEL_SLUG.to_string(),
         display_name: "Remote Test".to_string(),
         description: Some("A remote model that requires the test shell".to_string()),
@@ -618,6 +619,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,
@@ -864,6 +866,7 @@ async fn remote_models_apply_legacy_instructions() -> Result<()> {
 
     let remote_instructions = "Use the remote instructions template only.";
     let remote_model = ModelInfo {
+        locked_reason: None,
         slug: model.to_string(),
         display_name: "Parallel Remote".to_string(),
         description: Some("A remote model with custom instructions".to_string()),
@@ -887,6 +890,7 @@ async fn remote_models_apply_legacy_instructions() -> Result<()> {
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,
@@ -1451,6 +1455,7 @@ fn test_remote_model_with_policy(
     truncation_policy: TruncationPolicyConfig,
 ) -> ModelInfo {
     ModelInfo {
+        locked_reason: None,
         slug: slug.to_string(),
         display_name: format!("{slug} display"),
         description: Some(format!("{slug} description")),
@@ -1474,6 +1479,7 @@ fn test_remote_model_with_policy(
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,

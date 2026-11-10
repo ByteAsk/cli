@@ -24,6 +24,29 @@ const THREAD_TITLE_MODEL: &str = "gpt-5.6-luna";
 pub(super) const THREAD_TITLE_PROMPT_MAX_BYTES: usize = 960;
 const THREAD_TITLE_RECENT_MESSAGES: usize = 8;
 
+/// ByteAsk's managed backend (`model_provider = "byteask"` in config.toml).
+const BYTEASK_MANAGED_PROVIDER_ID: &str = "byteask";
+
+/// The model and effort for a side request (the thread title, the catch-up): the cheap
+/// model at low effort when this session's backend serves it, else the session's own
+/// model and effort. Upstream chose the cheap model for ChatGPT sign-ins only, so on
+/// ByteAsk's managed backend both ran on whatever the user picked for their work, at
+/// its effort: a top model at high effort is expensive for one title.
+pub(super) fn side_request_model(
+    provider_id: &str,
+    has_chatgpt_account: bool,
+    catalog_has_cheap_model: bool,
+    current_model: &str,
+) -> (String, Option<ReasoningEffort>) {
+    let backend_serves_it = provider_id == BYTEASK_MANAGED_PROVIDER_ID
+        || (provider_id == "openai" && has_chatgpt_account);
+    if backend_serves_it && catalog_has_cheap_model {
+        (THREAD_TITLE_MODEL.to_string(), Some(ReasoningEffort::Low))
+    } else {
+        (current_model.to_string(), None)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GeneratedThreadTitle {
@@ -31,6 +54,19 @@ struct GeneratedThreadTitle {
 }
 
 impl App {
+    /// [`side_request_model`] for this session.
+    pub(super) fn side_request_model_here(&self) -> (String, Option<ReasoningEffort>) {
+        side_request_model(
+            &self.chat_widget.config_ref().model_provider_id,
+            self.chat_widget.has_chatgpt_account(),
+            self.chat_widget
+                .model_catalog()
+                .try_list_models()
+                .is_ok_and(|models| models.iter().any(|model| model.model == THREAD_TITLE_MODEL)),
+            self.chat_widget.current_model(),
+        )
+    }
+
     /// Start a hidden title-generation thread without blocking the UI loop.
     pub(super) fn generate_thread_title(
         &mut self,
@@ -40,19 +76,7 @@ impl App {
         prompt: String,
     ) {
         let request_handle = app_server.request_handle();
-        let model = if self.chat_widget.config_ref().model_provider_id == "openai"
-            && self.chat_widget.has_chatgpt_account()
-            && self
-                .chat_widget
-                .model_catalog()
-                .try_list_models()
-                .is_ok_and(|models| models.iter().any(|model| model.model == THREAD_TITLE_MODEL))
-        {
-            THREAD_TITLE_MODEL.to_string()
-        } else {
-            self.chat_widget.current_model().to_string()
-        };
-        let effort = (model == THREAD_TITLE_MODEL).then_some(ReasoningEffort::Low);
+        let (model, effort) = self.side_request_model_here();
         let config = self.chat_widget.config_ref();
         let options = TemporaryStructuredThreadOptions {
             model,

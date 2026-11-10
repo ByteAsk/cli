@@ -178,6 +178,14 @@ async fn spawn_process_portable(
     }
 
     let mut child = pair.slave.spawn_command(command_builder)?;
+    // BYTEASK_CHILD_OOM_SCORE_ADJ: this path has no pre_exec hook, so the parent sets it.
+    #[cfg(target_os = "linux")]
+    if let (Some(value), Some(pid)) = (
+        crate::process_group::child_oom_score_adj(),
+        child.process_id(),
+    ) {
+        crate::process_group::set_oom_score_adj_of(pid, value);
+    }
     #[cfg(unix)]
     // portable-pty establishes the spawned PTY child as a new session leader on
     // Unix, so PID == PGID and we can reuse the pipe backend's process-group
@@ -319,6 +327,8 @@ async fn spawn_process_preserving_fds(
     let stdout = slave.try_clone()?;
     let stderr = slave.try_clone()?;
     let inherited_fds = inherited_fds.to_vec();
+    #[cfg(target_os = "linux")]
+    let oom_score_adj = crate::process_group::child_oom_score_adj();
 
     unsafe {
         command
@@ -352,6 +362,10 @@ async fn spawn_process_preserving_fds(
                     return Err(std::io::Error::last_os_error());
                 }
 
+                #[cfg(target_os = "linux")]
+                if let Some(value) = oom_score_adj {
+                    crate::process_group::set_own_oom_score_adj(value);
+                }
                 close_inherited_fds_except(&inherited_fds);
                 Ok(())
             });

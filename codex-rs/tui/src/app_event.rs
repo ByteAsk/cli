@@ -502,6 +502,15 @@ pub(crate) enum AppEvent {
         origin: RateLimitRefreshOrigin,
     },
 
+    /// A navigation or edit raised by a ByteAsk settings (`/login`) menu row.
+    ByteAskSettings(crate::byteask_settings::views::SettingsRequest),
+
+    /// An API key submitted from the ByteAsk settings key prompt.
+    ByteAskSettingsKeyEntered {
+        provider_id: String,
+        key: String,
+    },
+
     /// Open the current thread goal summary/action menu.
     OpenThreadGoalMenu {
         thread_id: ThreadId,
@@ -648,11 +657,6 @@ pub(crate) enum AppEvent {
     /// Open the provided URL in the user's browser.
     OpenUrlInBrowser {
         url: String,
-    },
-
-    /// Open the current thread in Codex Desktop.
-    OpenDesktopThread {
-        thread_id: ThreadId,
     },
 
     /// Persist a pet selection and reload the ambient pet.
@@ -926,6 +930,12 @@ pub(crate) enum AppEvent {
 
     InsertHistoryCell(Box<dyn HistoryCell>),
 
+    /// An in-chat session-feedback rating (1=bad, 2=fine, 3=good) the user picked on
+    /// the ByteAsk nudge. Handled by the chat widget → POST to the gateway.
+    ByteAskFeedback {
+        rating: u8,
+    },
+
     /// Finish buffering initial resume replay after all replay events have been queued.
     EndInitialHistoryReplayBuffer,
 
@@ -1025,6 +1035,14 @@ pub(crate) enum AppEvent {
 
     /// Open the full model picker (non-auto models).
     OpenAllModelsPopup,
+
+    /// Open the model picker filtered to one `picker_group` (level 2 of byteask's
+    /// two-level provider -> model picker). Distinct from `OpenAllModelsPopup`,
+    /// which re-reads the whole catalog: here the group's members are already
+    /// chosen and must not be widened back out.
+    OpenModelsPopupForGroup {
+        models: Vec<ModelPreset>,
+    },
 
     /// Open the confirmation prompt before enabling full access mode.
     OpenFullAccessConfirmation {
@@ -1381,6 +1399,19 @@ pub(crate) enum AppEvent {
         turn_revision: usize,
         result: Result<String, String>,
     },
+
+    /// A key action taken inside a ByteAsk info pane (`/usage`,
+    /// `/referral-code`, `/upgrade`, `/voucher`). `enter` performs exactly the
+    /// action the pane's footer names — it never closes the pane.
+    ByteAskPaneAction {
+        pane: crate::bottom_pane::info_pane_view::ByteAskPane,
+        action: crate::bottom_pane::info_pane_view::PaneAction,
+    },
+
+    /// A gateway answer for a ByteAsk info pane, routed by pane id. A result
+    /// whose pane has already closed is dropped rather than inserted into the
+    /// transcript.
+    ByteAskPaneResult(crate::chatwidget::byteask_account::PaneOutcome),
 }
 
 /// Named profile selection to apply after any required UI guardrails complete.

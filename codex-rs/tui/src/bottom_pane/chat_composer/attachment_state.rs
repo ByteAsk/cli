@@ -144,9 +144,9 @@ impl AttachmentState {
             .map(|(index, _)| {
                 let label = local_image_label_text(index + 1);
                 if self.selected_remote_image_index == Some(index) {
-                    label.cyan().reversed().into()
+                    label.fg(crate::style::accent_color()).reversed().into()
                 } else {
-                    label.cyan().into()
+                    label.fg(crate::style::accent_color()).into()
                 }
             })
             .collect()

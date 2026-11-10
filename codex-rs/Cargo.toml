@@ -57,7 +57,19 @@ members = [
     "exec-server/tests/support",
     "execpolicy",
     "ext/agent",
+    "ext/agent-checks",
+    "ext/subagents",
     "ext/connectors",
+    "ext/byteask-policy",
+    "ext/check-result",
+    "ext/context-tools",
+    "ext/harness",
+    "ext/checks-profile",
+    "ext/cpp-tools",
+    "ext/merge-check",
+    "ext/ref-tools",
+    "ext/results-store",
+    "ext/toolbox",
     "ext/extension-api",
     "ext/goal",
     "ext/git-attribution",
@@ -70,6 +82,9 @@ members = [
     "ext/queue",
     "ext/skills",
     "ext/web-search",
+    "ext/replay",
+    "ext/port-check",
+    "ext/hft-pack",
     "external-agent-migration",
     "keyring-store",
     "file-search",
@@ -127,6 +142,7 @@ members = [
     "utils/approval-presets",
     "utils/oss",
     "utils/output-truncation",
+    "utils/byteask-reducers",
     "utils/path-utils",
     "utils/plugins",
     "utils/fuzzy-match",
@@ -147,7 +163,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.153.4"
+version = "0.1.0"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -192,7 +208,19 @@ codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
 codex-agent-extension = { path = "ext/agent" }
+codex-subagents = { path = "ext/subagents" }
 codex-connectors-extension = { path = "ext/connectors" }
+codex-byteask-policy = { path = "ext/byteask-policy" }
+codex-check-result = { path = "ext/check-result" }
+codex-context-tools = { path = "ext/context-tools" }
+codex-byteask-harness = { path = "ext/harness" }
+codex-checks-profile = { path = "ext/checks-profile" }
+codex-cpp-tools = { path = "ext/cpp-tools" }
+codex-merge-check = { path = "ext/merge-check" }
+codex-agent-checks = { path = "ext/agent-checks" }
+codex-ref-tools = { path = "ext/ref-tools" }
+codex-results-store = { path = "ext/results-store" }
+codex-toolbox = { path = "ext/toolbox" }
 codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
@@ -279,6 +307,10 @@ codex-utils-image = { path = "utils/image" }
 codex-utils-json-to-toml = { path = "utils/json-to-toml" }
 codex-utils-oss = { path = "utils/oss" }
 codex-utils-output-truncation = { path = "utils/output-truncation" }
+byteask-output-reducers = { path = "utils/byteask-reducers" }
+byteask-replay = { path = "ext/replay" }
+byteask-port-check = { path = "ext/port-check" }
+byteask-hft-pack = { path = "ext/hft-pack" }
 codex-utils-path = { path = "utils/path-utils" }
 codex-utils-path-uri = { path = "utils/path-uri" }
 codex-utils-plugins = { path = "utils/plugins" }

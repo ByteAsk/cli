@@ -37,29 +37,38 @@ fn changed_updater_forces_refresh_even_when_version_may_match() {
 }
 
 #[tokio::test]
-async fn installer_fetch_uses_exact_url_and_preserves_bytes() {
-    let script = b"#!/bin/sh\nprintf 'update bytes'\n".to_vec();
-    let http = FakeInstallerHttp::new(InstallerResponse::Success(script.clone()));
-
-    assert_eq!(
-        fetch_installer_script(&http)
-            .await
-            .expect("installer fetch should succeed"),
-        script
-    );
-    assert_eq!(http.requested_urls(), vec![INSTALL_URL.to_string()]);
-}
-
-#[tokio::test]
-async fn installer_fetch_rejects_non_success_status() {
-    let http = FakeInstallerHttp::new(InstallerResponse::Unsuccessful { status: 503 });
+async fn the_background_daemon_never_self_installs() {
+    // Upstream's loop downloaded and RAN an installer on an hourly timer, and the URL
+    // it used installs OpenAI's Codex - over a ByteAsk install, while the surrounding
+    // error text said "standalone ByteAsk updater". ByteAsk has exactly one update
+    // path, `byteask --update`, so this refuses instead and says so. The fake HTTP
+    // client proves the refusal happens WITHOUT a request: a test that only checked the
+    // error string would still pass if we fetched first and threw the body away.
+    let http = FakeInstallerHttp::new(InstallerResponse::Success(b"#!/bin/sh\n".to_vec()));
 
     let error = fetch_installer_script(&http)
         .await
-        .expect_err("non-success response should fail");
+        .expect_err("the daemon must not self-install");
 
-    assert!(error.to_string().contains("503"));
-    assert_eq!(http.requested_urls(), vec![INSTALL_URL.to_string()]);
+    assert!(
+        error.to_string().contains("byteask --update"),
+        "the refusal must name the one update path, got: {error}"
+    );
+    assert!(
+        http.requested_urls().is_empty(),
+        "no installer may be fetched at all, requested: {:?}",
+        http.requested_urls()
+    );
+}
+
+#[test]
+fn the_daemon_installer_url_is_ours() {
+    // Belt and braces: if a future change re-enables the fetch, it must not point at
+    // another vendor's installer.
+    assert!(
+        INSTALL_URL.contains("byteask.ai"),
+        "daemon installer URL is not ByteAsk's: {INSTALL_URL}"
+    );
 }
 
 struct FakeInstallerHttp {

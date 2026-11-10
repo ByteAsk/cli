@@ -149,7 +149,7 @@ pub(crate) fn thread_items_to_transcript_cells(
                     )
                 {
                     cells.push(Arc::new(PrefixedWrappedHistoryCell::new(
-                        format!("Sent by Codex from task {source_thread_id}\n{prompt}"),
+                        format!("Sent by ByteAsk from task {source_thread_id}\n{prompt}"),
                         "• ".dim(),
                         "  ",
                     )));

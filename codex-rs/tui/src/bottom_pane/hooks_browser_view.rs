@@ -795,7 +795,7 @@ fn event_description(event_name: HookEventName) -> &'static str {
         HookEventName::UserPromptSubmit => "When the user submits a prompt",
         HookEventName::SubagentStart => "When a subagent is created",
         HookEventName::SubagentStop => "Right before a subagent ends its turn",
-        HookEventName::Stop => "Right before Codex ends its turn",
+        HookEventName::Stop => "Right before ByteAsk ends its turn",
         HookEventName::Interrupt => "Right before an interrupted turn is aborted",
     }
 }
@@ -1095,7 +1095,7 @@ mod tests {
         );
         assert_eq!(
             view.event_table_lines()[1].spans[3].style.fg,
-            Some(Color::Cyan)
+            Some(crate::style::accent_color())
         );
         assert!(
             view.event_table_lines()[1].spans[3]

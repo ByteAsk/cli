@@ -68,6 +68,22 @@ impl ChatWidget {
         );
     }
 
+    pub(super) fn on_dynamic_tool_call_started(&mut self, item: ThreadItem) {
+        self.defer_or_handle(
+            item,
+            InterruptManager::push_item_started,
+            Self::handle_dynamic_tool_call_started_now,
+        );
+    }
+
+    pub(super) fn on_dynamic_tool_call_completed(&mut self, item: ThreadItem) {
+        self.defer_or_handle(
+            item,
+            InterruptManager::push_item_completed,
+            Self::handle_dynamic_tool_call_completed_now,
+        );
+    }
+
     pub(super) fn on_web_search_begin(&mut self, call_id: String) {
         self.flush_answer_stream_with_separator();
         self.flush_active_cell();
@@ -252,6 +268,92 @@ impl ChatWidget {
         self.transcript.had_work_activity = true;
     }
 
+    pub(crate) fn handle_dynamic_tool_call_started_now(&mut self, item: ThreadItem) {
+        self.transcript.had_work_activity = true;
+        let ThreadItem::DynamicToolCall {
+            id,
+            namespace,
+            tool,
+            arguments,
+            ..
+        } = item
+        else {
+            return;
+        };
+        self.flush_answer_stream_with_separator();
+        self.flush_active_cell();
+        self.transcript.active_cell = Some(Box::new(history_cell::new_active_mcp_tool_call(
+            id,
+            McpInvocation {
+                server: namespace.unwrap_or_default(),
+                tool,
+                arguments: Some(arguments),
+            },
+            self.config.animations,
+        )));
+        self.bump_active_cell_revision();
+        self.request_redraw();
+    }
+
+    pub(crate) fn handle_dynamic_tool_call_completed_now(&mut self, item: ThreadItem) {
+        self.flush_answer_stream_with_separator();
+        let ThreadItem::DynamicToolCall {
+            id,
+            namespace,
+            tool,
+            arguments,
+            status,
+            content_items,
+            success,
+            duration_ms,
+        } = item
+        else {
+            return;
+        };
+        let invocation = McpInvocation {
+            server: namespace.unwrap_or_default(),
+            tool,
+            arguments: Some(arguments),
+        };
+        let duration = Duration::from_millis(duration_ms.unwrap_or_default().max(0) as u64);
+        let failed = matches!(status, codex_app_server_protocol::DynamicToolCallStatus::Failed)
+            || success == Some(false);
+        let result = if failed {
+            Err(dynamic_tool_failure_text(&content_items)
+                .unwrap_or_else(|| "tool call failed".to_string()))
+        } else {
+            Ok(codex_protocol::mcp::CallToolResult {
+                content: dynamic_tool_content_to_mcp(content_items),
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            })
+        };
+
+        let extra_cell = match self
+            .transcript
+            .active_cell
+            .as_mut()
+            .and_then(|cell| cell.as_any_mut().downcast_mut::<McpToolCallCell>())
+        {
+            Some(cell) if cell.call_id() == id => cell.complete(duration, result),
+            _ => {
+                self.flush_active_cell();
+                let mut cell =
+                    history_cell::new_active_mcp_tool_call(id, invocation, self.config.animations);
+                let extra_cell = cell.complete(duration, result);
+                self.transcript.active_cell = Some(Box::new(cell));
+                extra_cell
+            }
+        };
+
+        self.flush_active_cell();
+        if let Some(extra) = extra_cell {
+            self.add_boxed_history(extra);
+        }
+        self.transcript.had_work_activity = true;
+    }
+
     pub(crate) fn handle_queued_item_started_now(&mut self, item: ThreadItem) {
         match item {
             item @ ThreadItem::CommandExecution { .. } => {
@@ -259,6 +361,9 @@ impl ChatWidget {
             }
             item @ ThreadItem::McpToolCall { .. } => {
                 self.handle_mcp_tool_call_started_now(item);
+            }
+            item @ ThreadItem::DynamicToolCall { .. } => {
+                self.handle_dynamic_tool_call_started_now(item);
             }
             _ => {}
         }
@@ -271,7 +376,48 @@ impl ChatWidget {
             }
             item @ ThreadItem::FileChange { .. } => self.handle_file_change_completed_now(item),
             item @ ThreadItem::McpToolCall { .. } => self.handle_mcp_tool_call_completed_now(item),
+            item @ ThreadItem::DynamicToolCall { .. } => {
+                self.handle_dynamic_tool_call_completed_now(item)
+            }
             _ => {}
         }
     }
+}
+
+/// Convert a dynamic tool's output content items into MCP-shaped content blocks
+/// so they render through the shared `McpToolCallCell` (see `render_content_block`).
+fn dynamic_tool_content_to_mcp(
+    items: Option<Vec<codex_app_server_protocol::DynamicToolCallOutputContentItem>>,
+) -> Vec<serde_json::Value> {
+    use codex_app_server_protocol::DynamicToolCallOutputContentItem as Item;
+    items
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| match item {
+            Item::InputText { text } => serde_json::json!({ "type": "text", "text": text }),
+            Item::InputImage { image_url } => {
+                serde_json::json!({ "type": "text", "text": format!("<image: {image_url}>") })
+            }
+            Item::InputAudio { audio_url } => {
+                serde_json::json!({ "type": "text", "text": format!("<audio: {audio_url}>") })
+            }
+        })
+        .collect()
+}
+
+/// The joined text of a failed dynamic tool call, for the `Err` render path.
+fn dynamic_tool_failure_text(
+    items: &Option<Vec<codex_app_server_protocol::DynamicToolCallOutputContentItem>>,
+) -> Option<String> {
+    use codex_app_server_protocol::DynamicToolCallOutputContentItem as Item;
+    let items = items.as_ref()?;
+    let text = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::InputText { text } => Some(text.as_str()),
+            Item::InputImage { .. } | Item::InputAudio { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
 }

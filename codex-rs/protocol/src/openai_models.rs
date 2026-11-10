@@ -256,6 +256,12 @@ pub struct ModelPreset {
     pub upgrade: Option<ModelUpgrade>,
     /// Whether this preset should appear in the picker UI.
     pub show_in_picker: bool,
+    /// Menu grouping label for the two-level `/model` picker (e.g. "OpenAI",
+    /// "Anthropic", "DeepSeek"). Absent means the preset is shown as a
+    /// direct-select row at the top level instead of nested under a group
+    /// (used for `auto`, a routing alias with no provider of its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picker_group: Option<String>,
     /// Multi-agent backend selected when this model starts a new thread.
     #[serde(default, skip_serializing, skip_deserializing)]
     #[schemars(skip)]
@@ -268,6 +274,9 @@ pub struct ModelPreset {
     /// Input modalities accepted when composing user turns for this preset.
     #[serde(default = "default_input_modalities")]
     pub input_modalities: Vec<InputModality>,
+    /// Why this account cannot select the model, if it cannot. `None` = selectable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_reason: Option<String>,
 }
 
 /// Visibility of a model in the picker or APIs.
@@ -400,6 +409,12 @@ pub struct ModelInfo {
     pub visibility: ModelVisibility,
     pub supported_in_api: bool,
     pub priority: i32,
+    /// Menu grouping label for the two-level `/model` picker. Catalog-driven
+    /// (not a hardcoded prefix map), so adding a provider group needs no
+    /// engine rebuild — only a catalog regen. Absent = shown as a
+    /// direct-select row at the top level (used for `auto`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picker_group: Option<String>,
     #[serde(default)]
     pub additional_speed_tiers: Vec<String>,
     #[serde(default)]
@@ -479,6 +494,14 @@ pub struct ModelInfo {
         deserialize_with = "deserialize_optional_model_selector"
     )]
     pub multi_agent_version: Option<MultiAgentVersion>,
+    /// Set by ByteAsk when this account may not select the model (a paid-plan
+    /// model on a free plan). The string is the reason, shown next to the row.
+    ///
+    /// `#[serde(default)]` is load-bearing: catalogs in the wild predate this
+    /// field, and a missing default would make them fail to parse — which brings
+    /// the whole client down at startup, not just the picker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_reason: Option<String>,
     /// Reasoning effort used for multi-agent work when the user selects Ultra.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_reasoning_effort: Option<ReasoningEffort>,
@@ -858,6 +881,7 @@ impl From<ModelInfo> for ModelPreset {
             model: info.slug.clone(),
             display_name: info.display_name,
             description: info.description.unwrap_or_default(),
+            locked_reason: info.locked_reason.clone(),
             model_specialty: info.model_specialty,
             default_reasoning_effort: info
                 .default_reasoning_level
@@ -878,6 +902,7 @@ impl From<ModelInfo> for ModelPreset {
                 retirement_at: upgrade.retirement_at,
             }),
             show_in_picker: info.visibility == ModelVisibility::List,
+            picker_group: info.picker_group,
             multi_agent_version: info.multi_agent_version,
             availability_nux: info.availability_nux,
             supported_in_api: info.supported_in_api,
@@ -968,10 +993,12 @@ mod tests {
             description: None,
             default_reasoning_level: None,
             supported_reasoning_levels: vec![],
+            locked_reason: None,
             shell_type: ConfigShellToolType::UnifiedExec,
             visibility: ModelVisibility::List,
             supported_in_api: true,
             priority: 1,
+            picker_group: None,
             additional_speed_tiers: Vec::new(),
             service_tiers: Vec::new(),
             default_service_tier: None,

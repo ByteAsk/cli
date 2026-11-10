@@ -110,14 +110,14 @@ pub(crate) fn create_tool_for_codex_tool_call_param() -> Tool {
         .into_generator()
         .into_root_schema_for::<CodexToolCallParam>();
 
-    let input_schema = create_tool_input_schema(schema, "Codex tool schema should serialize");
+    let input_schema = create_tool_input_schema(schema, "ByteAsk tool schema should serialize");
 
     Tool::new(
         "codex",
-        "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
+        "Run a ByteAsk session. Accepts configuration parameters matching the ByteAsk Config struct.",
         input_schema,
     )
-    .with_title("Codex")
+    .with_title("ByteAsk")
     .with_raw_output_schema(codex_tool_output_schema())
 }
 
@@ -229,14 +229,14 @@ pub(crate) fn create_tool_for_codex_tool_call_reply_param() -> Tool {
         .into_generator()
         .into_root_schema_for::<CodexToolCallReplyParam>();
 
-    let input_schema = create_tool_input_schema(schema, "Codex reply tool schema should serialize");
+    let input_schema = create_tool_input_schema(schema, "ByteAsk reply tool schema should serialize");
 
     Tool::new(
         "codex-reply",
-        "Continue a Codex conversation by providing the thread id and prompt.",
+        "Continue a ByteAsk conversation by providing the thread id and prompt.",
         input_schema,
     )
-    .with_title("Codex Reply")
+    .with_title("ByteAsk Reply")
     .with_raw_output_schema(codex_tool_output_schema())
 }
 
@@ -292,7 +292,7 @@ mod tests {
         let tool = create_tool_for_codex_tool_call_param();
         let tool_json = serde_json::to_value(&tool).expect("tool serializes");
         let expected_tool_json = serde_json::json!({
-          "description": "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
+          "description": "Run a ByteAsk session. Accepts configuration parameters matching the ByteAsk Config struct.",
           "inputSchema": {
             "additionalProperties": false,
             "properties": {
@@ -330,7 +330,7 @@ mod tests {
                 "type": "string"
               },
               "prompt": {
-                "description": "The *initial user prompt* to start the Codex conversation.",
+                "description": "The *initial user prompt* to start the ByteAsk conversation.",
                 "type": "string"
               },
               "sandbox": {
@@ -364,7 +364,7 @@ mod tests {
             ],
             "type": "object"
           },
-          "title": "Codex"
+          "title": "ByteAsk"
         });
         assert_eq!(expected_tool_json, tool_json);
     }
@@ -388,7 +388,7 @@ mod tests {
         let tool = create_tool_for_codex_tool_call_reply_param();
         let tool_json = serde_json::to_value(&tool).expect("tool serializes");
         let expected_tool_json = serde_json::json!({
-          "description": "Continue a Codex conversation by providing the thread id and prompt.",
+          "description": "Continue a ByteAsk conversation by providing the thread id and prompt.",
           "inputSchema": {
             "properties": {
               "conversationId": {
@@ -396,11 +396,11 @@ mod tests {
                 "type": "string"
               },
               "prompt": {
-                "description": "The *next user prompt* to continue the Codex conversation.",
+                "description": "The *next user prompt* to continue the ByteAsk conversation.",
                 "type": "string"
               },
               "threadId": {
-                "description": "The thread id for this Codex session. This field is required, but we keep it optional here for backward compatibility for clients that still use conversationId.",
+                "description": "The thread id for this ByteAsk session. This field is required, but we keep it optional here for backward compatibility for clients that still use conversationId.",
                 "type": "string"
               }
             },
@@ -425,7 +425,7 @@ mod tests {
             ],
             "type": "object"
           },
-          "title": "Codex Reply",
+          "title": "ByteAsk Reply",
         });
         assert_eq!(expected_tool_json, tool_json);
     }

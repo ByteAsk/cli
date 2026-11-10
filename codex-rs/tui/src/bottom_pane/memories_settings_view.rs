@@ -101,7 +101,9 @@ impl MemoriesSettingsView {
             app_event_tx,
             docs_link: Line::from(vec![
                 "Learn more: ".dim(),
-                MEMORIES_DOC_URL.cyan().underlined(),
+                MEMORIES_DOC_URL
+                    .fg(crate::style::accent_color())
+                    .underlined(),
             ]),
             keymap,
         };
@@ -117,7 +119,7 @@ impl MemoriesSettingsView {
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Memories".bold()));
         header.push(Line::from(
-            "Choose how Codex uses and creates memories. Changes are saved to config.toml".dim(),
+            "Choose how ByteAsk uses and creates memories. Changes are saved to config.toml".dim(),
         ));
         header
     }
@@ -126,7 +128,7 @@ impl MemoriesSettingsView {
         let mut header = ColumnRenderable::new();
         header.push(Line::from("Reset all memories?".bold()));
         header.push(Line::from(
-            "This clears local memory files and rollout summaries for the current Codex home."
+            "This clears local memory files and rollout summaries for the current ByteAsk home."
                 .dim(),
         ));
         header

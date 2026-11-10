@@ -1,5 +1,5 @@
 ---
-source: tui/src/chatwidget/tests.rs
+source: tui/src/chatwidget/tests/review_mode.rs
 expression: info
 ---
 • Model interrupted to submit steer instructions.

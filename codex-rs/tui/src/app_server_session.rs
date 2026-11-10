@@ -1660,6 +1660,7 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
         model: model.model,
         display_name: model.display_name,
         description: model.description,
+        locked_reason: model.locked_reason,
         model_specialty: model.model_specialty,
         default_reasoning_effort: model.default_reasoning_effort,
         supported_reasoning_efforts: model
@@ -1685,6 +1686,9 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
         is_default: model.is_default,
         upgrade,
         show_in_picker: !model.hidden,
+        // This is the path every `/model` list takes, so dropping the group here
+        // flattened the picker for every catalog, including one that sets it.
+        picker_group: model.picker_group,
         multi_agent_version: None,
         availability_nux: model.availability_nux.map(|nux| ModelAvailabilityNux {
             message: nux.message,
@@ -2420,6 +2424,7 @@ mod tests {
             availability_nux: None,
             display_name: "Current model".to_string(),
             description: "A test model".to_string(),
+            locked_reason: None,
             model_specialty: None,
             hidden: false,
             supported_reasoning_efforts: Vec::new(),
@@ -2431,7 +2436,26 @@ mod tests {
             service_tiers: Vec::new(),
             default_service_tier: None,
             is_default: false,
+            picker_group: None,
         }
+    }
+
+    #[test]
+    fn model_preset_from_api_model_keeps_picker_group() {
+        let mut grouped = api_model_with_upgrade_retirement_at(/*retirement_at*/ None);
+        grouped.picker_group = Some("OpenAI".to_string());
+
+        assert_eq!(
+            model_preset_from_api_model(grouped).picker_group,
+            Some("OpenAI".to_string())
+        );
+        assert_eq!(
+            model_preset_from_api_model(api_model_with_upgrade_retirement_at(
+                /*retirement_at*/ None,
+            ))
+            .picker_group,
+            None
+        );
     }
 
     #[test]

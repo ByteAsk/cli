@@ -1348,30 +1348,17 @@ async fn usage_error_slash_command_is_available_from_local_recall() {
 }
 
 #[tokio::test]
-async fn signed_out_usage_command_reports_chatgpt_login_requirement() {
+async fn byteask_usage_command_without_gateway_opens_a_pane_and_writes_no_history() {
+    // ByteAsk accounts have no ChatGPT backend, so `/usage` routes to the
+    // gateway-backed view. It is a bottom-pane readout, never a history cell:
+    // account chrome is not part of the conversation.
+    // With no gateway bearer configured (as in tests) the pane opens
+    // on its signed-out state instead of hitting the network.
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     submit_composer_text(&mut chat, "/usage");
 
-    let cells = drain_insert_history(&mut rx);
-    let rendered = cells
-        .iter()
-        .map(|cell| lines_to_single_string(cell))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_chatwidget_snapshot!(
-        "signed_out_usage_command_reports_chatgpt_login_requirement",
-        rendered
-    );
-    assert_eq!(recall_latest_after_clearing(&mut chat), "/usage");
-}
-
-#[tokio::test]
-async fn signed_out_usage_command_with_args_reports_chatgpt_login_requirement() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    submit_composer_text(&mut chat, "/usage weekly");
-
+    assert_eq!(chat.bottom_pane.active_view_id(), Some("byteask_usage"));
     let cells = drain_insert_history(&mut rx);
     let rendered = cells
         .iter()
@@ -1379,9 +1366,36 @@ async fn signed_out_usage_command_with_args_reports_chatgpt_login_requirement() 
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        rendered.contains("Sign in with ChatGPT to use /usage."),
-        "expected ChatGPT login requirement, got: {rendered:?}"
+        !rendered.contains("usage"),
+        "a readout must not enter the transcript, got: {rendered:?}"
     );
+    // `esc` closes it, and the transcript is exactly as the user left it.
+    chat.bottom_pane
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.active_view_id(), None);
+    assert_eq!(recall_latest_after_clearing(&mut chat), "/usage");
+}
+
+#[tokio::test]
+async fn byteask_usage_command_with_args_without_gateway_opens_a_pane() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    submit_composer_text(&mut chat, "/usage weekly");
+
+    assert_eq!(chat.bottom_pane.active_view_id(), Some("byteask_usage"));
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !rendered.contains("usage"),
+        "a readout must not enter the transcript, got: {rendered:?}"
+    );
+    chat.bottom_pane
+        .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(chat.bottom_pane.active_view_id(), None);
     assert_eq!(recall_latest_after_clearing(&mut chat), "/usage weekly");
 }
 
@@ -1704,7 +1718,7 @@ async fn pending_token_activity_refresh_keeps_composer_visible_in_short_viewport
             .vt100()
             .screen()
             .contents()
-            .contains("Ask Codex to do anything")
+            .contains("Ask ByteAsk to do anything")
     );
 }
 
@@ -1802,12 +1816,46 @@ async fn slash_quit_requests_exit() {
 }
 
 #[tokio::test]
-async fn slash_logout_requests_app_server_logout() {
+async fn slash_logout_writes_marker_and_exits() {
+    // ByteAsk: /logout can't clear the startup-loaded mode-C token from inside the
+    // TUI, so it drops a marker the wrapper reads after we exit (which then clears
+    // config.toml's experimental_bearer_token) and requests a graceful shutdown.
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
     chat.dispatch_command(SlashCommand::Logout);
 
-    assert_matches!(rx.try_recv(), Ok(AppEvent::Logout));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::Exit(ExitMode::ShutdownFirst)));
+    let marker = chat.config.codex_home.join(".byteask-auth-request");
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "logout");
+}
+
+#[tokio::test]
+async fn slash_login_opens_settings_in_place_without_restarting() {
+    // ByteAsk: /login used to write a marker and exit so the shell wrapper could
+    // paint its own screen. Coming back reprinted the entire session banner and
+    // tips block — on every /login, even a read-only look. It now opens the
+    // settings view in the bottom pane like /model, so the session never ends and
+    // nothing is reprinted; only edits the engine cannot pick up mid-session hand
+    // off to the wrapper.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.dispatch_command(SlashCommand::Login);
+
+    assert!(
+        chat.bottom_pane.has_active_view(),
+        "/login should open the settings view"
+    );
+    let marker = chat.config.codex_home.join(".byteask-auth-request");
+    assert!(
+        !marker.exists(),
+        "/login must not hand the session to the wrapper just to show settings"
+    );
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AppEvent::Exit(_)),
+            "/login must not exit the session: {event:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3058,36 +3106,6 @@ async fn slash_fork_with_name_requests_named_fork() {
 }
 
 #[tokio::test]
-async fn slash_app_requests_desktop_handoff() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let thread_id = ThreadId::new();
-    chat.thread_id = Some(thread_id);
-
-    chat.dispatch_command(SlashCommand::App);
-
-    assert_matches!(
-        rx.try_recv(),
-        Ok(AppEvent::OpenDesktopThread {
-            thread_id: actual_thread_id,
-        }) if actual_thread_id == thread_id
-    );
-}
-
-#[tokio::test]
-async fn slash_app_without_thread_id_shows_starting_error() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-
-    chat.dispatch_command(SlashCommand::App);
-
-    let cells = drain_insert_history(&mut rx);
-    assert_eq!(cells.len(), 1, "expected app startup error");
-    assert_chatwidget_snapshot!(
-        "slash_app_without_thread_id_shows_starting_error",
-        lines_to_single_string(&cells[0])
-    );
-}
-
-#[tokio::test]
 async fn slash_pwd_and_cwd_alias_display_current_working_directory_from_composer() {
     let mut output = Vec::new();
     for (command, side) in [("/pwd", false), ("/cwd", true), ("/pwd x", false)] {
@@ -3544,4 +3562,65 @@ async fn compact_queues_user_messages_snapshot() {
         "compact_queues_user_messages_snapshot",
         normalize_snapshot_paths(term.backend().vt100().screen().contents())
     );
+}
+
+// ByteAsk: a signed-out session's model call ends with the gateway's
+// "Sign in to continue — type /login.". Instead of leaving the user to type the
+// command, the email prompt opens, and the typed address goes straight to sign-in.
+#[tokio::test]
+async fn a_signed_out_model_call_opens_the_sign_in_email_prompt() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.handle_non_retry_error(
+        "Sign in to continue — type /login.".to_string(),
+        /*codex_error_info*/ None,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .iter()
+        .map(|cell| lines_to_single_string(cell))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        rendered.contains("Sign in to continue"),
+        "the reason stays in history: {rendered:?}"
+    );
+    assert!(chat.bottom_pane.has_active_view(), "the email prompt should be open");
+
+    // Typed characters go through the paste-burst detector; paste, as the review-prompt
+    // tests do.
+    chat.handle_paste("dev@example.com".to_string());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let mut requested = None;
+    while let Ok(event) = rx.try_recv() {
+        if let AppEvent::ByteAskSettings(request) = event {
+            requested = Some(request);
+        }
+    }
+    assert_eq!(
+        requested,
+        Some(crate::byteask_settings::views::SettingsRequest::SignInAs {
+            email: "dev@example.com".to_string(),
+        })
+    );
+}
+
+#[tokio::test]
+async fn the_other_sign_in_prompts_open_it_too_and_ordinary_errors_do_not() {
+    for message in [
+        "Sign in to continue — type /login.",
+        "Sign in to use other models — type /login.",
+    ] {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.handle_non_retry_error(message.to_string(), /*codex_error_info*/ None);
+        assert!(chat.bottom_pane.has_active_view(), "{message}");
+    }
+    for message in [
+        "stream disconnected before completion",
+        "Your ByteAsk session expired — run /login to sign in again.",
+    ] {
+        let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        chat.handle_non_retry_error(message.to_string(), /*codex_error_info*/ None);
+        assert!(!chat.bottom_pane.has_active_view(), "{message}");
+    }
 }

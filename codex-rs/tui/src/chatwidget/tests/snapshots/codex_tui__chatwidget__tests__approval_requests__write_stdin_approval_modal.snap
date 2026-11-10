@@ -1,6 +1,5 @@
 ---
 source: tui/src/chatwidget/tests/approval_requests.rs
-assertion_line: 123
 expression: "format!(\"{buf:?}\")"
 ---
 Buffer {
@@ -13,7 +12,7 @@ Buffer {
         "  Input: "confirm\n"                                                            ",
         "                                                                                ",
         "› 1. Yes, proceed (y)                                                           ",
-        "  2. No, and tell Codex what to do differently (esc)                            ",
+        "  2. No, and tell ByteAsk what to do differently (esc)                          ",
         "                                                                                ",
         "  Press enter to confirm or esc to cancel                                       ",
     ],
@@ -21,10 +20,10 @@ Buffer {
         x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 2, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
         x: 46, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
-        x: 0, y: 6, fg: Cyan, bg: Reset, underline: Reset, modifier: BOLD,
+        x: 0, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: BOLD,
         x: 21, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
-        x: 48, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
-        x: 51, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 50, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
+        x: 53, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 2, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: DIM,
     ]
 }

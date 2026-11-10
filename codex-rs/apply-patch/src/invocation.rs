@@ -187,6 +187,39 @@ pub async fn maybe_parse_apply_patch_verified_with_mode(
     }
 }
 
+/// ByteAsk (`[byteask_harness] strict_patch`): refuse, before anything is written, an
+/// update hunk whose position in its file is a guess (see `file_update::compute_replacements`).
+/// Run it before [`verify_apply_patch_args_with_mode`]; a file that cannot be read is left to
+/// that verification to report.
+pub async fn check_unambiguous_hunks(
+    args: &ApplyPatchArgs,
+    cwd: &PathUri,
+    update_file_mode: ApplyPatchFileUpdateMode,
+    fs: &dyn ExecutorFileSystem,
+    sandbox: Option<&codex_exec_server::FileSystemSandboxContext>,
+) -> Result<(), ApplyPatchError> {
+    let effective_cwd = args
+        .workdir
+        .as_ref()
+        .map(|dir| cwd.join(dir))
+        .transpose()?
+        .unwrap_or_else(|| cwd.clone());
+    for hunk in &args.hunks {
+        if let Hunk::UpdateFile { chunks, .. } = hunk {
+            let path = hunk.resolve_path(&effective_cwd)?;
+            crate::file_update::check_chunks_unambiguous(
+                &path,
+                chunks,
+                update_file_mode,
+                fs,
+                sandbox,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn verify_apply_patch_args(
     args: ApplyPatchArgs,
     cwd: &PathUri,

@@ -267,7 +267,7 @@ fn recent_conversation_messages_escape_markup_and_ignore_commentary() {
 fn recent_conversation_messages_strip_ide_context_before_escaping() {
     let ide_context = "x".repeat(THREAD_TITLE_PROMPT_MAX_BYTES + 1);
     let user_message = format!(
-        "# Context from my IDE setup:\n{ide_context}\n## My request for Codex:\n\nEarlier request\n## My request for Codex:\n  Fix <login> & retries  "
+        "# Context from my IDE setup:\n{ide_context}\n## My request for ByteAsk:\n\nEarlier request\n## My request for ByteAsk:\n  Fix <login> & retries  "
     );
     let items = vec![title_user_message("user-1", &user_message)];
 
@@ -481,4 +481,21 @@ fn title_agent_message(id: &str, text: &str, phase: Option<MessagePhase>) -> Thr
         delivery: None,
         questions: None,
     }
+}
+
+#[test]
+fn side_requests_ride_the_cheap_model_wherever_the_backend_serves_it() {
+    use super::side_request_model;
+    use codex_protocol::openai_models::ReasoningEffort;
+    let cheap = ("gpt-5.6-luna".to_string(), Some(ReasoningEffort::Low));
+    let own = |m: &str| (m.to_string(), None);
+    // ByteAsk managed: was the session's model and effort before (astra, high).
+    assert_eq!(side_request_model("byteask", false, true, "gpt-6-astra"), cheap);
+    // A ChatGPT sign-in: upstream's rule, unchanged.
+    assert_eq!(side_request_model("openai", true, true, "gpt-6-astra"), cheap);
+    // An OpenAI API key, BYOK, or a self-hosted model: the user's own backend.
+    assert_eq!(side_request_model("openai", false, true, "gpt-6-astra"), own("gpt-6-astra"));
+    assert_eq!(side_request_model("byok-local", false, true, "self/qwen"), own("self/qwen"));
+    // The cheap model is not in this session's catalog.
+    assert_eq!(side_request_model("byteask", false, false, "gpt-5.4"), own("gpt-5.4"));
 }

@@ -1,29 +1,25 @@
-use std::collections::HashMap;
+//! ByteAsk: commit attribution follows two switches, the served catalog's
+//! `byteask_attribution.enabled` (off unless literally `true`) and the user's
+//! `[features] commit_attribution`, and never the ChatGPT backend's workspace setting.
+//! These replace upstream's tests of that setting, which ByteAsk no longer reads.
+
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
-use app_test_support::ChatGptAuthFixture;
+use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::to_response;
-use app_test_support::write_chatgpt_auth;
-use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
-use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
-use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
-use codex_app_server_protocol::ThreadRollbackParams;
-use codex_app_server_protocol::ThreadRollbackResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::UserInput;
-use codex_config::types::AuthCredentialsStoreMode;
+use codex_features::Feature;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_rollout::RolloutItem;
@@ -32,14 +28,15 @@ use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use serde_json::json;
 use tempfile::TempDir;
 use test_case::test_case;
 use tokio::time::Duration;
 use tokio::time::timeout;
 use wiremock::Mock;
+use wiremock::MockServer;
 use wiremock::ResponseTemplate;
-use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
@@ -49,9 +46,12 @@ use wiremock::matchers::path;
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(not(any(target_os = "macos", windows)))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
-const COMMIT_ATTRIBUTION: &str = "Co-authored-by: Codex <noreply@openai.com>";
-const PR_ATTRIBUTION: &str = "Generated with [Codex](https://openai.com/codex/).";
-const ATTRIBUTION_DISABLED: &str = "attribution is disabled for the current workspace";
+const BYTEASK_TRAILER: &str = "Co-authored-by: ByteAsk <noreply@byteask.ai>";
+const BYTEASK_PR_LINE: &str = "Generated with [ByteAsk](https://byteask.ai/).";
+const ATTRIBUTION_DISABLED: &str = "ByteAsk commit and pull request attribution is disabled";
+// Upstream's own text, as a history written by an upstream build would carry it.
+const UPSTREAM_TRAILER: &str = "Co-authored-by: Codex <noreply@openai.com>";
+const UPSTREAM_PR_LINE: &str = "Generated with [Codex](https://openai.com/codex/).";
 const LEGACY_COMMIT_ATTRIBUTION_INSTRUCTIONS: &str = "\
 When you write or edit a git commit message, ensure the message ends with this trailer exactly once:
 Co-authored-by: Codex <noreply@openai.com>
@@ -63,166 +63,153 @@ Rules:
 
 #[derive(Clone, Copy)]
 enum LegacyAttribution {
+    /// Upstream's older commit-only instruction.
     CommitOnly,
-    UnlinkedPullRequest,
+    /// Upstream's enabled world-state fragment.
+    UpstreamEnabled,
 }
 
-#[tokio::test]
-async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> {
-    skip_if_no_network!(Ok(()));
+/// A one-model catalog from the bundled models.json, carrying `switch` as its
+/// `byteask_attribution` object (or none).
+fn write_catalog(path: &Path, switch: Option<&Value>) -> Result<String> {
+    let bundled = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../models-manager/models.json"
+    ))?;
+    let mut catalog: Value = serde_json::from_str(&bundled)?;
+    let first = catalog["models"]
+        .as_array()
+        .and_then(|models| models.first())
+        .cloned()
+        .context("bundled models.json has no models")?;
+    let slug = first["slug"].as_str().context("model without a slug")?.to_string();
+    catalog["models"] = json!([first]);
+    let object = catalog.as_object_mut().context("catalog is not an object")?;
+    object.remove("byteask_attribution");
+    if let Some(switch) = switch {
+        object.insert("byteask_attribution".to_string(), switch.clone());
+    }
+    std::fs::write(path, catalog.to_string())?;
+    Ok(slug)
+}
 
+async fn mock_server_that_must_not_be_asked_for_settings() -> MockServer {
     let server = responses::start_mock_server().await;
-    let settings_server = responses::start_mock_server().await;
-    let response_mock = responses::mount_sse_sequence(
-        &server,
-        [
-            "Unavailable",
-            "Recovered",
-            "Cached",
-            "After switch",
-            "After rollback",
-        ]
-        .into_iter()
-        .map(create_final_assistant_message_sse_response)
-        .collect::<Result<Vec<_>>>()?,
-    )
-    .await;
     Mock::given(method("GET"))
         .and(path("/backend-api/wham/config/bundle"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
         .mount(&server)
         .await;
-    let enabled_settings_requests = Arc::new(AtomicUsize::new(0));
+    // ByteAsk never asks the ChatGPT backend whether to attribute.
     Mock::given(method("GET"))
         .and(path("/backend-api/wham/settings/user"))
-        .and(header("chatgpt-account-id", "workspace-enabled"))
-        .respond_with({
-            let enabled_settings_requests = enabled_settings_requests.clone();
-            move |_request: &wiremock::Request| {
-                if enabled_settings_requests.fetch_add(1, Ordering::SeqCst) == 0 {
-                    ResponseTemplate::new(503)
-                } else {
-                    ResponseTemplate::new(200).set_body_json(json!({
-                        "commit_attribution_enabled": true,
-                    }))
-                }
-            }
-        })
-        .expect(3)
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"commit_attribution_enabled": true})),
+        )
+        .expect(0)
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/backend-api/wham/settings/user"))
-        .and(header("chatgpt-account-id", "workspace-disabled"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "commit_attribution_enabled": false,
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
+    server
+}
 
-    let codex_home = TempDir::new()?;
-    write_mock_responses_config_toml_with_chatgpt_base_url(
-        codex_home.path(),
-        &server.uri(),
-        &format!("{}/backend-api", server.uri()),
-    )?;
-    write_chatgpt_auth(
-        codex_home.path(),
-        ChatGptAuthFixture::new("chatgpt-token")
-            .account_id("workspace-enabled")
-            .plan_type("enterprise"),
-        AuthCredentialsStoreMode::File,
-    )?;
+fn write_config(
+    codex_home: &Path,
+    server: &MockServer,
+    catalog: &Path,
+    model: &str,
+    opted_out: bool,
+) -> Result<()> {
+    let mut config = MockResponsesConfig::new(&server.uri())
+        .with_model(model)
+        .with_root_config(&format!("model_catalog_json = \"{}\"", catalog.display()))
+        .with_root_config(&format!(
+            "chatgpt_base_url = \"{}/backend-api\"",
+            server.uri()
+        ));
+    if opted_out {
+        config = config.disable_feature(Feature::CommitAttribution);
+    }
+    config.write(codex_home)?;
+    Ok(())
+}
 
+async fn start_app_server(codex_home: &Path) -> Result<TestAppServer> {
     let mut app_server = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
+        .with_codex_home(codex_home)
         .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_ACCESS_TOKEN", None)])
+        .without_auto_env()
         .build()
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, app_server.initialize()).await??;
+    Ok(app_server)
+}
 
+fn counts(developer_text: &str) -> (usize, usize, usize) {
+    (
+        developer_text.matches(BYTEASK_TRAILER).count(),
+        developer_text.matches(BYTEASK_PR_LINE).count(),
+        developer_text.matches(ATTRIBUTION_DISABLED).count(),
+    )
+}
+
+#[test_case(Some(json!({"enabled": true})), false, 1; "switch_on")]
+#[test_case(Some(json!({"enabled": false})), false, 0; "switch_off")]
+#[test_case(None, false, 0; "no_switch_in_the_catalog")]
+#[test_case(Some(json!({"enabled": "yes"})), false, 0; "malformed_switch")]
+#[test_case(Some(json!({"enabled": true})), true, 0; "user_opted_out")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn attribution_follows_the_served_switch_and_the_user_setting(
+    switch: Option<Value>,
+    opted_out: bool,
+    expected: usize,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = mock_server_that_must_not_be_asked_for_settings().await;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        ["First", "Second"]
+            .into_iter()
+            .map(create_final_assistant_message_sse_response)
+            .collect::<Result<Vec<_>>>()?,
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    let catalog = codex_home.path().join("catalog.json");
+    let model = write_catalog(&catalog, switch.as_ref())?;
+    write_config(codex_home.path(), &server, &catalog, &model, opted_out)?;
+
+    let mut app_server = start_app_server(codex_home.path()).await?;
     let request_id = app_server
-        .send_thread_start_request_with_auto_env(ThreadStartParams {
-            config: Some(HashMap::from([(
-                "chatgpt_base_url".to_string(),
-                json!(format!("{}/backend-api", settings_server.uri())),
-            )])),
-            history_mode: Some(ThreadHistoryMode::Legacy),
-            ..Default::default()
-        })
+        .send_thread_start_request(ThreadStartParams::default())
         .await?;
     let ThreadStartResponse { thread, .. } = read_response(&mut app_server, request_id).await?;
     run_turn(&mut app_server, &thread.id, "First turn").await?;
     run_turn(&mut app_server, &thread.id, "Second turn").await?;
-    run_turn(&mut app_server, &thread.id, "Third turn").await?;
-
-    let request_id = app_server
-        .send_chatgpt_auth_tokens_login_request(
-            "e30.e30.c2ln".to_string(),
-            "workspace-disabled".to_string(),
-            Some("enterprise".to_string()),
-        )
-        .await?;
-    let _: LoginAccountResponse = read_response(&mut app_server, request_id).await?;
-    run_turn(&mut app_server, &thread.id, "Turn after workspace switch").await?;
-
-    let request_id = app_server
-        .send_thread_rollback_request(ThreadRollbackParams {
-            thread_id: thread.id.clone(),
-            num_turns: 1,
-        })
-        .await?;
-    let _: ThreadRollbackResponse = read_response(&mut app_server, request_id).await?;
-
-    let request_id = app_server
-        .send_chatgpt_auth_tokens_login_request(
-            "e30.e30.c2ln".to_string(),
-            "workspace-enabled".to_string(),
-            Some("enterprise".to_string()),
-        )
-        .await?;
-    let _: LoginAccountResponse = read_response(&mut app_server, request_id).await?;
-    run_turn(&mut app_server, &thread.id, "Turn after rollback").await?;
 
     let requests = response_mock.requests();
-    assert_eq!(requests.len(), 5);
-    for (request, expected) in requests
-        .into_iter()
-        .zip([(0, 0), (1, 0), (1, 0), (1, 1), (1, 0)])
-    {
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        // Sent once, then carried in history: exactly `expected` copies on every turn.
         let developer_text = request.message_input_texts("developer").join("\n");
-        assert_eq!(
-            (
-                developer_text.matches(COMMIT_ATTRIBUTION).count(),
-                developer_text.matches(PR_ATTRIBUTION).count(),
-                developer_text.matches(ATTRIBUTION_DISABLED).count(),
-            ),
-            (expected.0, expected.0, expected.1)
-        );
+        assert_eq!(counts(&developer_text), (expected, expected, 0));
     }
     server.verify().await;
-    assert!(
-        settings_server
-            .received_requests()
-            .await
-            .context("failed to fetch thread-override requests")?
-            .iter()
-            .all(|request| request.url.path() != "/backend-api/wham/settings/user"),
-        "attribution settings must use the process-level base URL"
-    );
     Ok(())
 }
 
-#[test_case(LegacyAttribution::CommitOnly; "commit_only")]
-#[test_case(LegacyAttribution::UnlinkedPullRequest; "unlinked_pull_request")]
+#[test_case(LegacyAttribution::CommitOnly, false; "commit_only_resumed_off")]
+#[test_case(LegacyAttribution::UpstreamEnabled, false; "upstream_enabled_resumed_off")]
+#[test_case(LegacyAttribution::CommitOnly, true; "commit_only_resumed_on")]
+#[test_case(LegacyAttribution::UpstreamEnabled, true; "upstream_enabled_resumed_on")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cold_resume_replaces_legacy_attribution_without_duplication(
+async fn cold_resume_replaces_an_upstream_attribution_fragment(
     legacy_attribution: LegacyAttribution,
+    resumed_on: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
+    let server = mock_server_that_must_not_be_asked_for_settings().await;
     let response_mock = responses::mount_sse_sequence(
         &server,
         ["Initial", "Resumed", "Resumed again"]
@@ -231,72 +218,27 @@ async fn cold_resume_replaces_legacy_attribution_without_duplication(
             .collect::<Result<Vec<_>>>()?,
     )
     .await;
-    Mock::given(method("GET"))
-        .and(path("/backend-api/wham/config/bundle"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-        .mount(&server)
-        .await;
-    let settings_requests = Arc::new(AtomicUsize::new(0));
-    Mock::given(method("GET"))
-        .and(path("/backend-api/wham/settings/user"))
-        .and(header("chatgpt-account-id", "workspace-resume"))
-        .respond_with({
-            let settings_requests = Arc::clone(&settings_requests);
-            move |_request: &wiremock::Request| {
-                ResponseTemplate::new(200).set_body_json(json!({
-                    "commit_attribution_enabled": settings_requests
-                        .fetch_add(1, Ordering::SeqCst)
-                        == 0,
-                }))
-            }
-        })
-        .expect(2)
-        .mount(&server)
-        .await;
-
     let codex_home = TempDir::new()?;
-    write_mock_responses_config_toml_with_chatgpt_base_url(
-        codex_home.path(),
-        &server.uri(),
-        &format!("{}/backend-api", server.uri()),
-    )?;
-    write_chatgpt_auth(
-        codex_home.path(),
-        ChatGptAuthFixture::new("chatgpt-token")
-            .account_id("workspace-resume")
-            .plan_type("enterprise"),
-        AuthCredentialsStoreMode::File,
-    )?;
+    let catalog = codex_home.path().join("catalog.json");
+    let model = write_catalog(&catalog, Some(&json!({"enabled": true})))?;
+    write_config(codex_home.path(), &server, &catalog, &model, false)?;
 
-    let mut app_server = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_ACCESS_TOKEN", None)])
-        .without_auto_env()
-        .build()
-        .await?;
-    timeout(DEFAULT_READ_TIMEOUT, app_server.initialize()).await??;
+    let mut app_server = start_app_server(codex_home.path()).await?;
     let request_id = app_server
         .send_thread_start_request(ThreadStartParams::default())
         .await?;
     let ThreadStartResponse { thread, .. } = read_response(&mut app_server, request_id).await?;
     run_turn(&mut app_server, &thread.id, "persist enabled attribution").await?;
-    let rollout_path = thread
+    let rollout_path: PathBuf = thread
         .path
         .context("initial thread should have a rollout path")?;
     let status = timeout(DEFAULT_READ_TIMEOUT, app_server.shutdown_gracefully()).await??;
-    anyhow::ensure!(
-        status.success(),
-        "initial app-server did not exit successfully"
-    );
+    anyhow::ensure!(status.success(), "initial app-server did not exit successfully");
     replace_attribution_fragment_with_legacy(&rollout_path, legacy_attribution)?;
+    // The switch is read once per process, so the resumed process sees the new value.
+    write_catalog(&catalog, Some(&json!({"enabled": resumed_on})))?;
 
-    let mut app_server = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_ACCESS_TOKEN", None)])
-        .without_auto_env()
-        .build()
-        .await?;
-    timeout(DEFAULT_READ_TIMEOUT, app_server.initialize()).await??;
+    let mut app_server = start_app_server(codex_home.path()).await?;
     let request_id = app_server
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread.id,
@@ -304,20 +246,23 @@ async fn cold_resume_replaces_legacy_attribution_without_duplication(
         })
         .await?;
     let ThreadResumeResponse { thread, .. } = read_response(&mut app_server, request_id).await?;
-    run_turn(&mut app_server, &thread.id, "resume disabled attribution").await?;
-    run_turn(&mut app_server, &thread.id, "continue disabled attribution").await?;
+    run_turn(&mut app_server, &thread.id, "resumed").await?;
+    run_turn(&mut app_server, &thread.id, "resumed again").await?;
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 3);
-    let initial_text = requests[0].message_input_texts("developer").join("\n");
-    assert_eq!(initial_text.matches(COMMIT_ATTRIBUTION).count(), 1);
-    assert_eq!(initial_text.matches(PR_ATTRIBUTION).count(), 1);
-    assert_eq!(initial_text.matches(ATTRIBUTION_DISABLED).count(), 0);
+    let initial = requests[0].message_input_texts("developer").join("\n");
+    assert_eq!(counts(&initial), (1, 1, 0));
     for request in &requests[1..] {
         let developer_text = request.message_input_texts("developer").join("\n");
-        assert_eq!(developer_text.matches(COMMIT_ATTRIBUTION).count(), 1);
-        assert_eq!(developer_text.matches(PR_ATTRIBUTION).count(), 0);
-        assert_eq!(developer_text.matches(ATTRIBUTION_DISABLED).count(), 1);
+        // The upstream instruction stays in history either way; what matters is that
+        // exactly one ByteAsk notice follows it, and it is not repeated on the next turn.
+        assert_eq!(developer_text.matches(UPSTREAM_TRAILER).count(), 1);
+        if resumed_on {
+            assert_eq!(counts(&developer_text), (1, 1, 0));
+        } else {
+            assert_eq!(counts(&developer_text), (0, 0, 1));
+        }
     }
     server.verify().await;
     Ok(())
@@ -347,9 +292,9 @@ fn replace_attribution_fragment_with_legacy(
                             LegacyAttribution::CommitOnly => {
                                 LEGACY_COMMIT_ATTRIBUTION_INSTRUCTIONS.to_string()
                             }
-                            LegacyAttribution::UnlinkedPullRequest => {
-                                text.replace(PR_ATTRIBUTION, "Generated with Codex.")
-                            }
+                            LegacyAttribution::UpstreamEnabled => text
+                                .replace(BYTEASK_TRAILER, UPSTREAM_TRAILER)
+                                .replace(BYTEASK_PR_LINE, UPSTREAM_PR_LINE),
                         };
                         replaced = true;
                     }

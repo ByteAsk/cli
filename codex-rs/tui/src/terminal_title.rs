@@ -3,7 +3,7 @@
 //! This module owns the low-level OSC title write path and the sanitization
 //! that happens immediately before we emit it. It is intentionally narrow:
 //! callers decide when the title should change and whether an empty title means
-//! "leave the old title alone" or "clear the title Codex last wrote".
+//! "leave the old title alone" or "clear the title ByteAsk last wrote".
 //! This module does not attempt to read or restore the terminal's previous
 //! title because that is not portable across terminals.
 //!

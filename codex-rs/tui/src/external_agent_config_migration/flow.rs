@@ -18,8 +18,8 @@ use super::source::run_external_agent_config_source_prompt;
 
 pub(crate) const EXTERNAL_AGENT_CONFIG_MIGRATION_NO_ITEMS_MESSAGE: &str =
     "No compatible setup was found to import.";
-pub(crate) const EXTERNAL_AGENT_CONFIG_MIGRATION_REMOTE_UNAVAILABLE_MESSAGE: &str = "Import from other apps is unavailable in remote sessions. Start Codex locally and run /import.";
-pub(crate) const EXTERNAL_AGENT_CONFIG_MIGRATION_DAEMON_UNAVAILABLE_MESSAGE: &str = "Import from other apps is unavailable while Codex is connected to the local app-server daemon. Stop the daemon, restart Codex, and run /import.";
+pub(crate) const EXTERNAL_AGENT_CONFIG_MIGRATION_REMOTE_UNAVAILABLE_MESSAGE: &str = "Import from other apps is unavailable in remote sessions. Start ByteAsk locally and run /import.";
+pub(crate) const EXTERNAL_AGENT_CONFIG_MIGRATION_DAEMON_UNAVAILABLE_MESSAGE: &str = "Import from other apps is unavailable while ByteAsk is connected to the local app-server daemon. Stop the daemon, restart ByteAsk, and run /import.";
 
 pub(crate) enum ExternalAgentConfigMigrationFlowOutcome {
     Started(Vec<Line<'static>>),
@@ -147,12 +147,12 @@ fn external_agent_config_migration_started_lines(
     let mut lines = vec![
         vec![
             "• ".dim(),
-            "Import started.".cyan(),
+            "Import started.".fg(crate::style::accent_color()),
             " You can keep working while it finishes.".into(),
         ]
         .into(),
         vec!["  ".into(), "Imported setup will apply to new chats.".dim()].into(),
-        vec!["  ".into(), "Importing:".cyan().bold()].into(),
+        vec!["  ".into(), "Importing:".fg(crate::style::accent_color()).bold()].into(),
     ];
     lines.extend(
         import_summaries
@@ -160,7 +160,7 @@ fn external_agent_config_migration_started_lines(
             .map(|(item_type, count, names)| {
                 let mut line = vec![
                     "    ".into(),
-                    external_agent_config_migration_type_label(item_type).cyan(),
+                    external_agent_config_migration_type_label(item_type).fg(crate::style::accent_color()),
                     ": ".into(),
                     count.to_string().green(),
                 ];
@@ -212,7 +212,7 @@ pub(crate) fn external_agent_config_migration_finished_lines(
         .into(),
     ];
     if !notification.item_type_results.is_empty() {
-        lines.push(vec!["  ".into(), "Results by type:".cyan().bold()].into());
+        lines.push(vec!["  ".into(), "Results by type:".fg(crate::style::accent_color()).bold()].into());
         lines.extend(notification.item_type_results.iter().map(|type_result| {
             let failed_count = format!("{} failed", type_result.failures.len());
             let failed_count = if type_result.failures.is_empty() {
@@ -222,7 +222,7 @@ pub(crate) fn external_agent_config_migration_finished_lines(
             };
             vec![
                 "    ".into(),
-                external_agent_config_migration_type_label(type_result.item_type).cyan(),
+                external_agent_config_migration_type_label(type_result.item_type).fg(crate::style::accent_color()),
                 ": ".into(),
                 format!("{} imported", type_result.successes.len()).green(),
                 ", ".into(),

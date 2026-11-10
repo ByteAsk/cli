@@ -14,8 +14,12 @@ use tokio::task;
 
 use crate::operations::run_git_for_status;
 
-const BASELINE_COMMIT_MESSAGE: &str =
-    "Initialize Codex git baseline\n\nCo-authored-by: Codex <noreply@openai.com>";
+// ByteAsk: this message lands in a REAL commit in the user's repository, so it must
+// not advertise another product. The upstream `Co-authored-by: Codex
+// <noreply@openai.com>` trailer is dropped rather than rebranded — a rebrand would
+// produce the nonsense `ByteAsk <noreply@openai.com>`, and we do not want a
+// co-author trailer on a user's commit at all.
+const BASELINE_COMMIT_MESSAGE: &str = "Initialize ByteAsk git baseline";
 
 /// File-level change status between a git baseline and the current directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,7 +165,7 @@ fn write_index_from_head(root: &Path) -> anyhow::Result<()> {
 
 fn codex_signature() -> gix::actor::Signature {
     gix::actor::Signature {
-        name: "Codex".into(),
+        name: "ByteAsk".into(),
         email: "noreply@openai.com".into(),
         time: gix::date::Time {
             seconds: chrono::Utc::now().timestamp(),

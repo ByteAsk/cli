@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn denied_git_marketplace_does_not_clone_or_create_install_root() {
-        let codex_home = TempDir::new().expect("create Codex home");
+        let codex_home = TempDir::new().expect("create ByteAsk home");
         let requirements = requirements(
             r#"
 [marketplaces]

@@ -226,23 +226,23 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
         vec![
             Line::from(vec![
                 "• ".dim(),
-                "Import started.".cyan(),
+                "Import started.".fg(crate::style::accent_color()),
                 " You can keep working while it finishes.".into(),
             ]),
             Line::from(vec![
                 "  ".into(),
                 "Imported setup will apply to new chats.".dim(),
             ]),
-            Line::from(vec!["  ".into(), "Importing:".cyan().bold()]),
+            Line::from(vec!["  ".into(), "Importing:".fg(crate::style::accent_color()).bold()]),
             Line::from(vec![
                 "    ".into(),
-                "Settings".cyan(),
+                "Settings".fg(crate::style::accent_color()),
                 ": ".into(),
                 "1".green(),
             ]),
             Line::from(vec![
                 "    ".into(),
-                "Memory".cyan(),
+                "Memory".fg(crate::style::accent_color()),
                 ": ".into(),
                 "2".green(),
                 " — ".dim(),
@@ -250,7 +250,7 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
             ]),
             Line::from(vec![
                 "    ".into(),
-                "Skills".cyan(),
+                "Skills".fg(crate::style::accent_color()),
                 ": ".into(),
                 "4".green(),
                 " — ".dim(),
@@ -258,7 +258,7 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
             ]),
             Line::from(vec![
                 "    ".into(),
-                "MCP servers".cyan(),
+                "MCP servers".fg(crate::style::accent_color()),
                 ": ".into(),
                 "2".green(),
                 " — ".dim(),
@@ -266,7 +266,7 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
             ]),
             Line::from(vec![
                 "    ".into(),
-                "Chat sessions".cyan(),
+                "Chat sessions".fg(crate::style::accent_color()),
                 ": ".into(),
                 "3".green(),
                 " — ".dim(),
@@ -274,7 +274,7 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
             ]),
             Line::from(vec![
                 "    ".into(),
-                "Plugins".cyan(),
+                "Plugins".fg(crate::style::accent_color()),
                 ": ".into(),
                 "2".green(),
                 " — ".dim(),
@@ -294,10 +294,10 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
                 "1 failed".red(),
                 ".".into(),
             ]),
-            Line::from(vec!["  ".into(), "Results by type:".cyan().bold()]),
+            Line::from(vec!["  ".into(), "Results by type:".fg(crate::style::accent_color()).bold()]),
             Line::from(vec![
                 "    ".into(),
-                "Settings".cyan(),
+                "Settings".fg(crate::style::accent_color()),
                 ": ".into(),
                 "1 imported".green(),
                 ", ".into(),
@@ -305,7 +305,7 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
             ]),
             Line::from(vec![
                 "    ".into(),
-                "Memory".cyan(),
+                "Memory".fg(crate::style::accent_color()),
                 ": ".into(),
                 "2 imported".green(),
                 ", ".into(),
@@ -313,7 +313,7 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
             ]),
             Line::from(vec![
                 "    ".into(),
-                "Plugins".cyan(),
+                "Plugins".fg(crate::style::accent_color()),
                 ": ".into(),
                 "1 imported".green(),
                 ", ".into(),

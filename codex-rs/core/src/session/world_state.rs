@@ -30,6 +30,9 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructionsProvenance;
 
+/// Sent in place of a byte-identical copy of the base instructions on a model switch.
+pub(crate) const BYTEASK_SAME_INSTRUCTIONS_POINTER: &str = "The system instructions at the top of this conversation apply unchanged to this model. Follow them, and disregard any earlier model_switch block.";
+
 impl Session {
     #[tracing::instrument(name = "world_state.build", level = "info", skip_all)]
     pub(crate) async fn build_world_state_for_step(
@@ -88,6 +91,18 @@ impl Session {
             String::new()
         };
         let mut world_state = WorldState::default();
+        // ByteAsk token efficiency. A model switch embeds the
+        // NEW model's full instructions in a `<model_switch>` message that then rides in
+        // history for the rest of the session (13-21K chars). When they are byte-identical to
+        // the base instructions already sent at the top of every request (most ByteAsk catalog
+        // entries share one template) that copy carries no information. A short pointer is
+        // still sent, not nothing: after A -> B -> A an earlier block naming B's instructions
+        // would otherwise remain the last word.
+        let model_instructions = if base_instructions == model_instructions {
+            BYTEASK_SAME_INSTRUCTIONS_POINTER.to_string()
+        } else {
+            model_instructions
+        };
         world_state.add_section(ModelInstructionsState::new(
             &turn_context.model_info().slug,
             previous_model.as_deref(),
@@ -160,7 +175,12 @@ impl Session {
             .services
             .exec_policy
             .current_for_prefix_rules(turn_context.allow_prefix_rules());
-        if turn_context.config.include_permissions_instructions {
+        // ByteAsk Context: no permissions block in exec, so the prefix is the same in every
+        // workspace; interactive sessions keep it (the user needs the approval policy text).
+        let byteask_context_headless =
+            crate::byteask_context::headless(&turn_context.session_source)
+                && crate::byteask_context::shapes_prefix(&turn_context.config);
+        if turn_context.config.include_permissions_instructions && !byteask_context_headless {
             let environment = step_context.environments.primary();
             let permission_profile = step_context
                 .environments

@@ -183,7 +183,7 @@ impl ChatWidget {
                 self.bottom_pane.show_selection_view(SelectionViewParams {
                     title: Some("Archive this session?".to_string()),
                     subtitle: Some(
-                        "Are you sure? This will archive the current session and exit Codex"
+                        "Are you sure? This will archive the current session and exit ByteAsk"
                             .to_string(),
                     ),
                     footer_hint: Some(standard_popup_hint_line()),
@@ -245,16 +245,6 @@ impl ChatWidget {
             SlashCommand::Fork => {
                 self.app_event_tx
                     .send(AppEvent::ForkCurrentSession { name: None });
-            }
-            SlashCommand::App => {
-                let Some(thread_id) = self.thread_id else {
-                    self.add_error_message(
-                        "Session is still starting; try /app again in a moment.".to_string(),
-                    );
-                    return;
-                };
-                self.app_event_tx
-                    .send(AppEvent::OpenDesktopThread { thread_id });
             }
             SlashCommand::Init => {
                 const INIT_PROMPT: &str = include_str!("../../assets/prompt_for_init_command.md");
@@ -407,8 +397,11 @@ impl ChatWidget {
             SlashCommand::Quit | SlashCommand::Exit => {
                 self.request_quit_without_confirmation();
             }
+            SlashCommand::Login => {
+                self.open_byteask_settings();
+            }
             SlashCommand::Logout => {
-                self.app_event_tx.send(AppEvent::Logout);
+                self.request_byteask_auth("logout");
             }
             SlashCommand::Copy => {
                 self.show_copy_picker();
@@ -484,9 +477,22 @@ impl ChatWidget {
                 );
             }
             SlashCommand::Usage => {
-                if self.ensure_usage_command_available() {
+                if !self.has_codex_backend_auth {
+                    // ByteAsk accounts (gateway magic-link auth) have no ChatGPT
+                    // backend, so `/usage` shows gateway-reported plan usage.
+                    self.show_byteask_usage();
+                } else if self.ensure_usage_command_available() {
                     self.open_usage_menu();
                 }
+            }
+            SlashCommand::ReferralCode => {
+                self.show_byteask_referral();
+            }
+            SlashCommand::Upgrade => {
+                self.show_byteask_upgrade(String::new());
+            }
+            SlashCommand::Voucher => {
+                self.show_byteask_voucher(String::new());
             }
             SlashCommand::Ide => {
                 self.handle_ide_command();
@@ -724,7 +730,10 @@ impl ChatWidget {
                 self.add_error_message("Usage: /pwd".to_string());
             }
             SlashCommand::Usage => {
-                if self.ensure_usage_command_available() {
+                if !self.has_codex_backend_auth {
+                    // ByteAsk gateway usage ignores the token-activity views.
+                    self.show_byteask_usage();
+                } else if self.ensure_usage_command_available() {
                     match tokens::TokenActivityView::parse(trimmed) {
                         Some(view) => self.add_token_activity_output(view),
                         None => self.add_error_message(
@@ -732,6 +741,12 @@ impl ChatWidget {
                         ),
                     }
                 }
+            }
+            SlashCommand::Upgrade => {
+                self.show_byteask_upgrade(trimmed.to_string());
+            }
+            SlashCommand::Voucher => {
+                self.show_byteask_voucher(trimmed.to_string());
             }
             SlashCommand::Ide => {
                 self.handle_ide_command_args(trimmed);
@@ -1136,6 +1151,9 @@ impl ChatWidget {
             | SlashCommand::Status
             | SlashCommand::Pwd
             | SlashCommand::Usage
+            | SlashCommand::ReferralCode
+            | SlashCommand::Upgrade
+            | SlashCommand::Voucher
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
@@ -1149,7 +1167,6 @@ impl ChatWidget {
             | SlashCommand::Raw
             | SlashCommand::Vim
             | SlashCommand::Diff
-            | SlashCommand::App
             | SlashCommand::Rename
             | SlashCommand::Recap
             | SlashCommand::TestApproval => QueueDrain::Continue,
@@ -1185,6 +1202,7 @@ impl ChatWidget {
             | SlashCommand::Memories
             | SlashCommand::Quit
             | SlashCommand::Exit
+            | SlashCommand::Login
             | SlashCommand::Logout
             | SlashCommand::Mention
             | SlashCommand::Skills

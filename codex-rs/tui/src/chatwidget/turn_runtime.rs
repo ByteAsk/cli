@@ -173,6 +173,9 @@ impl ChatWidget {
             self.transcript.had_work_activity = false;
             self.request_status_line_branch_refresh();
             self.request_status_line_git_summary_refresh();
+            // ByteAsk: after a real completed turn, maybe arm the occasional in-chat
+            // feedback/referral nudge (cadence-gated; no-op for non-gateway accounts).
+            self.bottom_pane.byteask_on_turn_complete();
             self.refresh_thread_usage_after_turn();
         }
         // Mark task stopped and request redraw now that all content is in history.
@@ -349,7 +352,7 @@ impl ChatWidget {
         self.finalize_turn();
 
         let message = if message.trim().is_empty() {
-            "Codex is currently experiencing high load.".to_string()
+            "ByteAsk is currently experiencing high load.".to_string()
         } else {
             message
         };
@@ -363,11 +366,17 @@ impl ChatWidget {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.flush_answer_stream_with_separator();
         self.finalize_turn();
+        let sign_in = super::byteask_settings_menu::is_gateway_sign_in_prompt(&message);
         self.add_to_history(history_cell::new_error_event(message));
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Failed,
             /*body*/ None,
         );
+        // ByteAsk: a signed-out session asked for something that needs an account.
+        // Open the email prompt instead of telling the user to type /login.
+        if sign_in {
+            self.prompt_byteask_email();
+        }
         self.request_redraw();
 
         // After an error ends the turn, try sending the next queued input.
@@ -423,12 +432,12 @@ impl ChatWidget {
         // Keep owner remediation in history even when the optional backend banner is unavailable.
         let (message, nudge) = match rate_limit_reached_type {
             Some(RateLimitReachedType::WorkspaceOwnerCreditsDepleted) => (
-                    "You're out of credits. Your workspace is out of credits. Add credits to continue using Codex."
+                    "You're out of credits. Your workspace is out of credits. Add credits to continue using ByteAsk."
                         .to_string(),
                     None,
             ),
             Some(RateLimitReachedType::WorkspaceOwnerUsageLimitReached) => (
-                    "Usage limit reached. You've reached your usage limit. Increase your limits to continue using codex."
+                    "Usage limit reached. You've reached your usage limit. Increase your limits to continue using ByteAsk."
                         .to_string(),
                     None,
             ),

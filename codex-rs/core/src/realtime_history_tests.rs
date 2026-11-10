@@ -83,6 +83,7 @@ fn dynamic_tool_call(id: &str, status: DynamicToolCallStatus) -> TurnItem {
         success: Some(status == DynamicToolCallStatus::Completed),
         error: None,
         duration: None,
+        host_executed: false,
     })
 }
 

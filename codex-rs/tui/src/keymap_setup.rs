@@ -84,15 +84,15 @@ fn key_binding_span(binding: &str) -> ratatui::text::Span<'static> {
     if binding == "unbound" {
         binding.to_string().dim()
     } else {
-        binding.to_string().cyan()
+        binding.to_string().fg(crate::style::accent_color())
     }
 }
 
 fn keymap_action_menu_hint_line() -> Line<'static> {
     Line::from(vec![
-        "enter".cyan(),
+        "enter".fg(crate::style::accent_color()),
         " select · ".dim(),
-        "esc".cyan(),
+        "esc".fg(crate::style::accent_color()),
         " back".dim(),
     ])
 }
@@ -173,7 +173,7 @@ pub(crate) fn build_keymap_action_menu_params(
     let remove_action = action.clone();
     let config_path = format!("tui.keymap.{context}.{action}");
     let source = if custom_binding {
-        "Custom root override".cyan()
+        "Custom root override".fg(crate::style::accent_color())
     } else {
         "Default keymap".dim()
     };
@@ -192,7 +192,7 @@ pub(crate) fn build_keymap_action_menu_params(
     ]));
     header.push(Line::from(vec![
         "Config ".dim(),
-        format!("`{config_path}`").cyan(),
+        format!("`{config_path}`").fg(crate::style::accent_color()),
     ]));
     header.push(Line::from(description.to_string().dim()));
 
@@ -310,7 +310,7 @@ pub(crate) fn build_keymap_action_menu_params(
         header: Box::new(header),
         footer_note: Some(Line::from(vec![
             "Changes write the root ".dim(),
-            "`tui.keymap.*`".cyan(),
+            "`tui.keymap.*`".fg(crate::style::accent_color()),
             " override.".dim(),
         ])),
         footer_hint: Some(keymap_action_menu_hint_line()),
@@ -794,7 +794,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: false,
             skills: Some(Vec::new()),

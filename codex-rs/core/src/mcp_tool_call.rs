@@ -130,6 +130,77 @@ pub(crate) async fn handle_mcp_tool_call(
     invocation_tool_name: ToolName,
     arguments: String,
 ) -> HandledMcpToolCall {
+    // ByteAsk Context: the repository's identity is filled here, never by the model.
+    let turn_context = &step_context.turn;
+    let context_call = crate::byteask_context::server_name(&turn_context.config)
+        .is_some_and(|server| server == tool_info.server_name);
+    let identity_call = crate::byteask_context::identity_server(&turn_context.config)
+        .is_some_and(|server| server == tool_info.server_name);
+    let arguments = if identity_call {
+        #[allow(deprecated)]
+        let cwd = turn_context.cwd.to_path_buf();
+        byteask_context_arguments(tool_info.tool.name.as_ref(), arguments, &cwd).await
+    } else {
+        arguments
+    };
+    let mut handled = handle_mcp_tool_call_inner(
+        sess,
+        step_context,
+        cancellation_token,
+        call_id,
+        originating_item_id,
+        tool_info,
+        prepared_call,
+        hook_tool_name,
+        invocation_tool_name,
+        arguments,
+    )
+    .await;
+    // ByteAsk Context: in exec no answer tells the model to stop and ask about indexing.
+    if context_call && crate::byteask_context::headless(&turn_context.session_source) {
+        for item in &mut handled.result.content {
+            let replacement = item
+                .get("text")
+                .and_then(JsonValue::as_str)
+                .and_then(crate::byteask_context::headless_tool_text);
+            if let (Some(replacement), Some(object)) = (replacement, item.as_object_mut()) {
+                object.insert("text".to_string(), JsonValue::String(replacement));
+            }
+        }
+    }
+    handled
+}
+
+/// The model's arguments for a ByteAsk Context tool with `repo_url`, `commit_sha` and
+/// `worktree` (or `workdir`) filled from git in `cwd`.
+async fn byteask_context_arguments(tool: &str, arguments: String, cwd: &std::path::Path) -> String {
+    let mut object = if arguments.trim().is_empty() {
+        serde_json::Map::new()
+    } else {
+        match serde_json::from_str::<JsonValue>(&arguments) {
+            Ok(JsonValue::Object(object)) => object,
+            // Not an object: left for the normal path to report.
+            _ => return arguments,
+        }
+    };
+    let identity = crate::byteask_context::repo_identity(cwd).await;
+    crate::byteask_context::fill_identity(tool, &mut object, &identity);
+    serde_json::to_string(&JsonValue::Object(object)).unwrap_or(arguments)
+}
+
+#[expect(clippy::too_many_arguments)]
+async fn handle_mcp_tool_call_inner(
+    sess: Arc<Session>,
+    step_context: &Arc<StepContext>,
+    cancellation_token: &CancellationToken,
+    call_id: String,
+    originating_item_id: Option<ResponseItemId>,
+    tool_info: &ToolInfo,
+    prepared_call: Option<PreparedMcpCall>,
+    hook_tool_name: HookToolName,
+    invocation_tool_name: ToolName,
+    arguments: String,
+) -> HandledMcpToolCall {
     let turn_context = &step_context.turn;
     let server = tool_info.server_name.clone();
     let tool_name = tool_info.tool.name.to_string();
@@ -799,7 +870,7 @@ async fn refresh_codex_apps_after_connector_auth(sess: &Arc<Session>, turn_conte
             );
         }
         Err(err) => {
-            tracing::warn!("failed to refresh Codex Apps tools after connector auth: {err:#}");
+            tracing::warn!("failed to refresh ByteAsk Apps tools after connector auth: {err:#}");
         }
     }
 }

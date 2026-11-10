@@ -111,7 +111,7 @@ impl PluginStore {
             AbsolutePathBuf::from_absolute_path_checked(codex_home.join(PLUGINS_DATA_DIR))
                 .map_err(|err| PluginStoreError::io("failed to resolve plugin data root", err))?;
         let codex_home = AbsolutePathBuf::from_absolute_path_checked(codex_home)
-            .map_err(|err| PluginStoreError::io("failed to resolve Codex home", err))?;
+            .map_err(|err| PluginStoreError::io("failed to resolve ByteAsk home", err))?;
 
         Ok(Self {
             codex_home,

@@ -438,7 +438,9 @@ async fn removing_remote_thread_omits_disconnect_guidance() -> Result<()> {
             total_tokens: 2,
             ..Default::default()
         };
-        let mut expected = vec!["Token usage: total=2 input=0 output=2".to_string()];
+        // ByteAsk prints no token line at exit (exit_summary.rs), so the summary
+        // starts at the resume/archive guidance.
+        let mut expected: Vec<String> = Vec::new();
         if archived {
             expected.push(format!("Session archived: {thread_id}"));
         }

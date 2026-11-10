@@ -196,7 +196,7 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
             sandbox.as_ref(),
         )
         .await;
-        let stdout = String::from_utf8_lossy(&stdout).into_owned();
+        let mut stdout = String::from_utf8_lossy(&stdout).into_owned();
         let stderr = String::from_utf8_lossy(&stderr).into_owned();
         let failed = result.is_err();
         let exit_code = if failed { 1 } else { 0 };
@@ -204,6 +204,11 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
             Ok(delta) => delta,
             Err(failure) => failure.into_parts().1,
         };
+        // ByteAsk: show the post-patch text around each hunk, so the model does not
+        // have to re-read the file to see that the edit landed.
+        if !failed && byteask_output_reducers::policy::active().flag("patch_echo") {
+            stdout.push_str(&crate::tools::byteask_patch_echo::echo(&delta));
+        }
         self.committed_delta.append(delta);
         let output = ExecToolCallOutput {
             exit_code,

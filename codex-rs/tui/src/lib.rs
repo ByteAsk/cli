@@ -110,6 +110,12 @@ mod ascii_animation;
 mod backend_banners;
 mod bottom_pane;
 mod branch_summary;
+mod byteask_a11y;
+#[cfg(test)]
+mod byteask_copy_guard_tests;
+mod byteask_marketing;
+mod byteask_nudge;
+mod byteask_settings;
 mod chatwidget;
 mod cli;
 mod clipboard_copy;
@@ -162,7 +168,8 @@ mod motion;
 mod multi_agents;
 mod named_session_lookup;
 mod notifications;
-#[cfg(any(not(debug_assertions), test))]
+// Only its own tests use it now: the update check reads ByteAsk's version.json, not npm.
+#[cfg(test)]
 mod npm_registry;
 pub(crate) mod onboarding;
 mod oss_selection;
@@ -216,7 +223,7 @@ mod update_versions;
 mod updates;
 #[cfg(any(not(debug_assertions), test))]
 mod updates_cache;
-mod version;
+pub mod version;
 mod vim_search;
 mod width;
 #[cfg(any(target_os = "windows", test))]
@@ -432,7 +439,7 @@ async fn connect_remote_app_server(
     let app_server = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
         endpoint,
         client_name: "codex-tui".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: codex_login::default_client::reported_client_version(),
         experimental_api: true,
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
@@ -589,7 +596,7 @@ where
             .unwrap_or_else(|err| panic!("cli session source should deserialize: {err}")),
         enable_codex_api_key_env: false,
         client_name: "codex-tui".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: codex_login::default_client::reported_client_version(),
         experimental_api: true,
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
@@ -942,6 +949,14 @@ pub async fn run_main(
     loader_overrides: LoaderOverrides,
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
 ) -> std::io::Result<AppExitInfo> {
+    // Accessibility switches. The flag outranks the env var
+    // and `tui.screen_reader`, so it is set before any ByteAsk surface can ask, and the
+    // confirmation line is written while stdout is still a plain stream.
+    if cli.ax_screen_reader {
+        byteask_a11y::set_flag(true);
+    }
+    byteask_a11y::print_confirmation_line();
+
     match startup_orchestration::run_main_inner(
         cli,
         arg0_paths,
@@ -981,6 +996,11 @@ async fn run_ratatui_app(
     environment_manager: Arc<EnvironmentManager>,
     startup_draft: startup_draft::StartupDraft,
 ) -> color_eyre::Result<AppExitInfo> {
+    // The third and lowest-precedence screen-reader source. Config is only available
+    // here, after the terminal has been claimed, so this turns the mode on for every surface
+    // drawn from now on without re-announcing it.
+    byteask_a11y::set_config(initial_config.tui_screen_reader);
+
     let uses_remote_workspace = app_server_target.uses_remote_workspace();
     let workload_identity_selected = is_workload_identity_selected();
     color_eyre::install()?;
@@ -1266,7 +1286,7 @@ async fn run_ratatui_app(
                 disconnect_info: None,
                 update_action: None,
                 exit_reason: ExitReason::Fatal(format!(
-                    "No saved session found with ID {id_str}. Run `codex {action}` without an ID to choose from existing sessions."
+                    "No saved session found with ID {id_str}. Run `byteask {action}` without an ID to choose from existing sessions."
                 )),
             })
         };

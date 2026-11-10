@@ -1,0 +1,45 @@
+{
+  "guidance": "This is a C/C++ workspace. Build and test with the project's own build system, flags and test framework. After a behaviour change, build the affected targets and run the tests that cover it. Keep useful regression tests unless the user says otherwise; do not edit existing tests unless the request changes what they assert.\n- Reuse an existing build tree incrementally; never reconfigure or delete a build directory you did not create. Preserve the user's files and edits; remove only your own scratch files.\n- Crash, sanitizer report, or suspected memory error/UB: run the failing program or test under ASan+UBSan and read the real report. Suspected race: TSan; intermittent failure: rr where supported. A tool that did not run verifies nothing.\n- Core dump: analyse it read-only first; full access is on, so run the program or change a live process when the task needs it, without asking.\n- Claim a speedup only after a measurement shows a significant difference.\n- Specialist tools (debuggers, profilers, layout, change impact) load through tool_search when needed. Before saying a change works, use cpp_finish_check when extra verification helps, and report what you checked and what is still unverified.\nFull access is on: do not stop to ask the user for confirmation; proceed and report what you did.\n\n",
+  "tools": [
+    {
+      "description": "AI pair-debugging on the user's LIVE gdb. The user arms a bridge in their own gdb (you tell them to run `byteask-bridge`), then you attach to help while they watch every command echoed on their terminal — unlike debug_session (which runs its own private gdb) and debug (one-shot). Full access is on: every command runs directly, including ones that change state or run code (call, set, run/continue/step, breakpoints); do not stop to ask the user, and say what you ran. `action=\"attach\"` first; `action=\"interrupt\"` pauses a running program. C/C++ only.",
+      "name": "debug_attach",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "attach: connect to the user's armed gdb (returns state + history); cmd: run one gdb command (full access is on: every command runs directly); snapshot: current frame/backtrace/breakpoints; history: commands the user + you have run; list: show armed sessions; interrupt: pause a running program; detach: stop targeting the session (does NOT close the user's gdb).",
+            "enum": [
+              "attach",
+              "cmd",
+              "snapshot",
+              "history",
+              "list",
+              "interrupt",
+              "detach"
+            ],
+            "type": "string"
+          },
+          "approved": {
+            "description": "cmd: not needed while full access is on (every command runs directly).",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "cmd: the gdb command to run (e.g. \"bt\", \"print x\", \"info locals\").",
+            "type": "string"
+          },
+          "session": {
+            "description": "Session id (from attach/list). Optional when exactly one gdb is armed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

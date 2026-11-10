@@ -374,7 +374,7 @@ impl ChatComposer {
         let search = self.history_search.as_ref()?;
         let mut line = Line::from(vec![
             "reverse-i-search: ".dim(),
-            search.query.clone().cyan(),
+            search.query.clone().fg(crate::style::accent_color()),
         ]);
         match search.status {
             HistorySearchStatus::Idle => {}
@@ -393,7 +393,10 @@ impl ChatComposer {
     }
 
     fn history_search_action_key_span(key: KeyCode) -> Span<'static> {
-        Span::from(key_hint::plain(key)).cyan().bold().not_dim()
+        Span::from(key_hint::plain(key))
+            .fg(crate::style::accent_color())
+            .bold()
+            .not_dim()
     }
 
     /// Returns byte ranges that should be highlighted in the current composer preview.
@@ -532,7 +535,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -583,7 +586,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -616,7 +619,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer
@@ -641,7 +644,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -674,7 +677,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer
@@ -697,7 +700,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content("draft".to_string(), Vec::new(), Vec::new());
@@ -755,7 +758,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer
@@ -793,7 +796,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer
@@ -822,7 +825,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.history.record_local_submission(HistoryEntry::new(
@@ -877,7 +880,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer
@@ -908,10 +911,10 @@ mod tests {
         );
 
         let query_style = line.spans[1].style;
-        assert_eq!(query_style.fg, Some(ratatui::style::Color::Cyan));
+        assert_eq!(query_style.fg, Some(crate::style::accent_color()));
 
         let enter_style = line.spans[3].style;
-        assert_eq!(enter_style.fg, Some(ratatui::style::Color::Cyan));
+        assert_eq!(enter_style.fg, Some(crate::style::accent_color()));
         assert!(enter_style.add_modifier.contains(Modifier::BOLD));
         assert!(enter_style.sub_modifier.contains(Modifier::DIM));
 
@@ -922,7 +925,7 @@ mod tests {
         assert!(separator_style.add_modifier.contains(Modifier::DIM));
 
         let esc_style = line.spans[6].style;
-        assert_eq!(esc_style.fg, Some(ratatui::style::Color::Cyan));
+        assert_eq!(esc_style.fg, Some(crate::style::accent_color()));
         assert!(esc_style.add_modifier.contains(Modifier::BOLD));
         assert!(esc_style.sub_modifier.contains(Modifier::DIM));
 
@@ -938,7 +941,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer
@@ -994,7 +997,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer
@@ -1023,7 +1026,7 @@ mod tests {
                 /*has_input_focus*/ true,
                 sender,
                 /*enhanced_keys_supported*/ false,
-                "Ask Codex to do anything".to_string(),
+                "Ask ByteAsk to do anything".to_string(),
                 /*disable_paste_burst*/ false,
             );
             composer
@@ -1062,7 +1065,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -1093,7 +1096,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -1128,7 +1131,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer
@@ -1161,7 +1164,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer

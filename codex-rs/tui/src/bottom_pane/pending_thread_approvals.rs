@@ -60,7 +60,7 @@ impl PendingThreadApprovals {
         lines.push(
             Line::from(vec![
                 "    ".into(),
-                "/subagents".cyan().bold(),
+                "/subagents".fg(crate::style::accent_color()).bold(),
                 " to switch threads".dim(),
             ])
             .dim(),

@@ -7,6 +7,12 @@
 
 use codex_api::Provider as ApiProvider;
 use codex_api::RetryConfig as ApiRetryConfig;
+// ByteAsk: the CANONICAL reported-version resolver lives here because this crate sits
+// BELOW codex-login in the dependency graph (login depends on us, so we cannot depend on
+// login). Everything that reports a version to the OpenAI/Codex backend routes through
+// it — the `version` HTTP header below, the User-Agent, clientInfo, and the model-list
+// fetch. Having three independent copies is exactly how ByteAsk shipped `0.1.0` in one
+// field while another said `0.153.4`.
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::ModelProviderAuthInfo;
 use codex_protocol::error::CodexErr;
@@ -17,6 +23,57 @@ use http::HeaderMap;
 use http::header::HeaderName;
 use http::header::HeaderValue;
 use schemars::JsonSchema;
+
+/// The real upstream Codex version this binary was built from, stamped by `build.rs`
+/// from the merged `rust-v<x.y.z>` git tag. ByteAsk's own crate version is `0.1.0`,
+/// which is below every model's `minimal_client_version`.
+pub const UPSTREAM_CODEX_VERSION: &str = env!("BYTEASK_UPSTREAM_CODEX_VERSION");
+
+/// Resolve the version to report to the OpenAI/Codex backend.
+///
+/// `auto` / `upstream` (case-insensitive) → [`UPSTREAM_CODEX_VERSION`] (what the wrapper
+/// sends for a ChatGPT-subscription session); any other non-blank value → that literal
+/// (manual escape hatch); blank/unset → `build_version` (managed/BYOK, unchanged).
+pub fn resolve_reported_version(override_val: Option<&str>, build_version: &str) -> String {
+    match override_val.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) if v.eq_ignore_ascii_case("auto") || v.eq_ignore_ascii_case("upstream") => {
+            UPSTREAM_CODEX_VERSION.to_string()
+        }
+        Some(v) => v.to_string(),
+        None => build_version.to_string(),
+    }
+}
+
+/// The version this client reports to the backend (the `version` header, the UA and
+/// clientInfo all use this).
+/// `BYTEASK_REPORTED_VERSION` is the documented name (nothing a user
+/// can see or type carries the upstream brand). `BYTEASK_CODEX_VERSION_OVERRIDE` is
+/// still read as a silent fallback, the same way `CODEX_HOME` is, so a setup that
+/// followed the older instruction keeps working.
+///
+/// ⚠️ NOT `BYTEASK_CLIENT_VERSION`: that name is taken — the wrapper sets it to the
+/// SHIPPED version (what `byteask --version` shows). Reusing it would make the
+/// wrapper's `:=auto` default a no-op and report `0.1.13` to the backend, which is
+/// below every model's `minimal_client_version`: the exact bug this whole path fixes.
+pub fn reported_client_version() -> String {
+    let env = |name: &str| std::env::var(name).ok();
+    let env_override = version_override_from(
+        env("BYTEASK_REPORTED_VERSION").as_deref(),
+        env("BYTEASK_CODEX_VERSION_OVERRIDE").as_deref(),
+    );
+    resolve_reported_version(env_override.as_deref(), env!("CARGO_PKG_VERSION"))
+}
+
+/// Split from the env read above so the precedence is testable without mutating
+/// process env in a parallel test harness.
+pub fn version_override_from(neutral: Option<&str>, legacy: Option<&str>) -> Option<String> {
+    let pick = |v: Option<&str>| {
+        v.map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    pick(neutral).or_else(|| pick(legacy))
+}
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -395,7 +452,14 @@ impl ModelProviderInfo {
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: Some(
-                [("version".to_string(), env!("CARGO_PKG_VERSION").into())]
+                // ⚠️ THE version the ChatGPT/Codex backend actually gates on. Upstream
+                // hardcodes CARGO_PKG_VERSION here, which for ByteAsk is `0.1.0` —
+                // below every model's minimal_client_version — so a subscription session
+                // is refused with "requires a newer version of Codex" on EVERY model
+                // even when the UA and clientInfo report the upstream version.
+                // This is a dedicated header on the built-in OpenAI provider, which is
+                // why a custom-provider capture never showed it.
+                [("version".to_string(), reported_client_version().into())]
                     .into_iter()
                     .collect(),
             ),
@@ -635,3 +699,27 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
 #[cfg(test)]
 #[path = "model_provider_info_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod reported_version_tests {
+    use super::*;
+
+    /// `auto` / `upstream` report the upstream base version this binary was built from.
+    #[test]
+    fn auto_reports_the_upstream_base_version() {
+        for auto in ["auto", "AUTO", " upstream "] {
+            assert_eq!(
+                resolve_reported_version(Some(auto), "0.1.0"),
+                UPSTREAM_CODEX_VERSION
+            );
+        }
+    }
+
+    /// A concrete literal is honoured exactly; nothing set reports the build version.
+    #[test]
+    fn a_literal_override_and_the_unset_case() {
+        assert_eq!(resolve_reported_version(Some("0.140.0"), "0.1.0"), "0.140.0");
+        assert_eq!(resolve_reported_version(None, "0.1.0"), "0.1.0");
+        assert_eq!(resolve_reported_version(Some("  "), "0.1.0"), "0.1.0");
+    }
+}

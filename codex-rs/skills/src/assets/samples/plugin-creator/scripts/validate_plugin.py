@@ -31,7 +31,7 @@ HEX_COLOR_RE = re.compile(r"^#[0-9A-F]{6}$", re.IGNORECASE)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate a local Codex plugin.")
+    parser = argparse.ArgumentParser(description="Validate a local ByteAsk plugin.")
     parser.add_argument("plugin_path", help="Path to the plugin root directory")
     return parser.parse_args()
 

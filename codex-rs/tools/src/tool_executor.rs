@@ -123,6 +123,14 @@ pub trait ToolExecutor<Invocation>: Send + Sync {
         false
     }
 
+    /// Whether this executor emits its own turn items (e.g. web_search's
+    /// `ExtensionItem::WebSearch`). When `true`, the host adapter must NOT
+    /// auto-emit a generic tool-call turn item around the call — otherwise
+    /// the user would see two cells for one tool call.
+    fn manages_turn_items(&self) -> bool {
+        false
+    }
+
     /// Handles one invocation without retaining capabilities borrowed by the host.
     fn handle<'a>(&'a self, invocation: Invocation) -> ToolExecutorFuture<'a>
     where

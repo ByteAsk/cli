@@ -2,6 +2,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::Weak;
 
+use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
+use codex_protocol::items::DynamicToolCallItem;
+use codex_protocol::items::DynamicToolCallStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
@@ -65,8 +68,202 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
     where
         ToolInvocation: 'a,
     {
-        Box::pin(async move { self.0.handle(to_extension_call(&invocation).await).await })
+        Box::pin(async move {
+            // Executors that emit their own turn items (web_search, image_gen)
+            // opt out via manages_turn_items(); everything else gets a generic
+            // visible tool-call item around the call. Emitted as the core
+            // `TurnItem::DynamicToolCall` (already wired through conversion,
+            // history, and client rendering) — no new wire kind.
+            if self.0.manages_turn_items() {
+                let call = to_extension_call(&invocation).await;
+                return self.0.handle(call).await;
+            }
+
+            let session = Arc::clone(&invocation.session);
+            let turn = Arc::clone(&invocation.turn);
+            let call_id = invocation.call_id.clone();
+            let tool = invocation.tool_name.to_string();
+            let arguments = tool_call_arguments(&invocation.payload);
+            let payload = invocation.payload.clone();
+
+            session
+                .emit_turn_item_started(
+                    turn.as_ref(),
+                    &TurnItem::DynamicToolCall(DynamicToolCallItem {
+                        id: call_id.clone(),
+                        namespace: None,
+                        tool: tool.clone(),
+                        arguments: arguments.clone(),
+                        status: DynamicToolCallStatus::InProgress,
+                        content_items: None,
+                        success: None,
+                        error: None,
+                        duration: None,
+                        host_executed: true,
+                    }),
+                )
+                .await;
+
+            let started_at = std::time::Instant::now();
+            // Turn aborts hard-cancel this future (parallel.rs aborts the
+            // dispatch task), which would otherwise strand the InProgress item
+            // in thread history forever. The guard emits a terminal Failed
+            // item from Drop unless disarmed by normal completion below.
+            let mut abort_guard = ToolCallAbortGuard {
+                session: Arc::downgrade(&session),
+                turn: Arc::downgrade(&turn),
+                item: Some(DynamicToolCallItem {
+                    id: call_id.clone(),
+                    namespace: None,
+                    tool: tool.clone(),
+                    arguments: arguments.clone(),
+                    status: DynamicToolCallStatus::Failed,
+                    content_items: Some(Vec::new()),
+                    success: Some(false),
+                    error: Some("tool call interrupted".to_string()),
+                    duration: None,
+                    host_executed: true,
+                }),
+            };
+
+            let call = to_extension_call(&invocation).await;
+            let result = self.0.handle(call).await;
+            abort_guard.item = None; // disarm — we emit the real terminal item
+            let duration = Some(started_at.elapsed());
+
+            let item = match &result {
+                Ok(output) => {
+                    let (text, success) =
+                        tool_output_text_and_success(output.as_ref(), &call_id, &payload);
+                    DynamicToolCallItem {
+                        id: call_id,
+                        namespace: None,
+                        tool,
+                        arguments,
+                        status: DynamicToolCallStatus::Completed,
+                        content_items: Some(
+                            text.map(|text| vec![DynamicToolCallOutputContentItem::InputText { text }])
+                                .unwrap_or_default(),
+                        ),
+                        success: Some(success),
+                        error: None,
+                        duration,
+                        host_executed: true,
+                    }
+                }
+                // RespondToModel is these tools' routine soft-error channel
+                // (retryable guidance the model recovers from) — render it as
+                // a completed call carrying the message, NOT a red failure.
+                Err(codex_tools::FunctionCallError::RespondToModel(message)) => {
+                    DynamicToolCallItem {
+                        id: call_id,
+                        namespace: None,
+                        tool,
+                        arguments,
+                        status: DynamicToolCallStatus::Completed,
+                        content_items: Some(vec![DynamicToolCallOutputContentItem::InputText {
+                            text: truncate_tool_output(message.clone()),
+                        }]),
+                        success: None,
+                        error: None,
+                        duration,
+                        host_executed: true,
+                    }
+                }
+                Err(err) => DynamicToolCallItem {
+                    id: call_id,
+                    namespace: None,
+                    tool,
+                    arguments,
+                    status: DynamicToolCallStatus::Failed,
+                    content_items: Some(Vec::new()),
+                    success: Some(false),
+                    error: Some(truncate_tool_output(err.to_string())),
+                    duration,
+                    host_executed: true,
+                },
+            };
+            session
+                .emit_turn_item_completed(turn.as_ref(), TurnItem::DynamicToolCall(item))
+                .await;
+
+            result
+        })
     }
+}
+
+/// Max output text carried on the visible tool-call item — display surfaces
+/// truncate further; this only keeps rollout persistence light.
+const TOOL_CALL_ITEM_OUTPUT_CAP: usize = 4096;
+
+/// Emits a terminal Failed item if the tool-call future is dropped before
+/// completing (turn abort). Disarmed by setting `item` to `None`.
+struct ToolCallAbortGuard {
+    session: Weak<Session>,
+    turn: Weak<TurnContext>,
+    item: Option<DynamicToolCallItem>,
+}
+
+impl Drop for ToolCallAbortGuard {
+    fn drop(&mut self) {
+        let Some(item) = self.item.take() else {
+            return;
+        };
+        let (Some(session), Some(turn)) = (self.session.upgrade(), self.turn.upgrade()) else {
+            return;
+        };
+        // Drop runs synchronously inside the runtime worker that dropped the
+        // aborted task; the emission itself is async, so hand it off.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                session
+                    .emit_turn_item_completed(turn.as_ref(), TurnItem::DynamicToolCall(item))
+                    .await;
+            });
+        }
+    }
+}
+
+/// The tool arguments as a JSON value for display; never fails (a
+/// non-JSON payload is carried verbatim as a string).
+fn tool_call_arguments(payload: &ToolPayload) -> serde_json::Value {
+    let raw = payload.log_payload();
+    serde_json::from_str(raw.as_ref())
+        .unwrap_or_else(|_| serde_json::Value::String(raw.into_owned()))
+}
+
+/// Best-effort (text, success) of a tool output via its model-facing
+/// response item. `to_response_item` is pure formatting, so calling it here
+/// in addition to the router is safe.
+fn tool_output_text_and_success(
+    output: &dyn codex_tools::ToolOutput,
+    call_id: &str,
+    payload: &ToolPayload,
+) -> (Option<String>, bool) {
+    use codex_protocol::models::ResponseInputItem;
+    match output.to_response_item(call_id, payload) {
+        ResponseInputItem::FunctionCallOutput { output, .. } => (
+            output.body.to_text().map(truncate_tool_output),
+            output.success.unwrap_or(true),
+        ),
+        ResponseInputItem::CustomToolCallOutput { output, .. } => (
+            output.body.to_text().map(truncate_tool_output),
+            output.success.unwrap_or(true),
+        ),
+        _ => (None, output.success_for_logging()),
+    }
+}
+
+fn truncate_tool_output(mut text: String) -> String {
+    if text.len() > TOOL_CALL_ITEM_OUTPUT_CAP {
+        let mut cut = TOOL_CALL_ITEM_OUTPUT_CAP;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str("…");
+    }
+    text
 }
 
 impl CoreToolRuntime for ExtensionToolAdapter {
@@ -244,6 +441,8 @@ mod tests {
 
     use super::CoreTurnItemEmitter;
     use super::ExtensionToolAdapter;
+    use codex_protocol::items::DynamicToolCallItem;
+    use codex_protocol::items::DynamicToolCallStatus;
     use crate::session::step_context::StepContext;
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
@@ -319,6 +518,12 @@ mod tests {
                 output_schema: None,
                 defer_loading: None,
             })
+        }
+
+        // Plays the web_search role: emits its own extension item, so the
+        // adapter must not add a generic tool-call item around it.
+        fn manages_turn_items(&self) -> bool {
+            true
         }
 
         fn handle<'a>(
@@ -610,5 +815,205 @@ mod tests {
 
         assert_eq!(started_item, expected_started_item);
         assert_eq!(completed_item, expected_completed_item);
+    }
+
+    /// Drain every pending event and return the extension tool-call items seen
+    /// as (is_started, item) pairs.
+    fn drain_tool_call_items(
+        rx: &async_channel::Receiver<codex_protocol::protocol::Event>,
+    ) -> Vec<(bool, DynamicToolCallItem)> {
+        let mut out = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event.msg {
+                EventMsg::ItemStarted(ev) => {
+                    if let TurnItem::DynamicToolCall(item) = ev.item {
+                        out.push((true, item));
+                    }
+                }
+                EventMsg::ItemCompleted(ev) => {
+                    if let TurnItem::DynamicToolCall(item) = ev.item {
+                        out.push((false, item));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    async fn invoke_adapter(
+        handler: &ExtensionToolAdapter,
+        arguments: String,
+    ) -> (
+        Result<Box<dyn codex_tools::ToolOutput>, codex_tools::FunctionCallError>,
+        async_channel::Receiver<codex_protocol::protocol::Event>,
+    ) {
+        let (session, turn, rx) = crate::session::tests::make_session_and_context_with_rx().await;
+        let step_context = StepContext::for_test(Arc::clone(&turn));
+        let invocation = ToolInvocation {
+            session,
+            step_context,
+            turn,
+            cancellation_token: tokio_util::sync::CancellationToken::new(),
+            tracker: Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-extension".to_string(),
+            tool_name: codex_tools::ToolName::plain("extension_echo"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function { arguments },
+        };
+        let result = crate::tools::registry::ToolExecutor::handle(handler, invocation).await;
+        (result, rx)
+    }
+
+    #[tokio::test]
+    async fn auto_emits_tool_call_items_around_extension_call() {
+        let handler = ExtensionToolAdapter::new(Arc::new(StubExtensionExecutor));
+        let (result, rx) =
+            invoke_adapter(&handler, json!({ "message": "hello" }).to_string()).await;
+        result.expect("extension call should succeed");
+
+        let items = drain_tool_call_items(&rx);
+        assert_eq!(items.len(), 2, "expected started + completed items");
+        let (started_flag, started) = &items[0];
+        let (completed_flag, completed) = &items[1];
+        assert!(*started_flag && !*completed_flag);
+        assert_eq!(started.id, "call-extension");
+        assert_eq!(started.tool, "extension_echo");
+        assert_eq!(started.arguments, json!({ "message": "hello" }));
+        assert_eq!(started.status, DynamicToolCallStatus::InProgress);
+        assert_eq!(started.content_items, None);
+        // Same id started -> completed so clients correlate + history upserts.
+        assert_eq!(completed.id, started.id);
+        assert_eq!(completed.status, DynamicToolCallStatus::Completed);
+        assert_eq!(completed.success, Some(true));
+        assert!(completed.duration.is_some());
+        let output = tool_call_item_text(completed);
+        assert!(output.contains("ok"), "output should carry the tool text: {output}");
+    }
+
+    #[tokio::test]
+    async fn failed_extension_call_emits_failed_tool_call_item() {
+        struct FailingExecutor;
+        impl<'call> codex_extension_api::ToolExecutor<codex_tools::ToolCall<'call>> for FailingExecutor {
+            fn tool_name(&self) -> codex_tools::ToolName {
+                codex_tools::ToolName::plain("extension_echo")
+            }
+            fn spec(&self) -> codex_tools::ToolSpec {
+                StubExtensionExecutor.spec()
+            }
+            fn handle<'a>(
+                &'a self,
+                _call: codex_tools::ToolCall<'call>,
+            ) -> codex_tools::ToolExecutorFuture<'a>
+            where
+                'call: 'a,
+            {
+                Box::pin(async {
+                    Err(codex_tools::FunctionCallError::Fatal(
+                        "backend unreachable".to_string(),
+                    ))
+                })
+            }
+        }
+        let handler = ExtensionToolAdapter::new(Arc::new(FailingExecutor));
+        let (result, rx) = invoke_adapter(&handler, "{}".to_string()).await;
+        assert!(result.is_err(), "the error must propagate unchanged");
+
+        let items = drain_tool_call_items(&rx);
+        assert_eq!(items.len(), 2);
+        let (_, completed) = &items[1];
+        assert_eq!(completed.status, DynamicToolCallStatus::Failed);
+        assert_eq!(completed.success, Some(false));
+        assert!(
+            completed.error.as_deref().unwrap_or_default().contains("backend unreachable"),
+            "failed item should carry the error text"
+        );
+    }
+
+    #[tokio::test]
+    async fn respond_to_model_error_renders_completed_not_failed() {
+        struct SoftErrorExecutor;
+        impl<'call> codex_extension_api::ToolExecutor<codex_tools::ToolCall<'call>> for SoftErrorExecutor {
+            fn tool_name(&self) -> codex_tools::ToolName {
+                codex_tools::ToolName::plain("extension_echo")
+            }
+            fn spec(&self) -> codex_tools::ToolSpec {
+                StubExtensionExecutor.spec()
+            }
+            fn handle<'a>(
+                &'a self,
+                _call: codex_tools::ToolCall<'call>,
+            ) -> codex_tools::ToolExecutorFuture<'a>
+            where
+                'call: 'a,
+            {
+                Box::pin(async {
+                    Err(codex_tools::FunctionCallError::RespondToModel(
+                        "unknown compiler, candidates: arm64g1430".to_string(),
+                    ))
+                })
+            }
+        }
+        let handler = ExtensionToolAdapter::new(Arc::new(SoftErrorExecutor));
+        let (result, rx) = invoke_adapter(&handler, "{}".to_string()).await;
+        assert!(result.is_err(), "the soft error must still propagate to the router");
+
+        let items = drain_tool_call_items(&rx);
+        assert_eq!(items.len(), 2);
+        let (_, completed) = &items[1];
+        // Routine retryable guidance must NOT render as a red failure.
+        assert_eq!(completed.status, DynamicToolCallStatus::Completed);
+        assert_eq!(completed.success, None);
+        assert_eq!(completed.error, None);
+        assert!(tool_call_item_text(completed).contains("candidates"));
+    }
+
+    fn tool_call_item_text(item: &DynamicToolCallItem) -> String {
+        item.content_items
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|ci| match ci {
+                codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                    text,
+                } => text.clone(),
+                _ => String::new(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn self_emitting_executor_gets_no_auto_tool_call_items() {
+        let handler = ExtensionToolAdapter::new(Arc::new(CapturingExtensionExecutor {
+            captured_call: Arc::new(Mutex::new(None)),
+            captured_sandbox_cwds: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let (result, rx) = invoke_adapter(&handler, "{}".to_string()).await;
+        result.expect("extension call should succeed");
+
+        assert_eq!(
+            drain_tool_call_items(&rx).len(),
+            0,
+            "manages_turn_items executors must not get auto tool-call items"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_json_arguments_fall_back_to_string() {
+        let handler = ExtensionToolAdapter::new(Arc::new(StubExtensionExecutor));
+        let (result, rx) = invoke_adapter(&handler, "not json".to_string()).await;
+        result.expect("extension call should succeed");
+
+        let items = drain_tool_call_items(&rx);
+        assert_eq!(items[0].1.arguments, json!("not json"));
+    }
+
+    #[test]
+    fn truncate_tool_output_caps_on_char_boundary() {
+        let long = "é".repeat(super::TOOL_CALL_ITEM_OUTPUT_CAP); // 2 bytes each
+        let out = super::truncate_tool_output(long);
+        assert!(out.len() <= super::TOOL_CALL_ITEM_OUTPUT_CAP + '…'.len_utf8());
+        assert!(out.ends_with('…'));
     }
 }

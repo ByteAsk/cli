@@ -68,7 +68,7 @@ fn inserts_bwrap_argv0_before_command_separator() {
     apply_inner_command_argv0_for_launcher(
         &mut argv,
         /*supports_argv0*/ true,
-        "/tmp/codex-arg0-session/codex-linux-sandbox".to_string(),
+        "/tmp/byteask-arg0-session/byteask-linux-sandbox".to_string(),
     );
     assert_eq!(
         argv,
@@ -89,7 +89,7 @@ fn inserts_bwrap_argv0_before_command_separator() {
             "--cap-drop".to_string(),
             "ALL".to_string(),
             "--argv0".to_string(),
-            "codex-linux-sandbox".to_string(),
+            "byteask-linux-sandbox".to_string(),
             "--".to_string(),
             "/bin/true".to_string(),
         ]
@@ -115,13 +115,13 @@ fn rewrites_inner_command_path_when_bwrap_lacks_argv0() {
     apply_inner_command_argv0_for_launcher(
         &mut argv,
         /*supports_argv0*/ false,
-        "/tmp/codex-arg0-session/codex-linux-sandbox".to_string(),
+        "/tmp/byteask-arg0-session/byteask-linux-sandbox".to_string(),
     );
 
     assert!(!argv.iter().any(|arg| arg == "--argv0"));
     assert!(
         argv.windows(2)
-            .any(|window| { window == ["--", "/tmp/codex-arg0-session/codex-linux-sandbox"] })
+            .any(|window| { window == ["--", "/tmp/byteask-arg0-session/byteask-linux-sandbox"] })
     );
 }
 

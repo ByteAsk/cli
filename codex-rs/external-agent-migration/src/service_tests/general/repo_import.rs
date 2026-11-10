@@ -152,7 +152,7 @@ async fn import_repo_agents_md_from_nested_cwd_rewrites_terms_and_skips_non_empt
     );
     assert_eq!(
         fs::read_to_string(repo_root.join("AGENTS.md")).expect("read target"),
-        "Codex\nCodex\nCodex\nSee AGENTS.md\n"
+        "ByteAsk\nCodex\nCodex\nSee AGENTS.md\n"
     );
     assert_eq!(
         fs::read_to_string(repo_with_existing_target.join("AGENTS.md"))
@@ -207,7 +207,7 @@ async fn import_repo_agents_md_overwrites_empty_targets() {
     );
     assert_eq!(
         fs::read_to_string(repo_root.join("AGENTS.md")).expect("read target"),
-        "Codex guidance"
+        "ByteAsk guidance"
     );
 }
 
@@ -682,7 +682,7 @@ async fn import_repo_uses_non_empty_external_agent_agents_source() {
 
     assert_eq!(
         fs::read_to_string(repo_root.join("AGENTS.md")).expect("read target"),
-        "Codex guidance"
+        "ByteAsk guidance"
     );
 }
 
@@ -715,7 +715,7 @@ async fn import_continues_after_failed_migration_item() {
 
     assert_eq!(
         fs::read_to_string(repo_root.join("AGENTS.md")).expect("read target"),
-        "Codex guidance"
+        "ByteAsk guidance"
     );
 }
 

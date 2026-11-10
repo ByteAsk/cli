@@ -731,6 +731,13 @@ pub struct Tui {
     #[serde(default = "default_true")]
     pub animations: bool,
 
+    /// Render ByteAsk's own surfaces as linear, announce-once text for a screen reader:
+    /// labelled plain lines instead of panes, static spinners, ASCII glyphs.
+    /// Defaults to `false`. The `--ax-screen-reader` flag and the
+    /// `BYTEASK_AX_SCREEN_READER` environment variable both take precedence over this.
+    #[serde(default)]
+    pub screen_reader: bool,
+
     /// Show startup tooltips in the TUI welcome screen.
     /// Defaults to `true`.
     #[serde(default = "default_true")]

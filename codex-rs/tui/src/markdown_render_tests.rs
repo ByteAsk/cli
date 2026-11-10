@@ -711,7 +711,7 @@ fn ordered_item_with_indented_continuation_is_tight() {
 #[test]
 fn inline_code() {
     let text = render_markdown_text("Example of `Inline code`");
-    let expected = Line::from_iter(["Example of ".into(), "Inline code".cyan()]).into();
+    let expected = Line::from_iter(["Example of ".into(), "Inline code".fg(crate::style::accent_color())]).into();
     assert_eq!(text, expected);
 }
 
@@ -753,9 +753,9 @@ fn strong_emphasis() {
 fn link() {
     let text = render_markdown_text("[Link](https://example.com)");
     let expected = Text::from(Line::from_iter([
-        "Link".cyan().underlined(),
+        "Link".fg(crate::style::accent_color()).underlined(),
         " (".into(),
-        "https://example.com".cyan().underlined(),
+        "https://example.com".fg(crate::style::accent_color()).underlined(),
         ")".into(),
     ]));
     assert_eq!(text, expected);
@@ -764,10 +764,10 @@ fn link() {
 #[test]
 fn web_link_labels_use_link_style_and_preserve_inline_formatting() {
     for (label, expected_label) in [
-        ("plain", "plain".cyan().underlined()),
-        ("`code`", "code".cyan().underlined()),
-        ("**bold**", "bold".cyan().bold().underlined()),
-        ("*italic*", "italic".cyan().italic().underlined()),
+        ("plain", "plain".fg(crate::style::accent_color()).underlined()),
+        ("`code`", "code".fg(crate::style::accent_color()).underlined()),
+        ("**bold**", "bold".fg(crate::style::accent_color()).bold().underlined()),
+        ("*italic*", "italic".fg(crate::style::accent_color()).italic().underlined()),
     ] {
         let text = render_markdown_text(&format!(
             "before [{label}](https://example.com) after `code`"
@@ -776,10 +776,10 @@ fn web_link_labels_use_link_style_and_preserve_inline_formatting() {
             "before ".into(),
             expected_label,
             " (".into(),
-            "https://example.com".cyan().underlined(),
+            "https://example.com".fg(crate::style::accent_color()).underlined(),
             ")".into(),
             " after ".into(),
-            "code".cyan(),
+            "code".fg(crate::style::accent_color()),
         ]));
         assert_eq!(text, expected, "label: {label}");
     }
@@ -805,9 +805,9 @@ fn web_link_labels_keep_link_style_in_wrapped_prose_and_tables() {
             assert_eq!(
                 labels,
                 vec![
-                    "plain".cyan().underlined(),
-                    "code".cyan().underlined(),
-                    "<b>".cyan().underlined()
+                    "plain".fg(crate::style::accent_color()).underlined(),
+                    "code".fg(crate::style::accent_color()).underlined(),
+                    "<b>".fg(crate::style::accent_color()).underlined()
                 ]
             );
         }
@@ -828,23 +828,23 @@ fn file_link_hides_destination() {
         "[/Users/example/code/codex/codex-rs/tui/src/My%20File.rs](/Users/example/code/codex/codex-rs/tui/src/My%20File.rs)",
         Path::new("/Users/example/code/codex"),
     );
-    let expected = Text::from(Line::from_iter(["codex-rs/tui/src/My File.rs".cyan()]));
+    let expected = Text::from(Line::from_iter(["codex-rs/tui/src/My File.rs".fg(crate::style::accent_color())]));
     assert_eq!(text, expected);
 }
 
 #[test]
 fn file_link_keeps_descriptive_label_and_target() {
     let text = render_markdown_text_for_cwd(
-        "Your `codex` launcher [automatically adds those overrides](/home/dev-user/code/openai/project/dotslash-gen/bin/codex:1105), even though you did not specify any.",
+        "Your `byteask` launcher [automatically adds those overrides](/home/dev-user/code/openai/project/dotslash-gen/bin/codex:1105), even though you did not specify any.",
         Path::new("/home/dev-user/code/openai"),
     );
     let expected = Text::from(Line::from_iter([
         "Your ".into(),
-        "codex".cyan(),
+        "byteask".fg(crate::style::accent_color()),
         " launcher ".into(),
         "automatically adds those overrides".into(),
         " (".into(),
-        "project/dotslash-gen/bin/codex:1105".cyan(),
+        "project/dotslash-gen/bin/codex:1105".fg(crate::style::accent_color()),
         ")".into(),
         ", even though you did not specify any.".into(),
     ]));
@@ -921,7 +921,7 @@ fn file_link_decodes_percent_encoded_bare_path_destination() {
     let expected = Text::from(Line::from_iter([
         "open Example Folder/Résumé/report.md".into(),
         " (".into(),
-        "Example Folder/Résumé/report.md".cyan(),
+        "Example Folder/Résumé/report.md".fg(crate::style::accent_color()),
         ")".into(),
     ]));
     assert_eq!(text, expected);
@@ -952,7 +952,7 @@ fn file_link_keeps_unrelated_relative_label_with_matching_suffix() {
     let expected = Text::from(Line::from_iter([
         "other/src/lib.rs".into(),
         " (".into(),
-        "src/lib.rs".cyan(),
+        "src/lib.rs".fg(crate::style::accent_color()),
         ")".into(),
     ]));
     assert_eq!(text, expected);
@@ -966,7 +966,7 @@ fn file_link_appends_line_number_when_label_lacks_it() {
         Path::new("/Users/example/code/codex"),
     );
     let expected = Text::from(Line::from_iter([
-        "codex-rs/tui/src/markdown_render.rs:74".cyan()
+        "codex-rs/tui/src/markdown_render.rs:74".fg(crate::style::accent_color())
     ]));
     assert_eq!(text, expected);
 }
@@ -978,7 +978,7 @@ fn file_link_keeps_absolute_paths_outside_cwd() {
         Path::new("/Users/example/code/codex/codex-rs/tui"),
     );
     let expected = Text::from(Line::from_iter([
-        "/Users/example/code/codex/README.md:74".cyan()
+        "/Users/example/code/codex/README.md:74".fg(crate::style::accent_color())
     ]));
     assert_eq!(text, expected);
 }
@@ -990,7 +990,7 @@ fn file_link_appends_hash_anchor_when_label_lacks_it() {
         Path::new("/Users/example/code/codex"),
     );
     let expected = Text::from(Line::from_iter([
-        "codex-rs/tui/src/markdown_render.rs:74:3".cyan(),
+        "codex-rs/tui/src/markdown_render.rs:74:3".fg(crate::style::accent_color()),
     ]));
     assert_eq!(text, expected);
 }
@@ -1002,7 +1002,7 @@ fn file_link_uses_target_path_for_hash_anchor() {
         Path::new("/Users/example/code/codex"),
     );
     let expected = Text::from(Line::from_iter([
-        "codex-rs/tui/src/markdown_render.rs:74:3".cyan(),
+        "codex-rs/tui/src/markdown_render.rs:74:3".fg(crate::style::accent_color()),
     ]));
     assert_eq!(text, expected);
 }
@@ -1014,7 +1014,7 @@ fn file_link_appends_range_when_label_lacks_it() {
         Path::new("/Users/example/code/codex"),
     );
     let expected = Text::from(Line::from_iter([
-        "codex-rs/tui/src/markdown_render.rs:74:3-76:9".cyan(),
+        "codex-rs/tui/src/markdown_render.rs:74:3-76:9".fg(crate::style::accent_color()),
     ]));
     assert_eq!(text, expected);
 }
@@ -1026,7 +1026,7 @@ fn file_link_uses_target_path_for_range() {
         Path::new("/Users/example/code/codex"),
     );
     let expected = Text::from(Line::from_iter([
-        "codex-rs/tui/src/markdown_render.rs:74:3-76:9".cyan(),
+        "codex-rs/tui/src/markdown_render.rs:74:3-76:9".fg(crate::style::accent_color()),
     ]));
     assert_eq!(text, expected);
 }
@@ -1038,7 +1038,7 @@ fn file_link_appends_hash_range_when_label_lacks_it() {
         Path::new("/Users/example/code/codex"),
     );
     let expected = Text::from(Line::from_iter([
-        "codex-rs/tui/src/markdown_render.rs:74:3-76:9".cyan(),
+        "codex-rs/tui/src/markdown_render.rs:74:3-76:9".fg(crate::style::accent_color()),
     ]));
     assert_eq!(text, expected);
 }
@@ -1056,7 +1056,7 @@ fn multiline_file_link_label_after_styled_prefix_does_not_panic() {
         " ".into(),
         "bar".into(),
         " (".into(),
-        "codex-rs/tui/src/markdown_render.rs:74:3".cyan(),
+        "codex-rs/tui/src/markdown_render.rs:74:3".fg(crate::style::accent_color()),
         ")".into(),
     ]));
     assert_eq!(text, expected);
@@ -1069,7 +1069,7 @@ fn file_link_uses_target_path_for_hash_range() {
         Path::new("/Users/example/code/codex"),
     );
     let expected = Text::from(Line::from_iter([
-        "codex-rs/tui/src/markdown_render.rs:74:3-76:9".cyan(),
+        "codex-rs/tui/src/markdown_render.rs:74:3-76:9".fg(crate::style::accent_color()),
     ]));
     assert_eq!(text, expected);
 }
@@ -1078,9 +1078,9 @@ fn file_link_uses_target_path_for_hash_range() {
 fn url_link_shows_destination() {
     let text = render_markdown_text("[docs](https://example.com/docs)");
     let expected = Text::from(Line::from_iter([
-        "docs".cyan().underlined(),
+        "docs".fg(crate::style::accent_color()).underlined(),
         " (".into(),
-        "https://example.com/docs".cyan().underlined(),
+        "https://example.com/docs".fg(crate::style::accent_color()).underlined(),
         ")".into(),
     ]));
     assert_eq!(text, expected);

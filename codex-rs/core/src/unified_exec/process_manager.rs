@@ -59,6 +59,9 @@ use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::spawn_exit_watcher;
 use crate::unified_exec::async_watcher::start_streaming_output;
 use crate::unified_exec::clamp_yield_time;
+use crate::unified_exec::empty_poll_floor_ms;
+use crate::unified_exec::exec_yield_time;
+use crate::unified_exec::wait_floor_note;
 use crate::unified_exec::generate_chunk_id;
 use crate::unified_exec::head_tail_buffer::HeadTailBuffer;
 use crate::unified_exec::process::OutputHandles;
@@ -99,7 +102,7 @@ const UNIFIED_EXEC_ENV: [(&str, &str); 10] = [
     ("CODEX_CI", "1"),
 ];
 const NETWORK_ACCESS_DENIED_MESSAGE: &str =
-    "Network access was denied by the Codex sandbox network proxy.";
+    "Network access was denied by the ByteAsk sandbox network proxy.";
 const LATE_NETWORK_DENIAL_GRACE_PERIOD: Duration = Duration::from_millis(100);
 const INTERRUPT: &str = "\u{3}";
 
@@ -590,7 +593,23 @@ impl UnifiedExecProcessManager {
             }
         };
 
-        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
+        // ByteAsk: without a TTY the first wait has a floor (it still ends when the
+        // command exits); remember whether the floor, not the model, set the wait.
+        let mut yield_time_ms = exec_yield_time(request.yield_time_ms, request.tty);
+        let mut floor_raised_wait =
+            completion.is_none() && yield_time_ms > clamp_yield_time(request.yield_time_ms);
+        // ByteAsk: a floor-raised wait ends as soon as the user sends a message (and is not
+        // raised at all when a message is already waiting).
+        let mut input_rx = None;
+        if floor_raised_wait {
+            match Self::user_input_activity(context).await {
+                Some(rx) => input_rx = Some(rx),
+                None => {
+                    yield_time_ms = clamp_yield_time(request.yield_time_ms);
+                    floor_raised_wait = false;
+                }
+            }
+        }
         // For the initial exec_command call, we both stream output to events
         // (via start_streaming_output above) and collect a snapshot here for
         // the tool response body.
@@ -601,12 +620,17 @@ impl UnifiedExecProcessManager {
         let deadline = start
             .checked_add(wait)
             .ok_or_else(|| UnifiedExecError::process_failed("timeout_ms is too large".into()))?;
-        let collected_output = Self::collect_output_until_deadline(
+        let (collected_output, woke_by_input) = Self::collect_output_until_deadline_or_input(
             process.output_handles(),
             Some(context.session.subscribe_elicitation_pause_state()),
             deadline,
+            input_rx.as_mut(),
         )
         .await;
+        if woke_by_input {
+            // the user's message ended the wait: no "waited at least" note
+            floor_raised_wait = false;
+        }
         if let Some(completion) = completion.as_mut()
             && !process.has_exited()
         {
@@ -623,9 +647,16 @@ impl UnifiedExecProcessManager {
         ))
         .unwrap_or(usize::MAX);
         let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
+        let mut collected_output = collected_output;
+        let byteask_tee = collected_output.take_tee();
         let collected = collected_output.to_bytes_with_omission_marker();
         let text = String::from_utf8_lossy(&collected).to_string();
         let chunk_id = generate_chunk_id();
+        // ByteAsk: publish the complete original under the id the serializer will look up
+        // (`<call_id>_<chunk_id>`), BEFORE any footer can name it.
+        if let Some(tee) = byteask_tee {
+            let _ = tee.adopt(&format!("{}_{chunk_id}", context.call_id));
+        }
         if deferred_network_approval
             .as_ref()
             .is_some_and(DeferredNetworkApproval::is_cancelled)
@@ -796,6 +827,8 @@ impl UnifiedExecProcessManager {
             original_token_count: Some(original_token_count),
             output_omitted_bytes,
             hook_command: Some(request.hook_command.clone()),
+            wait_note: (floor_raised_wait && response_process_id.is_some())
+                .then(|| wait_floor_note(wall_time)),
         };
 
         Ok(response)
@@ -931,20 +964,48 @@ impl UnifiedExecProcessManager {
             }
         }
 
-        let yield_time_ms = {
+        let (mut yield_time_ms, mut floor_raised_wait) = {
             // Empty polls use configurable background timeout bounds. Non-empty
             // writes keep a fixed max cap so interactive stdin remains responsive.
             let time_ms = request.yield_time_ms.max(MIN_YIELD_TIME_MS);
             if request.input.is_empty() {
-                time_ms.clamp(MIN_EMPTY_YIELD_TIME_MS, self.max_write_stdin_yield_time_ms)
+                // ByteAsk: a session without a TTY cannot take input, so its empty
+                // polls wait at least `empty_poll_floor_ms` (still ending at exit).
+                let max = self.max_write_stdin_yield_time_ms;
+                let upstream = time_ms.clamp(MIN_EMPTY_YIELD_TIME_MS, max);
+                let floored = time_ms.clamp(empty_poll_floor_ms(tty).min(max), max);
+                (floored, floored > upstream)
             } else {
-                time_ms.min(MAX_YIELD_TIME_MS)
+                (time_ms.min(MAX_YIELD_TIME_MS), false)
             }
         };
+        // ByteAsk: a floor-raised poll ends as soon as the user sends a message (and keeps
+        // upstream's length when a message is already waiting).
+        let mut input_rx = None;
+        if floor_raised_wait {
+            match Self::user_input_activity(context).await {
+                Some(rx) => input_rx = Some(rx),
+                None => {
+                    yield_time_ms = request
+                        .yield_time_ms
+                        .max(MIN_YIELD_TIME_MS)
+                        .clamp(MIN_EMPTY_YIELD_TIME_MS, self.max_write_stdin_yield_time_ms);
+                    floor_raised_wait = false;
+                }
+            }
+        }
         let start = Instant::now();
         let deadline = start + Duration::from_millis(yield_time_ms);
-        let collected_output =
-            Self::collect_output_until_deadline(&output, pause_state, deadline).await;
+        let (collected_output, woke_by_input) = Self::collect_output_until_deadline_or_input(
+            &output,
+            pause_state,
+            deadline,
+            input_rx.as_mut(),
+        )
+        .await;
+        if woke_by_input {
+            floor_raised_wait = false;
+        }
         let wall_time = Instant::now().saturating_duration_since(start);
 
         let original_token_count = usize::try_from(approx_tokens_from_byte_count(
@@ -952,6 +1013,8 @@ impl UnifiedExecProcessManager {
         ))
         .unwrap_or(usize::MAX);
         let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
+        let mut collected_output = collected_output;
+        let byteask_tee = collected_output.take_tee();
         let collected = collected_output.to_bytes_with_omission_marker();
         let chunk_id = generate_chunk_id();
         if network_approval
@@ -1012,6 +1075,9 @@ impl UnifiedExecProcessManager {
             }
         };
 
+        if let Some(tee) = byteask_tee {
+            let _ = tee.adopt(&format!("{event_call_id}_{chunk_id}"));
+        }
         let response = ExecCommandToolOutput {
             event_call_id,
             chunk_id,
@@ -1024,6 +1090,7 @@ impl UnifiedExecProcessManager {
             original_token_count: Some(original_token_count),
             output_omitted_bytes,
             hook_command: Some(hook_command),
+            wait_note: (floor_raised_wait && process_id.is_some()).then(|| wait_floor_note(wall_time)),
         };
 
         let should_emit_interaction = !request.input.is_empty() || response.process_id.is_some();
@@ -1455,12 +1522,60 @@ impl UnifiedExecProcessManager {
             })
     }
 
+    #[cfg(test)]
     pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
+        output: &OutputHandles<MAX_BYTES>,
+        pause_state: Option<watch::Receiver<bool>>,
+        deadline: Instant,
+    ) -> HeadTailBuffer<MAX_BYTES> {
+        Self::collect_output_until_deadline_or_input(output, pause_state, deadline, None)
+            .await
+            .0
+    }
+
+    /// ByteAsk: the input-activity receiver for a floor-raised wait, or `None` when the user's
+    /// input is already waiting (then the caller keeps upstream's shorter wait).
+    async fn user_input_activity(
+        context: &UnifiedExecContext,
+    ) -> Option<watch::Receiver<crate::session::InputQueueActivity>> {
+        let session = &context.session;
+        let turn_state = session
+            .input_queue
+            .turn_state_for_sub_id(&session.active_turn, &context.step_context.turn.sub_id)
+            .await;
+        let (rx, pending) = session
+            .input_queue
+            .subscribe_activity(turn_state.as_deref())
+            .await;
+        pending.is_none().then_some(rx)
+    }
+
+    /// Resolves when `rx` sees new input activity; never resolves without a receiver (or when
+    /// its sender is gone).
+    async fn input_arrived(
+        rx: Option<&mut watch::Receiver<crate::session::InputQueueActivity>>,
+    ) {
+        if let Some(rx) = rx
+            && rx.changed().await.is_ok()
+        {
+            return;
+        }
+        std::future::pending::<()>().await
+    }
+
+    /// [`Self::collect_output_until_deadline`] that also ends when `input_rx` sees the user's
+    /// input (ByteAsk: a wait floor never makes a message wait behind a running command).
+    /// The flag is true when the input ended the wait.
+    pub(super) async fn collect_output_until_deadline_or_input<const MAX_BYTES: usize>(
         output: &OutputHandles<MAX_BYTES>,
         mut pause_state: Option<watch::Receiver<bool>>,
         mut deadline: Instant,
-    ) -> HeadTailBuffer<MAX_BYTES> {
+        mut input_rx: Option<
+            &mut watch::Receiver<crate::session::InputQueueActivity>,
+        >,
+    ) -> (HeadTailBuffer<MAX_BYTES>, bool) {
         const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_millis(50);
+        let mut woke_by_input = false;
 
         let OutputHandles {
             output_buffer,
@@ -1533,6 +1648,10 @@ impl UnifiedExecProcessManager {
                     _ = &mut exit_notified => exit_signal_received = true,
                     _ = tokio::time::sleep(remaining) => break,
                     _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+                    _ = Self::input_arrived(input_rx.as_deref_mut()) => {
+                        woke_by_input = true;
+                        break;
+                    }
                 }
                 continue;
             }
@@ -1545,7 +1664,7 @@ impl UnifiedExecProcessManager {
             }
         }
 
-        collected
+        (collected, woke_by_input)
     }
 
     async fn extend_deadlines_while_paused(

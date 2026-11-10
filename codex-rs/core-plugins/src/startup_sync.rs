@@ -32,6 +32,10 @@ const CURATED_PLUGINS_FETCH_REF: &str = "refs/codex/curated-sync";
 const CURATED_PLUGINS_RELATIVE_DIR: &str = ".tmp/plugins";
 const CURATED_PLUGINS_SHA_FILE: &str = ".tmp/plugins.sha";
 const CURATED_PLUGINS_SYNC_LOCK_FILE: &str = ".tmp/plugins.sync.lock";
+/// Staging dir for a fresh clone/extract before it is activated.
+const CURATED_PLUGINS_CLONE_PREFIX: &str = "plugins-clone-";
+/// Previous repo moved aside during activation; kept on disk if a rollback fails.
+const CURATED_PLUGINS_BACKUP_PREFIX: &str = "plugins-backup-";
 const CURATED_PLUGINS_BACKUP_ARCHIVE_FALLBACK_VERSION: &str = "export-backup";
 const CURATED_PLUGINS_GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const CURATED_PLUGINS_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -370,6 +374,58 @@ pub fn has_local_curated_plugins_snapshot(codex_home: &Path) -> bool {
         && codex_home.join(CURATED_PLUGINS_SHA_FILE).is_file()
 }
 
+/// ByteAsk: with the plugins feature off, remove everything the plugin machinery auto-created
+/// in this home.
+///
+/// - Under `.tmp`: the curated clone, its sha and lock files, and every temp dir the sync
+///   creates (`CURATED_PLUGINS_CLONE_PREFIX`, `CURATED_PLUGINS_BACKUP_PREFIX`,
+///   `TRUSTED_GIT_REPOSITORY_PREFIX`) -- the same constants the creators use.
+/// - Under `plugins/cache`: the remote marketplace caches. They mirror the account's
+///   server-side install list (rebuilt and pruned by the remote installed-plugin sync, which
+///   only runs with plugins enabled); nothing on disk proves a local user install.
+///
+/// Kept: local marketplace plugins (including the configured-curated `openai-curated` cache)
+/// and user-added marketplaces under `.tmp/marketplaces`. Does nothing while another process
+/// holds the sync lock, e.g. a session started with `features.plugins = true`.
+pub fn remove_curated_marketplace_sync_artifacts(codex_home: &Path) {
+    let lock_path = codex_home.join(CURATED_PLUGINS_SYNC_LOCK_FILE);
+    let _lock = match File::options().write(true).open(&lock_path) {
+        Ok(file) => match file.try_lock() {
+            Ok(()) => Some(file),
+            Err(_) => return,
+        },
+        Err(_) => None,
+    };
+    let tmp = codex_home.join(".tmp");
+    if tmp.is_dir() {
+        let _ = std::fs::remove_dir_all(codex_home.join(CURATED_PLUGINS_RELATIVE_DIR));
+        let _ = std::fs::remove_file(codex_home.join(CURATED_PLUGINS_SHA_FILE));
+        if let Ok(entries) = std::fs::read_dir(&tmp) {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name();
+                let Some(name) = file_name.to_str() else {
+                    continue;
+                };
+                let sync_temp_dir = [
+                    CURATED_PLUGINS_CLONE_PREFIX,
+                    CURATED_PLUGINS_BACKUP_PREFIX,
+                    crate::git_policy::TRUSTED_GIT_REPOSITORY_PREFIX,
+                ]
+                .iter()
+                .any(|prefix| name.starts_with(prefix));
+                if sync_temp_dir && entry.path().is_dir() {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+    }
+    let plugin_cache = codex_home.join(crate::store::PLUGINS_CACHE_DIR);
+    for marketplace in crate::remote::REMOTE_MARKETPLACE_NAMES {
+        let _ = std::fs::remove_dir_all(plugin_cache.join(marketplace));
+    }
+    let _ = std::fs::remove_file(&lock_path);
+}
+
 fn prepare_curated_repo_parent_and_temp_dir(repo_path: &Path) -> Result<TempDir, String> {
     let Some(parent) = repo_path.parent() else {
         return Err(format!(
@@ -386,7 +442,7 @@ fn prepare_curated_repo_parent_and_temp_dir(repo_path: &Path) -> Result<TempDir,
     remove_stale_curated_repo_temp_dirs(parent, CURATED_PLUGINS_STALE_TEMP_DIR_MAX_AGE);
 
     let clone_dir = tempfile::Builder::new()
-        .prefix("plugins-clone-")
+        .prefix(CURATED_PLUGINS_CLONE_PREFIX)
         .tempdir_in(parent)
         .map_err(|err| {
             format!(
@@ -530,7 +586,7 @@ fn activate_curated_repo(repo_path: &Path, staged_repo_dir: TempDir) -> Result<(
             )
         })?;
         let backup_dir = tempfile::Builder::new()
-            .prefix("plugins-backup-")
+            .prefix(CURATED_PLUGINS_BACKUP_PREFIX)
             .tempdir_in(parent)
             .map_err(|err| {
                 format!(

@@ -56,8 +56,13 @@ const SYSTEM_SKILLS_DIR: Dir = include_dir::include_dir!("$CARGO_MANIFEST_DIR/sr
 
 const SYSTEM_SKILLS_DIR_NAME: &str = ".system";
 const SKILLS_DIR_NAME: &str = "skills";
-const SYSTEM_SKILLS_MARKER_FILENAME: &str = ".codex-system-skills.marker";
-const SYSTEM_SKILLS_MARKER_SALT: &str = "v1";
+// ByteAsk-named. An existing home still holding the old marker simply fails the
+// fingerprint check once, and the reinstall below clears the directory, old marker included.
+const SYSTEM_SKILLS_MARKER_FILENAME: &str = ".byteask-system-skills.marker";
+// v2: ByteAsk renamed the codex-named skill files. v3: remaining skill prose and paths
+// rebranded. The content fingerprint already changes with each; the salt bump makes the
+// refresh explicit for existing homes.
+const SYSTEM_SKILLS_MARKER_SALT: &str = "v3";
 
 /// Returns the on-disk cache location for embedded system skills from an absolute CODEX_HOME.
 pub fn system_cache_root_dir(codex_home: &AbsolutePathBuf) -> AbsolutePathBuf {

@@ -318,7 +318,7 @@ pub(super) fn wait_until_capture_is_ready(path: &Path) -> Result<()> {
         }
         if Instant::now() >= deadline {
             bail!(
-                "analytics capture did not become ready at {}; use a debug Codex binary",
+                "analytics capture did not become ready at {}; use a debug ByteAsk binary",
                 path.display()
             );
         }

@@ -149,6 +149,7 @@ impl SkillPopup {
                     display_shortcut: None,
                     description,
                     category_tag: None,
+                    right_tag: None,
                     is_disabled: false,
                     disabled_reason: None,
                     wrap_indent: None,

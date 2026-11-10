@@ -357,6 +357,9 @@ pub struct ExecCommandToolOutput {
     /// Bytes omitted by the output collection cap before model-facing truncation.
     pub output_omitted_bytes: Option<NonZeroUsize>,
     pub hook_command: Option<String>,
+    /// ByteAsk: set when a wait floor, not the model's `yield_time_ms`, decided how long
+    /// this call waited on a still-running command. Shown after the session line.
+    pub wait_note: Option<String>,
 }
 
 impl ToolOutput for ExecCommandToolOutput {
@@ -460,6 +463,11 @@ impl ExecCommandToolOutput {
 
     fn truncated_output_with_policy(&self, policy: TruncationPolicy) -> String {
         let text = String::from_utf8_lossy(&self.raw_output).to_string();
+        self.truncated_text_with_policy(&text, policy)
+    }
+
+    fn truncated_text_with_policy(&self, text: &str, policy: TruncationPolicy) -> String {
+        let text = text.to_string();
         let Some(omitted_bytes) = self.output_omitted_bytes else {
             return formatted_truncate_text(&text, policy);
         };
@@ -488,6 +496,9 @@ impl ExecCommandToolOutput {
     }
 
     fn response_header(&self) -> String {
+        if byteask_output_reducers::policy::active().flag("compact_header") {
+            return self.byteask_compact_header();
+        }
         let mut sections = Vec::new();
 
         if !self.chunk_id.is_empty() {
@@ -505,6 +516,10 @@ impl ExecCommandToolOutput {
             sections.push(format!("Process running with session ID {process_id}"));
         }
 
+        if let Some(note) = &self.wait_note {
+            sections.push(note.clone());
+        }
+
         if let Some(original_token_count) = self.original_token_count {
             sections.push(format!("Original token count: {original_token_count}"));
         }
@@ -513,13 +528,149 @@ impl ExecCommandToolOutput {
         sections.join("\n")
     }
 
+    /// `[exit 0 | 1.2s]`, the session id only while the process is still running (the
+    /// model needs it for `write_stdin`), the token count only when something was cut.
+    /// Drops `Chunk ID` (an id no tool accepts back) and sub-second precision: a removal,
+    /// so class N and off until the policy turns it on.
+    pub(crate) fn byteask_compact_header(&self) -> String {
+        let secs = self.wall_time.as_secs_f64();
+        let mut first = match self.exit_code {
+            Some(code) => format!("[exit {code} | {secs:.1}s]"),
+            None => format!("[running | {secs:.1}s]"),
+        };
+        if let Some(process_id) = &self.process_id {
+            first.push_str(&format!("\nProcess running with session ID {process_id}"));
+        }
+        if let Some(note) = &self.wait_note {
+            first.push('\n');
+            first.push_str(note);
+        }
+        if let Some(count) = self.original_token_count
+            && (self.output_omitted_bytes.is_some()
+                || count > self.model_output_policy().token_budget())
+        {
+            first.push_str(&format!("\nOriginal token count: {count}"));
+        }
+        first
+    }
+
+    /// ByteAsk token efficiency: shrink what the model READS at
+    /// the moment it enters the conversation. Only this model-facing text is affected;
+    /// hooks, telemetry and the UI keep the raw output. Returns the text to truncate, the
+    /// budget to truncate it to, and the footer to append (empty when nothing happened).
+    fn byteask_reduce(&self, upstream: TruncationPolicy) -> (String, TruncationPolicy, String) {
+        self.byteask_reduce_with(upstream, &byteask_output_reducers::policy::active())
+    }
+
+    pub(crate) fn byteask_reduce_with(
+        &self,
+        upstream: TruncationPolicy,
+        eff: &byteask_output_reducers::Policy,
+    ) -> (String, TruncationPolicy, String) {
+        let raw = String::from_utf8_lossy(&self.raw_output).to_string();
+        // `path:line:text` must really start with a path before it may be regrouped. An
+        // absolute path is checked on disk; a relative one only structurally, because the
+        // command's working directory is not known here. The family match (a search
+        // command run with line numbers) is what makes that enough: without a file name
+        // the first field is a number and the parse refuses.
+        let path_exists = |p: &str| {
+            let path = std::path::Path::new(p);
+            if path.is_absolute() {
+                path.exists()
+            } else {
+                !p.contains("://") && !p.contains(char::is_whitespace)
+            }
+        };
+        let ctx = byteask_output_reducers::Ctx {
+            command: self.hook_command.as_deref(),
+            path_exists: Some(&path_exists),
+        };
+        let reduced = byteask_output_reducers::reduce(&raw, &ctx, eff);
+
+        // A lower budget than upstream's is allowed ONLY when the original was spilled.
+        let wanted = eff
+            .budget_for(reduced.family)
+            .map(TruncationPolicy::Tokens)
+            .filter(|p| p.byte_budget() < upstream.byte_budget())
+            .filter(|p| reduced.text.len() > p.byte_budget());
+        let collection_cut = self.output_omitted_bytes.is_some();
+        if !reduced.changed() && wanted.is_none() && !collection_cut {
+            return (raw, upstream, String::new());
+        }
+        let spill_id = format!("{}_{}", self.event_call_id, self.chunk_id);
+        let spilled = byteask_output_reducers::spill::write(&spill_id, &self.raw_output);
+        // Content was removed by a reducer: without the original on disk, undo it.
+        let (text, fired) = if reduced.lossy && spilled.is_none() {
+            let safe = byteask_output_reducers::reduce_terminal(&raw, eff.ansi, eff.cr);
+            (safe.text, safe.fired)
+        } else {
+            (reduced.text, reduced.fired)
+        };
+        let policy = match (&spilled, wanted) {
+            (Some(_), Some(p)) => p,
+            _ => upstream,
+        };
+        let mut notes = fired.join(" ");
+        if policy.byte_budget() < upstream.byte_budget() {
+            if !notes.is_empty() {
+                notes.push(' ');
+            }
+            notes.push_str("trimmed");
+        }
+        if notes.is_empty() {
+            // Nothing of ours happened. Still point at the complete original when the
+            // 1 MiB collector dropped the middle and a tee kept it.
+            return match spilled {
+                Some(path) if collection_cut && path.to_string_lossy().ends_with(".full.txt") => {
+                    let footer = self.byteask_footer("complete output kept", &spill_id, &path, eff);
+                    (raw, upstream, footer)
+                }
+                _ => (raw, upstream, String::new()),
+            };
+        }
+        let footer = match spilled {
+            Some(path) => self.byteask_footer(&notes, &spill_id, &path, eff),
+            None => format!("\n[byteask: {notes}; original not retained]"),
+        };
+        (text, policy, footer)
+    }
+
+    fn byteask_footer(
+        &self,
+        notes: &str,
+        spill_id: &str,
+        path: &std::path::Path,
+        eff: &byteask_output_reducers::Policy,
+    ) -> String {
+        let bytes = std::fs::metadata(path)
+            .map(|m| m.len())
+            .unwrap_or(self.raw_output.len() as u64);
+        let lines = String::from_utf8_lossy(&self.raw_output).lines().count();
+        let approx = if self.output_omitted_bytes.is_some() { "more than " } else { "" };
+        if eff.flag("native_read") {
+            // A handle, not a path: fewer tokens, and the home directory stays local.
+            format!(
+                "\n[byteask: {notes}; full output ({approx}{lines} lines, {bytes} bytes) is spill:{spill_id}; read a range with read_file or search it with search, do not re-run the command]"
+            )
+        } else {
+            format!(
+                "\n[byteask: {notes}; full output ({approx}{lines} lines, {bytes} bytes) saved at {}; read a part of it with sed -n 'A,Bp' or search it with rg, do not re-run the command]",
+                path.display()
+            )
+        }
+    }
+
     fn response_text(&self) -> String {
         let header = self.response_header();
+        let upstream_policy = self.model_output_policy();
+        let (text, reduced_policy, footer) = self.byteask_reduce(upstream_policy);
+        // The footer is written INSIDE the budget, so no later pass can cut it off.
         let output_budget = (self.truncation_policy * 1.2)
             .byte_budget()
-            .saturating_sub(header.len().saturating_add(/*rhs*/ 1));
-        let mut policy = self.model_output_policy();
-        let mut output = self.truncated_output_with_policy(policy);
+            .saturating_sub(header.len().saturating_add(/*rhs*/ 1))
+            .saturating_sub(footer.len());
+        let mut policy = reduced_policy;
+        let mut output = self.truncated_text_with_policy(&text, policy);
 
         // History applies this same serialization budget to the complete response.
         // Reserve room for metadata, warning headers, and the truncation marker so
@@ -534,10 +685,10 @@ impl ExecCommandToolOutput {
                     tokens.saturating_sub(TruncationPolicy::Bytes(excess_bytes).token_budget()),
                 ),
             };
-            output = self.truncated_output_with_policy(policy);
+            output = self.truncated_text_with_policy(&text, policy);
         }
 
-        format!("{header}\n{output}")
+        format!("{header}\n{output}{footer}")
     }
 }
 

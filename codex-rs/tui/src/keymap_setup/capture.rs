@@ -71,7 +71,7 @@ impl KeymapCaptureView {
                 "  ".into(),
                 format!("{}.{}", self.context, self.action).dim(),
             ]),
-            Line::from(vec!["Current: ".dim(), self.current_binding.clone().cyan()]),
+            Line::from(vec!["Current: ".dim(), self.current_binding.clone().fg(crate::style::accent_color())]),
         ];
 
         let instructions = match (self.capture_mode, self.first_stroke.as_deref()) {

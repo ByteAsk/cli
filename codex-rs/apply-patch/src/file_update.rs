@@ -58,8 +58,13 @@ pub(crate) async fn derive_new_contents_from_chunks(
                 original_lines.pop();
             }
 
-            let replacements =
-                compute_replacements(&original_lines, &path_text, chunks, update_file_mode)?;
+            let replacements = compute_replacements(
+                &original_lines,
+                &path_text,
+                chunks,
+                update_file_mode,
+                /*strict*/ false,
+            )?;
             let mut new_lines = apply_replacements(original_lines, &replacements);
             if !new_lines.last().is_some_and(String::is_empty) {
                 new_lines.push(String::new());
@@ -69,8 +74,13 @@ pub(crate) async fn derive_new_contents_from_chunks(
         ApplyPatchFileUpdateMode::PreserveLineEndings => {
             let mut source_file = SourceFile::parse(&original_contents);
             let original_lines = source_file.line_texts();
-            let replacements =
-                compute_replacements(&original_lines, &path_text, chunks, update_file_mode)?;
+            let replacements = compute_replacements(
+                &original_lines,
+                &path_text,
+                chunks,
+                update_file_mode,
+                /*strict*/ false,
+            )?;
             source_file.apply_replacements(&replacements);
             source_file.into_contents()
         }
@@ -84,11 +94,17 @@ pub(crate) async fn derive_new_contents_from_chunks(
 /// Compute a list of replacements needed to transform `original_lines` into the
 /// new lines, given the patch `chunks`. Each replacement is returned as
 /// `(start_index, old_len, new_lines)`.
+///
+/// `strict` (ByteAsk) refuses a chunk whose position is a guess: a chunk without any
+/// line to match (it would be appended at the end of the file whatever its `@@` line says),
+/// and a chunk without an `@@` line whose lines occur more than once from where the search
+/// starts (only the first occurrence would be changed).
 fn compute_replacements(
     original_lines: &[String],
     path: &str,
     chunks: &[UpdateFileChunk],
     update_file_mode: ApplyPatchFileUpdateMode,
+    strict: bool,
 ) -> std::result::Result<Vec<Replacement>, ApplyPatchError> {
     let mut replacements: Vec<Replacement> = Vec::new();
     let mut line_index: usize = 0;
@@ -113,6 +129,9 @@ fn compute_replacements(
         }
 
         if chunk.old_lines.is_empty() {
+            if strict && !chunk.is_end_of_file && has_content(original_lines) {
+                return Err(unanchored_chunk(path));
+            }
             // Preserve the legacy split representation's handling of a final
             // empty line. `SourceFile` only exposes real source lines, so its
             // insertion point is always after the final line.
@@ -169,6 +188,26 @@ fn compute_replacements(
             );
         }
 
+        if strict && pattern.is_empty() && has_content(original_lines) && !chunk.is_end_of_file {
+            return Err(unanchored_chunk(path));
+        }
+        if let Some(start_idx) = found
+            && strict
+            && chunk.change_context.is_none()
+            && !chunk.is_end_of_file
+            && let Some(other) =
+                seek_sequence::next_match_as_strict(original_lines, pattern, start_idx)
+        {
+            return Err(ApplyPatchError::ComputeReplacements(format!(
+                "Ambiguous hunk for {path}: the lines it changes occur more than once (at line {} \
+                 and line {}), so the patch could change the wrong one. Add more unchanged \
+                 context lines, or an `@@` line naming the enclosing function or class, so the \
+                 hunk matches exactly one place. Nothing was changed.",
+                start_idx + 1,
+                other + 1,
+            )));
+        }
+
         if let Some(start_idx) = found {
             match update_file_mode {
                 ApplyPatchFileUpdateMode::NormalizeToLf => {
@@ -218,6 +257,67 @@ fn compute_replacements(
     replacements.sort_by_key(|(index, _, _)| *index);
 
     Ok(replacements)
+}
+
+fn has_content(lines: &[String]) -> bool {
+    lines.iter().any(|line| !line.trim().is_empty())
+}
+
+fn unanchored_chunk(path: &str) -> ApplyPatchError {
+    ApplyPatchError::ComputeReplacements(format!(
+        "Ambiguous hunk for {path}: it has no unchanged context lines and no lines to remove, \
+         so it could only be appended at the end of the file. Include the unchanged line(s) \
+         around the insertion point (or end the hunk with `*** End of File` when appending at \
+         the end is intended). Nothing was changed."
+    ))
+}
+
+/// ByteAsk: check, before anything is written, that every update chunk of the file at
+/// `path` matches exactly one place (see `strict` on [`compute_replacements`]).
+pub(crate) async fn check_chunks_unambiguous(
+    path: &PathUri,
+    chunks: &[UpdateFileChunk],
+    update_file_mode: ApplyPatchFileUpdateMode,
+    fs: &dyn ExecutorFileSystem,
+    sandbox: Option<&FileSystemSandboxContext>,
+) -> std::result::Result<(), ApplyPatchError> {
+    // A file that cannot be read is reported by the normal verification.
+    let Ok(original_contents) = fs
+        .read_file_text(
+            path,
+            ReadFileOptions {
+                follow_symlinks: true,
+            },
+            sandbox,
+        )
+        .await
+    else {
+        return Ok(());
+    };
+    let path_text = path.inferred_native_path_string();
+    let original_lines = match update_file_mode {
+        ApplyPatchFileUpdateMode::NormalizeToLf => {
+            let mut lines = original_contents
+                .split('\n')
+                .map(String::from)
+                .collect::<Vec<_>>();
+            if lines.last().is_some_and(String::is_empty) {
+                lines.pop();
+            }
+            lines
+        }
+        ApplyPatchFileUpdateMode::PreserveLineEndings => {
+            SourceFile::parse(&original_contents).line_texts()
+        }
+    };
+    compute_replacements(
+        &original_lines,
+        &path_text,
+        chunks,
+        update_file_mode,
+        /*strict*/ true,
+    )
+    .map(|_| ())
 }
 
 /// Apply the `(start_index, old_len, new_lines)` replacements to `original_lines`,

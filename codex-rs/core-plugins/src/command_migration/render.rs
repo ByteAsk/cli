@@ -4,10 +4,10 @@ pub(super) fn rewrite_terms(content: &str, profile: RewriteProfile) -> String {
     let mut rewritten =
         replace_case_insensitive_with_boundaries(content, profile.doc_file_name, "AGENTS.md");
     for from in profile.term_variants {
-        rewritten = replace_case_insensitive_with_boundaries(&rewritten, from, "Codex");
+        rewritten = replace_case_insensitive_with_boundaries(&rewritten, from, "ByteAsk");
     }
     for from in profile.case_sensitive_term_variants {
-        rewritten = replace_with_boundaries(&rewritten, from, "Codex");
+        rewritten = replace_with_boundaries(&rewritten, from, "ByteAsk");
     }
     rewritten
 }

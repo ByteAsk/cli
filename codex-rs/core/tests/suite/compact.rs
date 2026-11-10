@@ -1,5 +1,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
+use codex_core::CodexThread;
 use codex_core::TurnInputRequest;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
@@ -101,6 +102,25 @@ const OLD_GLOBAL_INSTRUCTIONS: &str = "old global instructions";
 const REMOTE_V2_SUMMARY: &str = "global-instructions-remote-v2-summary";
 
 pub(super) const COMPACT_WARNING_MESSAGE: &str = "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.";
+
+/// Wait for a compaction turn to finish, failing if the long-thread warning fires.
+///
+/// ByteAsk only warns once compaction has actually repeated in a thread; the first
+/// compaction is routine and used to raise a false alarm on every thread.
+pub(super) async fn expect_turn_complete_without_compact_warning(codex: &CodexThread) {
+    let event = wait_for_event(codex, |ev| {
+        matches!(ev, EventMsg::TurnComplete(_))
+            || matches!(
+                ev,
+                EventMsg::Warning(WarningEvent { message }) if message == COMPACT_WARNING_MESSAGE
+            )
+    })
+    .await;
+    assert!(
+        matches!(event, EventMsg::TurnComplete(_)),
+        "the first compaction must not warn, got {event:?}"
+    );
+}
 
 fn ev_exec_command_call(call_id: &str, command: &str) -> serde_json::Value {
     ev_function_call(
@@ -573,12 +593,7 @@ async fn summarize_context_three_requests_and_instructions(
 
     // 2) Summarize – second hit should include the summarization prompt.
     codex.submit(Op::Compact).await?;
-    let warning_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
-    let EventMsg::Warning(WarningEvent { message }) = warning_event else {
-        panic!("expected warning event after compact");
-    };
-    assert_eq!(message, COMPACT_WARNING_MESSAGE);
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    expect_turn_complete_without_compact_warning(&codex).await;
 
     // 3) Next user input – third hit; history should include only the summary.
     codex
@@ -818,8 +833,7 @@ async fn manual_pre_compact_block_decision_does_not_block_compaction() {
     })
     .await;
     assert_eq!(completed.run.status, HookRunStatus::Failed);
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    expect_turn_complete_without_compact_warning(&codex).await;
 
     let requests = request_log.requests();
     assert_eq!(
@@ -874,8 +888,7 @@ async fn compact_hooks_respect_matchers_and_post_runs_after_compaction() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     codex.submit(Op::Compact).await.expect("trigger compact");
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    expect_turn_complete_without_compact_warning(&codex).await;
 
     assert_eq!(request_log.requests().len(), 2);
     assert!(
@@ -898,6 +911,66 @@ async fn compact_hooks_respect_matchers_and_post_runs_after_compaction() {
     assert!(input.get("reason").is_none());
     assert!(input.get("phase").is_none());
     assert!(input.get("implementation").is_none());
+}
+
+/// ByteAsk: "Long threads and multiple compactions…" is only true once compaction
+/// has repeated. The first compaction stays silent; the second one warns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compact_warning_fires_only_from_the_second_compaction() {
+    skip_if_no_network!();
+
+    let server = start_mock_server().await;
+    let turn = |id: &str| {
+        sse(vec![
+            ev_assistant_message(&format!("m-{id}"), FIRST_REPLY),
+            ev_completed_with_tokens(&format!("r-{id}"), /*total_tokens*/ 80),
+        ])
+    };
+    let compaction = |id: &str| {
+        sse(vec![
+            ev_assistant_message(&format!("m-{id}"), SUMMARY_TEXT),
+            ev_completed_with_tokens(&format!("r-{id}"), /*total_tokens*/ 100),
+        ])
+    };
+    mount_sse_sequence(
+        &server,
+        vec![turn("1"), compaction("2"), turn("3"), compaction("4")],
+    )
+    .await;
+
+    let model_provider = non_openai_model_provider(&server);
+    let mut builder = test_codex().with_config(move |config| {
+        config.model_provider = model_provider;
+        set_test_compact_prompt(config);
+    });
+    let codex = builder
+        .build(&server)
+        .await
+        .expect("create conversation")
+        .codex;
+
+    for (text, second) in [("USER_ONE", false), ("USER_TWO", true)] {
+        codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }]))
+            .await
+            .expect("submit user turn");
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+        codex.submit(Op::Compact).await.expect("trigger compact");
+        if second {
+            let warning = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
+            let EventMsg::Warning(WarningEvent { message }) = warning else {
+                panic!("expected the long-thread warning on the second compaction");
+            };
+            assert_eq!(message, COMPACT_WARNING_MESSAGE);
+            wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+        } else {
+            expect_turn_complete_without_compact_warning(&codex).await;
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -938,12 +1011,7 @@ async fn manual_compact_uses_custom_prompt() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     codex.submit(Op::Compact).await.expect("trigger compact");
-    let warning_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
-    let EventMsg::Warning(WarningEvent { message }) = warning_event else {
-        panic!("expected warning event after compact");
-    };
-    assert_eq!(message, COMPACT_WARNING_MESSAGE);
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    expect_turn_complete_without_compact_warning(&codex).await;
 
     let requests = request_log.requests();
     assert_eq!(
@@ -3789,12 +3857,7 @@ async fn manual_compact_retries_after_context_window_error() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     codex.submit(Op::Compact).await.unwrap();
-    let warning_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::Warning(_))).await;
-    let EventMsg::Warning(WarningEvent { message }) = warning_event else {
-        panic!("expected warning event after compact retry");
-    };
-    assert_eq!(message, COMPACT_WARNING_MESSAGE);
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    expect_turn_complete_without_compact_warning(&codex).await;
 
     let requests = request_log.requests();
     assert_eq!(

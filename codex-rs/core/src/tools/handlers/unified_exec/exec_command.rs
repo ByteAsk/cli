@@ -398,6 +398,7 @@ impl ExecCommandHandler {
                 original_token_count: None,
                 output_omitted_bytes: None,
                 hook_command: None,
+                wait_note: None,
             }));
         }
 
@@ -454,6 +455,7 @@ impl ExecCommandHandler {
                     original_token_count: Some(original_token_count),
                     output_omitted_bytes,
                     hook_command: Some(hook_command),
+                    wait_note: None,
                 }))
             }
             Err(err) => {

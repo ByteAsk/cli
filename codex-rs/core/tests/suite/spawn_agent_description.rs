@@ -80,6 +80,7 @@ fn test_model_info(
     service_tiers: Vec<ModelServiceTier>,
 ) -> ModelInfo {
     ModelInfo {
+        locked_reason: None,
         slug: slug.to_string(),
         display_name: display_name.to_string(),
         description: Some(description.to_string()),
@@ -100,6 +101,7 @@ fn test_model_info(
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers,
         default_service_tier: None,

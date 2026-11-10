@@ -1,0 +1,13 @@
+---
+source: tui/src/byteask_settings/views.rs
+expression: "render(remove_key_params(&view), 76)"
+---
+
+  Remove a key
+  Removing only forgets it here — add it again anytime
+
+› 1. Anthropic  Forget this key                                   your key
+  2. Gemini     Forget this key                                   your key
+  3. Back       Keep every key
+
+  Press enter to confirm or esc to go back

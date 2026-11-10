@@ -21,4 +21,13 @@ additionalSpeedTiers: Array<string>, serviceTiers: Array<ModelServiceTier>,
 /**
  * Catalog default service tier id for this model, when one is configured.
  */
-defaultServiceTier: string | null, isDefault: boolean, };
+defaultServiceTier: string | null, isDefault: boolean,
+/**
+ * Why this account cannot select the model, if it cannot. `None` = selectable.
+ */
+lockedReason?: string | null,
+/**
+ * Menu grouping label for the two-level `/model` picker (e.g. "OpenAI").
+ * `None` = a direct-select row at the top level (used for `auto`).
+ */
+pickerGroup?: string | null, };

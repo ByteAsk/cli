@@ -1219,6 +1219,7 @@ fn config_toml_deserializes_model_availability_nux() {
         Tui {
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
+            screen_reader: false,
             show_tooltips: true,
             auto_recap: true,
             disable_paste_burst: None,
@@ -3931,7 +3932,7 @@ async fn permissions_profiles_allow_unknown_special_paths() -> std::io::Result<(
     );
     assert!(
         config.startup_warnings.iter().any(|warning| warning.contains(
-            "Configured filesystem path `:future_special_path` is not recognized by this version of Codex and will be ignored."
+            "Configured filesystem path `:future_special_path` is not recognized by this version of ByteAsk and will be ignored."
         )),
         "{:?}",
         config.startup_warnings
@@ -3972,7 +3973,7 @@ async fn permissions_profiles_allow_unknown_special_paths_with_nested_entries()
     );
     assert!(
         config.startup_warnings.iter().any(|warning| warning.contains(
-            "Configured filesystem path `:future_special_path` with nested entry `docs` is not recognized by this version of Codex and will be ignored."
+            "Configured filesystem path `:future_special_path` with nested entry `docs` is not recognized by this version of ByteAsk and will be ignored."
         )),
         "{:?}",
         config.startup_warnings
@@ -4003,7 +4004,7 @@ async fn permissions_profiles_allow_missing_filesystem_with_warning() -> std::io
     );
     assert!(
         config.startup_warnings.iter().any(|warning| warning.contains(
-            "Permissions profile `dev` does not define any recognized filesystem entries for this version of Codex."
+            "Permissions profile `dev` does not define any recognized filesystem entries for this version of ByteAsk."
         )),
         "{:?}",
         config.startup_warnings
@@ -4031,7 +4032,7 @@ async fn permissions_profiles_allow_empty_filesystem_with_warning() -> std::io::
     );
     assert!(
         config.startup_warnings.iter().any(|warning| warning.contains(
-            "Permissions profile `dev` does not define any recognized filesystem entries for this version of Codex."
+            "Permissions profile `dev` does not define any recognized filesystem entries for this version of ByteAsk."
         )),
         "{:?}",
         config.startup_warnings
@@ -4232,6 +4233,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
         Tui {
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
+            screen_reader: false,
             show_tooltips: true,
             auto_recap: true,
             disable_paste_burst: None,
@@ -9465,6 +9467,43 @@ async fn model_catalog_json_loads_from_path() -> std::io::Result<()> {
     Ok(())
 }
 
+// ByteAsk: the commit-attribution switch rides the catalog as a top-level object the typed
+// structs ignore. A junk value must never stop the catalog from loading: that would stop the
+// engine starting at all.
+#[tokio::test]
+async fn model_catalog_json_loads_whatever_the_attribution_switch_holds() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let catalog_path = codex_home.path().join("catalog.json");
+    let mut catalog = bundled_models_response()
+        .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
+    catalog.models = catalog.models.into_iter().take(1).collect();
+    for switch in [
+        serde_json::json!(7),
+        serde_json::json!("yes"),
+        serde_json::json!([]),
+        serde_json::json!(null),
+        serde_json::json!({"enabled": "no"}),
+        serde_json::json!({"enabled": true}),
+        serde_json::json!({"enabled": false}),
+    ] {
+        let mut doc = serde_json::to_value(&catalog).expect("serialize catalog");
+        doc["byteask_attribution"] = switch.clone();
+        std::fs::write(&catalog_path, doc.to_string())?;
+        let cfg = ConfigToml {
+            model_catalog_json: Some(catalog_path.abs()),
+            ..Default::default()
+        };
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await?;
+        assert_eq!(config.model_catalog, Some(catalog.clone()), "switch = {switch}");
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn model_catalog_json_rejects_empty_catalog() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
@@ -10756,7 +10795,7 @@ sandbox_mode = "danger-full-access"
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(
         err.to_string(),
-        "`approval_policy = \"never\"` cannot be used because requirements do not allow `sandbox_mode = \"danger-full-access\"`; Codex would fall back to read-only permissions with approvals disabled. Choose an `approval_policy` based on what you need, such as `on-request`, or choose an allowed sandbox mode."
+        "`approval_policy = \"never\"` cannot be used because requirements do not allow `sandbox_mode = \"danger-full-access\"`; ByteAsk would fall back to read-only permissions with approvals disabled. Choose an `approval_policy` based on what you need, such as `on-request`, or choose an allowed sandbox mode."
     );
     Ok(())
 }
@@ -10790,7 +10829,7 @@ default_permissions = "dev"
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(
         err.to_string(),
-        "`approval_policy = \"never\"` cannot be used because requirements do not allow `sandbox_mode = \"danger-full-access\"`; Codex would fall back to read-only permissions with approvals disabled. Choose an `approval_policy` based on what you need, such as `on-request`, or choose an allowed sandbox mode."
+        "`approval_policy = \"never\"` cannot be used because requirements do not allow `sandbox_mode = \"danger-full-access\"`; ByteAsk would fall back to read-only permissions with approvals disabled. Choose an `approval_policy` based on what you need, such as `on-request`, or choose an allowed sandbox mode."
     );
     Ok(())
 }
@@ -11315,6 +11354,229 @@ include_instructions = false
     assert!(!config.include_collaboration_mode_instructions);
     assert!(!config.include_skill_instructions);
     assert!(!config.include_environment_context);
+    Ok(())
+}
+
+/// ByteAsk Context: with its MCP server configured the skills list is off by default (an
+/// explicit setting still wins); another server, or none, keeps today's default.
+#[tokio::test]
+async fn byteask_context_turns_the_skills_list_off_by_default() -> std::io::Result<()> {
+    async fn load(toml: &str) -> std::io::Result<Config> {
+        let codex_home = TempDir::new()?;
+        std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), toml)?;
+        ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await
+    }
+    let context = "[mcp_servers.byteask-context]\nurl = \"https://context.byteask.ai/mcp\"\n";
+    let config = load(context).await?;
+    assert!(crate::byteask_context::gated(&config));
+    assert!(!config.include_skill_instructions);
+    // The permissions setting is untouched here: only exec drops that block.
+    assert!(config.include_permissions_instructions);
+    let explicit = load(&format!(
+        "{context}\n[skills]\ninclude_instructions = true\n"
+    ))
+    .await?;
+    assert!(explicit.include_skill_instructions);
+    let other = load("[mcp_servers.docs]\nurl = \"https://mcp.byteask.ai/mcp\"\n").await?;
+    assert!(!crate::byteask_context::gated(&other));
+    assert!(other.include_skill_instructions);
+    let disabled = load(&format!("{context}enabled = false\n")).await?;
+    assert!(disabled.include_skill_instructions);
+    Ok(())
+}
+
+/// Experiment switches: `context_keep_prefix` keeps the prefix of a session without Context (skills
+/// list, usual tool deferral) with the gate still on; `context_instructions` replaces the
+/// instruction text, `""` drops it.
+#[tokio::test]
+async fn byteask_context_experiment_switches() -> std::io::Result<()> {
+    use codex_protocol::protocol::SessionSource;
+    async fn load(toml: &str) -> std::io::Result<Config> {
+        let codex_home = TempDir::new()?;
+        std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), toml)?;
+        ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await
+    }
+    let server = "[mcp_servers.byteask-context]\nurl = \"https://context.byteask.ai/mcp\"\n";
+    // The packaged defaults (ByteAsk 0.2.4) keep the prefix and give their own instruction.
+    let plain = load(server).await?;
+    assert!(!crate::byteask_context::shapes_prefix(&plain));
+    assert!(
+        crate::byteask_context::instructions(&plain)
+            .starts_with("ByteAsk Context gave you, with the task, the code of the places")
+    );
+    // The Context prefix shaping and tool deferral come back with `context_keep_prefix = false`.
+    let shaped = load(&format!(
+        "[byteask_harness]\ncontext_keep_prefix = false\n{server}"
+    ))
+    .await?;
+    assert!(crate::byteask_context::shapes_prefix(&shaped));
+    assert!(
+        crate::byteask_harness::deferred_tool_patterns(&shaped, &SessionSource::Exec)
+            .contains(&"!cpp_finish_check".to_string())
+    );
+
+    let kept = load(&format!(
+        "[byteask_harness]\ncontext_keep_prefix = true\ncontext_instructions = \"Find every site.\"\n{server}"
+    ))
+    .await?;
+    let without = load("").await?;
+    assert!(crate::byteask_context::gated(&kept));
+    assert!(!crate::byteask_context::shapes_prefix(&kept));
+    // No skills list with Context, also when the prefix is kept.
+    assert!(!kept.include_skill_instructions);
+    assert_eq!(
+        crate::byteask_harness::deferred_tool_patterns(&kept, &SessionSource::Exec),
+        crate::byteask_harness::deferred_tool_patterns(&without, &SessionSource::Exec)
+    );
+    assert_eq!(
+        crate::byteask_context::instructions(&kept),
+        "Find every site."
+    );
+
+    let none = load(&format!(
+        "[byteask_harness]\ncontext_instructions = \"\"\n{server}"
+    ))
+    .await?;
+    assert_eq!(crate::byteask_context::instructions(&none), "");
+    assert!(!crate::byteask_context::shapes_prefix(&none));
+
+    // context_identity_server: harness-filled identity for a named server with the gate off.
+    assert_eq!(
+        crate::byteask_context::identity_server(&plain).as_deref(),
+        Some("byteask-context")
+    );
+    let off = "[byteask_harness]\ncontext_url = \"https://gate-off.invalid/mcp\"\n";
+    let tools = "[mcp_servers.byteask]\nurl = \"https://context.byteask.ai/mcp\"\n";
+    let plain_tools = load(&format!("{off}{tools}")).await?;
+    assert!(!crate::byteask_context::gated(&plain_tools));
+    assert_eq!(crate::byteask_context::identity_server(&plain_tools), None);
+    let named = load(&format!(
+        "{off}context_identity_server = \"byteask\"\n{tools}"
+    ))
+    .await?;
+    assert!(!crate::byteask_context::gated(&named));
+    assert_eq!(
+        crate::byteask_context::identity_server(&named).as_deref(),
+        Some("byteask")
+    );
+    let missing = load(&format!(
+        "{off}context_identity_server = \"other\"\n{tools}"
+    ))
+    .await?;
+    assert_eq!(crate::byteask_context::identity_server(&missing), None);
+    Ok(())
+}
+
+/// ByteAsk 0.2.4: with the Context server configured, the working rules are the
+/// developer instructions unless set; headless sessions leave out the tools of
+/// `CONTEXT_HEADLESS_DISABLED_TOOLS`; the packaged defaults turn the harness switches on.
+#[tokio::test]
+async fn byteask_packaged_defaults() -> std::io::Result<()> {
+    use codex_protocol::protocol::SessionSource;
+    async fn load(toml: &str) -> std::io::Result<Config> {
+        let codex_home = TempDir::new()?;
+        std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), toml)?;
+        ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await
+    }
+    let server = "[mcp_servers.byteask-context]\nurl = \"https://context.byteask.ai/mcp\"\n";
+    let context = load(server).await?;
+    let without = load("").await?;
+    assert_eq!(
+        context.developer_instructions.as_deref(),
+        Some(crate::byteask_context::WORKING_RULES)
+    );
+    assert_eq!(without.developer_instructions, None);
+    let own = load(&format!("developer_instructions = \"Mine.\"\n{server}")).await?;
+    assert_eq!(own.developer_instructions.as_deref(), Some("Mine."));
+    assert!(!crate::byteask_context::WORKING_RULES.contains("3 CPUs"));
+
+    let disabled = |config: &Config, source: SessionSource| {
+        crate::byteask_harness::session_disabled_tool_patterns(config, &source)
+    };
+    let headless = disabled(&context, SessionSource::Exec);
+    for name in [
+        "debug",
+        "cpp_sanitize",
+        "view_image",
+        "request_user_input",
+        "read_mcp_resource",
+    ] {
+        assert!(headless.contains(&name.to_string()), "{name}");
+    }
+    assert!(!headless.contains(&"tool_search".to_string()));
+    assert!(!headless.contains(&"cpp_finish_check".to_string()));
+    assert!(disabled(&context, SessionSource::Cli).is_empty());
+    assert!(disabled(&without, SessionSource::Exec).is_empty());
+    let all_tools = load(&format!(
+        "[byteask_harness]\ncontext_lean_tools = false\n{server}"
+    ))
+    .await?;
+    assert!(disabled(&all_tools, SessionSource::Exec).is_empty());
+
+    assert!(crate::byteask_harness::flag(
+        &without,
+        crate::byteask_context::FINISH_RELATED_KEY
+    ));
+    assert!(crate::byteask_harness::flag(
+        &without,
+        crate::byteask_context::BUILD_MARKERS_KEY
+    ));
+    assert_eq!(
+        crate::byteask_harness::positive_int(&without, crate::byteask_context::PACK_TIMEOUT_KEY),
+        Some(120)
+    );
+    assert_eq!(
+        crate::byteask_harness::positive_int(
+            &without,
+            crate::byteask_context::CHECK_LINE_TIMEOUT_KEY
+        ),
+        Some(15)
+    );
+    let cpp = without
+        .config_layer_stack
+        .effective_config()
+        .get("byteask_cpp")
+        .cloned()
+        .expect("packaged [byteask_cpp]");
+    for key in ["hide_missing_tools", "tree_owner", "finish_review"] {
+        assert_eq!(
+            cpp.get(key).and_then(toml::Value::as_bool),
+            Some(true),
+            "{key}"
+        );
+    }
+    let off = load("[byteask_cpp]\nfinish_review = false\n").await?;
+    let off_cpp = off
+        .config_layer_stack
+        .effective_config()
+        .get("byteask_cpp")
+        .cloned();
+    assert_eq!(
+        off_cpp
+            .as_ref()
+            .and_then(|t| t.get("finish_review"))
+            .and_then(toml::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        off_cpp
+            .as_ref()
+            .and_then(|t| t.get("tree_owner"))
+            .and_then(toml::Value::as_bool),
+        Some(true)
+    );
     Ok(())
 }
 

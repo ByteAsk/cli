@@ -684,6 +684,9 @@
             "collaboration_modes": {
               "type": "boolean"
             },
+            "commit_attribution": {
+              "type": "boolean"
+            },
             "compaction_image_budget": {
               "type": "boolean"
             },
@@ -4085,6 +4088,11 @@
           "default": null,
           "description": "Working directory to use when resuming or forking a session. When unset, prompt if the current and session directories differ."
         },
+        "screen_reader": {
+          "default": false,
+          "description": "Render ByteAsk's own surfaces as linear, announce-once text for a screen reader: labelled plain lines instead of panes, static spinners, ASCII glyphs. Defaults to `false`. The `--ax-screen-reader` flag and the `BYTEASK_AX_SCREEN_READER` environment variable both take precedence over this.",
+          "type": "boolean"
+        },
         "session_picker_view": {
           "allOf": [
             {
@@ -6007,6 +6015,9 @@
           "type": "boolean"
         },
         "collaboration_modes": {
+          "type": "boolean"
+        },
+        "commit_attribution": {
           "type": "boolean"
         },
         "compaction_image_budget": {

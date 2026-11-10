@@ -138,6 +138,10 @@ pub(crate) struct SelectionItem {
     pub display_shortcut: Option<ShortcutHint>,
     pub description: Option<String>,
     pub selected_description: Option<String>,
+    /// Status label pinned flush to the right edge of the row (e.g. `your key`,
+    /// `they bill you`). Keeps trailing metadata in its own aligned column
+    /// instead of running it into the description text.
+    pub right_tag: Option<String>,
     pub is_current: bool,
     pub is_default: bool,
     pub is_disabled: bool,
@@ -626,6 +630,7 @@ impl ListSelectionView {
                         match_indices: None,
                         description,
                         category_tag: None,
+                        right_tag: item.right_tag.clone(),
                         wrap_indent,
                         is_disabled,
                         disabled_reason: item.disabled_reason.clone(),
@@ -1511,14 +1516,14 @@ mod tests {
         let items = vec![
             SelectionItem {
                 name: "Read Only".to_string(),
-                description: Some("Codex can read files".to_string()),
+                description: Some("ByteAsk can read files".to_string()),
                 is_current: true,
                 dismiss_on_select: true,
                 ..Default::default()
             },
             SelectionItem {
                 name: "Full Access".to_string(),
-                description: Some("Codex can edit files".to_string()),
+                description: Some("ByteAsk can edit files".to_string()),
                 is_current: false,
                 dismiss_on_select: true,
                 ..Default::default()
@@ -1627,7 +1632,7 @@ mod tests {
 
     #[test]
     fn renders_blank_line_between_subtitle_and_items() {
-        let view = make_selection_view(Some("Switch between Codex approval presets"));
+        let view = make_selection_view(Some("Switch between ByteAsk approval presets"));
         assert_snapshot!("list_selection_spacing_with_subtitle", render_lines(&view));
     }
 
@@ -1710,7 +1715,7 @@ mod tests {
         let tx = AppEventSender::new(tx_raw);
         let items = vec![SelectionItem {
             name: "Read Only".to_string(),
-            description: Some("Codex can read files".to_string()),
+            description: Some("ByteAsk can read files".to_string()),
             is_current: true,
             dismiss_on_select: true,
             ..Default::default()
@@ -1742,7 +1747,7 @@ mod tests {
         let tx = AppEventSender::new(tx_raw);
         let items = vec![SelectionItem {
             name: "Read Only".to_string(),
-            description: Some("Codex can read files".to_string()),
+            description: Some("ByteAsk can read files".to_string()),
             is_current: false,
             dismiss_on_select: true,
             ..Default::default()
@@ -2451,7 +2456,7 @@ mod tests {
             SelectionItem {
                 name: "gpt-5.1-codex".to_string(),
                 description: Some(
-                    "Optimized for Codex. Balance of reasoning quality and coding ability."
+                    "Optimized for ByteAsk. Balance of reasoning quality and coding ability."
                         .to_string(),
                 ),
                 is_current: true,
@@ -2461,7 +2466,7 @@ mod tests {
             SelectionItem {
                 name: "gpt-5.1-codex-mini".to_string(),
                 description: Some(
-                    "Optimized for Codex. Cheaper, faster, but less capable.".to_string(),
+                    "Optimized for ByteAsk. Cheaper, faster, but less capable.".to_string(),
                 ),
                 dismiss_on_select: true,
                 ..Default::default()
@@ -2533,7 +2538,7 @@ mod tests {
             SelectionItem {
                 name: "gpt-5.1-codex".to_string(),
                 description: Some(
-                    "Optimized for Codex. Balance of reasoning quality and coding ability."
+                    "Optimized for ByteAsk. Balance of reasoning quality and coding ability."
                         .to_string(),
                 ),
                 is_current: true,
@@ -2543,7 +2548,7 @@ mod tests {
             SelectionItem {
                 name: "gpt-5.1-codex-mini".to_string(),
                 description: Some(
-                    "Optimized for Codex. Cheaper, faster, but less capable.".to_string(),
+                    "Optimized for ByteAsk. Cheaper, faster, but less capable.".to_string(),
                 ),
                 dismiss_on_select: true,
                 ..Default::default()

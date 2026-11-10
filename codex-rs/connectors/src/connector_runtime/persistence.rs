@@ -28,9 +28,9 @@ use super::ConnectorRuntimeSnapshot;
 use super::emit_duration;
 
 const MCP_TOOLS_CACHE_WRITE_DURATION_METRIC: &str = "codex.mcp.tools.cache_write.duration_ms";
-const CODEX_APPS_TOOLS_CACHE_DIR: &str = "cache/codex_apps_tools";
+const CODEX_APPS_TOOLS_CACHE_DIR: &str = "cache/byteask_apps_tools";
 pub(crate) const CODEX_APPS_TOOLS_CACHE_SCHEMA_VERSION: u8 = 4;
-const CODEX_APPS_SERVER_INFO_CACHE_DIR: &str = "cache/codex_apps_server_info";
+const CODEX_APPS_SERVER_INFO_CACHE_DIR: &str = "cache/byteask_apps_server_info";
 const CODEX_APPS_SERVER_INFO_CACHE_SCHEMA_VERSION: u8 = 1;
 pub(crate) const CODEX_APPS_TOOLS_CACHE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -103,7 +103,7 @@ fn write_cached_codex_apps_server_info<T: ConnectorRuntimePayload>(
         schema_version: CODEX_APPS_SERVER_INFO_CACHE_SCHEMA_VERSION,
         server_info: server_info.clone(),
     })
-    .context("failed to serialize Codex Apps server info cache")?;
+    .context("failed to serialize ByteAsk Apps server info cache")?;
     write_codex_apps_cache_file(&cache_path, "server info", bytes)
 }
 
@@ -121,7 +121,7 @@ pub(crate) fn persist_codex_apps_cache<T>(
     }
     let server_info_result = write_cached_codex_apps_server_info(cache_context, server_info);
     if let Err(err) = &server_info_result {
-        tracing::warn!("failed to write Codex Apps server info cache: {err:#}");
+        tracing::warn!("failed to write ByteAsk Apps server info cache: {err:#}");
     }
     let status = if tools_result.is_ok() && server_info_result.is_ok() {
         "success"
@@ -171,31 +171,31 @@ fn write_codex_apps_cache_file(
 ) -> anyhow::Result<()> {
     let parent = cache_path.parent().ok_or_else(|| {
         anyhow!(
-            "Codex Apps {cache_name} cache path `{}` has no parent",
+            "ByteAsk Apps {cache_name} cache path `{}` has no parent",
             cache_path.display()
         )
     })?;
     std::fs::create_dir_all(parent).with_context(|| {
         format!(
-            "failed to create Codex Apps {cache_name} cache directory `{}`",
+            "failed to create ByteAsk Apps {cache_name} cache directory `{}`",
             parent.display()
         )
     })?;
     let mut temporary = NamedTempFile::new_in(parent).with_context(|| {
         format!(
-            "failed to create temporary Codex Apps {cache_name} cache in `{}`",
+            "failed to create temporary ByteAsk Apps {cache_name} cache in `{}`",
             parent.display()
         )
     })?;
     temporary.write_all(&bytes).with_context(|| {
         format!(
-            "failed to write temporary Codex Apps {cache_name} cache for `{}`",
+            "failed to write temporary ByteAsk Apps {cache_name} cache for `{}`",
             cache_path.display()
         )
     })?;
     temporary.persist(cache_path).map_err(|error| {
         anyhow!(
-            "failed to atomically replace Codex Apps {cache_name} cache `{}`: {}",
+            "failed to atomically replace ByteAsk Apps {cache_name} cache `{}`: {}",
             cache_path.display(),
             error.error
         )

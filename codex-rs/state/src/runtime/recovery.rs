@@ -83,7 +83,7 @@ pub async fn backup_runtime_db_for_fresh_start(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             tokio::fs::create_dir_all(sqlite_home).await?;
             Err(std::io::Error::other(format!(
-                "no Codex runtime database files were found to back up for {}",
+                "no ByteAsk runtime database files were found to back up for {}",
                 db_path.display()
             )))
         }
@@ -172,7 +172,7 @@ async fn backup_sqlite_paths(
     if backups.is_empty() {
         let _ = tokio::fs::remove_dir(backup_dir).await;
         return Err(std::io::Error::other(
-            "no Codex runtime database files were found to back up",
+            "no ByteAsk runtime database files were found to back up",
         ));
     }
 

@@ -3305,3 +3305,33 @@ async fn approve_mode_skips_guardian_in_every_permission_mode() {
         assert_eq!(decision, None);
     }
 }
+
+// ---- ByteAsk: recognising the Context engine's MCP server (no auto-approval since 0.2.0) ----
+
+#[test]
+fn an_installed_context_engine_serve_script_is_recognised() {
+    let install = tempfile::tempdir().expect("install");
+    std::fs::create_dir_all(install.path().join("python/bctx")).expect("mkdir");
+    std::fs::write(install.path().join("python/bctx/cli.py"), "").expect("cli");
+    let serve = install.path().join("serve.py");
+    std::fs::write(&serve, "").expect("serve");
+    let serve = serve.to_string_lossy().into_owned();
+    assert!(crate::byteask_harness::is_context_engine_mcp(
+        "/usr/bin/python3",
+        &[
+            "-I".to_string(),
+            serve.clone(),
+            "--data".to_string(),
+            "/data".to_string(),
+            "mcp".to_string(),
+        ]
+    ));
+    // the same script without the engine beside it is not the Context engine
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let lone = elsewhere.path().join("serve.py");
+    std::fs::write(&lone, "").expect("lone");
+    assert!(!crate::byteask_harness::is_context_engine_mcp(
+        "/usr/bin/python3",
+        &[lone.to_string_lossy().into_owned(), "mcp".to_string(),]
+    ));
+}

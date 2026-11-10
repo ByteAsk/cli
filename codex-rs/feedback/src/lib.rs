@@ -502,7 +502,7 @@ impl FeedbackSnapshot {
             _ => Level::Info,
         };
         let title = format!(
-            "[{}]: Codex session {}",
+            "[{}]: ByteAsk session {}",
             display_classification(classification),
             self.thread_id
         );

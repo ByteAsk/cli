@@ -1,0 +1,85 @@
+{
+ "content": [
+  {
+   "text": "{\"check_result\": {\"check\": \"context_bundle\", \"schema\": 1, \"summary\": \"answered from completed index snapshots\", \"verdict\": \"PASS\"}, \"commit\": \"7ce35799767de7b9c6ba836c72e479c5f70219a3\", \"items\": [{\"name\": \"Catch::ConsoleReporter::testRunEnded\", \"path\": \"src/catch2/reporters/catch_reporter_console.cpp\", \"start_line\": 517}, {\"name\": \"Catch::ConsoleReporter\", \"path\": \"src/catch2/reporters/catch_reporter_console.hpp\", \"start_line\": 18}, {\"name\": \"Catch::CompactReporter::testRunEnded\", \"path\": \"src/catch2/reporters/catch_reporter_compact.cpp\", \"start_line\": 246}, {\"name\": \"Catch::TAPReporter::testRunEnded\", \"path\": \"src/catch2/reporters/catch_reporter_tap.cpp\", \"start_line\": 216}, {\"name\": \"Catch::ConsoleReporter::ConsoleReporter\", \"path\": \"src/catch2/reporters/catch_reporter_console.cpp\", \"start_line\": 379}, {\"name\": \"Catch::JsonReporter::testRunEnded\", \"path\": \"src/catch2/reporters/catch_reporter_json.cpp\", \"start_line\": 152}, {\"name\": \"Catch::StreamingReporterBase::testRunEnded\", \"path\": \"src/catch2/reporters/catch_reporter_streaming_base.cpp\", \"start_line\": 19}, {\"name\": \"Catch::ConsoleReporter::printTotalsDivider\", \"path\": \"src/catch2/reporters/catch_reporter_console.cpp\", \"start_line\": 626}, {\"name\": \"Catch::CumulativeReporterBase::testRunEnded\", \"path\": \"src/catch2/reporters/catch_reporter_cumulative_base.cpp\", \"start_line\": 142}, {\"name\": \"Catch::XmlReporter::testRunEnded\", \"path\": \"src/catch2/reporters/catch_reporter_xml.cpp\", \"start_line\": 207}, {\"name\": \"Catch::EventListenerBase::testRunEnded\", \"path\": \"src/catch2/reporters/catch_reporter_event_listener.cpp\", \"start_line\": 38}, {\"name\": \"Catch::MultiReporter::testRunEnded\", \"path\": \"src/catch2/reporters/catch_reporter_multi.cpp\", \"start_line\": 159}], \"partition\": \"catch2-2849\", \"setting\": \"dev\", \"task\": \"Reporter prints the wrong test count when a test case is skipped: `ConsoleReporter::testRunEnded` shows totals that include skipped tests\", \"text\": \"# Context for: Reporter prints the wrong test count when a test case is skipped: `ConsoleReporter::testRunEnded` shows totals that include skipped tests\\nbuild setting: dev | commit 7ce35799767d | compiler clang 21.1.8 | facts from the compiler, not text search\\n\\n## Where to look (most likely first)\\n1. Catch::ConsoleReporter::testRunEnded  src/catch2/reporters/catch_reporter_console.cpp:517-522  [defines `ConsoleReporter::testRunEnded` named in the task; words of the task (BM25)]\\n2. Catch::ConsoleReporter  src/catch2/reporters/catch_reporter_console.hpp:18-63  [defines `ConsoleReporter` named in the task; words of the task (BM25)]\\n3. Catch::CompactReporter::testRunEnded  src/catch2/reporters/catch_reporter_compact.cpp:246-250  [same name as Catch::ConsoleReporter::testRunEnded (overload or override); defines `testRunEnded` named in the task]\\n4. Catch::TAPReporter::testRunEnded  src/catch2/reporters/catch_reporter_tap.cpp:216-223  [words of the task (BM25); words of the title (BM25)]\\n5. Catch::ConsoleReporter::ConsoleReporter  src/catch2/reporters/catch_reporter_console.cpp:379-401  [defines `ConsoleReporter` named in the task; same name as Catch::ConsoleReporter (overload or override)]\\n6. Catch::JsonReporter::testRunEnded  src/catch2/reporters/catch_reporter_json.cpp:152-168  [words of the task (BM25); words of the title (BM25)]\\n7. Catch::StreamingReporterBase::testRunEnded  src/catch2/reporters/catch_reporter_streaming_base.cpp:19-21  [same name as Catch::ConsoleReporter::testRunEnded (overload or override); defines `testRunEnded` named in the task]\\n8. Catch::ConsoleReporter::printTotalsDivider  src/catch2/reporters/catch_reporter_console.cpp:626-655  [words of the task (BM25); words of the title (BM25)]\\n\\n## The code\\n### src/catch2/reporters/catch_reporter_console.cpp:517  void ConsoleReporter::testRunEnded(const TestRunStats &_testRunStats)  (body omitted: budget)\\n\\n### src/catch2/reporters/catch_reporter_console.hpp:18  Catch::ConsoleReporter  (body omitted: budget)\\n\\n### src/catch2/reporters/catch_reporter_compact.cpp:246  void CompactReporter::testRunEnded(const TestRunStats &_testRunStats)  (body omitted: budget)\\n\\n### src/catch2/reporters/catch_reporter_tap.cpp:216  void TAPReporter::testRunEnded(const TestRunStats &_testRunStats)  (body omitted: budget)\\n\\n### src/catch2/reporters/catch_reporter_console.cpp:379  ConsoleReporter::ConsoleReporter(ReporterConfig &&config)  (body omitted: budget)\\n\\n### src/catch2/reporters/catch_reporter_json.cpp:152  void JsonReporter::testRunEnded(const TestRunStats &runStats)  (body omitted: budget)\\n\\n## History\\n- 7619920f8606 Support for reporting skipped tests (similar past change)\\n- b406ad52a77c Mark !mayfail tests as skipped in the JUnit reporter (similar past change)\\n- 6185d0cc0a73 Use console reporter's totals summary for compact reporter (similar past change)\\n- 98d4c49d1c97 Provide ConsoleReporter declaration with EXTERNAL_INTERFACES (similar past change)\\n\", \"used_tokens_est\": 983}",
+   "type": "text"
+  }
+ ],
+ "isError": false,
+ "structuredContent": {
+  "check_result": {
+   "check": "context_bundle",
+   "schema": 1,
+   "summary": "answered from completed index snapshots",
+   "verdict": "PASS"
+  },
+  "commit": "7ce35799767de7b9c6ba836c72e479c5f70219a3",
+  "items": [
+   {
+    "name": "Catch::ConsoleReporter::testRunEnded",
+    "path": "src/catch2/reporters/catch_reporter_console.cpp",
+    "start_line": 517
+   },
+   {
+    "name": "Catch::ConsoleReporter",
+    "path": "src/catch2/reporters/catch_reporter_console.hpp",
+    "start_line": 18
+   },
+   {
+    "name": "Catch::CompactReporter::testRunEnded",
+    "path": "src/catch2/reporters/catch_reporter_compact.cpp",
+    "start_line": 246
+   },
+   {
+    "name": "Catch::TAPReporter::testRunEnded",
+    "path": "src/catch2/reporters/catch_reporter_tap.cpp",
+    "start_line": 216
+   },
+   {
+    "name": "Catch::ConsoleReporter::ConsoleReporter",
+    "path": "src/catch2/reporters/catch_reporter_console.cpp",
+    "start_line": 379
+   },
+   {
+    "name": "Catch::JsonReporter::testRunEnded",
+    "path": "src/catch2/reporters/catch_reporter_json.cpp",
+    "start_line": 152
+   },
+   {
+    "name": "Catch::StreamingReporterBase::testRunEnded",
+    "path": "src/catch2/reporters/catch_reporter_streaming_base.cpp",
+    "start_line": 19
+   },
+   {
+    "name": "Catch::ConsoleReporter::printTotalsDivider",
+    "path": "src/catch2/reporters/catch_reporter_console.cpp",
+    "start_line": 626
+   },
+   {
+    "name": "Catch::CumulativeReporterBase::testRunEnded",
+    "path": "src/catch2/reporters/catch_reporter_cumulative_base.cpp",
+    "start_line": 142
+   },
+   {
+    "name": "Catch::XmlReporter::testRunEnded",
+    "path": "src/catch2/reporters/catch_reporter_xml.cpp",
+    "start_line": 207
+   },
+   {
+    "name": "Catch::EventListenerBase::testRunEnded",
+    "path": "src/catch2/reporters/catch_reporter_event_listener.cpp",
+    "start_line": 38
+   },
+   {
+    "name": "Catch::MultiReporter::testRunEnded",
+    "path": "src/catch2/reporters/catch_reporter_multi.cpp",
+    "start_line": 159
+   }
+  ],
+  "partition": "catch2-2849",
+  "setting": "dev",
+  "task": "Reporter prints the wrong test count when a test case is skipped: `ConsoleReporter::testRunEnded` shows totals that include skipped tests",
+  "text": "# Context for: Reporter prints the wrong test count when a test case is skipped: `ConsoleReporter::testRunEnded` shows totals that include skipped tests\nbuild setting: dev | commit 7ce35799767d | compiler clang 21.1.8 | facts from the compiler, not text search\n\n## Where to look (most likely first)\n1. Catch::ConsoleReporter::testRunEnded  src/catch2/reporters/catch_reporter_console.cpp:517-522  [defines `ConsoleReporter::testRunEnded` named in the task; words of the task (BM25)]\n2. Catch::ConsoleReporter  src/catch2/reporters/catch_reporter_console.hpp:18-63  [defines `ConsoleReporter` named in the task; words of the task (BM25)]\n3. Catch::CompactReporter::testRunEnded  src/catch2/reporters/catch_reporter_compact.cpp:246-250  [same name as Catch::ConsoleReporter::testRunEnded (overload or override); defines `testRunEnded` named in the task]\n4. Catch::TAPReporter::testRunEnded  src/catch2/reporters/catch_reporter_tap.cpp:216-223  [words of the task (BM25); words of the title (BM25)]\n5. Catch::ConsoleReporter::ConsoleReporter  src/catch2/reporters/catch_reporter_console.cpp:379-401  [defines `ConsoleReporter` named in the task; same name as Catch::ConsoleReporter (overload or override)]\n6. Catch::JsonReporter::testRunEnded  src/catch2/reporters/catch_reporter_json.cpp:152-168  [words of the task (BM25); words of the title (BM25)]\n7. Catch::StreamingReporterBase::testRunEnded  src/catch2/reporters/catch_reporter_streaming_base.cpp:19-21  [same name as Catch::ConsoleReporter::testRunEnded (overload or override); defines `testRunEnded` named in the task]\n8. Catch::ConsoleReporter::printTotalsDivider  src/catch2/reporters/catch_reporter_console.cpp:626-655  [words of the task (BM25); words of the title (BM25)]\n\n## The code\n### src/catch2/reporters/catch_reporter_console.cpp:517  void ConsoleReporter::testRunEnded(const TestRunStats &_testRunStats)  (body omitted: budget)\n\n### src/catch2/reporters/catch_reporter_console.hpp:18  Catch::ConsoleReporter  (body omitted: budget)\n\n### src/catch2/reporters/catch_reporter_compact.cpp:246  void CompactReporter::testRunEnded(const TestRunStats &_testRunStats)  (body omitted: budget)\n\n### src/catch2/reporters/catch_reporter_tap.cpp:216  void TAPReporter::testRunEnded(const TestRunStats &_testRunStats)  (body omitted: budget)\n\n### src/catch2/reporters/catch_reporter_console.cpp:379  ConsoleReporter::ConsoleReporter(ReporterConfig &&config)  (body omitted: budget)\n\n### src/catch2/reporters/catch_reporter_json.cpp:152  void JsonReporter::testRunEnded(const TestRunStats &runStats)  (body omitted: budget)\n\n## History\n- 7619920f8606 Support for reporting skipped tests (similar past change)\n- b406ad52a77c Mark !mayfail tests as skipped in the JUnit reporter (similar past change)\n- 6185d0cc0a73 Use console reporter's totals summary for compact reporter (similar past change)\n- 98d4c49d1c97 Provide ConsoleReporter declaration with EXTERNAL_INTERFACES (similar past change)\n",
+  "used_tokens_est": 983
+ }
+}

@@ -111,7 +111,7 @@ pub(super) fn search_check() -> DoctorCheck {
     };
     let mut check = DoctorCheck::new("runtime.search", "search", status, summary).details(details);
     if status != CheckStatus::Ok {
-        check = check.remediation("Install ripgrep or repair the bundled Codex package.");
+        check = check.remediation("Install ripgrep or repair the bundled ByteAsk package.");
     }
     check
 }

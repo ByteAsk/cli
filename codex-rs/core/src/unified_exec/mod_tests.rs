@@ -209,6 +209,7 @@ async fn exec_command_with_tty(
         original_token_count: Some(original_token_count),
         output_omitted_bytes,
         hook_command: Some(cmd.to_string()),
+        wait_note: None,
     })
 }
 
@@ -1040,5 +1041,198 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
     }
     original.terminate();
     assert!(session.terminate_background_terminal(process_id).await);
+    Ok(())
+}
+
+// ---- ByteAsk: wait instead of poll ---------------------------------------
+
+/// An empty poll of a session without a TTY waits past upstream's 5 s floor and returns
+/// as soon as the command exits; a TTY session keeps the 5 s floor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_poll_without_a_tty_waits_for_the_exit_not_five_seconds() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    let (session, turn) = test_session_and_turn().await;
+
+    let started = exec_command_with_tty(
+        &session,
+        &turn,
+        "sleep 8 && echo done",
+        /*yield_time_ms*/ 250,
+        /*workdir*/ None,
+        /*tty*/ false,
+    )
+    .await?;
+    let process_id = started.process_id.expect("still running after 250 ms");
+    let poll = write_stdin(&session, &turn, process_id, "", /*yield_time_ms*/ 1_000).await?;
+    assert_eq!(poll.exit_code, Some(0), "the poll must last until the exit: {poll:?}");
+    assert!(poll.process_id.is_none());
+    assert!(poll.wall_time >= Duration::from_secs(6), "{:?}", poll.wall_time);
+    assert!(poll.wall_time < Duration::from_secs(30), "ended at the exit: {:?}", poll.wall_time);
+    assert!(poll.wait_note.is_none(), "no note once the command has exited");
+    assert!(poll.truncated_output(DEFAULT_MAX_OUTPUT_TOKENS).contains("done"));
+
+    let tty = exec_command(
+        &session, &turn, "sleep 8 && echo done", /*yield_time_ms*/ 250, /*workdir*/ None,
+    )
+    .await?;
+    let tty_id = tty.process_id.expect("still running after 250 ms");
+    let tty_poll = write_stdin(&session, &turn, tty_id, "", /*yield_time_ms*/ 1_000).await?;
+    assert!(tty_poll.process_id.is_some(), "a TTY poll keeps the 5 s floor: {tty_poll:?}");
+    assert!(tty_poll.wall_time < Duration::from_secs(7), "{:?}", tty_poll.wall_time);
+    Ok(())
+}
+
+/// A wait raised by the floor ends as soon as new input arrives, instead of holding the
+/// message behind a running command for the whole floor (60 s for an empty poll).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_floored_wait_ends_when_new_input_arrives() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    let (session, turn) = test_session_and_turn().await;
+
+    let started = exec_command_with_tty(
+        &session,
+        &turn,
+        "sleep 60",
+        /*yield_time_ms*/ 250,
+        /*workdir*/ None,
+        /*tty*/ false,
+    )
+    .await?;
+    let process_id = started.process_id.expect("still running after 250 ms");
+
+    let mail_session = Arc::clone(&session);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let root = codex_protocol::AgentPath::root();
+        mail_session
+            .input_queue
+            .enqueue_mailbox_communication(
+                codex_protocol::protocol::InterAgentCommunication::new(
+                    root.clone(),
+                    root,
+                    Vec::new(),
+                    "new input".to_string(),
+                    /*trigger_turn*/ false,
+                ),
+                Default::default(),
+            )
+            .await;
+    });
+    let poll = write_stdin(&session, &turn, process_id, "", /*yield_time_ms*/ 1_000).await?;
+    assert!(poll.process_id.is_some(), "the command still runs: {poll:?}");
+    assert!(poll.wall_time < Duration::from_secs(10), "woke on input: {:?}", poll.wall_time);
+    assert!(poll.wait_note.is_none(), "no 'waited at least' note after an early wake");
+
+    let stopped = write_stdin(&session, &turn, process_id, "\u{3}", /*yield_time_ms*/ 1_000).await?;
+    assert!(stopped.process_id.is_none(), "{stopped:?}");
+    Ok(())
+}
+
+// ---- ByteAsk: no long wait on a background job that already finished ------------------
+
+/// `clock.sleep` started while a background terminal runs ends when that terminal exits,
+/// not after the full duration; a sleep with no background terminal sleeps as asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sleep_ends_when_the_background_job_it_waits_for_exits() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    use crate::tools::context::ToolCallSource;
+    use crate::tools::context::ToolInvocation;
+    use crate::tools::context::ToolOutput as _;
+    use crate::tools::context::ToolPayload;
+    use crate::tools::registry::ToolExecutor as _;
+
+    let (session, turn) = test_session_and_turn().await;
+    let started = exec_command_with_tty(
+        &session, &turn, "sleep 2", /*yield_time_ms*/ 250, /*workdir*/ None,
+        /*tty*/ false,
+    )
+    .await?;
+    assert!(started.process_id.is_some(), "still running after 250 ms");
+
+    let sleep = |duration_ms: u64| ToolInvocation {
+        session: Arc::clone(&session),
+        step_context: crate::session::step_context::StepContext::for_test(Arc::clone(&turn)),
+        turn: Arc::clone(&turn),
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        tracker: Arc::new(tokio::sync::Mutex::new(
+            crate::turn_diff_tracker::TurnDiffTracker::new(),
+        )),
+        call_id: "sleep-1".to_string(),
+        tool_name: codex_tools::ToolName::namespaced("clock", "sleep"),
+        source: ToolCallSource::Direct,
+        payload: ToolPayload::Function {
+            arguments: format!("{{\"duration_ms\": {duration_ms}}}"),
+        },
+    };
+    let begun = tokio::time::Instant::now();
+    let output = crate::tools::handlers::SleepHandler
+        .handle(sleep(120_000))
+        .await
+        .map_err(|err| anyhow::anyhow!("{err:?}"))?;
+    let waited = begun.elapsed();
+    let text = format!(
+        "{:?}",
+        output.to_response_item(
+            "sleep-1",
+            &ToolPayload::Function {
+                arguments: String::new(),
+            }
+        )
+    );
+    assert!(text.contains("Sleep ended early"), "{text}");
+    assert!(
+        waited < Duration::from_secs(30),
+        "woke at the exit: {waited:?}"
+    );
+
+    // nothing in the background now: the sleep runs to its end
+    let output = crate::tools::handlers::SleepHandler
+        .handle(sleep(300))
+        .await
+        .map_err(|err| anyhow::anyhow!("{err:?}"))?;
+    let text = format!(
+        "{:?}",
+        output.to_response_item(
+            "sleep-1",
+            &ToolPayload::Function {
+                arguments: String::new(),
+            }
+        )
+    );
+    assert!(text.contains("Sleep completed."), "{text}");
+    Ok(())
+}
+
+/// A user interrupt aborts the running tool call, which drops a floored wait mid-way. That
+/// must end the wait at once and leave the session usable: the still-running command can
+/// be interrupted and polled afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_a_floored_wait_ends_it_and_leaves_the_session_usable() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    let (session, turn) = test_session_and_turn().await;
+
+    let started = exec_command_with_tty(
+        &session,
+        &turn,
+        "sleep 60",
+        /*yield_time_ms*/ 250,
+        /*workdir*/ None,
+        /*tty*/ false,
+    )
+    .await?;
+    let process_id = started.process_id.expect("still running after 250 ms");
+
+    let dropped_at = Instant::now();
+    let abandoned = tokio::time::timeout(
+        Duration::from_secs(1),
+        write_stdin(&session, &turn, process_id, "", /*yield_time_ms*/ 1_000),
+    )
+    .await;
+    assert!(abandoned.is_err(), "the floor holds the poll past 1 s: {abandoned:?}");
+    assert!(dropped_at.elapsed() < Duration::from_secs(2), "{:?}", dropped_at.elapsed());
+
+    let stopped = write_stdin(&session, &turn, process_id, "\u{3}", /*yield_time_ms*/ 1_000).await?;
+    assert!(stopped.process_id.is_none(), "the interrupt ends the command: {stopped:?}");
+    assert!(stopped.wall_time < Duration::from_secs(10), "{:?}", stopped.wall_time);
     Ok(())
 }

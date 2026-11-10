@@ -1,0 +1,204 @@
+{
+  "guidance": "You have ByteAsk grounded-reference tools that return VERBATIM, PAGE-CITED excerpts from authoritative specifications:\n- autosar_ref — C/C++ coding standards & language specs (MISRA C/C++, AUTOSAR C++14, C++ Core Guidelines, ISO C++, C11): rule ids, 'is X allowed/compliant', rationale, language clauses.\n- mcu_ref — embedded silicon & firmware (STM32/ESP32/Cortex-M registers, Modbus, CAN/ISO-TP, MQTT, linker scripts).\n- fpga_ref — AMD/Xilinx FPGA (UG/PG guides, Vivado/Vitis, GT attributes, AXI/PCIe/DDR4 IP).\n- hft_ref — exchange & network wire protocols (ITCH/OUCH/FIX/PITCH, RFC IP/TCP/UDP, PTP, SFP/QSFP).\n- grid_ref — grid/DER standards (IEEE 1547/2030.5, SunSpec, G98/G99, grid codes).\n- scpi_ref — SCPI test & measurement instrument command references.\n- x86_ref — the full Intel x86 SDM (MSRs, CPUID, opcodes, paging, memory ordering).\n\nBefore stating any such detail from memory — a coding-standard rule, a register/bitfield/reset value, a protocol field offset, an MSR, an SCPI command, a trip threshold — call the matching tool and quote the cited result; these specifics are exactly what language models get wrong. Call a *_ref tool only when the task involves its domain or the user asks, not by default on general C/C++ work (this overrides the 'proactively' in autosar_ref's description).\n\nCOMBINE grounded lookups with web_search for the best answer:\n- The *_ref tools are the SOURCE OF TRUTH for exact, safety-critical values (rule compliance, register/reset values, wire field offsets, MSRs) — prefer their page-cited excerpt over web or memory.\n- web_search adds breadth: newer material, library/idiom usage, and the long tail these corpora only sample. When a *_ref tool replies 'no confident match' the topic is NOT in the corpus: for a long-tail part (an un-indexed MCU/FPGA/instrument/regional code) follow up with a site:-scoped web_search of the vendor/standard and LABEL it web-sourced (verify against the datasheet); for an exact authoritative miss (a rule id, MSR, or field offset) tell the user it is not covered rather than presenting a web guess as fact.\n\nUse ref_context to expand a hit's `_ref:` id to its full section, and ref_request to log a document that is genuinely missing. Never silently answer a spec detail from memory.",
+  "tools": [
+    {
+      "description": "Expand a reference search hit to its full section. Pass the `_ref:` id returned by any *_ref search tool (autosar_ref, mcu_ref, fpga_ref, hft_ref, grid_ref, scpi_ref, x86_ref). Use when a returned snippet is truncated or you need the surrounding clauses / adjacent fields / the whole table.",
+      "name": "ref_context",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "ref_id": {
+            "description": "The `_ref:` id from a prior *_ref search hit whose full section you want.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref_id"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Record a request for a document ByteAsk has NOT indexed. Use ONLY after a *_ref search returned 'no confident match' AND the user genuinely needs that spec indexed. Pass a short free-text description (title / standard / version). This does NOT answer anything — it logs the gap so the document can be added later.",
+      "name": "ref_request",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "request": {
+            "description": "Short free-text description of the missing document (title / standard / version).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Search 33 AMD/Xilinx + interconnect references and return VERBATIM, page-cited excerpts: UltraScale GTH/GTY/GTM (UG576/UG578/UG581), 7-series GTX (UG476), SelectIO/clocking (UG571/UG471/UG572), Vivado constraints/synth/impl/methodology (UG903/UG901/UG904/UG949), Vitis HLS (UG1399), Versal (AM011), device datasheets (DS922/DS923/DS182); LogiCORE IP — 10G/25G+100G Ethernet (PG210/PG203), PCIe (PG213/PG156), XDMA/QDMA/AXI-DMA (PG195/PG302/PG021), DDR4 (PG150), PCS/PMA, AXI Interconnect/Stream; plus AMBA AXI/ACE (IHI0022H), AXI4-Stream (IHI0051B), PCIe Base 4.0. Call it for GT attributes/DRP maps/defaults, XDC syntax, HLS pragmas, IP register maps, AXI signals & response codes (TKEEP, BRESP/DECERR), or TLP formats — never guess an attribute default. Coverage is AMD/Xilinx-centric: for Intel/Altera/Lattice parts or an un-indexed UG/PG a 'no confident match' is expected — then use web_search site:docs.amd.com / the vendor's site to cover the long tail.",
+      "name": "fpga_ref",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Max snippets to return, 1-10 (default 8). Use a small limit for a precise lookup, larger to survey a topic.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What to look up, in the engineer's own words or exact tokens (a rule id, register name, field, command, MSR, threshold, doc id). Natural keywords work best; you do not need to phrase it as a question.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Search embedded silicon & firmware references and return VERBATIM, page-cited excerpts: STM32F4 Reference Manual (RM0090 — every peripheral register), Arm Cortex-M4 TRM + Generic User Guide, ESP32 TRM + ESP-IDF API, Modbus (application / serial-RTU / TCP), CAN (ISO 11898-1) + ISO-TP (ISO 15765-2), MQTT 3.1.1, GNU ld linker scripts, python-can / PyModbus / IntelHex / PCAN-USB FD, MCP2221A, LTC6812, AWS IoT Core. Call it BEFORE quoting any register offset/bitfield/reset value, NVIC/SysTick/MPU/CONTROL detail, Modbus function or exception code, or CAN/ISO-TP framing field. This corpus indexes a curated SET of parts, not every MCU: if the exact part (e.g. an STM32H7, nRF52, RP2040) returns 'no confident match', that part is not indexed — then use web_search site:st.com / site:espressif.com / the vendor's site for the datasheet, and label it as web-sourced (verify against the datasheet). Never invent a register or reset value.",
+      "name": "mcu_ref",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Max snippets to return, 1-10 (default 8). Use a small limit for a precise lookup, larger to survey a topic.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What to look up, in the engineer's own words or exact tokens (a rule id, register name, field, command, MSR, threshold, doc id). Natural keywords work best; you do not need to phrase it as a question.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Search grid-interconnection & DER (solar/storage) standards and return VERBATIM, page-cited excerpts: IEEE 1547.1-2020 conformance tests, IEEE 2030.5 (SEP2), SunSpec Modbus 1547 profile + information model, ENA G98 + G99 (UK), AS/NZS 4777.2 (AU), BS EN 50549-1 (EU), IEC 62116 anti-islanding, CSIP-AUS, Austrian TOR, Spanish RD 244/2019. Call it for trip/ride-through thresholds & timings, volt-var / volt-watt curves, LFSM/FSM settings, SunSpec model registers (e.g. DERVoltVar 705), or conformance procedures — never quote a protection setting from memory. Coverage is a set of major standards + regional codes: for a jurisdiction or standard not indexed (a 'no confident match'; note VDE-AR-N 4105 is a text-less scan) use web_search for the regional grid code, labeled as web-sourced.",
+      "name": "grid_ref",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Max snippets to return, 1-10 (default 8). Use a small limit for a precise lookup, larger to survey a topic.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What to look up, in the engineer's own words or exact tokens (a rule id, register name, field, command, MSR, threshold, doc id). Natural keywords work best; you do not need to phrase it as a question.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Search test & measurement instrument command references and return VERBATIM, page-cited excerpts: the SCPI-1999 standard, VISA (VPP-4.3); Yokogawa WT5000/WT3000/WT1800/WT500 power analyzers + DL750 ScopeCorder; Tektronix MDO/MSO/DPO4000 scopes; Hioki PW3335; Chroma 61800/618xx grid simulators; Kikusui PCR-LE; Pacific Power AMX; AMETEK Asterion; NH Research 9410; Cinergia GE+. Call it for the exact SCPI command path/syntax for a specific instrument, *common commands (*IDN?, *ESR?), the status model, or remote-control setup. This indexes a SET of instruments: for a model not covered (Keysight, Rigol, R&S, etc. — a 'no confident match') use web_search site:<vendor> for that instrument's programming manual, labeled as web-sourced. Never invent a command path.",
+      "name": "scpi_ref",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Max snippets to return, 1-10 (default 8). Use a small limit for a precise lookup, larger to survey a topic.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What to look up, in the engineer's own words or exact tokens (a rule id, register name, field, command, MSR, threshold, doc id). Natural keywords work best; you do not need to phrase it as a question.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Search the complete Intel 64 / IA-32 Software Developer's Manual, Vols 1-4 (5,342 pages, doc 325462) and return VERBATIM, page-cited excerpts. Call it for MSR names/addresses (e.g. IA32_TSC_DEADLINE = 6E0H), CPUID leaves & feature bits, CR0-CR4 bits, instruction semantics/opcodes/flag effects, paging structures, the memory-ordering model, or APIC/TSC/VMX detail — before quoting any from memory. This is the authoritative x86 reference: a 'no confident match' means it is not in the SDM — tell the user; do NOT quote a web-guessed MSR address or opcode as fact (for a quick opcode cross-check, web_search site:felixcloutier.com and label it).",
+      "name": "x86_ref",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Max snippets to return, 1-10 (default 8). Use a small limit for a precise lookup, larger to survey a topic.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What to look up, in the engineer's own words or exact tokens (a rule id, register name, field, command, MSR, threshold, doc id). Natural keywords work best; you do not need to phrase it as a question.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Search the full text of the C/C++ safety & coding standards and return VERBATIM, page-cited excerpts: AUTOSAR C++14 (all 397 rules), MISRA C++:2008 (all 228 rules), MISRA C:2012, the C++ Core Guidelines, ISO C++ (N4950) and C11 (N1570). Call this BEFORE stating any coding-standard or language-standard fact from memory (they are frequently misremembered), and PROACTIVELY while writing or reviewing C/C++: for any rule id (A5-2-2, M0-1-1, 0-1-1, Dir 4.6, ES.20 — type them plain, en-dashes optional), 'is X allowed / compliant', a rule's rationale/exceptions/examples, or a language clause (UB, lifetime, conversions, templates). Follow the rule it returns and cite the id. Core Guidelines cite by §section, not page. This corpus IS the authoritative rulebook: a 'no confident match' means the rule/topic is genuinely not covered (e.g. SEI CERT C++ is not indexed) — tell the user and do NOT answer a rule-compliance question from memory or a web guess. For modern library/idiom usage (not a rule), use web_search site:cppreference.com instead.",
+      "name": "autosar_ref",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Max snippets to return, 1-10 (default 8). Use a small limit for a precise lookup, larger to survey a topic.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What to look up, in the engineer's own words or exact tokens (a rule id, register name, field, command, MSR, threshold, doc id). Natural keywords work best; you do not need to phrase it as a question.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Search trading-system & low-latency networking specs and return VERBATIM, page-cited excerpts: Nasdaq TotalView-ITCH 5.0, OUCH 4.2/5.0, NYSE Pillar (integrated feed + binary gateway), Cboe PITCH (multicast + TCP) + BOE/BOE3, FIX 4.4 + FIX SBE; RFC 791/9293/768/826/894/1071 (IPv4/TCP/UDP/ARP/framing/checksum), IEEE 1588-2019 PTP; SFF-8472/8431/8636 (SFP+/QSFP diagnostics), Cisco K35-Q/V9P SmartNICs. Call it for exact message/field offsets & lengths, type codes, endianness, price scaling, PTP message layouts & clockClass, or DDM byte maps. These are the authoritative wire specs and a WRONG offset is dangerous, so a 'no confident match' means it is genuinely not indexed (e.g. CME MDP 3.0 — its encoding is FIX SBE, which IS indexed; IEEE 802.3 base is not) — tell the user; do NOT present a web-guessed field offset as authoritative.",
+      "name": "hft_ref",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Max snippets to return, 1-10 (default 8). Use a small limit for a precise lookup, larger to survey a topic.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "What to look up, in the engineer's own words or exact tokens (a rule id, register name, field, command, MSR, threshold, doc id). Natural keywords work best; you do not need to phrase it as a question.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

@@ -96,6 +96,19 @@ where
         auth_manager.clone(),
         git_attribution_base_url,
         http_client_factory,
+        |config: &Config| {
+            config
+                .features
+                .enabled(codex_features::Feature::CommitAttribution)
+        },
+    );
+    // ByteAsk harness controls: time notes, constraint ledger (inert unless configured).
+    codex_byteask_harness::install(&mut builder);
+    // ByteAsk: independent reproduction-test writer (inert unless enabled).
+    codex_subagents::install(
+        &mut builder,
+        subagent_child_spawner(thread_manager.clone()),
+        thread_manager.clone(),
     );
     codex_guardian_v2::install(
         &mut builder,
@@ -108,6 +121,7 @@ where
     codex_mcp_extension::install(&mut builder);
     codex_mcp_extension::install_executor_plugins(&mut builder, environment_manager);
     codex_web_search_extension::install(&mut builder, auth_manager.clone());
+    codex_toolbox::install_byteask_tools(&mut builder);
     codex_image_generation_extension::install(&mut builder, auth_manager, |config: &Config| {
         Some(config.codex_home.clone())
     });
@@ -319,6 +333,26 @@ pub(crate) fn guardian_agent_spawner(
             })?;
             thread_manager
                 .spawn_subagent(forked_from_thread_id, options)
+                .await
+        })
+    }
+}
+
+/// ByteAsk: fresh sub-agent sessions attributed to a parent thread (e.g. the independent
+/// reproduction-test writer). Same injection pattern as [`guardian_agent_spawner`].
+pub(crate) fn subagent_child_spawner(
+    thread_manager: Weak<ThreadManager>,
+) -> impl AgentSpawner<StartThreadOptions, Spawned = NewThread, Error = CodexErr> {
+    move |parent_thread_id: ThreadId,
+          options: StartThreadOptions|
+          -> AgentSpawnFuture<'static, NewThread, CodexErr> {
+        let thread_manager = thread_manager.clone();
+        Box::pin(async move {
+            let thread_manager = thread_manager.upgrade().ok_or_else(|| {
+                CodexErr::UnsupportedOperation("thread manager dropped".to_string())
+            })?;
+            thread_manager
+                .spawn_fresh_subagent(parent_thread_id, options)
                 .await
         })
     }

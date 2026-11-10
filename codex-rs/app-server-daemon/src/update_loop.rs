@@ -53,8 +53,21 @@ const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
 const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
+// ByteAsk: upstream's standalone updater downloads and RUNS this script on an hourly
+// timer. It installs OpenAI's Codex — over a ByteAsk install — and the surrounding
+// error text already said "standalone ByteAsk updater", so it would have presented as
+// ByteAsk while replacing the user's binary with another product. The same class as the
+// per-manager commands rejected in tui/src/update_action.rs (`npm install -g
+// @openai/codex`, `brew upgrade --cask codex`).
+//
+// ByteAsk has exactly ONE update path: `byteask --update`, which re-runs our installer,
+// preserves the login token and works for the curl, pip and npm installs alike. So this
+// loop does not self-install at all; it refuses and says where to go. Pointing the URL
+// at our own install.sh was the alternative and was NOT taken: the surrounding machinery
+// manages an upstream-shaped "managed binary" path, and an untested auto-installer that
+// runs unattended on a timer is the wrong place to find out it disagrees with our layout.
 #[cfg(unix)]
-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
+const INSTALL_URL: &str = "https://code.byteask.ai/install.sh";
 
 #[cfg(unix)]
 pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
@@ -159,7 +172,7 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
         .exec();
     Err(err).with_context(|| {
         format!(
-            "failed to replace updater with managed Codex binary {}",
+            "failed to replace updater with managed ByteAsk binary {}",
             managed_codex_bin.display()
         )
     })
@@ -175,36 +188,37 @@ async fn install_latest_standalone(http: &RouteAwareClientPool) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("failed to invoke standalone Codex updater")?;
+        .context("failed to invoke standalone ByteAsk updater")?;
     let mut stdin = child
         .stdin
         .take()
-        .context("standalone Codex updater stdin was unavailable")?;
+        .context("standalone ByteAsk updater stdin was unavailable")?;
     stdin
         .write_all(&script)
         .await
-        .context("failed to pass standalone Codex updater to shell")?;
+        .context("failed to pass standalone ByteAsk updater to shell")?;
     drop(stdin);
     let status = child
         .wait()
         .await
-        .context("failed to wait for standalone Codex updater")?;
+        .context("failed to wait for standalone ByteAsk updater")?;
 
     if status.success() {
         Ok(())
     } else {
-        anyhow::bail!("standalone Codex updater exited with status {status}")
+        anyhow::bail!("standalone ByteAsk updater exited with status {status}")
     }
 }
 
 #[cfg(unix)]
-async fn fetch_installer_script(http: &impl InstallerHttp) -> Result<Vec<u8>> {
-    match http.get(INSTALL_URL).await? {
-        InstallerResponse::Success(body) => Ok(body),
-        InstallerResponse::Unsuccessful { status } => {
-            anyhow::bail!("standalone Codex updater request failed with status {status}")
-        }
-    }
+async fn fetch_installer_script(_http: &impl InstallerHttp) -> Result<Vec<u8>> {
+    // Refuse rather than fetch. See the note on INSTALL_URL: an unattended installer on
+    // an hourly timer is not a path ByteAsk wants, and upstream's pointed at another
+    // product entirely.
+    let _ = INSTALL_URL;
+    anyhow::bail!(
+        "ByteAsk does not self-install from the background daemon; run `byteask --update`"
+    )
 }
 
 #[cfg(unix)]
@@ -232,7 +246,7 @@ impl InstallerHttp for RouteAwareClientPool {
         let response = RouteAwareClientPool::get(self, url)
             .send()
             .await
-            .context("failed to fetch standalone Codex updater")?;
+            .context("failed to fetch standalone ByteAsk updater")?;
         if !response.status().is_success() {
             return Ok(InstallerResponse::Unsuccessful {
                 status: response.status().as_u16(),
@@ -241,7 +255,7 @@ impl InstallerHttp for RouteAwareClientPool {
         let body = response
             .bytes()
             .await
-            .context("failed to read standalone Codex updater")?
+            .context("failed to read standalone ByteAsk updater")?
             .to_vec();
         Ok(InstallerResponse::Success(body))
     }

@@ -1,0 +1,448 @@
+{
+ "schema": "byteask.perflab.compare/1",
+ "mode": "compare",
+ "verdict": "FASTER",
+ "verdict_reason": "p50: B is 36.7% better (95% CI -37.8% to -33.6%, p=0.0005, floor 2%)",
+ "summary": [
+  "FASTER: p50: B is 36.7% better (95% CI -37.8% to -33.6%, p=0.0005, floor 2%)",
+  "p50 189.6 -> 120.0 ns (-36.7%); p99 554.3 -> 400.4 ns (-27.8%); p99.9 1826.5 -> 538.3 ns (-70.5%); throughput 4.243M -> 7.219M (+70.2%); mean_ns 235.7 -> 138.5 ns (-41.2%); messages 1.800M -> 1.800M (+0.0%); tsc_ghz 2.3000 -> 2.3000 (+0.0%)",
+  "TMA (hot loop): backend_bound 43.8% (memory_bound 29.3%) -> backend_bound 54.9% (memory_bound 37.0%); biggest level-2 change light_operations -8.2 pp",
+  "allocs_per_msg 1.5200 -> 0.0000 OK",
+  "cpu 2 isolated, 3.09 GHz pinned; preflight 15/17 PASS; 12 rounds; noise 4.94%/round, smallest detectable 4.0%"
+ ],
+ "primary_metric": "p50_ns",
+ "confidence": 0.95,
+ "floor_pct": 2.0,
+ "rounds": 12,
+ "host": {
+  "hostname": "bench-host-1",
+  "cpu_model": "INTEL(R) XEON(R) PLATINUM 8581C CPU @ 2.30GHz",
+  "kernel": "7.0.0-1014-generic",
+  "measured_cpu": 2,
+  "sibling_cpu": 6,
+  "housekeeping_cpus": "0,4",
+  "freq_ghz": 3.085173157623786
+ },
+ "preflight": {
+  "ok": true,
+  "checks": [
+   {
+    "name": "root",
+    "status": "PASS",
+    "detail": "running as root (needed to place the job on the isolated CPU)",
+    "fix": null
+   },
+   {
+    "name": "lab_config",
+    "status": "PASS",
+    "detail": "measure cpu 2, SMT sibling 6, housekeeping 0,4",
+    "fix": null
+   },
+   {
+    "name": "isolated_cpu",
+    "status": "PASS",
+    "detail": "cpu 2 (and its SMT sibling) isolated; other tasks confined to 0,4",
+    "fix": null
+   }
+  ],
+  "freq_ghz": 3.085173157623786
+ },
+ "a": {
+  "label": "0a1b2c3",
+  "ref": "0a1b2c3",
+  "commit": "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567",
+  "command": [
+   "build/release/feed_bench",
+   "--feed",
+   "/data/feeds/sample-session.cap"
+  ],
+  "cwd": "/var/tmp/perflab/20261018T171950Z-13736/a",
+  "build": {
+   "ok": true,
+   "seconds": 2.837259772,
+   "log": "/var/tmp/perflab/20261018T171950Z-13736/build-a.log",
+   "log_tail": "[1/2] Building CXX object CMakeFiles/feed_bench.dir/bench/bench_main.cpp.o\n[2/2] Linking CXX executable feed_bench"
+  }
+ },
+ "b": {
+  "label": "7f8e9d0",
+  "ref": "7f8e9d0",
+  "commit": "7f8e9d0c1b2a39485766a5b4c3d2e1f0fedcba98",
+  "command": [
+   "build/release/feed_bench",
+   "--feed",
+   "/data/feeds/sample-session.cap"
+  ],
+  "cwd": "/var/tmp/perflab/20261018T171950Z-13736/b",
+  "build": {
+   "ok": true,
+   "seconds": 2.3964878130000002,
+   "log": "/var/tmp/perflab/20261018T171950Z-13736/build-b.log",
+   "log_tail": "[1/2] Building CXX object CMakeFiles/feed_bench.dir/bench/bench_main.cpp.o\n[2/2] Linking CXX executable feed_bench"
+  }
+ },
+ "metrics": [
+  {
+   "name": "p50_ns",
+   "better": "lower",
+   "unit": "ns",
+   "n": 12,
+   "a_median": 189.57,
+   "b_median": 120.0,
+   "ratio": 0.6330115524608324,
+   "change_pct": -36.69884475391676,
+   "ci": [
+    0.6215382180724799,
+    0.6635930047694754
+   ],
+   "ci_level": 0.95,
+   "p_value": 0.00048828125,
+   "mwu_p_value": 3.096246133349467e-05,
+   "noise_pct": 4.940761983980857,
+   "min_detectable_pct": 3.977313072339994,
+   "rounds_needed_for_floor": 47,
+   "verdict": "FASTER",
+   "reason": "B is 36.7% better (95% CI -37.8% to -33.6%, p=0.0005, floor 2%)"
+  },
+  {
+   "name": "p99_ns",
+   "better": "lower",
+   "unit": "ns",
+   "n": 12,
+   "a_median": 554.345,
+   "b_median": 400.435,
+   "ratio": 0.7223570159377283,
+   "change_pct": -27.764298406227173,
+   "ci": [
+    0.694179708106207,
+    0.7436116469183429
+   ],
+   "ci_level": 0.95,
+   "p_value": 0.00048828125,
+   "mwu_p_value": 3.6584556211582964e-05,
+   "noise_pct": 4.906028822055797,
+   "min_detectable_pct": 3.9494797108833746,
+   "rounds_needed_for_floor": 46,
+   "verdict": "FASTER",
+   "reason": "B is 27.8% better (95% CI -30.6% to -25.6%, p=0.0005, floor 2%)"
+  },
+  {
+   "name": "p999_ns",
+   "better": "lower",
+   "unit": "ns",
+   "n": 12,
+   "a_median": 1826.525,
+   "b_median": 538.26,
+   "ratio": 0.29469073787656885,
+   "change_pct": -70.53092621234312,
+   "ci": [
+    0.28534012786267904,
+    0.2994511435649662
+   ],
+   "ci_level": 0.95,
+   "p_value": 0.00048828125,
+   "mwu_p_value": 3.6017056308956796e-05,
+   "noise_pct": 3.4330852695230396,
+   "min_detectable_pct": 2.767507746660103,
+   "rounds_needed_for_floor": 23,
+   "verdict": "FASTER",
+   "reason": "B is 70.5% better (95% CI -71.5% to -70.1%, p=0.0005, floor 2%)"
+  },
+  {
+   "name": "throughput",
+   "better": "higher",
+   "unit": null,
+   "n": 12,
+   "a_median": 4242631.5,
+   "b_median": 7219061.5,
+   "ratio": 1.70155279806884,
+   "change_pct": 70.15527980688401,
+   "ci": [
+    1.638160427646944,
+    1.7395840502895448
+   ],
+   "ci_level": 0.95,
+   "p_value": 0.00048828125,
+   "mwu_p_value": 3.6584556211582964e-05,
+   "noise_pct": 3.795093833567731,
+   "min_detectable_pct": 3.058300266002334,
+   "rounds_needed_for_floor": 28,
+   "verdict": "FASTER",
+   "reason": "B is 70.2% better (95% CI +63.8% to +74.0%, p=0.0005, floor 2%)"
+  },
+  {
+   "name": "mean_ns",
+   "better": "lower",
+   "unit": "ns",
+   "n": 12,
+   "a_median": 235.70499999999998,
+   "b_median": 138.51999999999998,
+   "ratio": 0.5876837572389215,
+   "change_pct": -41.23162427610785,
+   "ci": [
+    0.5748533322078251,
+    0.6104159116587434
+   ],
+   "ci_level": 0.95,
+   "p_value": 0.00048828125,
+   "mwu_p_value": 3.6584556211582964e-05,
+   "noise_pct": 3.7947226382063937,
+   "min_detectable_pct": 3.0580021934043966,
+   "rounds_needed_for_floor": 28,
+   "verdict": "FASTER",
+   "reason": "B is 41.2% better (95% CI -42.5% to -39.0%, p=0.0005, floor 2%)"
+  },
+  {
+   "name": "messages",
+   "better": "info",
+   "unit": null,
+   "n": 12,
+   "a_median": 1800000.0,
+   "b_median": 1800000.0,
+   "ratio": 1.0,
+   "change_pct": 0.0,
+   "ci": [
+    null,
+    null
+   ],
+   "ci_level": 0.95,
+   "p_value": null,
+   "mwu_p_value": null,
+   "noise_pct": null,
+   "min_detectable_pct": null,
+   "rounds_needed_for_floor": null,
+   "verdict": "INFO",
+   "reason": "reported only (no direction from its name)"
+  },
+  {
+   "name": "tsc_ghz",
+   "better": "info",
+   "unit": null,
+   "n": 12,
+   "a_median": 2.3,
+   "b_median": 2.3,
+   "ratio": 1.0,
+   "change_pct": 0.0,
+   "ci": [
+    null,
+    null
+   ],
+   "ci_level": 0.95,
+   "p_value": null,
+   "mwu_p_value": null,
+   "noise_pct": null,
+   "min_detectable_pct": null,
+   "rounds_needed_for_floor": null,
+   "verdict": "INFO",
+   "reason": "reported only (no direction from its name)"
+  },
+  {
+   "name": "wall_s",
+   "better": "lower",
+   "unit": "s",
+   "n": 12,
+   "a_median": 0.6749814224999999,
+   "b_median": 0.472004225,
+   "ratio": 0.6992847643892007,
+   "change_pct": -30.07152356107993,
+   "ci": [
+    0.6903250947796553,
+    0.7111898977862277
+   ],
+   "ci_level": 0.95,
+   "p_value": 0.00048828125,
+   "mwu_p_value": 3.6584556211582964e-05,
+   "noise_pct": 2.182411923393568,
+   "min_detectable_pct": 1.7613692846725426,
+   "rounds_needed_for_floor": 10,
+   "verdict": "FASTER",
+   "reason": "B is 30.1% better (95% CI -31.0% to -28.9%, p=0.0005, floor 2%)"
+  }
+ ],
+ "regressions": [],
+ "guards": [
+  {
+   "metric": "allocs_per_msg",
+   "a_median": 1.52,
+   "b_median": 0.0,
+   "ok": true
+  }
+ ],
+ "check": {
+  "ran": false,
+  "command": null,
+  "ok": null,
+  "first_diff_line": null,
+  "a": null,
+  "b": null,
+  "detail": null
+ },
+ "tma": {
+  "status": "OK",
+  "reason": null,
+  "region": "perf-ctl",
+  "runs_per_side": 3,
+  "a": {
+   "tma_backend_bound": 43.75,
+   "tma_bad_speculation": 16.621695,
+   "tma_branch_mispredicts": 16.40625,
+   "tma_core_bound": 14.453125,
+   "tma_fetch_bandwidth": 10.9375,
+   "tma_fetch_latency": 7.987551,
+   "tma_frontend_bound": 18.925051,
+   "tma_heavy_operations": 2.734375,
+   "tma_light_operations": 17.96875,
+   "tma_machine_clears": 0.215445,
+   "tma_memory_bound": 29.296875,
+   "tma_retiring": 20.703125
+  },
+  "b": {
+   "tma_backend_bound": 54.863813,
+   "tma_bad_speculation": 14.245703,
+   "tma_branch_mispredicts": 14.007782,
+   "tma_core_bound": 17.509728,
+   "tma_fetch_bandwidth": 10.505837,
+   "tma_fetch_latency": 8.328293,
+   "tma_frontend_bound": 18.82643,
+   "tma_heavy_operations": 2.33463,
+   "tma_light_operations": 9.727626,
+   "tma_machine_clears": 0.237921,
+   "tma_memory_bound": 36.964981,
+   "tma_retiring": 12.062257
+  },
+  "delta_pp": {
+   "tma_backend_bound": 11.113813,
+   "tma_bad_speculation": -2.3759919999999983,
+   "tma_branch_mispredicts": -2.3984679999999994,
+   "tma_core_bound": 3.056602999999999,
+   "tma_fetch_bandwidth": -0.43166300000000035,
+   "tma_fetch_latency": 0.34074200000000054,
+   "tma_frontend_bound": -0.0986210000000014,
+   "tma_heavy_operations": -0.3997449999999998,
+   "tma_light_operations": -8.241124,
+   "tma_machine_clears": 0.022475999999999996,
+   "tma_memory_bound": 7.668106000000002,
+   "tma_retiring": -8.640868
+  },
+  "a_headline": "backend_bound 43.8% (memory_bound 29.3%)",
+  "b_headline": "backend_bound 54.9% (memory_bound 37.0%)",
+  "multiplexed": false,
+  "level2_available": true
+ },
+ "rounds_detail": [
+  {
+   "round": 1,
+   "order": "AB",
+   "rerun": 0,
+   "discarded": [],
+   "a": {
+    "exit": 0,
+    "signal": null,
+    "timed_out": false,
+    "wall_s": 0.675807082,
+    "user_s": 0.592909,
+    "sys_s": 0.078987,
+    "freq_ghz": 3.08726925338204,
+    "cycles": 2069031548,
+    "instructions": 2428003226,
+    "involuntary_switches": 3,
+    "metrics": {
+     "allocs_per_msg": 1.52,
+     "mean_ns": 236.17,
+     "messages": 1800000.0,
+     "p50_ns": 190.43,
+     "p999_ns": 1832.17,
+     "p99_ns": 554.78,
+     "throughput": 4234199.0,
+     "tsc_ghz": 2.3
+    },
+    "perflab_error": null,
+    "disturbed": null
+   },
+   "b": {
+    "exit": 0,
+    "signal": null,
+    "timed_out": false,
+    "wall_s": 0.471449938,
+    "user_s": 0.389845,
+    "sys_s": 0.07415999999999999,
+    "freq_ghz": 3.0866733630738947,
+    "cycles": 1430166948,
+    "instructions": 1223473601,
+    "involuntary_switches": 2,
+    "metrics": {
+     "allocs_per_msg": 0.0,
+     "mean_ns": 138.37,
+     "messages": 1800000.0,
+     "p50_ns": 120.0,
+     "p999_ns": 543.48,
+     "p99_ns": 401.74,
+     "throughput": 7226921.0,
+     "tsc_ghz": 2.3
+    },
+    "perflab_error": null,
+    "disturbed": null
+   }
+  },
+  {
+   "round": 2,
+   "order": "AB",
+   "rerun": 0,
+   "discarded": [],
+   "a": {
+    "exit": 0,
+    "signal": null,
+    "timed_out": false,
+    "wall_s": 0.689210425,
+    "user_s": 0.60676,
+    "sys_s": 0.075094,
+    "freq_ghz": 3.087344865040116,
+    "cycles": 2100062233,
+    "instructions": 2427955508,
+    "involuntary_switches": 2,
+    "metrics": {
+     "allocs_per_msg": 1.52,
+     "mean_ns": 242.22,
+     "messages": 1800000.0,
+     "p50_ns": 189.57,
+     "p999_ns": 1840.0,
+     "p99_ns": 609.57,
+     "throughput": 4128506.0,
+     "tsc_ghz": 2.3
+    },
+    "perflab_error": null,
+    "disturbed": null
+   },
+   "b": {
+    "exit": 0,
+    "signal": null,
+    "timed_out": false,
+    "wall_s": 0.472558512,
+    "user_s": 0.386086,
+    "sys_s": 0.07901699999999999,
+    "freq_ghz": 3.087175087257268,
+    "cycles": 1434298835,
+    "instructions": 1223450206,
+    "involuntary_switches": 1,
+    "metrics": {
+     "allocs_per_msg": 0.0,
+     "mean_ns": 138.67,
+     "messages": 1800000.0,
+     "p50_ns": 120.0,
+     "p999_ns": 526.96,
+     "p99_ns": 400.0,
+     "throughput": 7211202.0,
+     "tsc_ghz": 2.3
+    },
+    "perflab_error": null,
+    "disturbed": null
+   }
+  }
+ ],
+ "order_seed": 1792343997902430637,
+ "measure_lock": "took /var/lock/perf-lab-measure",
+ "notes": [],
+ "started_utc": "2026-10-18T17:19:50Z",
+ "finished_utc": "2026-10-18T17:20:15Z",
+ "runner_version": "0.1.0"
+}

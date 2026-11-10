@@ -23,7 +23,7 @@ async fn authenticated_plugin_migration_uses_chatgpt_curated_marketplace() {
         codex_home.join("config.toml"),
         "[features]\nplugins = true\n",
     )
-    .expect("write Codex config");
+    .expect("write ByteAsk config");
     fs::write(
         codex_home.join(".tmp/plugins.sha"),
         "0123456789abcdef0123456789abcdef01234567\n",

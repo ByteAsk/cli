@@ -138,7 +138,7 @@ pub const CONTEXT_WINDOW_OPEN_TAG: &str = "<context_window>";
 pub const CONTEXT_WINDOW_CLOSE_TAG: &str = "</context_window>";
 pub const CONTEXT_WINDOW_GUIDANCE_OPEN_TAG: &str = "<context_window_guidance>";
 pub const CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG: &str = "</context_window_guidance>";
-pub const USER_MESSAGE_BEGIN: &str = "## My request for Codex:";
+pub const USER_MESSAGE_BEGIN: &str = "## My request for ByteAsk:";
 
 /// Removes the model-context prefix from a user message before displaying it.
 pub fn strip_user_message_prefix(text: &str) -> &str {
@@ -1388,6 +1388,9 @@ pub enum EventMsg {
     /// Backend recommends additional account verification for this turn.
     ModelVerification(ModelVerificationEvent),
 
+    /// ByteAsk Context: one turn-0 pack attempt (only in sessions with ByteAsk Context configured).
+    ContextPack(ContextPackEvent),
+
     /// Backend moderation metadata intended for first-party turn presentation.
     TurnModerationMetadata(TurnModerationMetadataEvent),
 
@@ -2113,6 +2116,34 @@ pub struct ModelRerouteEvent {
 #[ts(rename_all = "snake_case")]
 pub enum ModelVerification {
     TrustedAccessForCyber,
+}
+
+/// ByteAsk Context's turn-0 pack for one user message: whether the harness called
+/// `find_code_for_task`, how long it took, how big the answer was, whether it went into the user
+/// turn, and why not when it did not. `message` is the one line shown to the user, if any.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct ContextPackEvent {
+    /// The harness called `find_code_for_task` for this message.
+    pub attempted: bool,
+    /// The answer went into the user turn before the first model request.
+    pub injected: bool,
+    /// Why nothing was injected: `not_a_task`, `not_cpp_repo`, `not_git_repo`, `not_indexed`,
+    /// `indexing`, `timeout` or `error`. `None` when injected.
+    pub reason: Option<String>,
+    /// Wall time of the call, in milliseconds (when attempted).
+    pub latency_ms: Option<u64>,
+    /// Size of the answer text, in bytes (when attempted and answered).
+    pub answer_bytes: Option<u64>,
+    /// The answer's approximate tokens (bytes / 4).
+    pub approx_tokens: Option<u64>,
+    /// The test programs the answer names as exercising its top places.
+    pub test_programs: Vec<String>,
+    /// A background build of those test programs was started.
+    pub warm_build_started: bool,
+    /// Pre-approved indexing of an unindexed repository: `started` or `failed`.
+    pub auto_index: Option<String>,
+    /// The one line shown to the user (TUI) or printed on stderr (exec), if any.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -5564,6 +5595,7 @@ mod tests {
                 success: None,
                 error: None,
                 duration: None,
+                host_executed: false,
             }),
         };
         let completed = ItemCompletedEvent {
@@ -5583,6 +5615,7 @@ mod tests {
                 success: Some(true),
                 error: None,
                 duration: Some(Duration::from_millis(5)),
+                host_executed: false,
             }),
         };
 

@@ -781,3 +781,20 @@ fn insert_initial_context_before_last_real_user_or_summary_keeps_compaction_last
     ];
     assert_eq!(refreshed, expected);
 }
+
+// ---- ByteAsk: cache-aware compaction ------------------------------------------------
+
+#[test]
+fn byteask_compaction_carries_tools_only_for_the_openai_passthrough() {
+    for slug in ["gpt-5.4", "gpt-5.6-luna", "gpt-6-astra", "auto"] {
+        assert!(byteask_is_openai_passthrough_model(slug), "{slug}");
+    }
+    // Our translators for these drop `tool_choice`, so a visible tool could be CALLED.
+    for slug in ["claude-sonnet-5", "gemini-3.8-flash", "kimi-k3", "deepseek-v4", "self/llama"] {
+        assert!(!byteask_is_openai_passthrough_model(slug), "{slug}");
+    }
+    // Dark: with no policy installed the flag is off, whatever the model.
+    if !byteask_output_reducers::policy::active().flag("compact_with_tools") {
+        assert!(!byteask_compaction_may_carry_tools("gpt-5.4"));
+    }
+}

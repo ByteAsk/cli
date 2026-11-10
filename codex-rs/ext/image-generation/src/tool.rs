@@ -129,6 +129,12 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ImageGenerationTool {
         ToolExposure::Direct
     }
 
+    // Emits its own ExtensionItem::ImageGeneration items — the core adapter
+    // must not add a generic tool-call item on top.
+    fn manages_turn_items(&self) -> bool {
+        true
+    }
+
     /// Executes the selected image operation and returns the completed image result.
     fn handle<'a>(&'a self, call: ToolCall<'call>) -> codex_extension_api::ToolExecutorFuture<'a>
     where

@@ -1,0 +1,41 @@
+name: Bug report
+description: Something in ByteAsk CLI does not work as expected.
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `byteask --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Linux x86_64, Linux arm64, macOS (Apple silicon), Windows x86_64, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How you run models
+      options: [ByteAsk account, Own provider key, Own hosted model, Not relevant]
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Commands, prompts and project details needed to see the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Include error text or terminal output. Remove keys, tokens and private code first.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected

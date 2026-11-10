@@ -1,0 +1,1042 @@
+{
+  "schema": "byteask.perflab.compare/1",
+  "mode": "aa",
+  "verdict": "NO_CLAIM",
+  "verdict_reason": "p50: inside the noise: B/A -0.5% (95% CI -0.5% to +0.0%, p=0.332)",
+  "summary": [
+    "NO CLAIM: p50: inside the noise: B/A -0.5% (95% CI -0.5% to +0.0%, p=0.332)",
+    "p50 188.7 -> 187.8 ns (-0.5%); p99 518.7 -> 514.3 ns (-0.8%); p99.9 1811.7 -> 1813.9 ns (+0.1%); throughput 4.366M -> 4.367M (+0.0%); allocs_per_msg 1.5200 -> 1.5200 (+0.0%); mean_ns 229.0 -> 229.0 ns (-0.0%); messages 1.800M -> 1.800M (+0.0%); tsc_ghz 2.3000 -> 2.3000 (+0.0%)",
+    "TMA: NOT RUN (disabled with --no-tma)",
+    "cpu 2 isolated, 3.09 GHz pinned; preflight 15/17 PASS; 12 rounds; noise 0.57%/round, smallest detectable 0.5%"
+  ],
+  "primary_metric": "p50_ns",
+  "confidence": 0.95,
+  "floor_pct": 2.0,
+  "rounds": 12,
+  "host": {
+    "hostname": "bench-host-1",
+    "cpu_model": "INTEL(R) XEON(R) PLATINUM 8581C CPU @ 2.30GHz",
+    "kernel": "7.0.0-1014-generic",
+    "measured_cpu": 2,
+    "sibling_cpu": 6,
+    "housekeeping_cpus": "0,4",
+    "freq_ghz": 3.0856528069476656
+  },
+  "preflight": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "root",
+        "status": "PASS",
+        "detail": "running as root (needed to place the job on the isolated CPU)",
+        "fix": null
+      },
+      {
+        "name": "lab_config",
+        "status": "PASS",
+        "detail": "measure cpu 2, SMT sibling 6, housekeeping 0,4",
+        "fix": null
+      },
+      {
+        "name": "isolated_cpu",
+        "status": "PASS",
+        "detail": "cpu 2 (and its SMT sibling) isolated; other tasks confined to 0,4",
+        "fix": null
+      },
+      {
+        "name": "irq_affinity",
+        "status": "PASS",
+        "detail": "no device interrupt is delivered to the measured core",
+        "fix": null
+      },
+      {
+        "name": "irqbalance",
+        "status": "PASS",
+        "detail": "not running",
+        "fix": null
+      },
+      {
+        "name": "cpu_governor",
+        "status": "NOT_APPLICABLE",
+        "detail": "cpufreq is not exposed (virtual machine); the frequency is verified by measurement instead",
+        "fix": null
+      },
+      {
+        "name": "turbo",
+        "status": "NOT_APPLICABLE",
+        "detail": "not controllable from the guest (on GCP C4 the all-core turbo is pinned by the host); verified by measured frequency",
+        "fix": null
+      },
+      {
+        "name": "frequency",
+        "status": "PASS",
+        "detail": "3.086 GHz, 0.04% spread over 5 runs",
+        "fix": null
+      },
+      {
+        "name": "timer_source",
+        "status": "PASS",
+        "detail": "tsc (constant, nonstop)",
+        "fix": null
+      },
+      {
+        "name": "nmi_watchdog",
+        "status": "PASS",
+        "detail": "off",
+        "fix": null
+      },
+      {
+        "name": "perf_counters",
+        "status": "PASS",
+        "detail": "perf_event_paranoid=1",
+        "fix": null
+      },
+      {
+        "name": "transparent_hugepages",
+        "status": "PASS",
+        "detail": "THP=madvise",
+        "fix": null
+      },
+      {
+        "name": "swap",
+        "status": "PASS",
+        "detail": "no swap in use",
+        "fix": null
+      },
+      {
+        "name": "memory",
+        "status": "PASS",
+        "detail": "28 GiB available",
+        "fix": null
+      },
+      {
+        "name": "smt_sibling_idle",
+        "status": "PASS",
+        "detail": "cpu 6 idle (0.0% busy)",
+        "fix": null
+      },
+      {
+        "name": "other_load",
+        "status": "PASS",
+        "detail": "housekeeping 3% busy, isolated CPUs idle",
+        "fix": null
+      },
+      {
+        "name": "steal_time",
+        "status": "PASS",
+        "detail": "no steal time on the measured CPU",
+        "fix": null
+      }
+    ],
+    "freq_ghz": 3.0856528069476656
+  },
+  "a": {
+    "label": "A",
+    "ref": null,
+    "commit": null,
+    "command": [
+      "/work/feed-handler/build/release/feed_bench",
+      "--feed",
+      "/data/feeds/sample-session.cap"
+    ],
+    "cwd": "/work/feed-handler",
+    "build": null
+  },
+  "b": {
+    "label": "A (again)",
+    "ref": null,
+    "commit": null,
+    "command": [
+      "/work/feed-handler/build/release/feed_bench",
+      "--feed",
+      "/data/feeds/sample-session.cap"
+    ],
+    "cwd": "/work/feed-handler",
+    "build": null
+  },
+  "metrics": [
+    {
+      "name": "p50_ns",
+      "better": "lower",
+      "unit": "ns",
+      "n": 12,
+      "a_median": 188.7,
+      "b_median": 187.83,
+      "ratio": 0.9953895071542131,
+      "change_pct": -0.4610492845786851,
+      "ci": [
+        0.9953895071542131,
+        1.0
+      ],
+      "ci_level": 0.95,
+      "p_value": 0.33203125,
+      "mwu_p_value": 0.19934092242023627,
+      "noise_pct": 0.5708220835771938,
+      "min_detectable_pct": 0.4613997878916809,
+      "rounds_needed_for_floor": 2,
+      "verdict": "NO_CLAIM",
+      "reason": "inside the noise: B/A -0.5% (95% CI -0.5% to +0.0%, p=0.332)"
+    },
+    {
+      "name": "p99_ns",
+      "better": "lower",
+      "unit": "ns",
+      "n": 12,
+      "a_median": 518.6949999999999,
+      "b_median": 514.345,
+      "ratio": 0.9916135686675216,
+      "change_pct": -0.8386431332478406,
+      "ci": [
+        0.9702427341329428,
+        1.027178475896675
+      ],
+      "ci_level": 0.95,
+      "p_value": 0.59375,
+      "mwu_p_value": 0.6857176033188221,
+      "noise_pct": 4.250401227452816,
+      "min_detectable_pct": 3.4237622189455363,
+      "rounds_needed_for_floor": 35,
+      "verdict": "NO_CLAIM",
+      "reason": "inside the noise: B/A -0.8% (95% CI -3.0% to +2.7%, p=0.594)"
+    },
+    {
+      "name": "p999_ns",
+      "better": "lower",
+      "unit": "ns",
+      "n": 12,
+      "a_median": 1811.74,
+      "b_median": 1813.91,
+      "ratio": 1.0011977436055948,
+      "change_pct": 0.11977436055947699,
+      "ci": [
+        0.995942631720445,
+        1.0062535972019302
+      ],
+      "ci_level": 0.95,
+      "p_value": 0.9375,
+      "mwu_p_value": 0.6858472086829301,
+      "noise_pct": 0.7417401904239451,
+      "min_detectable_pct": 0.5994566429334602,
+      "rounds_needed_for_floor": 2,
+      "verdict": "NO_CLAIM",
+      "reason": "inside the noise: B/A +0.1% (95% CI -0.4% to +0.6%, p=0.938)"
+    },
+    {
+      "name": "throughput",
+      "better": "higher",
+      "unit": null,
+      "n": 12,
+      "a_median": 4366361.0,
+      "b_median": 4367329.0,
+      "ratio": 1.0002216949079565,
+      "change_pct": 0.02216949079565378,
+      "ci": [
+        0.9931493253145912,
+        1.0116794308651602
+      ],
+      "ci_level": 0.95,
+      "p_value": 0.4677734375,
+      "mwu_p_value": 0.5443701002591239,
+      "noise_pct": 1.2688204613818588,
+      "min_detectable_pct": 1.0249171697072956,
+      "rounds_needed_for_floor": 4,
+      "verdict": "NO_CLAIM",
+      "reason": "inside the noise: B/A +0.0% (95% CI -0.7% to +1.2%, p=0.468)"
+    },
+    {
+      "name": "allocs_per_msg",
+      "better": "info",
+      "unit": null,
+      "n": 12,
+      "a_median": 1.52,
+      "b_median": 1.52,
+      "ratio": 1.0,
+      "change_pct": 0.0,
+      "ci": [
+        null,
+        null
+      ],
+      "ci_level": 0.95,
+      "p_value": null,
+      "mwu_p_value": null,
+      "noise_pct": null,
+      "min_detectable_pct": null,
+      "rounds_needed_for_floor": null,
+      "verdict": "INFO",
+      "reason": "reported only (no direction from its name)"
+    },
+    {
+      "name": "mean_ns",
+      "better": "lower",
+      "unit": "ns",
+      "n": 12,
+      "a_median": 229.02499999999998,
+      "b_median": 228.975,
+      "ratio": 0.9997816832223557,
+      "change_pct": -0.021831677764427848,
+      "ci": [
+        0.9884476219538778,
+        1.0068948912139386
+      ],
+      "ci_level": 0.95,
+      "p_value": 0.4677734375,
+      "mwu_p_value": 0.5443701002591239,
+      "noise_pct": 1.269474952546501,
+      "min_detectable_pct": 1.0254452129454306,
+      "rounds_needed_for_floor": 4,
+      "verdict": "NO_CLAIM",
+      "reason": "inside the noise: B/A -0.0% (95% CI -1.2% to +0.7%, p=0.468)"
+    },
+    {
+      "name": "messages",
+      "better": "info",
+      "unit": null,
+      "n": 12,
+      "a_median": 1800000.0,
+      "b_median": 1800000.0,
+      "ratio": 1.0,
+      "change_pct": 0.0,
+      "ci": [
+        null,
+        null
+      ],
+      "ci_level": 0.95,
+      "p_value": null,
+      "mwu_p_value": null,
+      "noise_pct": null,
+      "min_detectable_pct": null,
+      "rounds_needed_for_floor": null,
+      "verdict": "INFO",
+      "reason": "reported only (no direction from its name)"
+    },
+    {
+      "name": "tsc_ghz",
+      "better": "info",
+      "unit": null,
+      "n": 12,
+      "a_median": 2.3,
+      "b_median": 2.3,
+      "ratio": 1.0,
+      "change_pct": 0.0,
+      "ci": [
+        null,
+        null
+      ],
+      "ci_level": 0.95,
+      "p_value": null,
+      "mwu_p_value": null,
+      "noise_pct": null,
+      "min_detectable_pct": null,
+      "rounds_needed_for_floor": null,
+      "verdict": "INFO",
+      "reason": "reported only (no direction from its name)"
+    },
+    {
+      "name": "wall_s",
+      "better": "lower",
+      "unit": "s",
+      "n": 12,
+      "a_median": 0.658031869,
+      "b_median": 0.656258633,
+      "ratio": 0.9973052429775251,
+      "change_pct": -0.2694757022474903,
+      "ci": [
+        0.9884412294189168,
+        1.0074983627184597
+      ],
+      "ci_level": 0.95,
+      "p_value": 0.64599609375,
+      "mwu_p_value": 0.4025038193634147,
+      "noise_pct": 1.2986265968688793,
+      "min_detectable_pct": 1.0489640872987094,
+      "rounds_needed_for_floor": 4,
+      "verdict": "NO_CLAIM",
+      "reason": "inside the noise: B/A -0.3% (95% CI -1.2% to +0.7%, p=0.646)"
+    }
+  ],
+  "regressions": [],
+  "guards": [],
+  "check": {
+    "ran": false,
+    "command": null,
+    "ok": null,
+    "first_diff_line": null,
+    "a": null,
+    "b": null,
+    "detail": null
+  },
+  "tma": {
+    "status": "NOT_RUN",
+    "reason": "disabled with --no-tma",
+    "region": "perf-ctl",
+    "runs_per_side": 0,
+    "a": {},
+    "b": {},
+    "delta_pp": {},
+    "a_slots": null,
+    "b_slots": null,
+    "delta_slots_pct": {},
+    "a_headline": null,
+    "b_headline": null,
+    "multiplexed": false,
+    "level2_available": false
+  },
+  "rounds_detail": [
+    {
+      "round": 1,
+      "order": "BA",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.664897803,
+        "user_s": 0.5969439999999999,
+        "sys_s": 0.061096,
+        "freq_ghz": 3.0873912611305587,
+        "cycles": 2026812943,
+        "instructions": 2427926372,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 233.1,
+          "messages": 1800000.0,
+          "p50_ns": 188.7,
+          "p999_ns": 1839.13,
+          "p99_ns": 549.57,
+          "throughput": 4290023.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.653731598,
+        "user_s": 0.5734509999999999,
+        "sys_s": 0.076059,
+        "freq_ghz": 3.0871071418164027,
+        "cycles": 1999895929,
+        "instructions": 2427772951,
+        "involuntary_switches": 4,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 228.51,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1809.57,
+          "p99_ns": 515.65,
+          "throughput": 4376126.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 2,
+      "order": "BA",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.653872719,
+        "user_s": 0.584324,
+        "sys_s": 0.063035,
+        "freq_ghz": 3.087183182787523,
+        "cycles": 1993905891,
+        "instructions": 2427870373,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 227.95,
+          "messages": 1800000.0,
+          "p50_ns": 188.7,
+          "p999_ns": 1814.78,
+          "p99_ns": 507.83,
+          "throughput": 4386859.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.662188577,
+        "user_s": 0.585774,
+        "sys_s": 0.06809,
+        "freq_ghz": 3.087036841655905,
+        "cycles": 2013778273,
+        "instructions": 2427795674,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 230.51,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1810.44,
+          "p99_ns": 530.43,
+          "throughput": 4338199.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 3,
+      "order": "BA",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.654101743,
+        "user_s": 0.579267,
+        "sys_s": 0.07091,
+        "freq_ghz": 3.087213188348888,
+        "cycles": 2001989340,
+        "instructions": 2427867532,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 229.39,
+          "messages": 1800000.0,
+          "p50_ns": 188.7,
+          "p999_ns": 1802.61,
+          "p99_ns": 520.0,
+          "throughput": 4359459.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.650409631,
+        "user_s": 0.563497,
+        "sys_s": 0.079928,
+        "freq_ghz": 3.087233035615861,
+        "cycles": 1981819193,
+        "instructions": 2427900943,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 225.54,
+          "messages": 1800000.0,
+          "p50_ns": 186.96,
+          "p999_ns": 1799.13,
+          "p99_ns": 498.26,
+          "throughput": 4433711.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 4,
+      "order": "AB",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.649483776,
+        "user_s": 0.572242,
+        "sys_s": 0.07303,
+        "freq_ghz": 3.0870037765149925,
+        "cycles": 1986914934,
+        "instructions": 2427735336,
+        "involuntary_switches": 4,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 226.23,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1805.22,
+          "p99_ns": 498.26,
+          "throughput": 4420371.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.652335037,
+        "user_s": 0.581203,
+        "sys_s": 0.067023,
+        "freq_ghz": 3.087262982493669,
+        "cycles": 1996614916,
+        "instructions": 2427869988,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 227.91,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1818.26,
+          "p99_ns": 513.04,
+          "throughput": 4387722.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 5,
+      "order": "AB",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.672125002,
+        "user_s": 0.590896,
+        "sys_s": 0.074112,
+        "freq_ghz": 3.0871026458455755,
+        "cycles": 2047723174,
+        "instructions": 2427890474,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 233.58,
+          "messages": 1800000.0,
+          "p50_ns": 188.7,
+          "p999_ns": 1800.87,
+          "p99_ns": 559.13,
+          "throughput": 4281194.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.659039738,
+        "user_s": 0.5856009999999999,
+        "sys_s": 0.066067,
+        "freq_ghz": 3.0873133637765964,
+        "cycles": 2006800910,
+        "instructions": 2427858782,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 229.59,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1818.26,
+          "p99_ns": 525.22,
+          "throughput": 4355678.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 6,
+      "order": "BA",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.662568031,
+        "user_s": 0.586702,
+        "sys_s": 0.06908199999999999,
+        "freq_ghz": 3.086912725847775,
+        "cycles": 2019773158,
+        "instructions": 2427870872,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 230.94,
+          "messages": 1800000.0,
+          "p50_ns": 188.7,
+          "p999_ns": 1828.7,
+          "p99_ns": 530.43,
+          "throughput": 4330143.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.677265615,
+        "user_s": 0.5835119999999999,
+        "sys_s": 0.08207199999999999,
+        "freq_ghz": 3.0873745329139037,
+        "cycles": 2049747054,
+        "instructions": 2427898548,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 234.43,
+          "messages": 1800000.0,
+          "p50_ns": 188.7,
+          "p999_ns": 1828.7,
+          "p99_ns": 562.61,
+          "throughput": 4265583.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 7,
+      "order": "BA",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.66129398,
+        "user_s": 0.5774389999999999,
+        "sys_s": 0.076057,
+        "freq_ghz": 3.087544083276143,
+        "cycles": 2012365498,
+        "instructions": 2427816813,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 229.87,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1822.61,
+          "p99_ns": 526.96,
+          "throughput": 4350266.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.659117303,
+        "user_s": 0.582511,
+        "sys_s": 0.06906,
+        "freq_ghz": 3.0871507207403313,
+        "cycles": 2006285750,
+        "instructions": 2427690684,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 229.44,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1812.17,
+          "p99_ns": 526.96,
+          "throughput": 4358532.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 8,
+      "order": "AB",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.660184701,
+        "user_s": 0.582322,
+        "sys_s": 0.066036,
+        "freq_ghz": 3.087180230782643,
+        "cycles": 1997007644,
+        "instructions": 2427827685,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 228.43,
+          "messages": 1800000.0,
+          "p50_ns": 188.7,
+          "p999_ns": 1813.91,
+          "p99_ns": 512.17,
+          "throughput": 4377777.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.649036782,
+        "user_s": 0.577913,
+        "sys_s": 0.067106,
+        "freq_ghz": 3.0866410754387945,
+        "cycles": 1985700906,
+        "instructions": 2427875840,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 226.42,
+          "messages": 1800000.0,
+          "p50_ns": 186.96,
+          "p999_ns": 1803.48,
+          "p99_ns": 507.83,
+          "throughput": 4416608.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 9,
+      "order": "AB",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.659998862,
+        "user_s": 0.58658,
+        "sys_s": 0.065064,
+        "freq_ghz": 3.0870248356876333,
+        "cycles": 2006926612,
+        "instructions": 2427837613,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 230.06,
+          "messages": 1800000.0,
+          "p50_ns": 188.7,
+          "p999_ns": 1806.09,
+          "p99_ns": 526.09,
+          "throughput": 4346758.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.65418009,
+        "user_s": 0.573409,
+        "sys_s": 0.07305199999999999,
+        "freq_ghz": 3.0870883751494103,
+        "cycles": 1990549682,
+        "instructions": 2427833672,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 226.59,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1808.7,
+          "p99_ns": 500.87,
+          "throughput": 4413305.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 10,
+      "order": "AB",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.655296333,
+        "user_s": 0.584391,
+        "sys_s": 0.064042,
+        "freq_ghz": 3.0875843475272275,
+        "cycles": 1997593400,
+        "instructions": 2427889523,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 228.19,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1810.44,
+          "p99_ns": 512.17,
+          "throughput": 4382225.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.662076968,
+        "user_s": 0.583249,
+        "sys_s": 0.070908,
+        "freq_ghz": 3.087040911655646,
+        "cycles": 2014310621,
+        "instructions": 2427843917,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 230.77,
+          "messages": 1800000.0,
+          "p50_ns": 188.7,
+          "p999_ns": 1819.13,
+          "p99_ns": 527.83,
+          "throughput": 4333393.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 11,
+      "order": "AB",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.652354367,
+        "user_s": 0.582123,
+        "sys_s": 0.066014,
+        "freq_ghz": 3.0868574148845944,
+        "cycles": 1995594582,
+        "instructions": 2427846286,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 227.02,
+          "messages": 1800000.0,
+          "p50_ns": 186.96,
+          "p999_ns": 1813.04,
+          "p99_ns": 506.09,
+          "throughput": 4404884.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.650927465,
+        "user_s": 0.579589,
+        "sys_s": 0.067068,
+        "freq_ghz": 3.0870375640660974,
+        "cycles": 1991581555,
+        "instructions": 2427888180,
+        "involuntary_switches": 3,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 226.89,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1815.65,
+          "p99_ns": 506.09,
+          "throughput": 4407445.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    },
+    {
+      "round": 12,
+      "order": "BA",
+      "rerun": 0,
+      "discarded": [],
+      "a": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.656064876,
+        "user_s": 0.581301,
+        "sys_s": 0.068035,
+        "freq_ghz": 3.0868415762154444,
+        "cycles": 1999878593,
+        "instructions": 2427850738,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 228.66,
+          "messages": 1800000.0,
+          "p50_ns": 187.83,
+          "p999_ns": 1808.7,
+          "p99_ns": 517.39,
+          "throughput": 4373263.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      },
+      "b": {
+        "exit": 0,
+        "signal": null,
+        "timed_out": false,
+        "wall_s": 0.658337176,
+        "user_s": 0.5876129999999999,
+        "sys_s": 0.063065,
+        "freq_ghz": 3.0870584336120097,
+        "cycles": 2003631932,
+        "instructions": 2427820697,
+        "involuntary_switches": 2,
+        "metrics": {
+          "allocs_per_msg": 1.52,
+          "mean_ns": 229.5,
+          "messages": 1800000.0,
+          "p50_ns": 189.57,
+          "p999_ns": 1826.09,
+          "p99_ns": 511.3,
+          "throughput": 4357308.0,
+          "tsc_ghz": 2.3
+        },
+        "perflab_error": null,
+        "disturbed": null
+      }
+    }
+  ],
+  "order_seed": 1792345096514204179,
+  "measure_lock": "took /var/lock/perf-lab-measure",
+  "notes": [
+    "A/A noise on p50_ns: 0.57% per round; this many rounds detect a 0.5% change; 6 rounds would resolve the 2% floor"
+  ],
+  "started_utc": "2026-10-18T17:38:13Z",
+  "finished_utc": "2026-10-18T17:38:32Z",
+  "runner_version": "0.1.0"
+}

@@ -1,0 +1,39 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "byteask-replay"
+version.workspace = true
+
+# One shared replay-and-compare library: load recorded inputs,
+# feed both versions, compare their outputs under explicit rules, report the
+# first difference. Callers: the verify gate's replay tier, port_check and the
+# perf lab. Kept small on purpose so it compiles in seconds: serde + serde_json
+# for records, sha2 for input fingerprints, libc to stop a timed-out process
+# group. No async runtime.
+
+[lib]
+name = "byteask_replay"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "byteask-replay"
+path = "src/bin/byteask-replay.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+# float_roundtrip: serde_json's default float parser is best-effort and can land one
+# representable value away from the text; a comparison library must read back exactly the
+# double that was written.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+sha2 = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

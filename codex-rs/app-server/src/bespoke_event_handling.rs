@@ -24,6 +24,7 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ContextPackNotification;
 use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::DynamicToolCallParams;
 use codex_app_server_protocol::EnvironmentConnectionNotification;
@@ -418,6 +419,25 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::ModelVerification(notification))
+                .await;
+        }
+        EventMsg::ContextPack(event) => {
+            let notification = ContextPackNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id.clone(),
+                attempted: event.attempted,
+                injected: event.injected,
+                reason: event.reason,
+                latency_ms: event.latency_ms,
+                answer_bytes: event.answer_bytes,
+                approx_tokens: event.approx_tokens,
+                test_programs: event.test_programs,
+                warm_build_started: event.warm_build_started,
+                auto_index: event.auto_index,
+                message: event.message,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::ContextPack(notification))
                 .await;
         }
         EventMsg::TurnModerationMetadata(event) => {
@@ -1092,7 +1112,11 @@ pub(crate) async fn apply_bespoke_event_handling(
                 _ => true,
             };
             let dynamic_tool_call_params = match &event.item {
-                CoreTurnItem::DynamicToolCall(item) => Some(DynamicToolCallParams {
+                // Host-executed tool calls (the visible item the extension
+                // adapter emits around tools the ENGINE runs) must not be
+                // forwarded as a client-execution request — only genuine
+                // client-provided dynamic tools are.
+                CoreTurnItem::DynamicToolCall(item) if !item.host_executed => Some(DynamicToolCallParams {
                     thread_id: conversation_id.to_string(),
                     turn_id: event.turn_id.clone(),
                     call_id: item.id.clone(),
@@ -3501,6 +3525,7 @@ mod tests {
                         success: None,
                         error: None,
                         duration: None,
+                        host_executed: false,
                     }),
                     started_at_ms: 42,
                 }),
@@ -3538,6 +3563,98 @@ mod tests {
                 arguments: json!({"id": "123"}),
             }
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_executed_dynamic_tool_start_emits_item_without_client_request() -> Result<()> {
+        let codex_home = TempDir::new()?;
+        let config = load_default_config_for_test(&codex_home).await;
+        let thread_manager = Arc::new(
+            codex_core::test_support::thread_manager_with_models_provider_and_home(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+                config.model_provider.clone(),
+                config.codex_home.to_path_buf(),
+                Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            ),
+        );
+        let codex_core::NewThread {
+            thread_id: conversation_id,
+            thread: conversation,
+            ..
+        } = thread_manager
+            .start_thread(codex_core::StartThreadOptions::new(config))
+            .await?;
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing,
+            vec![ConnectionId(1)],
+            conversation_id,
+        );
+
+        apply_bespoke_event_handling(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id: conversation_id,
+                    turn_id: "turn-1".to_string(),
+                    item: CoreTurnItem::DynamicToolCall(DynamicToolCallItem {
+                        id: "dynamic-1".to_string(),
+                        namespace: Some("apps".to_string()),
+                        tool: "lookup".to_string(),
+                        arguments: json!({"id": "123"}),
+                        status: CoreDynamicToolCallStatus::InProgress,
+                        content_items: None,
+                        success: None,
+                        error: None,
+                        duration: None,
+                        host_executed: true,
+                    }),
+                    started_at_ms: 42,
+                }),
+            },
+            conversation_id,
+            conversation,
+            thread_manager,
+            outgoing,
+            new_thread_state(),
+            ThreadWatchManager::new(),
+            Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
+            "test-provider".to_string(),
+        )
+        .await;
+
+        let item_started = recv_broadcast_notification(&mut rx).await?;
+        let ServerNotification::ItemStarted(payload) = item_started else {
+            bail!("unexpected notification: {item_started:?}");
+        };
+        assert_eq!(payload.item.id(), "dynamic-1");
+
+        // Host-executed items must NOT be forwarded as a client-execution
+        // request — the engine already ran the tool.
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            recv_broadcast_message(&mut rx),
+        )
+        .await
+        {
+            // Nothing further sent (timeout) or the channel closed — both
+            // mean no client-execution request was forwarded.
+            Err(_elapsed) => {}
+            Ok(Err(_channel_closed)) => {}
+            Ok(Ok(message)) => {
+                if matches!(
+                    &message,
+                    OutgoingMessage::Request(ServerRequest::DynamicToolCall { .. })
+                ) {
+                    bail!("host-executed item must not trigger a DynamicToolCall request");
+                }
+            }
+        }
         Ok(())
     }
 

@@ -20,12 +20,406 @@ use owo_colors::Style;
 use pretty_assertions::assert_eq;
 
 use super::EventProcessorWithHumanOutput;
+use super::TOOL_OUTPUT_TEXT_CAP;
 use super::config_summary_entries;
 use super::final_message_from_turn_items;
+use super::looks_like_sandbox_write_denial;
 use super::reasoning_text;
 use super::should_print_final_message_to_stdout;
 use super::should_print_final_message_to_tty;
 use crate::event_processor::EventProcessor;
+
+/// An unstyled processor, so assertions read against plain text.
+fn plain_processor() -> EventProcessorWithHumanOutput {
+    EventProcessorWithHumanOutput {
+        bold: Style::new(),
+        cyan: Style::new(),
+        dimmed: Style::new(),
+        green: Style::new(),
+        italic: Style::new(),
+        magenta: Style::new(),
+        red: Style::new(),
+        yellow: Style::new(),
+        show_agent_reasoning: true,
+        show_raw_agent_reasoning: false,
+        last_message_path: None,
+        final_message: None,
+        final_message_rendered: false,
+        emit_final_message_on_shutdown: false,
+        last_total_token_usage: None,
+        sandbox_is_read_only: false,
+        sandbox_hint_shown: false,
+    }
+}
+
+fn dynamic_tool_call(
+    status: codex_app_server_protocol::DynamicToolCallStatus,
+    content_items: Option<Vec<codex_app_server_protocol::DynamicToolCallOutputContentItem>>,
+    success: Option<bool>,
+) -> ThreadItem {
+    ThreadItem::DynamicToolCall {
+        id: "tool-1".to_string(),
+        namespace: None,
+        tool: "cpp_sanitize".to_string(),
+        arguments: serde_json::json!({"source": "main.cpp"}),
+        status,
+        content_items,
+        success,
+        duration_ms: Some(1234),
+    }
+}
+
+fn text_item(text: &str) -> codex_app_server_protocol::DynamicToolCallOutputContentItem {
+    codex_app_server_protocol::DynamicToolCallOutputContentItem::InputText {
+        text: text.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `byteask exec` must render extension tools (`cpp_*`, `ref_*`, skills,
+// memories, image generation). Without these arms a `cpp_sanitize` call that
+// compiles and runs a program under ASan/UBSan and finds the bug prints not
+// one line to the terminal.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dynamic_tool_call_started_names_the_tool_and_its_target() {
+    let processor = plain_processor();
+
+    let lines = processor.item_started_lines(&dynamic_tool_call(
+        codex_app_server_protocol::DynamicToolCallStatus::InProgress,
+        None,
+        None,
+    ));
+
+    assert_eq!(
+        lines,
+        vec![
+            "tool: cpp_sanitize started".to_string(),
+            "{\"source\":\"main.cpp\"}".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn dynamic_tool_call_started_uses_the_namespace_when_present() {
+    let processor = plain_processor();
+    let mut item = dynamic_tool_call(
+        codex_app_server_protocol::DynamicToolCallStatus::InProgress,
+        None,
+        None,
+    );
+    if let ThreadItem::DynamicToolCall { namespace, .. } = &mut item {
+        *namespace = Some("cpp".to_string());
+    }
+
+    let lines = processor.item_started_lines(&item);
+
+    assert!(lines[0].contains("cpp/cpp_sanitize"), "{lines:?}");
+}
+
+#[test]
+fn dynamic_tool_call_completed_prints_the_tool_output() {
+    let processor = plain_processor();
+
+    let lines = processor.item_completed_lines(&dynamic_tool_call(
+        codex_app_server_protocol::DynamicToolCallStatus::Completed,
+        Some(vec![text_item(
+            "1 issue(s) (exit 1)\nubsan error include/pool.hpp:11:26 store to address 0x7ffc with insufficient space",
+        )]),
+        Some(true),
+    ));
+
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0], "tool: cpp_sanitize (completed in 1234ms)");
+    assert!(
+        lines[1].contains("ubsan error include/pool.hpp:11:26"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn dynamic_tool_call_completed_reports_failure() {
+    let processor = plain_processor();
+
+    let lines = processor.item_completed_lines(&dynamic_tool_call(
+        codex_app_server_protocol::DynamicToolCallStatus::Failed,
+        Some(vec![text_item("compiler not found")]),
+        None,
+    ));
+
+    assert_eq!(lines[0], "tool: cpp_sanitize (failed in 1234ms)");
+    assert_eq!(lines[1], "compiler not found");
+}
+
+/// `success: false` on an otherwise `Completed` call still means the tool
+/// failed; the TUI treats it that way and so must exec.
+#[test]
+fn dynamic_tool_call_success_false_renders_as_failed() {
+    let processor = plain_processor();
+
+    let lines = processor.item_completed_lines(&dynamic_tool_call(
+        codex_app_server_protocol::DynamicToolCallStatus::Completed,
+        None,
+        Some(false),
+    ));
+
+    assert_eq!(lines[0], "tool: cpp_sanitize (failed in 1234ms)");
+}
+
+/// The image-generation extension registers into the same tool registry
+/// and returns `image_url: "data:image/png;base64,…"`, so a renderer that
+/// echoed content items verbatim would dump megabytes of base64 to the
+/// terminal.
+#[test]
+fn dynamic_tool_call_image_output_is_a_placeholder_not_base64() {
+    let processor = plain_processor();
+    let payload = "A".repeat(4000);
+    let item = ThreadItem::DynamicToolCall {
+        id: "tool-1".to_string(),
+        namespace: None,
+        tool: "image_generation".to_string(),
+        arguments: serde_json::Value::Null,
+        status: codex_app_server_protocol::DynamicToolCallStatus::Completed,
+        content_items: Some(vec![
+            codex_app_server_protocol::DynamicToolCallOutputContentItem::InputImage {
+                image_url: format!("data:image/png;base64,{payload}"),
+            },
+        ]),
+        success: Some(true),
+        duration_ms: None,
+    };
+
+    let lines = processor.item_completed_lines(&item);
+
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[1], "<image: image/png, ~3000 bytes>");
+    assert!(
+        !lines[1].contains(&payload),
+        "base64 payload must not be printed"
+    );
+}
+
+/// A tool result is whatever the program under a debugger or sanitizer, or a
+/// third-party MCP server, printed: its escape sequences must not reach the
+/// user's terminal (OSC 52 writes the clipboard, OSC 0 retitles the window,
+/// CSI 2J clears the screen). Lines and tabs are kept.
+#[test]
+fn tool_output_escape_sequences_never_reach_the_terminal() {
+    let processor = plain_processor();
+    let payload = "ok \x1b]52;c;aGVsbG8=\x07 \x1b[2J\x1b]0;pwned\x07\n\tsecond line \x1b[31mred\x1b[0m";
+
+    let lines = processor.item_completed_lines(&dynamic_tool_call(
+        codex_app_server_protocol::DynamicToolCallStatus::Completed,
+        Some(vec![text_item(payload)]),
+        Some(true),
+    ));
+
+    let printed = lines.join("\n");
+    for sequence in ["\x1b", "\x07"] {
+        assert!(!printed.contains(sequence), "{sequence:?} reached the terminal: {printed:?}");
+    }
+    assert!(printed.contains("ok ") && printed.contains("\n\tsecond line"), "{printed:?}");
+}
+
+/// A byte cap with an explicit elision marker, so a reader can tell
+/// truncated output from complete output.
+#[test]
+fn dynamic_tool_call_text_is_capped_with_an_explicit_elision_marker() {
+    let processor = plain_processor();
+    let huge = "x".repeat(TOOL_OUTPUT_TEXT_CAP + 500);
+
+    let lines = processor.item_completed_lines(&dynamic_tool_call(
+        codex_app_server_protocol::DynamicToolCallStatus::Completed,
+        Some(vec![text_item(&huge)]),
+        Some(true),
+    ));
+
+    assert!(lines[1].len() < huge.len(), "output must be capped");
+    assert!(
+        lines[1].ends_with("… [truncated, 500 more bytes]"),
+        "expected an explicit elision marker, got: {}",
+        &lines[1][lines[1].len().saturating_sub(60)..]
+    );
+}
+
+/// The renderer cap must stay well above any tool-owned cap, or it becomes the
+/// reason a sanitizer trace goes unseen. cpp-tools' `STDOUT_CAP`
+/// is 2 KiB and its sanitizer trace budget sits in the same order of magnitude.
+#[test]
+fn renderer_cap_is_far_above_tool_owned_caps() {
+    assert!(
+        TOOL_OUTPUT_TEXT_CAP >= 16 * 1024,
+        "renderer cap must not become the binding constraint on tool output"
+    );
+}
+
+#[test]
+fn dynamic_tool_call_with_no_output_still_shows_the_call() {
+    let processor = plain_processor();
+
+    let lines = processor.item_completed_lines(&dynamic_tool_call(
+        codex_app_server_protocol::DynamicToolCallStatus::Completed,
+        Some(Vec::new()),
+        Some(true),
+    ));
+
+    assert_eq!(lines, vec!["tool: cpp_sanitize (completed in 1234ms)"]);
+}
+
+// ---------------------------------------------------------------------------
+// The MCP arm prints the output body as well as status and error (it used to
+// print only the latter two: the same defect as for extension tools).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mcp_tool_call_completed_prints_the_output_body() {
+    let processor = plain_processor();
+    let item = ThreadItem::McpToolCall {
+        id: "mcp-1".to_string(),
+        server: "docs".to_string(),
+        tool: "search".to_string(),
+        status: codex_app_server_protocol::McpToolCallStatus::Completed,
+        arguments: serde_json::json!({"q": "ubsan"}),
+        app_context: None,
+        mcp_app_resource_uri: None,
+        plugin_id: None,
+        read_only_hint: None,
+        result: Some(Box::new(codex_app_server_protocol::McpToolCallResult {
+            content: vec![serde_json::json!({"type": "text", "text": "the answer"})],
+            structured_content: None,
+            meta: None,
+        })),
+        error: None,
+        duration_ms: Some(42),
+    };
+
+    let lines = processor.item_completed_lines(&item);
+
+    assert_eq!(lines[0], "mcp: docs/search (completed in 42ms)");
+    assert_eq!(lines[1], "the answer");
+}
+
+#[test]
+fn mcp_tool_call_image_content_is_a_placeholder() {
+    let processor = plain_processor();
+    let item = ThreadItem::McpToolCall {
+        id: "mcp-1".to_string(),
+        server: "docs".to_string(),
+        tool: "render".to_string(),
+        status: codex_app_server_protocol::McpToolCallStatus::Completed,
+        arguments: serde_json::Value::Null,
+        app_context: None,
+        mcp_app_resource_uri: None,
+        plugin_id: None,
+        read_only_hint: None,
+        result: Some(Box::new(codex_app_server_protocol::McpToolCallResult {
+            content: vec![serde_json::json!({
+                "type": "image",
+                "mimeType": "image/png",
+                "data": "A".repeat(400),
+            })],
+            structured_content: None,
+            meta: None,
+        })),
+        error: None,
+        duration_ms: None,
+    };
+
+    let lines = processor.item_completed_lines(&item);
+
+    assert_eq!(lines[1], "<image: image/png, ~300 bytes>");
+}
+
+// ---------------------------------------------------------------------------
+// Read-only sandbox + `approval: never` is a dead end with no signal: the
+// agent hits `Read-only file system`, retries with `TMPDIR=/tmp`, fails
+// again, and concludes the product cannot compile. The hint is that signal.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sandbox_denial_signatures_are_recognised() {
+    assert!(looks_like_sandbox_write_denial(
+        Some(1),
+        "clang: error: unable to make temporary file: Read-only file system"
+    ));
+    // macOS Seatbelt denies writes with EPERM.
+    assert!(looks_like_sandbox_write_denial(
+        Some(1),
+        "mkdir: build: Operation not permitted"
+    ));
+}
+
+#[test]
+fn ordinary_failures_are_not_treated_as_sandbox_denials() {
+    assert!(!looks_like_sandbox_write_denial(
+        Some(1),
+        "error[E0308]: mismatched types"
+    ));
+    // `permission denied` is deliberately excluded: it fires routinely on a
+    // non-executable file with no sandbox involved.
+    assert!(!looks_like_sandbox_write_denial(
+        Some(126),
+        "./run.sh: permission denied"
+    ));
+    assert!(!looks_like_sandbox_write_denial(
+        Some(0),
+        "read-only file system"
+    ));
+}
+
+#[test]
+fn sandbox_denial_hint_is_offered_once_under_a_read_only_sandbox() {
+    let mut processor = plain_processor();
+    processor.sandbox_is_read_only = true;
+    let item = failed_command("clang: error: unable to make temporary file: Read-only file system");
+
+    let hint = processor
+        .sandbox_denial_hint(&item)
+        .expect("expected a sandbox hint");
+    assert!(hint.contains("--sandbox workspace-write"), "{hint}");
+    assert!(hint.contains("cpp_sanitize"), "{hint}");
+
+    // Advice, not an error: shown once, then suppressed.
+    processor.sandbox_hint_shown = true;
+    processor.render_item_completed(item);
+    assert!(processor.sandbox_hint_shown);
+}
+
+#[test]
+fn sandbox_denial_hint_is_suppressed_when_writes_are_allowed() {
+    let processor = plain_processor();
+    let item = failed_command("clang: error: unable to make temporary file: Read-only file system");
+
+    assert_eq!(processor.sandbox_denial_hint(&item), None);
+}
+
+#[test]
+fn sandbox_denial_hint_is_suppressed_for_ordinary_failures() {
+    let mut processor = plain_processor();
+    processor.sandbox_is_read_only = true;
+    let item = failed_command("error[E0308]: mismatched types");
+
+    assert_eq!(processor.sandbox_denial_hint(&item), None);
+}
+
+/// Built through serde because `cwd`'s `LegacyAppPathString` is deliberately
+/// not constructible from a raw string outside deserialization.
+fn failed_command(output: &str) -> ThreadItem {
+    serde_json::from_value(serde_json::json!({
+        "type": "commandExecution",
+        "id": "cmd-1",
+        "command": "clang++ main.cpp",
+        "cwd": "/tmp/hft",
+        "processId": null,
+        "status": "failed",
+        "commandActions": [],
+        "aggregatedOutput": output,
+        "exitCode": 1,
+        "durationMs": 10,
+    }))
+    .expect("valid commandExecution item")
+}
 
 #[test]
 fn suppresses_final_stdout_message_when_both_streams_are_terminals() {
@@ -240,6 +634,15 @@ async fn config_summary_entries_include_runtime_workspace_roots() {
             && sandbox_summary.contains(&expected_extra_root_name),
         "expected runtime workspace root in sandbox summary: {summary_entries:?}"
     );
+
+    // An unset `model_reasoning_effort` means "not configured, the
+    // provider decides". The header must not print "none", which reads
+    // as "reasoning was disabled".
+    assert_eq!(config.model_reasoning_effort, None);
+    let reasoning_effort = summary_entries
+        .iter()
+        .find_map(|(key, value)| (*key == "reasoning effort").then_some(value.as_str()));
+    assert_eq!(reasoning_effort, Some("default (provider-side)"));
 }
 
 #[test]
@@ -309,6 +712,8 @@ fn turn_completed_recovers_final_message_from_turn_items() {
         final_message_rendered: false,
         emit_final_message_on_shutdown: false,
         last_total_token_usage: None,
+        sandbox_is_read_only: false,
+        sandbox_hint_shown: false,
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
@@ -359,6 +764,8 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
         final_message_rendered: true,
         emit_final_message_on_shutdown: false,
         last_total_token_usage: None,
+        sandbox_is_read_only: false,
+        sandbox_hint_shown: false,
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
@@ -410,6 +817,8 @@ fn turn_completed_preserves_streamed_final_message_when_turn_items_are_empty() {
         final_message_rendered: false,
         emit_final_message_on_shutdown: false,
         last_total_token_usage: None,
+        sandbox_is_read_only: false,
+        sandbox_hint_shown: false,
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
@@ -454,6 +863,8 @@ fn turn_failed_clears_stale_final_message() {
         final_message_rendered: true,
         emit_final_message_on_shutdown: true,
         last_total_token_usage: None,
+        sandbox_is_read_only: false,
+        sandbox_hint_shown: false,
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
@@ -499,6 +910,8 @@ fn turn_interrupted_clears_stale_final_message() {
         final_message_rendered: true,
         emit_final_message_on_shutdown: true,
         last_total_token_usage: None,
+        sandbox_is_read_only: false,
+        sandbox_hint_shown: false,
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(

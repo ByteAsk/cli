@@ -1,0 +1,15 @@
+---
+source: tui/src/byteask_settings/views.rs
+expression: "render(keys_params(&view), 76)"
+---
+
+  API keys
+  Your key goes straight to the provider — they bill you
+
+› 1. OpenAI        Add your key                                    managed
+  2. Anthropic     Replace your key                               your key
+  3. Gemini        Replace your key                               your key
+  4. Remove a key  Forget one saved key
+  5. Back          Return to settings
+
+  Press enter to confirm or esc to go back

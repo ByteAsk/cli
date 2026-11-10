@@ -69,6 +69,16 @@ pub fn spawn_response_stream(
     {
         let _ = turn_state.set(header_value.to_string());
     }
+    // ByteAsk emergency brake: the gateway can stop the
+    // output reducers on a RUNNING session, with no release and no restart.
+    if stream_response
+        .headers
+        .get("x-byteask-eff-brake")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == "1")
+    {
+        byteask_output_reducers::policy::pull_brake();
+    }
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
     tokio::spawn(async move {
         if let Some(model) = server_model {

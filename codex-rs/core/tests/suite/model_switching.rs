@@ -107,6 +107,7 @@ fn test_model_info(
     input_modalities: Vec<InputModality>,
 ) -> ModelInfo {
     ModelInfo {
+        locked_reason: None,
         slug: slug.to_string(),
         display_name: display_name.to_string(),
         description: Some(description.to_string()),
@@ -130,6 +131,7 @@ fn test_model_info(
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,
@@ -1344,6 +1346,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         (smaller_context_window * effective_context_window_percent) / 100;
 
     let base_model = ModelInfo {
+        locked_reason: None,
         slug: large_model_slug.to_string(),
         display_name: "Larger Model".to_string(),
         description: Some("larger context window model".to_string()),
@@ -1367,6 +1370,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,

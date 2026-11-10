@@ -54,8 +54,8 @@ impl ChatWidget {
     pub(crate) fn show_transcript_export_file_prompt(&mut self) {
         let tx = self.app_event_tx.clone();
         let filename = self.thread_id().map_or_else(
-            || "codex-session.md".to_string(),
-            |thread_id| format!("codex-session-{thread_id}.md"),
+            || "byteask-session.md".to_string(),
+            |thread_id| format!("byteask-session-{thread_id}.md"),
         );
         let view = CustomPromptView::new(
             "Save conversation".to_string(),

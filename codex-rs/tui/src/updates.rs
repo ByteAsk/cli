@@ -1,165 +1,123 @@
 #![cfg(not(debug_assertions))]
 
 use crate::legacy_core::config::Config;
-use crate::npm_registry;
-use crate::npm_registry::NpmPackageInfo;
-use crate::update_action;
-use crate::update_action::UpdateAction;
-use crate::update_versions::extract_version_from_latest_tag;
-use crate::update_versions::is_newer;
-use crate::update_versions::is_source_build_version;
+use crate::update_versions::UpdateDecision;
+use crate::update_versions::VersionFeed;
+use crate::update_versions::parse_version_feed;
+use crate::update_versions::update_decision;
 use crate::updates_cache::VersionInfo;
 use crate::updates_cache::read_version_info;
 use crate::updates_cache::version_filepath;
+use crate::version::update_check_version;
 use chrono::Duration;
 use chrono::Utc;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::default_client::default_headers;
-use serde::Deserialize;
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
-use crate::version::CODEX_CLI_VERSION;
+/// ByteAsk's own update feed. Never GitHub's releases/latest: that flips the moment
+/// release assets are published, before the matching wrapper and helpers are served,
+/// which prompted users onto an incomplete release.
+const DEFAULT_VERSION_URL: &str = "https://code.byteask.ai/version.json";
+const VERSION_URL_ENV: &str = "BYTEASK_VERSION_URL";
 
-pub(crate) use crate::updates_cache::dismiss_version;
-
+/// A newer release exists: shown as a one-line notice inside the session.
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
-    if !config.check_for_update_on_startup || is_source_build_version(CODEX_CLI_VERSION) {
-        return None;
+    match cached_decision(config) {
+        UpdateDecision::Notice(version) => Some(version),
+        UpdateDecision::None | UpdateDecision::Required(_) => None,
     }
+}
 
-    let action = update_action::get_update_action();
+/// The installed version is below the feed's `min_supported`: the blocking prompt
+/// before the session opens.
+pub fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
+    match cached_decision(config) {
+        UpdateDecision::Required(version) => Some(version),
+        UpdateDecision::None | UpdateDecision::Notice(_) => None,
+    }
+}
+
+fn cached_decision(config: &Config) -> UpdateDecision {
+    if !config.check_for_update_on_startup {
+        return UpdateDecision::None;
+    }
+    let Some(current) = update_check_version() else {
+        return UpdateDecision::None;
+    };
     let version_file = version_filepath(config);
     let info = read_version_info(&version_file).ok();
-
-    if match &info {
-        None => true,
-        Some(info) => info.last_checked_at < Utc::now() - Duration::hours(20),
-    } {
-        let http_client_factory = config.http_client_factory();
-        // Refresh the cached latest version in the background so TUI startup
-        // isn’t blocked by a network call. The UI reads the previously cached
-        // value (if any) for this run; the next run shows the banner if needed.
-        tokio::spawn(async move {
-            check_for_update(&version_file, action, http_client_factory)
-                .await
-                .inspect_err(|e| tracing::error!("Failed to update version: {e}"))
-        });
+    let stale = info
+        .as_ref()
+        .is_none_or(|info| info.last_checked_at < Utc::now() - Duration::hours(20));
+    if stale {
+        refresh_in_background(version_file, config.http_client_factory());
     }
+    let Some(info) = info else {
+        return UpdateDecision::None;
+    };
+    update_decision(
+        Some(current),
+        &VersionFeed {
+            latest: info.latest_version,
+            min_supported: info.min_supported,
+            notes_url: None,
+        },
+    )
+}
 
-    info.and_then(|info| {
-        if is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false) {
-            Some(info.latest_version)
-        } else {
-            None
+/// Refresh the cached feed without blocking startup; this launch acts on the
+/// previous cache and the next launch on what this one fetched. Any failure is
+/// ignored (fail-open: no notice, no prompt).
+fn refresh_in_background(version_file: PathBuf, http_client_factory: HttpClientFactory) {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::spawn(async move {
+        if let Err(err) = check_for_update(&version_file, http_client_factory).await {
+            tracing::debug!("update check failed (ignored): {err}");
         }
-    })
-}
-
-// We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-
-#[derive(Deserialize, Debug, Clone)]
-struct ReleaseInfo {
-    tag_name: String,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct HomebrewCaskInfo {
-    version: String,
+    });
 }
 
 async fn check_for_update(
     version_file: &Path,
-    action: Option<UpdateAction>,
     http_client_factory: HttpClientFactory,
 ) -> anyhow::Result<()> {
+    let url = std::env::var(VERSION_URL_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_VERSION_URL.to_string());
     let client_pool = RouteAwareClientPool::with_chatgpt_cloudflare_cookies(
         http_client_factory,
         ClientRouteClass::Other,
     )
     .with_legacy_custom_ca_fallback();
-    let latest_version = match action {
-        Some(UpdateAction::BrewUpgrade) => {
-            let HomebrewCaskInfo { version } = client_pool
-                .get(HOMEBREW_CASK_API_URL)
-                .headers(default_headers())
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<HomebrewCaskInfo>()
-                .await?;
-            version
-        }
-        Some(UpdateAction::NpmGlobalLatest)
-        | Some(UpdateAction::BunGlobalLatest)
-        | Some(UpdateAction::VitePlusGlobalLatest)
-        | Some(UpdateAction::PnpmGlobalLatest) => {
-            let latest_version = fetch_latest_github_release_version(&client_pool).await?;
-            let package_info = client_pool
-                .get(npm_registry::PACKAGE_URL)
-                .headers(default_headers())
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<NpmPackageInfo>()
-                .await?;
-            npm_registry::ensure_version_ready(&package_info, &latest_version)?;
-            latest_version
-        }
-        Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            fetch_latest_github_release_version(&client_pool).await?
-        }
-    };
-
-    // Preserve any previously dismissed version if present.
-    let prev_info = read_version_info(version_file).ok();
+    let body = client_pool
+        .get(url)
+        .headers(default_headers())
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<serde_json::Value>()
+        .await?;
+    let feed = parse_version_feed(&body.to_string())
+        .ok_or_else(|| anyhow::anyhow!("malformed update feed"))?;
     let info = VersionInfo {
-        latest_version,
+        latest_version: feed.latest,
+        min_supported: feed.min_supported,
         last_checked_at: Utc::now(),
-        dismissed_version: prev_info.and_then(|p| p.dismissed_version),
     };
-
     let json_line = format!("{}\n", serde_json::to_string(&info)?);
     if let Some(parent) = version_file.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::write(version_file, json_line).await?;
     Ok(())
-}
-
-async fn fetch_latest_github_release_version(
-    client_pool: &RouteAwareClientPool,
-) -> anyhow::Result<String> {
-    let ReleaseInfo {
-        tag_name: latest_tag_name,
-    } = client_pool
-        .get(LATEST_RELEASE_URL)
-        .headers(default_headers())
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<ReleaseInfo>()
-        .await?;
-    extract_version_from_latest_tag(&latest_tag_name)
-}
-
-/// Returns the latest version to show in a popup, if it should be shown.
-/// This respects the user's dismissal choice for the current latest version.
-pub fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
-    if !config.check_for_update_on_startup || is_source_build_version(CODEX_CLI_VERSION) {
-        return None;
-    }
-
-    let version_file = version_filepath(config);
-    let latest = get_upgrade_version(config)?;
-    // If the user dismissed this exact version previously, do not show the popup.
-    if let Ok(info) = read_version_info(&version_file)
-        && info.dismissed_version.as_deref() == Some(latest.as_str())
-    {
-        return None;
-    }
-    Some(latest)
 }

@@ -248,6 +248,10 @@ pub(super) fn completed_item(
                 success: Some(event.success),
                 error: event.error.clone(),
                 duration: Some(event.duration),
+                // Legacy rollout events predate host-executed items: they are
+                // always client-executed dynamic tool calls, which is what the
+                // field's `false` default means.
+                host_executed: false,
             }),
             Some(event.turn_id.clone()),
         )),

@@ -21,6 +21,7 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         description: Some(preset.description.clone()),
         default_reasoning_level: Some(preset.default_reasoning_effort.clone()),
         supported_reasoning_levels: preset.supported_reasoning_efforts.clone(),
+        locked_reason: preset.locked_reason.clone(),
         shell_type: ConfigShellToolType::UnifiedExec,
         visibility: if preset.show_in_picker {
             ModelVisibility::List
@@ -29,6 +30,7 @@ fn preset_to_info(preset: &ModelPreset, priority: i32) -> ModelInfo {
         },
         supported_in_api: preset.supported_in_api,
         priority,
+        picker_group: None,
         additional_speed_tiers: preset.additional_speed_tiers.clone(),
         service_tiers: preset.service_tiers.clone(),
         default_service_tier: preset.default_service_tier.clone(),

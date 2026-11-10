@@ -69,7 +69,7 @@ pub(super) async fn import(
     let state_db = state_db.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotConnected,
-            "memory import requires the Codex state database",
+            "memory import requires the ByteAsk state database",
         )
     })?;
     let memory_root = codex_home.join("memories");

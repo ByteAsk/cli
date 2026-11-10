@@ -1,6 +1,5 @@
 ---
 source: tui/src/bottom_pane/pending_input_preview.rs
-assertion_line: 282
 expression: "format!(\"{buf:?}\")"
 ---
 Buffer {

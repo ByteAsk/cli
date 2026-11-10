@@ -301,6 +301,13 @@ pub struct DynamicToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "string", optional)]
     pub duration: Option<Duration>,
+    /// `true` when the host (engine) executed this tool itself — e.g. the
+    /// generic visible item emitted around extension tool calls. `false`
+    /// (the legacy default) means a client-executed dynamic tool: app-server
+    /// forwards those as a `DynamicToolCall` server request for the client
+    /// to run; host-executed items must NOT trigger that request.
+    #[serde(default)]
+    pub host_executed: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]

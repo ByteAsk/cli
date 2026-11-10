@@ -154,7 +154,8 @@ pub(crate) const SSL_CERT_DIR_ENV_KEY: &str = "SSL_CERT_DIR";
 
 // Best-effort compatibility set for common child toolchains that accept a CA bundle path.
 // This is intentionally curated rather than pretending to cover every TLS client.
-pub const CUSTOM_CA_ENV_KEYS: [&str; 11] = [
+pub const CUSTOM_CA_ENV_KEYS: [&str; 12] = [
+    "BYTEASK_CA_CERTIFICATE",
     "CODEX_CA_CERTIFICATE",
     "SSL_CERT_FILE",
     "REQUESTS_CA_BUNDLE",

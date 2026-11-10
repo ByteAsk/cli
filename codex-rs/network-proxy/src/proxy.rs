@@ -46,7 +46,7 @@ const WINDOWS_MANAGED_HTTP_PROXY_PORTS: RangeInclusive<u16> = 3128..=3159;
 const WINDOWS_MANAGED_SOCKS_PROXY_PORTS: RangeInclusive<u16> = 8081..=8112;
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "codex-network-proxy", about = "Codex network sandbox proxy")]
+#[command(name = "codex-network-proxy", about = "ByteAsk network sandbox proxy")]
 pub struct Args {}
 
 #[derive(Debug)]

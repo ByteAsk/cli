@@ -39,12 +39,14 @@ use codex_utils_cli::SharedCliOptions;
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use supports_color::Stream;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
+mod byteask_env_defaults;
 mod cloud_config;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
@@ -96,20 +98,22 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::user_input::UserInput;
 use codex_terminal_detection::TerminalName;
 
-/// Codex CLI
+/// ByteAsk — an AI coding agent for your terminal
 ///
-/// If no subcommand is specified, options will be forwarded to the interactive CLI.
+/// Run `byteask` with no command to start a session, or `byteask "<prompt>"` to start with a
+/// prompt. Options given without a command are forwarded to that session.
 #[derive(Debug, Parser)]
 #[clap(
     author,
-    version,
+    version = "0.1.0",
+    name = "byteask",
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
     // `codex-x86_64-unknown-linux-musl`, but the help output should always use
     // the generic `codex` command name that users run.
-    bin_name = "codex",
-    override_usage = "codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]"
+    bin_name = "byteask",
+    override_usage = "byteask [OPTIONS] [PROMPT]\n       byteask [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
     #[clap(flatten)]
@@ -128,12 +132,17 @@ struct MultitoolCli {
     subcommand: Option<Subcommand>,
 }
 
+// `hide = true` marks a subcommand that stays fully callable but is kept out of `--help`
+// output. Applied to the upstream-internal
+// plumbing a ByteAsk user never runs, and to `cloud`, whose help text names another
+// company's product and so cannot be fixed by the rebranding script (that script
+// deliberately excludes `Codex Cloud` — there is no ByteAsk equivalent to rename it to).
 #[derive(Debug, clap::Subcommand)]
 enum Subcommand {
     /// Browse all agent sessions on the shared local app-server daemon.
     Agents(AgentsCommand),
 
-    /// Run Codex non-interactively.
+    /// Run ByteAsk non-interactively.
     #[clap(visible_alias = "e")]
     Exec(ExecCli),
 
@@ -146,19 +155,40 @@ enum Subcommand {
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
 
-    /// Manage external MCP servers for Codex.
+    /// Manage external MCP servers for ByteAsk.
     Mcp(McpCli),
 
-    /// Manage Codex plugins.
+    /// Manage ByteAsk plugins.
     Plugin(PluginCli),
 
-    /// Start Codex as an MCP server (stdio).
+    /// Start ByteAsk as an MCP server (stdio).
+    #[clap(hide = true)]
     McpServer(McpServerCommand),
 
+    /// Use ByteAsk's C/C++ and reference tools from Claude Code or Codex.
+    Toolbox(codex_toolbox::cli::ToolboxCli),
+
+    /// Show or reset ByteAsk's protected local policy (plan cache, sandbox and upload settings).
+    Policy(codex_toolbox::cli::PolicyCli),
+
+    /// Try ByteAsk for your company on one laptop, with no server (`byteask company trial`).
+    #[clap(hide = true)]
+    Company(codex_toolbox::trial::CompanyCli),
+
+    /// The merge check for CI (run, sign, gate) and a person's skip of a check.
+    #[clap(hide = true)]
+    Checks(codex_toolbox::checks::ChecksCli),
+
+    /// Cloud Agent harness: build and test a repo without a model and write checks.json.
+    #[clap(hide = true)]
+    Verify(codex_agent_checks::VerifyCli),
+
     /// [experimental] Run the app server or related tooling.
+    #[clap(hide = true)]
     AppServer(AppServerCommand),
 
     /// [experimental] Manage the app-server daemon with remote control enabled.
+    #[clap(hide = true)]
     RemoteControl(RemoteControlCommand),
 
     /// Launch the Desktop app (opens the app installer if missing).
@@ -168,23 +198,25 @@ enum Subcommand {
     /// Generate shell completion scripts.
     Completion(CompletionCommand),
 
-    /// Update Codex to the latest version.
+    /// Update ByteAsk to the latest version.
     Update,
 
-    /// Diagnose local Codex installation, config, auth, and runtime health.
+    /// Diagnose local ByteAsk installation, config, auth, and runtime health.
     Doctor(DoctorCommand),
 
-    /// Run commands within a Codex-provided sandbox.
+    /// Run commands within a ByteAsk-provided sandbox.
+    #[clap(hide = true)]
     Sandbox(HostSandboxArgs),
 
     /// Debugging tools.
+    #[clap(hide = true)]
     Debug(DebugCommand),
 
     /// Execpolicy tooling.
     #[clap(hide = true)]
     Execpolicy(ExecpolicyCommand),
 
-    /// Apply the latest diff produced by Codex agent as a `git apply` to your local working tree.
+    /// Apply the latest diff produced by ByteAsk agent as a `git apply` to your local working tree.
     #[clap(visible_alias = "a")]
     Apply(ApplyCommand),
 
@@ -209,8 +241,8 @@ enum Subcommand {
     /// Fork a previous interactive session (picker by default; use --last to fork the most recent).
     Fork(ForkCommand),
 
-    /// [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally.
-    #[clap(name = "cloud", alias = "cloud-tasks")]
+    /// [EXPERIMENTAL] Browse tasks from the cloud and apply changes locally.
+    #[clap(name = "cloud", alias = "cloud-tasks", hide = true)]
     Cloud(CloudTasksCli),
 
     /// Internal: run the responses API proxy.
@@ -222,9 +254,11 @@ enum Subcommand {
     StdioToUds(StdioToUdsCommand),
 
     /// [EXPERIMENTAL] Run the standalone exec-server service.
+    #[clap(hide = true)]
     ExecServer(ExecServerCommand),
 
     /// Inspect feature flags.
+    #[clap(hide = true)]
     Features(FeaturesCli),
 }
 
@@ -299,7 +333,7 @@ struct DebugModelsCommand {
 
 #[derive(Debug, Parser)]
 struct ReviewCommand {
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of ByteAsk.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 
@@ -309,7 +343,7 @@ struct ReviewCommand {
 
 #[derive(Debug, Parser)]
 struct McpServerCommand {
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of ByteAsk.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 }
@@ -383,7 +417,7 @@ struct SessionArchiveConfigOverrides {
     #[clap(flatten)]
     shared: SharedCliOptions,
 
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of ByteAsk.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 
@@ -462,7 +496,7 @@ type HostSandboxArgs = UnsupportedSandboxArgs;
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 #[derive(Debug, Parser)]
 struct UnsupportedSandboxArgs {
-    /// Layer $CODEX_HOME/<name>.config.toml on top of the base user config.
+    /// Layer $BYTEASK_HOME/<name>.config.toml on top of the base user config.
     #[arg(long = "profile", short = 'p')]
     pub config_profile: Option<ProfileV2Name>,
 
@@ -494,13 +528,13 @@ struct LoginCommand {
 
     #[arg(
         long = "with-api-key",
-        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)"
+        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | byteask login --with-api-key`)"
     )]
     with_api_key: bool,
 
     #[arg(
         long = "with-access-token",
-        help = "Read the access token from stdin (e.g. `printenv CODEX_ACCESS_TOKEN | codex login --with-access-token`)"
+        help = "Read the access token from stdin (e.g. `byteask login --with-access-token < token.txt`)"
     )]
     with_access_token: bool,
 
@@ -551,7 +585,7 @@ struct AppServerCommand {
     #[command(flatten)]
     code_mode_host: codex_app_server::AppServerCodeModeHostArgs,
 
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of ByteAsk.
     #[arg(long = "strict-config", default_value_t = false)]
     strict_config: bool,
 
@@ -586,7 +620,6 @@ struct AppServerCommand {
     /// enabled = false
     /// ```
     ///
-    /// See https://developers.openai.com/codex/config-advanced/#metrics for more details.
     #[arg(long = "analytics-default-enabled")]
     analytics_default_enabled: bool,
 
@@ -599,7 +632,7 @@ struct ExecServerCommand {
     #[command(subcommand)]
     command: Option<ExecServerSubcommand>,
 
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of ByteAsk.
     #[arg(
         id = "exec_server_strict_config",
         long = "strict-config",
@@ -685,7 +718,7 @@ enum AppServerSubcommand {
     /// [experimental] Generate JSON Schema for the app server protocol.
     GenerateJsonSchema(GenerateJsonSchemaCommand),
 
-    /// [internal] Generate internal JSON Schema artifacts for Codex tooling.
+    /// [internal] Generate internal JSON Schema artifacts for ByteAsk tooling.
     #[clap(hide = true)]
     GenerateInternalJsonSchema(GenerateInternalJsonSchemaCommand),
 }
@@ -783,6 +816,24 @@ fn parse_socket_path(raw: &str) -> Result<AbsolutePathBuf, String> {
         .map_err(|err| format!("failed to resolve socket path `{raw}`: {err}"))
 }
 
+/// True when the engine is exiting to hand an auth action to the wrapper, i.e. it
+/// just wrote `.byteask-auth-request` into BYTEASK_HOME (see
+/// `tui/src/chatwidget/byteask_account.rs::request_byteask_auth_with`). The wrapper
+/// deletes the marker as soon as it reads it, so this is only ever true on the
+/// hand-off exit itself.
+fn byteask_exiting_for_auth_handoff() -> bool {
+    find_codex_home()
+        .map(|home| byteask_auth_handoff_marker_exists(home.as_path()))
+        .unwrap_or(false)
+}
+
+/// Split from the resolver above so it is testable without mutating BYTEASK_HOME
+/// in a parallel test harness (the same reason `trust::decide` is separate from
+/// `Config`).
+fn byteask_auth_handoff_marker_exists(byteask_home: &Path) -> bool {
+    byteask_home.join(".byteask-auth-request").exists()
+}
+
 /// Handle the app exit and print the results. Optionally run the update action.
 fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
     let is_fatal = match &exit_info.exit_reason {
@@ -798,8 +849,15 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
 
     let update_action = exit_info.update_action;
     let color_enabled = supports_color::on(Stream::Stdout).is_some();
-    for line in exit_info.format_exit_messages(color_enabled) {
-        println!("{line}");
+    // ByteAsk: when the TUI exits to hand a sign-in over to the wrapper (the
+    // `.byteask-auth-request` marker), the session is not over — it is about to be
+    // relaunched. The usual epilogue ("Token usage: … / To continue this session,
+    // run: byteask resume …") is then both wrong and clutter: it lands directly
+    // above the sign-in screen the user is supposed to read. Stay silent instead.
+    if !byteask_exiting_for_auth_handoff() {
+        for line in exit_info.format_exit_messages(color_enabled) {
+            println!("{line}");
+        }
     }
     if is_fatal {
         std::io::stdout().flush()?;
@@ -815,7 +873,7 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
 fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     println!();
     let cmd_str = action.command_str();
-    println!("Updating Codex via `{cmd_str}`...");
+    println!("Updating ByteAsk via `{cmd_str}`...");
     let status = {
         #[cfg(windows)]
         {
@@ -857,7 +915,7 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     if !status.success() {
         anyhow::bail!("`{cmd_str}` failed with status {status}");
     }
-    println!("\n🎉 Update ran successfully! Please restart Codex.");
+    println!("\n🎉 Update ran successfully! Please restart ByteAsk.");
     Ok(())
 }
 
@@ -882,7 +940,7 @@ fn run_update_command() -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
     {
         anyhow::bail!(
-            "`codex update` is not available in debug builds. Install a release build of Codex to use this command."
+            "`byteask update` is not available in debug builds. Install a release build of ByteAsk to use this command."
         );
     }
 
@@ -1036,6 +1094,8 @@ fn stage_str(stage: Stage) -> &'static str {
 }
 
 fn main() -> anyhow::Result<()> {
+    // ByteAsk 0.2.4: the harness switches the environment leaves unset get their defaults.
+    byteask_env_defaults::apply();
     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
         cli_main(arg0_paths, remote_control_disabled).await?;
@@ -1066,7 +1126,7 @@ async fn cli_main(
         && let Some(agents_endpoint) = &options.remote.remote
         && root_endpoint != agents_endpoint
     {
-        anyhow::bail!("`codex agents` received conflicting remote server endpoints");
+        anyhow::bail!("`byteask agents` received conflicting remote server endpoints");
     }
     let root_remote = agents_options
         .and_then(|options| options.remote.remote.clone())
@@ -1096,7 +1156,7 @@ async fn cli_main(
             );
             if open_agents_overview {
                 if interactive.prompt.is_some() || !interactive.images.is_empty() {
-                    anyhow::bail!("`codex agents` does not accept an initial prompt or images");
+                    anyhow::bail!("`byteask agents` does not accept an initial prompt or images");
                 }
                 if root_remote.is_some()
                     && (interactive.oss
@@ -1114,12 +1174,12 @@ async fn cli_main(
                             }))
                 {
                     anyhow::bail!(
-                        "`codex agents` cannot apply local provider or additional-directory overrides to a remote server"
+                        "`byteask agents` cannot apply local provider or additional-directory overrides to a remote server"
                     );
                 }
                 if is_workload_identity_selected() {
                     anyhow::bail!(
-                        "`codex agents` is unavailable while workload identity is active"
+                        "`byteask agents` is unavailable while workload identity is active"
                     );
                 }
                 if root_remote.is_none() {
@@ -1128,7 +1188,7 @@ async fn cli_main(
                         root_remote_auth_token_env.clone(),
                     )?;
                     #[cfg(not(unix))]
-                    anyhow::bail!("`codex agents` requires `--remote` on this platform");
+                    anyhow::bail!("`byteask agents` requires `--remote` on this platform");
                 }
                 interactive.agents_overview = true;
             }
@@ -1180,7 +1240,7 @@ async fn cli_main(
         }
         Some(Subcommand::McpServer(McpServerCommand { strict_config })) => {
             eprintln!(
-                "warning: `codex mcp-server` is deprecated and will be removed in a future release."
+                "warning: `byteask mcp-server` is deprecated and will be removed in a future release."
             );
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -1193,6 +1253,76 @@ async fn cli_main(
                 strict_config || root_strict_config,
             )
             .await?;
+        }
+        Some(Subcommand::Toolbox(mut toolbox_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "toolbox",
+            )?;
+            prepend_config_flags(
+                &mut toolbox_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            codex_toolbox::cli::run_toolbox(
+                toolbox_cli,
+                arg0_paths.codex_linux_sandbox_exe.clone(),
+            )
+            .await?;
+        }
+        Some(Subcommand::Policy(mut policy_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "policy",
+            )?;
+            prepend_config_flags(
+                &mut policy_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            codex_toolbox::cli::run_policy(policy_cli).await?;
+        }
+        Some(Subcommand::Company(mut company_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "company",
+            )?;
+            prepend_config_flags(
+                &mut company_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            codex_toolbox::trial::run_company(
+                company_cli,
+                arg0_paths.codex_linux_sandbox_exe.clone(),
+            )
+            .await?;
+        }
+        Some(Subcommand::Checks(mut checks_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "checks",
+            )?;
+            prepend_config_flags(
+                &mut checks_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            let code = codex_toolbox::checks::run_checks(checks_cli).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Some(Subcommand::Verify(verify_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "verify",
+            )?;
+            let code =
+                tokio::task::spawn_blocking(move || codex_agent_checks::run_verify(verify_cli))
+                    .await?;
+            std::process::exit(code);
         }
         Some(Subcommand::Mcp(mut mcp_cli)) => {
             reject_remote_mode_for_subcommand(
@@ -1541,7 +1671,7 @@ async fn cli_main(
                         .await;
                     } else if login_cli.api_key.is_some() {
                         eprintln!(
-                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
+                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | byteask login --with-api-key`."
                         );
                         std::process::exit(1);
                     } else if login_cli.with_api_key {
@@ -1664,7 +1794,7 @@ async fn cli_main(
             #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
             {
                 let _ = loader_overrides;
-                anyhow::bail!("`codex sandbox` is not supported on this operating system");
+                anyhow::bail!("`byteask sandbox` is not supported on this operating system");
             }
         }
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
@@ -1845,7 +1975,7 @@ fn profile_v2_for_subcommand<'a>(
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
+            "--profile only applies to runtime commands and `byteask mcp`: `byteask`, `byteask exec`, `byteask review`, `byteask resume`, `byteask queue`, `byteask archive`, `byteask delete`, `codex unarchive`, `byteask fork`, `byteask mcp`, `byteask sandbox`, and `byteask debug prompt-input`."
         ),
     }
 }
@@ -1859,7 +1989,7 @@ async fn run_exec_server_command(
     let codex_self_exe = arg0_paths
         .codex_self_exe
         .clone()
-        .ok_or_else(|| anyhow::anyhow!("Codex executable path is not configured"))?;
+        .ok_or_else(|| anyhow::anyhow!("ByteAsk executable path is not configured"))?;
     let runtime_paths = codex_exec_server::ExecServerRuntimePaths::new(
         codex_self_exe,
         arg0_paths.codex_linux_sandbox_exe.clone(),
@@ -1991,7 +2121,7 @@ async fn load_exec_server_remote_auth_provider(
 
     let (auth_manager, auth) = load_exec_server_remote_auth(
         config,
-        "remote exec-server registration requires ChatGPT authentication or API key authentication; run `codex login` or set CODEX_API_KEY",
+        "remote exec-server registration requires ChatGPT authentication or API key authentication; run `byteask login` or set CODEX_API_KEY",
     )
     .await?;
 
@@ -2264,6 +2394,11 @@ async fn run_debug_prompt_input_command(
         auth_manager,
         config.chatgpt_base_url.clone(),
         config.http_client_factory(),
+        |config: &Config| {
+            config
+                .features
+                .enabled(codex_features::Feature::CommitAttribution)
+        },
     );
     codex_skills_extension::install(&mut extensions, |config: &Config| {
         codex_skills_extension::SkillsExtensionConfig {
@@ -2429,6 +2564,11 @@ fn unsupported_subcommand_name_for_strict_config(
         }
         Some(Subcommand::RemoteControl(remote_control)) => Some(remote_control.subcommand_name()),
         Some(Subcommand::Mcp(_)) => Some("mcp"),
+        Some(Subcommand::Toolbox(_)) => Some("toolbox"),
+        Some(Subcommand::Policy(_)) => Some("policy"),
+        Some(Subcommand::Company(_)) => Some("company"),
+        Some(Subcommand::Checks(_)) => Some("checks"),
+        Some(Subcommand::Verify(_)) => Some("verify"),
         Some(Subcommand::Plugin(_)) => Some("plugin"),
         Some(Subcommand::MigrateRollouts(_)) => Some("migrate-rollouts"),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -2466,7 +2606,7 @@ fn reject_strict_config_for_unsupported_subcommand(
     subcommand: &str,
 ) -> anyhow::Result<()> {
     if strict_config {
-        anyhow::bail!("`--strict-config` is not supported for `codex {subcommand}`");
+        anyhow::bail!("`--strict-config` is not supported for `byteask {subcommand}`");
     }
     Ok(())
 }
@@ -2574,7 +2714,7 @@ async fn run_interactive_tui(
         }
 
         eprintln!(
-            "WARNING: TERM is set to \"dumb\". Codex's interactive TUI may not work in this terminal."
+            "WARNING: TERM is set to \"dumb\". ByteAsk's interactive TUI may not work in this terminal."
         );
         if !confirm("Continue anyway? [y/N]: ")? {
             return Ok(AppExitInfo::fatal(
@@ -2663,7 +2803,7 @@ where
             Err(backup_err) => {
                 local_state_db::print_diagnostic_guidance(startup_error);
                 return Ok(AppExitInfo::fatal(format!(
-                    "failed to move damaged Codex local database files into a backup folder automatically: {backup_err}"
+                    "failed to move damaged ByteAsk local database files into a backup folder automatically: {backup_err}"
                 )));
             }
         }
@@ -2928,7 +3068,7 @@ mod tests {
 
     #[tokio::test]
     async fn updater_http_client_factory_honors_respect_system_proxy() {
-        let codex_home = tempfile::tempdir().expect("temporary Codex home");
+        let codex_home = tempfile::tempdir().expect("temporary ByteAsk home");
         let config = ConfigBuilder::default()
             .codex_home(codex_home.path().to_path_buf())
             .cli_overrides(vec![(
@@ -3485,15 +3625,15 @@ mod tests {
     fn plugin_marketplace_help_uses_plugin_namespace() {
         let help = help_from_args(&["codex", "plugin", "marketplace", "--help"]);
         assert!(
-            help.contains("Usage: codex plugin marketplace [OPTIONS] <COMMAND>"),
+            help.contains("Usage: byteask plugin marketplace [OPTIONS] <COMMAND>"),
             "{help}"
         );
 
         for (subcommand, usage) in [
-            ("add", "Usage: codex plugin marketplace add"),
-            ("list", "Usage: codex plugin marketplace list"),
-            ("upgrade", "Usage: codex plugin marketplace upgrade"),
-            ("remove", "Usage: codex plugin marketplace remove"),
+            ("add", "Usage: byteask plugin marketplace add"),
+            ("list", "Usage: byteask plugin marketplace list"),
+            ("upgrade", "Usage: byteask plugin marketplace upgrade"),
+            ("remove", "Usage: byteask plugin marketplace remove"),
         ] {
             let help = help_from_args(&["codex", "plugin", "marketplace", subcommand, "--help"]);
             assert!(help.contains(usage), "{help}");
@@ -3745,6 +3885,21 @@ mod tests {
         }
     }
 
+    /// The sign-in hand-off is not the end of a session: the wrapper is about to
+    /// relaunch the engine. Printing "Token usage: ... / To continue this session,
+    /// run: byteask resume ..." there is wrong (the session continues) and it lands
+    /// directly above the sign-in screen the user has to read.
+    #[test]
+    fn byteask_auth_handoff_marker_is_what_silences_the_exit_epilogue() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        assert!(!byteask_auth_handoff_marker_exists(home.path()));
+
+        std::fs::write(home.path().join(".byteask-auth-request"), "login\nmanaged\n")
+            .expect("write marker");
+        assert!(byteask_auth_handoff_marker_exists(home.path()));
+    }
+
     #[test]
     fn format_exit_messages_skips_zero_usage() {
         let exit_info = AppExitInfo {
@@ -3787,7 +3942,6 @@ mod tests {
                 "Disconnected from this task. Any running work continues.",
                 "Reconnect: codex --remote wss://example.com:443/ --remote-auth-token-env CODEX_REMOTE_TOKEN resume 123e4567-e89b-12d3-a456-426614174000",
                 "Stop the current turn: run codex --remote wss://example.com:443/ --remote-auth-token-env CODEX_REMOTE_TOKEN agents, select this task, and press ctrl + x.",
-                "Token usage so far: total=2 input=0 output=2",
             ]
         );
     }
@@ -3813,7 +3967,6 @@ mod tests {
         exit_info.exit_reason = ExitReason::Archived(exit_info.thread_id.unwrap());
         let lines = exit_info.format_exit_messages(/*color_enabled*/ false);
         insta::assert_snapshot!(lines.join("\n"), @"
-        Token usage: total=2 input=0 output=2
         Session archived: 123e4567-e89b-12d3-a456-426614174000
         ");
     }
@@ -3846,9 +3999,8 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "Token usage: total=2 input=0 output=2".to_string(),
                 "To continue this session, run:".to_string(),
-                "  codex resume 123e4567-e89b-12d3-a456-426614174000".to_string(),
+                "  byteask resume 123e4567-e89b-12d3-a456-426614174000".to_string(),
             ]
         );
     }
@@ -3861,9 +4013,8 @@ mod tests {
                     sample_exit_info(Some("123e4567-e89b-12d3-a456-426614174000"), thread_name);
                 let lines = exit_info.format_exit_messages(/*color_enabled*/ false);
                 insta::assert_snapshot!(lines.join("\n"), @"
-                Token usage: total=2 input=0 output=2
                 To continue this session, run:
-                  codex resume 123e4567-e89b-12d3-a456-426614174000
+                  byteask resume 123e4567-e89b-12d3-a456-426614174000
                 ");
             }
         }
@@ -3879,9 +4030,8 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "Token usage: total=2 input=0 output=2",
                 "To continue this session, run:",
-                "  \u{1b}[36mcodex resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
+                "  \u{1b}[36mbyteask resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
             ]
         );
     }
@@ -3894,10 +4044,9 @@ mod tests {
         );
         let lines = exit_info.format_exit_messages(/*color_enabled*/ false);
         insta::assert_snapshot!(lines.join("\n"), @"
-        Token usage: total=2 input=0 output=2
         To continue this session, run:
-          codex resume 123e4567-e89b-12d3-a456-426614174000
-        Or run codex resume and select my-thread.
+          byteask resume 123e4567-e89b-12d3-a456-426614174000
+        Or run byteask resume and select my-thread.
         ");
     }
 
@@ -3911,10 +4060,9 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "Token usage: total=2 input=0 output=2",
                 "To continue this session, run:",
-                "  \u{1b}[36mcodex resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
-                "Or run \u{1b}[36mcodex resume\u{1b}[39m and select \u{1b}[36mmy-thread\u{1b}[39m.",
+                "  \u{1b}[36mbyteask resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
+                "Or run \u{1b}[36mbyteask resume\u{1b}[39m and select \u{1b}[36mmy-thread\u{1b}[39m.",
             ]
         );
     }
@@ -4311,7 +4459,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "`--strict-config` is not supported for `codex mcp`"
+            "`--strict-config` is not supported for `byteask mcp`"
         );
 
         let cli = MultitoolCli::try_parse_from(["codex", "--strict-config", "remote-control"])
@@ -4324,7 +4472,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "`--strict-config` is not supported for `codex remote-control`"
+            "`--strict-config` is not supported for `byteask remote-control`"
         );
     }
 
@@ -4340,7 +4488,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "`--strict-config` is not supported for `codex app-server proxy`"
+            "`--strict-config` is not supported for `byteask app-server proxy`"
         );
     }
 

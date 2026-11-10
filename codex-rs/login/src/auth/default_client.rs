@@ -161,8 +161,24 @@ pub fn is_first_party_chat_originator(originator_value: &str) -> bool {
     originator_value == "codex_atlas" || originator_value == "codex_chatgpt_desktop"
 }
 
+// ByteAsk: the reported-version resolver is CANONICAL in codex-model-provider-info
+// (which sits below this crate in the dep graph, and which also owns the `version`
+// HTTP header the ChatGPT backend gates on). Re-exported here so existing callers —
+// get_codex_user_agent below, and models-manager's client_version_to_whole — keep
+// working while there is exactly ONE definition and ONE build-time stamp.
+pub use codex_model_provider_info::UPSTREAM_CODEX_VERSION;
+pub use codex_model_provider_info::reported_client_version;
+pub use codex_model_provider_info::version_override_from;
+pub use codex_model_provider_info::resolve_reported_version;
+
 pub fn get_codex_user_agent() -> String {
-    let build_version = env!("CARGO_PKG_VERSION");
+    // ByteAsk override: the ChatGPT backend also reads the
+    // version from the User-Agent, so a subscription session must report the same
+    // real Codex version here as in client_version_to_whole. See
+    // `resolve_reported_version` — `auto` maps to the compiled upstream version.
+    let env_override = std::env::var("BYTEASK_CODEX_VERSION_OVERRIDE").ok();
+    let build_version = resolve_reported_version(env_override.as_deref(), env!("CARGO_PKG_VERSION"));
+    let build_version = build_version.as_str();
     let os_info = os_info::get();
     let originator = originator();
     let prefix = format!(

@@ -263,6 +263,92 @@ fn lagged_event_warning_message_is_explicit() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// `--max-turns` gives headless runs a budget. A "turn" is one model
+// response, and core emits exactly one token-usage update per response.
+// ---------------------------------------------------------------------------
+
+fn token_usage_notification(thread_id: &str, turn_id: &str) -> ServerNotification {
+    let breakdown = codex_app_server_protocol::TokenUsageBreakdown {
+        total_tokens: 2,
+        input_tokens: 1,
+        cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
+        output_tokens: 1,
+        reasoning_output_tokens: 0,
+    };
+    ServerNotification::ThreadTokenUsageUpdated(
+        codex_app_server_protocol::ThreadTokenUsageUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.to_string(),
+            token_usage: codex_app_server_protocol::ThreadTokenUsage {
+                total: breakdown.clone(),
+                last: breakdown,
+                model_context_window: None,
+            },
+        },
+    )
+}
+
+#[test]
+fn model_responses_are_counted_from_token_usage_updates() {
+    assert!(is_model_response_notification(
+        &token_usage_notification("thread-1", "turn-1"),
+        "thread-1",
+        "turn-1"
+    ));
+}
+
+#[test]
+fn other_threads_and_turns_do_not_spend_the_max_turns_budget() {
+    assert!(!is_model_response_notification(
+        &token_usage_notification("thread-2", "turn-1"),
+        "thread-1",
+        "turn-1"
+    ));
+    assert!(!is_model_response_notification(
+        &token_usage_notification("thread-1", "turn-2"),
+        "thread-1",
+        "turn-1"
+    ));
+}
+
+#[test]
+fn tool_calls_do_not_spend_the_max_turns_budget() {
+    // One model response can emit several parallel tool calls or none at all,
+    // so item notifications are not the unit of the budget.
+    let notification =
+        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
+            item: codex_app_server_protocol::ThreadItem::AgentMessage {
+                id: "msg-1".to_string(),
+                text: "hi".to_string(),
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            completed_at_ms: 0,
+        });
+
+    assert!(!is_model_response_notification(
+        &notification,
+        "thread-1",
+        "turn-1"
+    ));
+}
+
+#[test]
+fn max_turns_stop_message_says_the_work_may_be_unfinished() {
+    let message = max_turns_reached_message(5);
+
+    assert!(message.contains("--max-turns"), "{message}");
+    assert!(message.contains("5 model turns"), "{message}");
+    assert!(message.contains("may be unfinished"), "{message}");
+    assert!(max_turns_reached_message(1).contains("1 model turn:"));
+}
+
 #[test]
 fn runtime_warnings_are_filtered_to_the_primary_thread() {
     let primary_thread_id = "thread-1";

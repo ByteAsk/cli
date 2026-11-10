@@ -1,0 +1,92 @@
+{
+  "tools": [
+    {
+      "description": "Ask a RECORDED execution (an rr trace) what happened, by running time BACKWARDS from where it stopped — it never re-runs the program, so a crash, race or wrong value captured once can be examined as often as needed and always gives the same answer. Use it after debug_record (or on any rr trace) for: WHO WROTE a bad value (query=\"who_wrote\": a hardware watchpoint plus reverse-continue lands on each write, newest first, naming the thread, function, file:line and the value before -> after — including a write from ANOTHER thread, the question a forward debugger cannot answer); WHEN a function last ran and with which arguments (\"last_reached\"); WHICH lines led to the stop (\"last_lines\"); WHERE it stopped and what every thread was doing (\"stop_point\"). Questions are asked from the end of the recording (the crash signal, or the exit) unless stop_at / stop_event move the stop. Chain them: who wrote the bad pointer, then who wrote the field it was loaded from. Linux with rr only; needs hardware performance counters, like recording. C/C++.",
+      "name": "debug_reverse",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "description": "How many answers to walk back: writes or hits (default 3), lines (default 20); capped at 50.",
+            "type": "number"
+          },
+          "expr": {
+            "description": "who_wrote: what to watch, evaluated at the stop in your innermost frame: a variable, field or address (\"book.ask\", \"o->next\", \"*(long*)0x7ffd1234\"). It may only read: no assignment and no calls. At most 32 bytes.",
+            "type": "string"
+          },
+          "location": {
+            "description": "last_reached: a function, file:line or *ADDRESS (\"OrderBook::apply\", \"book.cpp:42\").",
+            "type": "string"
+          },
+          "query": {
+            "description": "\"who_wrote\": the most recent writes to `expr` before the stop, newest first, each with thread, function, file:line and the value changed from -> to. \"last_reached\": the most recent times `location` ran before the stop, with its arguments. \"last_lines\": the source lines the stopped thread ran just before the stop, oldest first. \"stop_point\": where the recording stops and what every thread was doing there.",
+            "enum": [
+              "who_wrote",
+              "last_reached",
+              "last_lines",
+              "stop_point"
+            ],
+            "type": "string"
+          },
+          "stop_at": {
+            "description": "Ask from here instead of the end of the recording: a function, file:line or *ADDRESS, reached for the `stop_hit`-th time (default 1).",
+            "type": "string"
+          },
+          "stop_event": {
+            "description": "Ask from this rr event number instead, to chain questions further back. An answer labelled `event N` happened just after event N, so stop_event N-1 asks from just before it.",
+            "type": "number"
+          },
+          "stop_hit": {
+            "description": "Which arrival at `stop_at` to stop on (1 = the first).",
+            "type": "number"
+          },
+          "timeout_sec": {
+            "description": "Wall-clock limit for the replay (default 300).",
+            "type": "number"
+          },
+          "trace": {
+            "description": "rr trace directory (debug_record prints it as `trace: …`). Default: the recording rr made most recently on this machine.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Triage a core dump in ONE call: the signal and fault address, the faulting thread (the one the kernel dumped first) and its crash site in your code, the faulting instruction and the register it used, then the LIKELY CAUSE with the facts it rests on — NULL or wild pointer (including one overwritten with text), stack overflow / runaway recursion, heap corruption (glibc's saved abort message: double free, corrupted size…), a failed assert with its message, an uncaught C++ exception with its type and what() text, a joinable std::thread destroyed, division by zero, __builtin_trap/unreachable reached, an instruction this CPU lacks (built with the wrong -march), a truncated memory-mapped file (SIGBUS) — plus every thread's position and which other threads were in the same function (a race hint). Start here for any core file or 'it crashed in production'; then dig deeper with debug (custom gdb commands on the same core) or, to see what led up to it, debug_record + debug_reverse. Read-only: it never runs the program. Linux ELF cores, gdb. C/C++.",
+      "name": "debug_core",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "core": {
+            "description": "Path to the core dump (relative to the workspace or absolute).",
+            "type": "string"
+          },
+          "program": {
+            "description": "The executable that crashed. Default: the one the core itself names, when that file exists here (or under `sysroot`).",
+            "type": "string"
+          },
+          "sysroot": {
+            "description": "For a core from ANOTHER machine: a directory holding copies of that machine's files at their original paths (sysroot/usr/lib/…, sysroot/opt/app/…), so its libraries resolve.",
+            "type": "string"
+          },
+          "timeout_sec": {
+            "description": "Wall-clock limit for gdb (default 300).",
+            "type": "number"
+          }
+        },
+        "required": [
+          "core"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

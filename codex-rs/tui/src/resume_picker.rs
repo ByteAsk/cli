@@ -2043,7 +2043,7 @@ fn draw_picker(tui: &mut Tui, state: &PickerState, screen_size: Size) -> std::io
         let header_title = if default_bg().is_some_and(is_light) {
             state.action.title().bold().fg(best_color((0, 100, 0)))
         } else {
-            state.action.title().bold().cyan()
+            state.action.title().bold().fg(crate::style::accent_color())
         };
         let header_line: Line = vec![header_title].into();
         frame.render_widget_ref(&header_line, chrome(header));

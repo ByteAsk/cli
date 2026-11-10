@@ -4,7 +4,9 @@ use super::*;
 
 impl ChatWidget {
     pub(crate) fn new_with_app_event(common: ChatWidgetInit) -> Self {
-        Self::new_with_op_target(common, CodexOpTarget::AppEvent)
+        let widget = Self::new_with_op_target(common, CodexOpTarget::AppEvent);
+        widget.maybe_emit_referral_promo_banner();
+        widget
     }
 
     pub(super) fn new_with_op_target(
@@ -296,9 +298,28 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_connectors_enabled(widget.connectors_enabled());
+        // Show `/usage` in the slash-command popup for ChatGPT-backend accounts
+        // (upstream token-activity) AND for ByteAsk gateway accounts (where it
+        // shows gateway-reported plan usage). Without the byteask_gateway() arm,
+        // `/usage` is typeable but missing from autocomplete on magic-link logins.
+        widget.bottom_pane.set_token_activity_command_enabled(
+            widget.has_codex_backend_auth || widget.byteask_gateway().is_some(),
+        );
+        // Always-on rotating footer hint (usage / referral) for ByteAsk
+        // gateway accounts. A shared slot carries the live weekly-usage %, filled
+        // by a one-shot async probe; the footer shows a /usage nudge until it lands.
+        let byteask_gw = widget.byteask_gateway().is_some();
+        let byteask_usage_slot = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1));
         widget
             .bottom_pane
-            .set_token_activity_command_enabled(widget.has_codex_backend_auth);
+            .set_byteask_marketing(byteask_gw, Some(byteask_usage_slot.clone()));
+        if byteask_gw {
+            widget.spawn_byteask_usage_probe(byteask_usage_slot);
+            // There is no operator-alert banner here:
+            // a server-driven promotion would insert itself at the top of every session
+            // and, being a history cell, could not be dismissed. The gateway route
+            // and the dashboard tab still exist; nothing in the client reads them.
+        }
         widget.refresh_status_surfaces();
 
         widget

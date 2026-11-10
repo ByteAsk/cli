@@ -31,6 +31,7 @@ pub(crate) mod test_sync_spec;
 mod tool_search;
 pub(crate) mod tool_search_spec;
 pub(crate) mod unified_exec;
+pub(crate) mod byteask_files;
 mod view_image;
 pub(crate) mod view_image_spec;
 mod wait_for_environment;

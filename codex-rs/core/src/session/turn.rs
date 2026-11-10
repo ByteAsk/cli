@@ -168,11 +168,19 @@ pub(crate) async fn run_turn(
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively
     // when they would push the thread over the compaction threshold.
+    // ByteAsk: a cold prompt cache is the one free moment to shrink old history.
+    if sess.byteask_cold_slim_if_due().await > 0 {
+        sess.recompute_token_usage(&turn_context).await;
+    }
+    // ByteAsk: the text about to be added, so compaction can run BEFORE a large paste
+    // carries one request past the threshold (and into the long-context price tier).
+    let byteask_pending_tokens = byteask_pending_input_tokens(&input);
     if let Err(err) = run_pre_sampling_compact(
         &sess,
         &turn_context,
         &mut client_session,
         &cancellation_token,
+        byteask_pending_tokens,
     )
     .await
     {
@@ -249,7 +257,7 @@ pub(crate) async fn run_turn(
     );
     let mut world_state = world_state?;
 
-    let Some((injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
+    let Some((mut injection_items, explicitly_enabled_connectors)) = build_skills_and_plugins(
         &sess,
         first_step_context.as_ref(),
         &user_input,
@@ -260,6 +268,18 @@ pub(crate) async fn run_turn(
     else {
         return Ok(None);
     };
+    // ByteAsk Context: the turn-0 pack, recorded with the user's message before the first
+    // model request (only with ByteAsk Context configured).
+    if let Some(pack) = crate::byteask_context::turn0_pack(
+        &sess,
+        turn_context.as_ref(),
+        &user_input,
+        &cancellation_token,
+    )
+    .await
+    {
+        injection_items.push(pack);
+    }
 
     if run_pending_session_start_hooks(&sess, &turn_context).await {
         return Ok(None);
@@ -419,6 +439,11 @@ pub(crate) async fn run_turn(
                 can_drain_pending_input = true;
                 // Process async hooks only after sampling and its tools have finished.
                 drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ false).await;
+                if model_needs_follow_up {
+                    // ByteAsk: extension checks after a tool step (see byteask_gate.rs).
+                    super::byteask_gate::after_step(&sess, &turn_context, &cancellation_token)
+                        .await?;
+                }
                 let (has_pending_input, token_status) = async {
                     let has_pending_input =
                         sess.input_queue.has_pending_input(&sess.active_turn).await;
@@ -510,6 +535,23 @@ pub(crate) async fn run_turn(
 
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
+                    // ByteAsk: an extension finish gate may send the model back to work.
+                    if super::byteask_gate::before_stop(
+                        &sess,
+                        &turn_context,
+                        last_agent_message.as_deref(),
+                        &cancellation_token,
+                    )
+                    .await?
+                    {
+                        sess.input_queue
+                            .accept_mailbox_delivery_for_current_turn(
+                                &sess.active_turn,
+                                &turn_context.sub_id,
+                            )
+                            .await;
+                        continue;
+                    }
                     let stop_outcome = run_turn_stop_hooks(
                         &sess,
                         &step_context,
@@ -662,6 +704,19 @@ pub(crate) async fn run_hooks_and_record_inputs(
         }
     }
     blocked_input && !accepted_user_input
+}
+
+/// Rough token count (bytes / 4) of the TEXT the user is about to add. Images are left
+/// out: their data URLs are not billed by length.
+fn byteask_pending_input_tokens(input: &[TurnInput]) -> i64 {
+    let bytes: usize = turn_user_input(input)
+        .iter()
+        .map(|item| match item {
+            UserInput::Text { text, .. } => text.len(),
+            _ => 0,
+        })
+        .sum();
+    i64::try_from(bytes / 4).unwrap_or(i64::MAX)
 }
 
 fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
@@ -1055,14 +1110,31 @@ async fn run_pre_sampling_compact(
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
     cancellation_token: &CancellationToken,
+    byteask_pending_tokens: i64,
 ) -> CodexResult<()> {
     maybe_run_previous_model_inline_compact(sess, turn_context, client_session, cancellation_token)
         .await?;
     let token_status =
         super::context_window::context_window_token_status(sess.as_ref(), turn_context.as_ref())
             .await;
+    // ByteAsk: only when the server-driven policy sets a headroom does the pending
+    // input count toward the threshold. Absent, behaviour is exactly upstream's.
+    let byteask_over_with_pending = byteask_output_reducers::policy::active()
+        .number("compaction_headroom_tokens")
+        .and_then(|headroom| {
+            let limit = token_status.auto_compact_scope_limit?;
+            let headroom = i64::try_from(headroom).ok()?;
+            Some(
+                token_status
+                    .auto_compact_scope_tokens
+                    .saturating_add(byteask_pending_tokens)
+                    .saturating_add(headroom)
+                    >= limit,
+            )
+        })
+        .unwrap_or(false);
     // Compact if the configured auto-compaction budget or usable context window is exhausted.
-    if token_status.token_limit_reached {
+    if token_status.token_limit_reached || byteask_over_with_pending {
         // Pre-turn compaction runs before run_turn creates the normal sampling step.
         let step_context = sess
             .capture_step_context(Arc::clone(turn_context), cancellation_token)
@@ -1366,6 +1438,7 @@ pub(crate) fn build_prompt(
             &turn_context.session_source,
         ),
         cyber_access_program: turn_context.cyber_access_program,
+        byteask_tool_choice_none: false,
     }
 }
 
@@ -1391,6 +1464,12 @@ async fn run_sampling_request(
 ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
     let turn_context = Arc::clone(&step_context.turn);
     let base_instructions = sess.get_prompt_base_instructions().await;
+    // ByteAsk: every model request keeps this thread's prompt cache warm, so stamp the
+    // idle clock here too; otherwise a long turn would make the NEXT turn look cold.
+    crate::byteask_compaction::touch(
+        &format!("{:?}", sess.thread_id),
+        std::time::Instant::now(),
+    );
 
     let tool_runtime = ToolCallRuntime::new(
         Arc::clone(&sess),
@@ -1829,6 +1908,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
         | EventMsg::RealtimeConversationClosed(_)
         | EventMsg::ModelReroute(_)
         | EventMsg::ModelVerification(_)
+        | EventMsg::ContextPack(_)
         | EventMsg::TurnModerationMetadata(_)
         | EventMsg::SafetyBuffering(_)
         | EventMsg::ContextCompacted(_)

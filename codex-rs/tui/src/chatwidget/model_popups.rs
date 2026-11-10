@@ -8,6 +8,10 @@ use super::*;
 const ULTRA_REASONING_CONCURRENCY_WARNING_THRESHOLD: usize = 8;
 pub(super) const MODEL_SELECTION_VIEW_ID: &str = "model-selection";
 pub(super) const ALL_MODELS_SELECTION_VIEW_ID: &str = "all-models-selection";
+/// Level 2 of the grouped picker. Deliberately NOT `ALL_MODELS_SELECTION_VIEW_ID`:
+/// a model-list refresh rebuilds a present all-models view from the WHOLE catalog,
+/// which would turn one provider's list into every model mid-selection.
+const GROUP_MODELS_SELECTION_VIEW_ID: &str = "group-models-selection";
 
 impl ChatWidget {
     /// Open a popup to choose a quick auto model. Selecting "All models"
@@ -82,6 +86,16 @@ impl ChatWidget {
             .into_iter()
             .filter(|preset| preset.show_in_picker)
             .collect();
+
+        // Two-level (provider -> model) rendering is opt-in PER CATALOG: it engages
+        // only when at least one preset carries a `picker_group`. A catalog without
+        // the field — the engine's own bundled `models.json`, any stale catalog, the
+        // app-server `model/list` path — falls through to the original behaviour
+        // below, unchanged.
+        if presets.iter().any(|preset| preset.picker_group.is_some()) {
+            self.open_grouped_model_popup(presets);
+            return;
+        }
 
         let current_model = self.current_model();
         let current_label = presets
@@ -201,6 +215,13 @@ impl ChatWidget {
         self.open_all_models_popup_with_view_id(presets, ALL_MODELS_SELECTION_VIEW_ID);
     }
 
+    /// Level 2 of the two-level picker: the all-models view, restricted to one
+    /// provider group. Esc steps back to level 1 because the group row keeps level 1
+    /// on the stack (`dismiss_on_select: false`), not because of the view id.
+    pub(crate) fn open_models_popup_for_group(&mut self, models: Vec<ModelPreset>) {
+        self.open_all_models_popup_with_view_id(models, GROUP_MODELS_SELECTION_VIEW_ID);
+    }
+
     fn open_all_models_popup_with_view_id(
         &mut self,
         presets: Vec<ModelPreset>,
@@ -215,34 +236,17 @@ impl ChatWidget {
             return;
         }
 
-        let mut items: Vec<SelectionItem> = Vec::new();
-        for preset in presets.into_iter() {
-            let description =
-                (!preset.description.is_empty()).then_some(preset.description.to_string());
-            let is_current = preset.model.as_str() == self.current_model();
-            let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
-            let preset_for_action = preset.clone();
-            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
-                let preset_for_event = preset_for_action.clone();
-                tx.send(AppEvent::OpenReasoningPopup {
-                    model: preset_for_event,
-                });
-            })];
-            items.push(SelectionItem {
-                name: preset.model.clone(),
-                description,
-                is_current,
-                is_default: preset.is_default,
-                actions,
-                dismiss_on_select: single_supported_effort,
-                dismiss_parent_on_child_accept: !single_supported_effort,
-                ..Default::default()
-            });
-        }
+        let items: Vec<SelectionItem> = presets
+            .into_iter()
+            .map(|preset| self.model_selection_item(preset))
+            .collect();
 
         let header = self.model_menu_header(
             "Select Model and Effort",
-            "Access legacy models by running codex -m <model_name> or in your config.toml",
+            // Kept short on purpose: `byteask` is two characters longer than the
+            // upstream command this replaced, which pushed the old wording one
+            // column past the popup and rendered a clipped "config.tom".
+            "Access other models with byteask -m <model_name> or in config.toml",
         );
         self.show_model_selection_view(SelectionViewParams {
             view_id: Some(view_id),
@@ -251,6 +255,140 @@ impl ChatWidget {
             header,
             ..Default::default()
         });
+    }
+
+    /// One picker row for a single model. Shared by the flat list and by level 2 of
+    /// the grouped picker so both behave identically.
+    fn model_selection_item(&self, preset: ModelPreset) -> SelectionItem {
+        let description =
+            (!preset.description.is_empty()).then_some(preset.description.to_string());
+        let is_current = preset.model.as_str() == self.current_model();
+        // `<= 1` (not `== 1`): models with zero selectable efforts (e.g. third-party
+        // models served via ByteAsk) also select-and-dismiss directly, with no effort
+        // sub-popup — otherwise the parent popup never receives a child-accept and stays open.
+        let single_supported_effort = preset.supported_reasoning_efforts.len() <= 1;
+        // A model this account cannot select (a paid-plan model on a free plan). The
+        // row STAYS in the list on purpose: hiding it would leave the user with no way
+        // to discover what upgrading actually buys. It is a
+        // DISABLED row with a `🔒` in the left gutter where the number goes -- the
+        // arrow keys skip it and enter cannot accept it -- instead of a selectable row
+        // with a flush-right `🔒 Pro` tag.
+        //
+        // Selecting it must be a no-op rather than an error: the gateway already
+        // answers a locked model by falling back, so a hard failure here would be the
+        // client inventing a stricter rule than the server enforces.
+        let locked_reason = preset.locked_reason.clone();
+        let is_locked = locked_reason.is_some();
+        let preset_for_action = preset.clone();
+        let actions: Vec<SelectionAction> = if is_locked {
+            vec![Box::new(|_tx| {})]
+        } else {
+            vec![Box::new(move |tx| {
+                let preset_for_event = preset_for_action.clone();
+                tx.send(AppEvent::OpenReasoningPopup {
+                    model: preset_for_event,
+                });
+            })]
+        };
+        SelectionItem {
+            name: preset.model.clone(),
+            description: if is_locked { locked_reason } else { description },
+            is_current,
+            is_default: preset.is_default,
+            actions,
+            // A locked row never opens the effort sub-popup, so it must dismiss like
+            // any other terminal row rather than leaving the parent waiting for a
+            // child-accept that can never arrive.
+            dismiss_on_select: if is_locked { true } else { single_supported_effort },
+            dismiss_parent_on_child_accept: !is_locked && !single_supported_effort,
+            is_disabled: is_locked,
+            disabled_gutter_marker: if is_locked { Some("🔒") } else { None },
+            ..Default::default()
+        }
+    }
+
+    /// Level 1 of the two-level picker: one row per `picker_group`, plus a direct row
+    /// for every preset that has no group (`auto`, which is a routing alias rather
+    /// than a provider). Level 2 is the existing all-models popup, filtered to the
+    /// chosen group.
+    fn open_grouped_model_popup(&mut self, presets: Vec<ModelPreset>) {
+        let current_model = self.current_model().to_string();
+
+        // Presets arrive already sorted by catalog priority; preserving encounter
+        // order therefore orders both the rows within a group and the groups
+        // themselves (by their highest-priority member) with no extra sorting.
+        let mut ungrouped: Vec<ModelPreset> = Vec::new();
+        let mut groups: Vec<(String, Vec<ModelPreset>)> = Vec::new();
+        for preset in presets {
+            match preset.picker_group.clone() {
+                None => ungrouped.push(preset),
+                Some(group) => match groups.iter_mut().find(|(name, _)| *name == group) {
+                    Some((_, members)) => members.push(preset),
+                    None => groups.push((group, vec![preset])),
+                },
+            }
+        }
+
+        // A lone group with nothing beside it would render as a one-row menu whose only
+        // purpose is another menu. Skip straight to the models.
+        if ungrouped.is_empty() && groups.len() == 1 {
+            let (_, members) = groups.remove(0);
+            self.open_all_models_popup_with_view_id(members, ALL_MODELS_SELECTION_VIEW_ID);
+            return;
+        }
+
+        let mut items: Vec<SelectionItem> = ungrouped
+            .into_iter()
+            .map(|preset| self.model_selection_item(preset))
+            .collect();
+
+        for (group, members) in groups {
+            let is_current = members
+                .iter()
+                .any(|preset| preset.model.as_str() == current_model);
+            let description = Some(Self::group_summary(&members));
+            let members_for_action = members;
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenModelsPopupForGroup {
+                    models: members_for_action.clone(),
+                });
+            })];
+            items.push(SelectionItem {
+                name: group,
+                description,
+                is_current,
+                actions,
+                // Keep this level on the stack and close it only once the model list
+                // accepts, so Esc at level 2 steps back here instead of dismissing the
+                // whole picker. (Same flag pair the model -> effort step already uses.)
+                dismiss_on_select: false,
+                dismiss_parent_on_child_accept: true,
+                ..Default::default()
+            });
+        }
+
+        let header = self.model_menu_header("Select Model", "Choose a provider, or pick Auto.");
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            header,
+            ..Default::default()
+        });
+    }
+
+    /// "Claude Opus 4.8, Claude Opus 5, Claude Sonnet 5, +2 more"
+    fn group_summary(members: &[ModelPreset]) -> String {
+        const SHOWN: usize = 3;
+        let mut summary = members
+            .iter()
+            .take(SHOWN)
+            .map(|preset| preset.display_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if let Some(rest) = members.len().checked_sub(SHOWN).filter(|rest| *rest > 0) {
+            summary.push_str(&format!(", +{rest} more"));
+        }
+        summary
     }
 
     fn model_selection_actions(
@@ -449,6 +587,9 @@ impl ChatWidget {
             .iter()
             .map(|option| option.effort.clone())
             .collect();
+        // Models that expose no reasoning efforts select with no effort at all (no
+        // sub-popup, no effort label) — distinct from a single explicitly-supported effort.
+        let no_selectable_effort = all_choices.is_empty();
         if all_choices.is_empty() {
             all_choices.push(default_effort.clone());
         }
@@ -457,7 +598,11 @@ impl ChatWidget {
             .partition(|effort| !Self::is_advanced_reasoning_effort(effort));
 
         if choices.len() == 1 && advanced_choices.is_empty() {
-            let selected_effort = choices.first().cloned();
+            let selected_effort = if no_selectable_effort {
+                None
+            } else {
+                choices.first().cloned()
+            };
             let selected_model = preset.model;
             if self
                 .should_prompt_plan_mode_reasoning_scope(&selected_model, selected_effort.clone())

@@ -36,7 +36,15 @@ pub(crate) struct GenericDisplayRow {
     pub match_indices: Option<Vec<usize>>, // indices to bold (char positions)
     pub description: Option<String>,       // optional grey text after the name
     pub category_tag: Option<String>,      // optional right-side category label
-    pub disabled_reason: Option<String>,   // optional disabled message
+    /// Optional label pinned flush to the right edge of the row.
+    ///
+    /// Unlike [`Self::category_tag`], which trails the description inline, this
+    /// is padded out to the content width so tags on consecutive rows line up
+    /// as a real column. Rows carrying one are kept to a single line — a
+    /// right-aligned column only reads as a column when every row occupies
+    /// exactly one viewport row.
+    pub right_tag: Option<String>,
+    pub disabled_reason: Option<String>, // optional disabled message
     pub is_disabled: bool,
     pub wrap_indent: Option<usize>, // optional indent for wrapped lines
 }
@@ -222,6 +230,9 @@ fn should_wrap_name_in_column(row: &GenericDisplayRow) -> bool {
         && row.match_indices.is_none()
         && row.display_shortcut.is_none()
         && row.category_tag.is_none()
+        // A pinned right tag owns the row's trailing cells, so it takes the
+        // single-line path in `wrap_standard_row` instead.
+        && row.right_tag.is_none()
         && row.name_prefix_spans.is_empty()
 }
 
@@ -287,6 +298,38 @@ fn wrap_two_column_row(row: &GenericDisplayRow, desc_col: usize, width: u16) -> 
     out
 }
 
+/// Cells a row must keep for its own text before a
+/// [`GenericDisplayRow::right_tag`] is worth pinning. Below this the tag would
+/// crowd out the label it annotates, so the row renders without it.
+const MIN_BODY_WIDTH_FOR_RIGHT_TAG: usize = 8;
+
+/// Pin `tag` flush to the right edge of `width`, truncating the row body if
+/// needed so the two never collide.
+///
+/// Returns `None` when there is no tag, or when the row is too narrow to show
+/// one without swallowing its own label — callers then fall back to ordinary
+/// wrapping.
+fn pin_right_tag(line: &Line<'static>, tag: Option<&str>, width: u16) -> Option<Line<'static>> {
+    let tag = tag.map(str::trim).filter(|tag| !tag.is_empty())?;
+    let width = width.max(1) as usize;
+    let tag_width = display_width(tag);
+    // Keep at least one space between the row body and the tag.
+    let body_limit = width.checked_sub(tag_width.saturating_add(1))?;
+    if body_limit < MIN_BODY_WIDTH_FOR_RIGHT_TAG {
+        return None;
+    }
+
+    let mut line = truncate_line_with_ellipsis_if_overflow(line.clone(), body_limit);
+    let gap = width
+        .saturating_sub(line_width(&line))
+        .saturating_sub(tag_width);
+    if gap > 0 {
+        line.spans.push(" ".repeat(gap).into());
+    }
+    line.spans.push(tag.to_string().dim());
+    Some(line)
+}
+
 fn wrap_standard_row(
     row: &GenericDisplayRow,
     desc_col: usize,
@@ -297,6 +340,9 @@ fn wrap_standard_row(
     use crate::wrapping::word_wrap_line;
 
     let full_line = build_full_line(row, desc_col, description_layout);
+    if let Some(line) = pin_right_tag(&full_line, row.right_tag.as_deref(), width) {
+        return vec![line];
+    }
     let continuation_indent = wrap_indent(row, desc_col, width);
     let options = RtOptions::new(width.max(1) as usize)
         .initial_indent(Line::from(""))

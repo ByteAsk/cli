@@ -699,3 +699,115 @@ fn usage_limit_reached_with_promo_message() {
         assert_eq!(err.to_string(), expected);
     });
 }
+
+// ---------------------------------------------------------------------------
+// ByteAsk error-surfacing contract.
+//
+// These pin behavior the Python side depends on but cannot observe: the gateway
+// and the BYOK sidecar choose their wire shape based on what the ENGINE does
+// with it, so a change here silently un-fixes user-facing errors.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn client_errors_are_not_retried_but_server_errors_are() {
+    // A 4xx is settled; retrying only costs the user ~6.2s of backoff before the
+    // same message. A 5xx is worth another attempt.
+    for status in [401u16, 402, 403, 404, 413, 422] {
+        let e = CodexErr::UnexpectedStatus(UnexpectedResponseError {
+            status: StatusCode::from_u16(status).unwrap(),
+            body: String::new(),
+            user_message: None,
+            url: None,
+            cf_ray: None,
+            request_id: None,
+            identity_authorization_error: None,
+            identity_error_code: None,
+        });
+        assert!(!e.is_retryable(), "{status} must not be retried");
+    }
+    for status in [500u16, 502, 503, 504] {
+        let e = CodexErr::UnexpectedStatus(UnexpectedResponseError {
+            status: StatusCode::from_u16(status).unwrap(),
+            body: String::new(),
+            user_message: None,
+            url: None,
+            cf_ray: None,
+            request_id: None,
+            identity_authorization_error: None,
+            identity_error_code: None,
+        });
+        assert!(e.is_retryable(), "{status} must still be retried");
+    }
+}
+
+#[test]
+fn a_loopback_url_is_never_shown_to_the_user() {
+    // The BYOK sidecar listens on 127.0.0.1. Appending its address made users
+    // believe ByteAsk's servers were down when their own CA store was broken.
+    let mk = |url: &str| {
+        CodexErr::UnexpectedStatus(UnexpectedResponseError {
+            status: StatusCode::BAD_GATEWAY,
+            body: "{\"error\":{\"message\":\"boom\"}}".to_string(),
+            user_message: None,
+            url: Some(url.to_string()),
+            cf_ray: None,
+            request_id: None,
+            identity_authorization_error: None,
+            identity_error_code: None,
+        })
+        .to_string()
+    };
+    for url in [
+        "http://127.0.0.1:8799/byteask/v1/responses",
+        "http://localhost:8799/x",
+        "http://[::1]:8799/x",
+    ] {
+        assert!(!mk(url).contains(url), "loopback url leaked: {url}");
+    }
+    // A real upstream url is still useful and must survive.
+    let real = "https://api.openai.com/v1/responses";
+    assert!(mk(real).contains(real));
+}
+
+#[test]
+fn a_plan_limit_never_renders_a_competitor_url_when_promo_copy_is_supplied() {
+    // THE critical one. UsageLimitReachedError::Display ignores error.message and
+    // builds copy from plan_type, which for a free plan emits
+    // "Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus)".
+    // The gateway therefore sends x-codex-promo-message; this proves that header
+    // actually displaces the ChatGPT copy.
+    let e = UsageLimitReachedError {
+        plan_type: Some(PlanType::Known(KnownPlan::Free)),
+        resets_at: None,
+        rate_limits: None,
+        promo_message: Some(
+            "you've reached your 5-hour ByteAsk limit; email founders@byteask.ai to upgrade"
+                .to_string(),
+        ),
+        rate_limit_reached_type: None,
+    };
+    let rendered = e.to_string();
+    assert!(
+        !rendered.contains("chatgpt.com"),
+        "shipped a competitor URL to a ByteAsk user: {rendered}"
+    );
+    assert!(
+        !rendered.contains("Codex"),
+        "leaked the upstream brand: {rendered}"
+    );
+    assert!(rendered.contains("founders@byteask.ai"), "{rendered}");
+}
+
+#[test]
+fn without_promo_copy_a_free_plan_still_renders_the_upstream_default() {
+    // Documents WHY the promo header is mandatory rather than a nicety: drop it
+    // and the ChatGPT copy comes straight back.
+    let e = UsageLimitReachedError {
+        plan_type: Some(PlanType::Known(KnownPlan::Free)),
+        resets_at: None,
+        rate_limits: None,
+        promo_message: None,
+        rate_limit_reached_type: None,
+    };
+    assert!(e.to_string().contains("chatgpt.com"));
+}

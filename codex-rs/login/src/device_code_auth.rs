@@ -83,7 +83,7 @@ async fn request_user_code(
         if status == StatusCode::NOT_FOUND {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
-                "device code login is not enabled for this Codex server. Use the browser login or verify the server URL.",
+                "device code login is not enabled for this ByteAsk server. Use the browser login or verify the server URL.",
             ));
         }
 
@@ -146,14 +146,20 @@ async fn poll_for_token(
     }
 }
 
+// ByteAsk: this is the sign-in screen a user reads while deciding whether to trust
+// us with their ChatGPT account, so it follows the terminal style (utility
+// voice, sentence case, one action per line) and uses the SAME wording as the TUI's
+// screen in tui/src/onboarding/auth/headless_chatgpt_login.rs, so the two surfaces
+// read identically. The upstream version opened with "Welcome to Codex [v…]" /
+// "OpenAI's command-line coding agent" and closed by naming Codex — three brand leaks
+// that the rebranding script cannot reach, because this is a MULTI-LINE string
+// literal and its sweep only rewrites quoted spans that sit on one line.
 fn device_code_prompt(verification_url: &str, code: &str) -> String {
-    let version = env!("CARGO_PKG_VERSION");
     format!(
-        "\nWelcome to Codex [v{ANSI_GRAY}{version}{ANSI_RESET}]\n{ANSI_GRAY}OpenAI's command-line coding agent{ANSI_RESET}\n\
-\nFollow these steps to sign in with ChatGPT using device code authorization:\n\
-\n1. Open this link in your browser and sign in to your account\n   {ANSI_BLUE}{verification_url}{ANSI_RESET}\n\
-\n2. Enter this one-time code {ANSI_GRAY}(expires in 15 minutes){ANSI_RESET}\n   {ANSI_BLUE}{code}{ANSI_RESET}\n\
-\n{ANSI_GRAY}Continue only if you started this login in Codex. If a website or another person gave you this code, cancel.{ANSI_RESET}\n",
+        "\nSign in with your ChatGPT subscription\n\
+\n  1. Open this link in your browser and sign in\n     {ANSI_BLUE}{verification_url}{ANSI_RESET}\n\
+\n  2. Enter this one-time code {ANSI_GRAY}(expires in 15 minutes){ANSI_RESET}\n     {ANSI_BLUE}{code}{ANSI_RESET}\n\
+\n{ANSI_GRAY}  Continue only if you started this sign-in in ByteAsk. If a website\n  or another person gave you this code, cancel.{ANSI_RESET}\n",
     )
 }
 
@@ -216,6 +222,13 @@ pub async fn complete_device_code_login(
         opts.forced_chatgpt_workspace_id.as_deref(),
         &tokens.id_token,
     ) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, message));
+    }
+
+    // ByteAsk: refuse a plan that serves no model BEFORE persisting. Checking after the
+    // credential is stored means a refusal has to undo damage already done - and a user
+    // trying a second account loses the working subscription they already had.
+    if let Err(message) = crate::byteask_plan_gate::ensure_plan_supported(&tokens.id_token) {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, message));
     }
 

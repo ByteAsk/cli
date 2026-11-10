@@ -36,6 +36,11 @@ pub struct Prompt {
     pub output_schema_strict: bool,
 
     pub(crate) cyber_access_program: Option<codex_protocol::turn_input::CyberAccessProgram>,
+
+    /// ByteAsk: send `tool_choice: "none"`. Lets a request carry the SAME tools array
+    /// as the working calls (so the provider's prompt cache still matches the prefix)
+    /// while the model cannot call any of them. Used by compaction.
+    pub(crate) byteask_tool_choice_none: bool,
 }
 
 impl Default for Prompt {
@@ -48,6 +53,7 @@ impl Default for Prompt {
             output_schema: None,
             output_schema_strict: true,
             cyber_access_program: None,
+            byteask_tool_choice_none: false,
         }
     }
 }

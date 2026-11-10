@@ -78,10 +78,30 @@ impl ToolCallRuntime {
     ) -> impl std::future::Future<Output = Result<ResponseItemEnvelope, CodexErr>> {
         let error_call = call.clone();
         let source = call.direct_source();
+        // ByteAsk loop nudge: what this call was, for comparison with the last one.
+        let byteask_thread = format!("{:?}", self.session.thread_id);
+        let byteask_tool = call.tool_name.name.clone();
+        let byteask_namespace = call.tool_name.namespace.clone();
+        let byteask_call_id = call.call_id.clone();
+        let byteask_args = call.payload.log_payload().into_owned();
         let future = self.handle_tool_call_with_source(call, source, cancellation_token);
         async move {
             match future.await {
-                Ok(response) => Ok(response.into_response()),
+                Ok(response) => {
+                    let mut envelope = response.into_response();
+                    crate::tools::byteask_loop::reduce_namespaced_output(
+                        byteask_namespace.as_deref(),
+                        &byteask_call_id,
+                        &mut envelope.item,
+                    );
+                    crate::tools::byteask_loop::observe(
+                        &byteask_thread,
+                        &byteask_tool,
+                        &byteask_args,
+                        &mut envelope.item,
+                    );
+                    Ok(envelope)
+                }
                 Err(FunctionCallError::Fatal(message)) => Err(CodexErr::Fatal(message)),
                 Err(other) => Ok(ResponseItemEnvelope::new(
                     Self::failure_response(error_call, other).into(),

@@ -1,0 +1,30 @@
+# Secret scanning configuration. Extends the default rules.
+# The paths below hold test fixtures, documentation examples or code that parses keys;
+# each match was reviewed and none is a real credential.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed test fixtures and key-handling code"
+paths = [
+  '''codex-rs/cli/src/login\.rs''',
+  '''codex-rs/cli/tests/login\.rs''',
+  '''codex-rs/cli/tests/cloud_auth\.rs''',
+  '''codex-rs/ext/merge-check/src/sign\.rs''',
+  '''codex-rs/agent-identity/src/lib\.rs''',
+  '''codex-rs/app-server/tests/suite/v2/connection_handling_websocket\.rs''',
+  '''codex-rs/app-server/README\.md''',
+  '''codex-rs/Cargo\.lock''',
+  '''codex-rs/codex-mcp/src/trusted_access_tests\.rs''',
+  '''codex-rs/codex-mcp/src/connection_manager_tests\.rs''',
+  '''codex-rs/core-plugins/src/remote/catalog_cache\.rs''',
+  '''codex-rs/exec/tests/suite/apply_patch\.rs''',
+  '''codex-rs/login/src/auth/agent_identity\.rs''',
+  '''codex-rs/login/src/auth/auth_tests\.rs''',
+  '''codex-rs/secrets/src/sanitizer\.rs''',
+  '''codex-rs/tui/src/byteask_settings/store\.rs''',
+]
+regexTarget = "line"
+regexes = [
+  '''_byok_merge "keys\.openai=" "keys\.anthropic=" "keys\.gemini="''',
+]

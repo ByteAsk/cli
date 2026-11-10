@@ -142,7 +142,7 @@ impl TraceReducer {
 
         let Some(codex_turn_id) = codex_turn_id else {
             bail!(
-                "code cell start {} did not include a Codex turn id",
+                "code cell start {} did not include a ByteAsk turn id",
                 started.code_cell_id
             );
         };
@@ -549,7 +549,7 @@ impl TraceReducer {
             .map(|turn| turn.thread_id.clone())
             .with_context(|| {
                 format!(
-                    "{event_name} {runtime_cell_id} referenced unknown Codex turn {codex_turn_id}"
+                    "{event_name} {runtime_cell_id} referenced unknown ByteAsk turn {codex_turn_id}"
                 )
             })
     }
@@ -642,7 +642,7 @@ impl TraceReducer {
             bail!("code cell start referenced unknown thread {thread_id}");
         }
         let Some(turn) = self.rollout.codex_turns.get(codex_turn_id) else {
-            bail!("code cell start referenced unknown Codex turn {codex_turn_id}");
+            bail!("code cell start referenced unknown ByteAsk turn {codex_turn_id}");
         };
         if turn.thread_id != thread_id {
             bail!(

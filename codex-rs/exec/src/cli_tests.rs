@@ -1,4 +1,5 @@
 use super::*;
+use clap::CommandFactory;
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -102,6 +103,48 @@ fn parses_config_isolation_flags() {
 
     assert!(cli.ignore_user_config);
     assert!(cli.ignore_rules);
+}
+
+#[test]
+fn parses_max_turns_budget() {
+    let cli = Cli::parse_from(["codex-exec", "--max-turns", "12", "summarize"]);
+
+    assert_eq!(cli.max_turns, Some(12));
+}
+
+#[test]
+fn max_turns_defaults_to_unlimited() {
+    let cli = Cli::parse_from(["codex-exec", "summarize"]);
+
+    assert_eq!(cli.max_turns, None);
+}
+
+#[test]
+fn max_turns_is_global_and_accepted_after_a_subcommand() {
+    let cli = Cli::parse_from(["codex-exec", "resume", "--last", "--max-turns", "3"]);
+
+    assert_eq!(cli.max_turns, Some(3));
+}
+
+/// `-s/--sandbox` was always documented; its *default* never was, so a headless
+/// evaluator could not know their shell commands were confined to a read-only
+/// filesystem.
+#[test]
+fn help_states_the_sandbox_default_and_the_escape_hatch() {
+    let help = Cli::command().render_help().to_string();
+
+    assert!(
+        help.contains("READ-ONLY by default"),
+        "help must state the sandbox default:\n{help}"
+    );
+    assert!(
+        help.contains("--sandbox workspace-write"),
+        "help must name the flag that allows writes:\n{help}"
+    );
+    assert!(
+        help.contains("cpp_sanitize"),
+        "help must say the native tools run outside the sandbox:\n{help}"
+    );
 }
 
 #[test]

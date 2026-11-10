@@ -288,7 +288,7 @@ impl RequestUserInputOverlay {
             let question_line = if answered {
                 Line::from(line.clone())
             } else {
-                Line::from(line.clone()).cyan()
+                Line::from(line.clone()).fg(crate::style::accent_color())
             };
             Paragraph::new(question_line).render(
                 Rect {
@@ -363,7 +363,7 @@ impl RequestUserInputOverlay {
                     spans.push(TIP_SEPARATOR.into());
                 }
                 if tip.highlight {
-                    spans.push(tip.text.cyan().bold().not_dim());
+                    spans.push(tip.text.fg(crate::style::accent_color()).bold().not_dim());
                 } else {
                     spans.push(tip.text.into());
                 }

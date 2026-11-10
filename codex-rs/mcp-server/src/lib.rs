@@ -212,7 +212,7 @@ fn reject_workload_identity(workload_identity_selected: bool) -> IoResult<()> {
     if workload_identity_selected {
         return Err(std::io::Error::new(
             ErrorKind::Unsupported,
-            "workload identity is not supported by `codex mcp-server`",
+            "workload identity is not supported by `byteask mcp-server`",
         ));
     }
     Ok(())

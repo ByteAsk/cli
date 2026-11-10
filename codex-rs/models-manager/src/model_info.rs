@@ -15,7 +15,7 @@ use codex_utils_output_truncation::approx_bytes_for_tokens;
 use tracing::warn;
 
 pub const BASE_INSTRUCTIONS: &str = include_str!("../prompt.md");
-const DEFAULT_PERSONALITY_HEADER: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
+const DEFAULT_PERSONALITY_HEADER: &str = "You are ByteAsk, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
 const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
@@ -152,11 +152,14 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         visibility: ModelVisibility::None,
         supported_in_api: true,
         priority: 99,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,
         availability_nux: None,
         upgrade: None,
+        // A slug we have no metadata for is never something the operator locked.
+        locked_reason: None,
         model_messages: Some(local_model_messages_for_slug(slug)),
         include_skills_usage_instructions: false,
         include_plugin_usage_instructions: false,

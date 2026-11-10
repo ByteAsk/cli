@@ -322,13 +322,20 @@ fn write_history_line<W: Write>(
     queue!(writer, Clear(ClearType::UntilNewLine))?;
     // Merge line-level style into each span so that ANSI colors reflect
     // line styles (e.g., blockquotes with green fg).
+    //
+    // Span text is untrusted — a tool result is whatever a debugged program or
+    // an MCP server chose to print — and scrollback goes out with a raw
+    // `Print`, so control characters are dropped here, as ratatui already does
+    // for the viewport. Without it a tool result's escape sequences reached
+    // the terminal: OSC 52 writes the clipboard, OSC 0 retitles the window,
+    // CSI 2J clears the screen. Our own hyperlinks are added after this.
     let merged_spans: Vec<Span> = line
         .line
         .spans
         .iter()
         .map(|s| Span {
             style: s.style.patch(line.line.style),
-            content: s.content.clone(),
+            content: without_control_chars(&s.content),
         })
         .collect();
     let merged_line = HyperlinkLine {
@@ -446,6 +453,14 @@ impl ModifierDiff {
     }
 }
 
+fn without_control_chars<'a>(text: &std::borrow::Cow<'a, str>) -> std::borrow::Cow<'a, str> {
+    if text.chars().any(char::is_control) {
+        std::borrow::Cow::Owned(text.chars().filter(|c| !c.is_control()).collect())
+    } else {
+        text.clone()
+    }
+}
+
 fn write_spans<'a, I>(mut writer: &mut impl Write, content: I) -> io::Result<()>
 where
     I: IntoIterator<Item = &'a Span<'a>>,
@@ -497,6 +512,48 @@ mod tests {
     use crate::test_backend::VT100Backend;
     use ratatui::layout::Rect;
     use ratatui::style::Color;
+
+    /// Tool output is untrusted text: a program under debug, or a third-party
+    /// MCP server, chooses it. The live viewport drops control characters
+    /// (ratatui filters them), but scrollback is written with raw `Print`, so
+    /// an escape sequence in a tool result reached the user's terminal: OSC 52
+    /// writes the clipboard, others retitle the window or move the cursor.
+    #[test]
+    fn tool_output_escape_sequences_never_reach_the_terminal() {
+        use crate::history_cell::HistoryCell;
+        use crate::history_cell::McpInvocation;
+        use crate::history_cell::new_active_mcp_tool_call;
+
+        let payload = "ok \x1b]52;c;aGVsbG8=\x07 \x1b[2J\x1b]0;pwned\x07 \x1b[31mred\x1b[0m done";
+        let mut cell = new_active_mcp_tool_call(
+            "call-1".to_string(),
+            McpInvocation {
+                server: "byteask".to_string(),
+                tool: "debug_session".to_string(),
+                arguments: None,
+            },
+            /*animations_enabled*/ false,
+        );
+        cell.complete(
+            std::time::Duration::ZERO,
+            Ok(codex_protocol::mcp::CallToolResult {
+                content: vec![serde_json::json!({"type": "text", "text": payload})],
+                structured_content: None,
+                is_error: None,
+                meta: None,
+            }),
+        );
+        let mut written = Vec::new();
+        for line in cell.display_lines(/*width*/ 200) {
+            let line = crate::terminal_hyperlinks::annotate_web_urls_in_line(line);
+            write_history_line(&mut written, &line, /*wrap_width*/ 200).expect("write");
+        }
+        let written = String::from_utf8(written).expect("utf-8");
+        for sequence in ["\x1b]52", "\x1b[2J", "\x1b]0;", "\x07"] {
+            assert!(!written.contains(sequence), "{sequence:?} reached the terminal: {written:?}");
+        }
+        assert!(written.contains("ok") && written.contains("done"), "{written:?}");
+    }
 
     #[test]
     fn writes_bold_then_regular_spans() {
@@ -1059,7 +1116,7 @@ mod tests {
         assert!(
             rows.iter()
                 .any(|row| row.trim_end() == "alpha beta gamma del"),
-            "expected terminal soft-wrap instead of Codex word pre-wrap, rows: {rows:?}"
+            "expected terminal soft-wrap instead of ByteAsk word pre-wrap, rows: {rows:?}"
         );
     }
 

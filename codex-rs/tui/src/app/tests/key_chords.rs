@@ -102,11 +102,11 @@ async fn completed_global_chord_reuses_the_existing_action_handler() -> Result<(
     insta::assert_snapshot!(
         render_bottom_popup(&app.chat_widget, /*width*/ 80)
             .replace(&test_path_display("/tmp/project"), "/tmp/project"),
-        @r"
-        › Ask Codex to do anything
+        @"
+    › Ask ByteAsk to do anything
 
-           ctrl + x … waiting for next key    esc cancel
-        "
+       ctrl + x … waiting for next key    esc cancel
+    "
     );
 
     press(&mut app, &mut tui, &mut app_server, ctrl('t')).await?;

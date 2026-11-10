@@ -1,81 +1,125 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+<h1 align="center">ByteAsk CLI</h1>
+
+<p align="center">An AI coding agent for your terminal, with tools for C and C++ work: build, debug, sanitize and profile.</p>
+
 <p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
+  <a href="https://github.com/ByteAsk/cli/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ByteAsk/cli"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
 </p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
----
+ByteAsk CLI is a fork of [OpenAI Codex CLI](https://github.com/openai/codex). It keeps Codex's terminal agent and
+adds native tools for C and C++ projects, a hosted model gateway with sign-in by email, support for your own
+provider keys and self-hosted models, and an optional connection to ByteAsk Context, a hosted code index.
+ByteAsk is not affiliated with, sponsored by, or endorsed by OpenAI. See [UPSTREAM.md](UPSTREAM.md).
 
-## Quickstart
+## Install
 
-### Installing and running Codex CLI
+**macOS and Linux**
 
-Run the following on Mac or Linux to install Codex CLI:
-
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```sh
+curl -fsSL https://code.byteask.ai/install.sh | sh
 ```
 
-Run the following on Windows to install Codex CLI:
-
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
-```
-
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
-
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
-```
+**Windows (PowerShell)**
 
 ```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
+irm https://code.byteask.ai/install.ps1 | iex
 ```
 
-Codex CLI can also be installed via the following package managers:
+**pip**
 
-```shell
-# Install using npm
-npm install -g @openai/codex
+```sh
+pip install byteask
 ```
 
-```shell
-# Install using Homebrew
-brew install --cask codex
+The installers download the engine for your platform from this repository's
+[releases](https://github.com/ByteAsk/cli/releases/latest) and check it against the published `SHA256SUMS`.
+Supported platforms: Linux x86_64 and arm64, macOS on Apple silicon, Windows x86_64.
+Release binaries up to v0.2.4 were built before the source was published; this repository holds that source,
+cleaned for publication. To build from source, see [docs/byteask/building.md](docs/byteask/building.md).
+
+## Quick start
+
+```sh
+cd your-project
+byteask
 ```
 
-Then simply run `codex` to get started.
+On first run ByteAsk asks how you want to run models:
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+- **ByteAsk account:** sign in with your email address; models run through the ByteAsk gateway.
+- **Your own provider key:** OpenAI, Anthropic or Gemini; requests go from your machine to the provider.
+- **Your own hosted model:** any OpenAI-compatible endpoint, for example vLLM or Ollama.
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+Then describe the task. ByteAsk reads the code, runs commands in a sandbox, and shows each change for approval.
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+## Usage
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+```text
+byteask                           start an interactive session
+byteask "<prompt>"                start with a prompt
+byteask exec "<prompt>"           one answer, no UI, for scripts and CI
+byteask review                    review the working tree
+byteask resume | fork             continue an earlier session
+byteask login | logout            sign in or out
+byteask byok <set|status|remove>  use your own provider key
+byteask models <add|test|list>    use your own hosted model
+byteask context connect           connect ByteAsk Context
+byteask mcp <add|list|remove>     manage MCP servers
+byteask doctor                    check the install
+byteask --update                  update ByteAsk
+```
 
-</details>
+Common options: `-m <model>`, `--effort <low|medium|high|xhigh>`, `-C <dir>`. Run `byteask --help` for the full
+list, and see [docs/byteask/usage.md](docs/byteask/usage.md) for examples.
 
-### Using Codex with your ChatGPT plan
+## C and C++ tools
 
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+When ByteAsk detects a C or C++ project it adds tools the agent can call on your code, for example:
 
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+- build and test with the project's own build system, and select the tests a change affects;
+- run clang-tidy and cppcheck, and read the compilation database;
+- run AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer builds;
+- debug with gdb or lldb, including core files, and join a gdb session you already have open;
+- record and replay with rr on Linux;
+- profile with perf and run benchmarks with noise checks;
+- show struct layout and padding, symbolize stack traces, and look up compiler output on Compiler Explorer.
 
-## Docs
+Each tool reports the command it ran and what it found.
 
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
+## Configuration
 
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+Settings live in `~/.byteask/config.toml`. The format follows Codex CLI's configuration, with ByteAsk's
+additions documented in [docs/byteask/configuration.md](docs/byteask/configuration.md).
+
+## What ByteAsk sends
+
+- **Signed in with a ByteAsk account:** your requests, including the code context the agent sends, go to the
+  ByteAsk gateway, which forwards them to the model provider.
+- **Your own key or your own hosted model:** requests go from your machine to that provider. ByteAsk receives a
+  usage record after each turn (provider, model and token counts; never the key or the prompt).
+- **Install:** the installer reports the platform it installed for.
+- **Update check:** the launcher asks `code.byteask.ai` for the latest version.
+
+The launcher in this repository honours `BYTEASK_NO_TELEMETRY=1`, which turns off the install report and the usage
+record; it reaches installed copies with the next release. The [privacy policy](https://byteask.ai/privacy)
+covers what the hosted service does with requests.
+
+## Relationship to Codex CLI
+
+The engine under `codex-rs/` is Codex CLI's Rust workspace. ByteAsk's own code lives mostly under
+`codex-rs/ext/`, plus changes to upstream files, all listed in [UPSTREAM.md](UPSTREAM.md). The launcher
+(`byteask`, `byteask.ps1`) and installers (`install.sh`, `install.ps1`) are ByteAsk's. We merge upstream stable
+releases regularly. The directories `codex-cli/`, `sdk/` and the upstream `docs/` are kept so merges stay small;
+nothing is published from them.
+
+## Contributing
+
+Bug reports and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first; everyone taking part
+follows the [Code of Conduct](CODE_OF_CONDUCT.md). Report security problems privately as described in
+[SECURITY.md](SECURITY.md).
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Third-party components are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

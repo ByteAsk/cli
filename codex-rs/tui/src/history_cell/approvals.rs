@@ -57,7 +57,7 @@ pub fn new_approval_decision_cell(
                     vec![
                         actor.subject().into(),
                         "approved".bold(),
-                        " codex to run ".into(),
+                        " ByteAsk to run ".into(),
                         Span::from(snippet).dim(),
                         " this time".bold(),
                     ]
@@ -76,7 +76,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     actor.subject().into(),
                     "approved".bold(),
-                    " codex network access to ".into(),
+                    " ByteAsk network access to ".into(),
                     Span::from(target).dim(),
                     " this time".bold(),
                 ],
@@ -91,7 +91,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     actor.subject().into(),
                     "approved".bold(),
-                    " codex to always run commands that start with ".into(),
+                    " ByteAsk to always run commands that start with ".into(),
                     snippet,
                 ],
             )
@@ -102,7 +102,7 @@ pub fn new_approval_decision_cell(
                     vec![
                         actor.subject().into(),
                         "approved".bold(),
-                        " codex to run ".into(),
+                        " ByteAsk to run ".into(),
                         Span::from(snippet).dim(),
                         " every time this session".bold(),
                     ]
@@ -121,7 +121,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     actor.subject().into(),
                     "approved".bold(),
-                    " codex network access to ".into(),
+                    " ByteAsk network access to ".into(),
                     Span::from(target).dim(),
                     " every time this session".bold(),
                 ],
@@ -140,7 +140,7 @@ pub fn new_approval_decision_cell(
                     vec![
                         actor.subject().into(),
                         "persisted".bold(),
-                        " Codex network access to ".into(),
+                        " ByteAsk network access to ".into(),
                         Span::from(target).dim(),
                     ],
                 ),
@@ -149,7 +149,7 @@ pub fn new_approval_decision_cell(
                     vec![
                         actor.subject().into(),
                         "denied".bold(),
-                        " codex network access to ".into(),
+                        " ByteAsk network access to ".into(),
                         Span::from(target).dim(),
                         " and saved that rule".into(),
                     ],
@@ -164,13 +164,13 @@ pub fn new_approval_decision_cell(
                         ApprovalDecisionActor::User => vec![
                             actor.subject().into(),
                             "did not approve".bold(),
-                            " codex to run ".into(),
+                            " ByteAsk to run ".into(),
                             snippet,
                         ],
                         ApprovalDecisionActor::Guardian => vec![
                             "Request ".into(),
                             "denied".bold(),
-                            " for codex to run ".into(),
+                            " for ByteAsk to run ".into(),
                             snippet,
                         ],
                     }
@@ -193,7 +193,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     actor.subject().into(),
                     "did not approve".bold(),
-                    " codex network access to ".into(),
+                    " ByteAsk network access to ".into(),
                     Span::from(target).dim(),
                 ],
             ),
@@ -204,7 +204,7 @@ pub fn new_approval_decision_cell(
                     vec![
                         "Review ".into(),
                         "timed out".bold(),
-                        " before codex could run ".into(),
+                        " before ByteAsk could run ".into(),
                         Span::from(snippet).dim(),
                     ]
                 } else {
@@ -221,7 +221,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     "Review ".into(),
                     "timed out".bold(),
-                    " before codex could access ".into(),
+                    " before ByteAsk could access ".into(),
                     Span::from(target).dim(),
                 ],
             ),
@@ -249,7 +249,7 @@ pub fn new_approval_decision_cell(
                 vec![
                     actor.subject().into(),
                     "canceled".bold(),
-                    " the request for codex network access to ".into(),
+                    " the request for ByteAsk network access to ".into(),
                     Span::from(target).dim(),
                 ],
             ),
@@ -282,7 +282,7 @@ pub fn new_guardian_denied_patch_request(files: Vec<String>) -> Box<dyn HistoryC
     let mut summary = vec![
         "Request ".into(),
         "denied".bold(),
-        " for codex to apply ".into(),
+        " for ByteAsk to apply ".into(),
     ];
     if files.len() == 1 {
         summary.push("a patch touching ".into());
@@ -314,7 +314,7 @@ pub fn new_guardian_timed_out_patch_request(files: Vec<String>) -> Box<dyn Histo
     let mut summary = vec![
         "Review ".into(),
         "timed out".bold(),
-        " before codex could apply ".into(),
+        " before ByteAsk could apply ".into(),
     ];
     if files.len() == 1 {
         summary.push("a patch touching ".into());
@@ -345,6 +345,6 @@ pub fn new_guardian_timed_out_action_request(summary: String) -> Box<dyn History
 /// Cyan history cell line showing the current review status.
 pub(crate) fn new_review_status_line(message: String) -> PlainHistoryCell {
     PlainHistoryCell {
-        lines: vec![Line::from(message.cyan())],
+        lines: vec![Line::from(message.fg(crate::style::accent_color()))],
     }
 }

@@ -1,4 +1,4 @@
-//! Terminal history, desktop handoff, and clear-screen UI helpers for the TUI app.
+//! Terminal history and clear-screen UI helpers for the TUI app.
 //!
 //! This module owns rendering the fresh session header, clearing inline or alternate-screen UI
 //! state, and resetting transcript-related app state after `/clear` or Ctrl-L.
@@ -6,8 +6,6 @@
 use super::*;
 use crate::terminal_hyperlinks::HyperlinkLine;
 use std::sync::Weak;
-
-const DESKTOP_THREAD_OPENED_MESSAGE: &str = "Opened this session in the Desktop app.";
 
 pub(super) struct RenderedHistoryTail {
     pub(super) cell: Weak<dyn HistoryCell>,
@@ -219,20 +217,6 @@ impl App {
             .add_info_message(format!("Opened {url} in your browser."), /*hint*/ None);
     }
 
-    pub(super) fn open_desktop_thread(&mut self, thread_id: ThreadId) {
-        let url = format!("codex://threads/{thread_id}");
-        if let Err(err) = open_desktop_thread_url(&url) {
-            self.chat_widget
-                .add_error_message(desktop_thread_open_error_message(&err));
-            return;
-        }
-
-        self.chat_widget.add_info_message(
-            DESKTOP_THREAD_OPENED_MESSAGE.to_string(),
-            /*hint*/ None,
-        );
-    }
-
     pub(super) fn clear_ui_header_lines_with_version(
         &self,
         width: u16,
@@ -248,12 +232,13 @@ impl App {
             self.config.cwd.to_path_buf(),
             version,
         )
+        .with_account(history_cell::byteask_account_email(&self.config))
         .with_yolo_mode(history_cell::is_yolo_mode(&self.config))
         .display_lines(width)
     }
 
     pub(super) fn clear_ui_header_lines(&self, width: u16) -> Vec<Line<'static>> {
-        self.clear_ui_header_lines_with_version(width, CODEX_CLI_VERSION)
+        self.clear_ui_header_lines_with_version(width, crate::version::display_version())
     }
 
     pub(super) fn queue_clear_ui_header(&mut self, tui: &mut tui::Tui) {
@@ -322,108 +307,3 @@ impl App {
         self.skill_load_warnings.clear();
     }
 }
-
-fn desktop_thread_open_error_message(err: &str) -> String {
-    format!(
-        "Failed to open this session in the Desktop app: {err}. Install or launch the Desktop app and try again."
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn open_desktop_thread_url(url: &str) -> Result<(), String> {
-    let status = std::process::Command::new("open")
-        .arg(url)
-        .status()
-        .map_err(|err| format!("failed to invoke `open`: {err}"))?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("`open {url}` exited with {status}"))
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn open_desktop_thread_url(url: &str) -> Result<(), String> {
-    let script = windows_desktop_app_launch_script(url);
-    let output = std::process::Command::new("powershell.exe")
-        .arg("-NoProfile")
-        .arg("-Command")
-        .arg(&script)
-        .output()
-        .map_err(|err| format!("failed to launch the Desktop app through PowerShell: {err}"))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if stderr.is_empty() {
-        Err(format!(
-            "failed to launch the Desktop app through PowerShell with {}",
-            output.status
-        ))
-    } else {
-        Err(stderr)
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_desktop_app_launch_script(url: &str) -> String {
-    let url = powershell_single_quoted_string(url);
-    format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-$url = {url}
-
-$package = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue
-if ($null -eq $package) {{
-    Write-Error 'Desktop app package is not installed'
-    exit 1
-}}
-
-$manifest = Get-AppxPackageManifest -Package $package.PackageFullName
-$application = $manifest.Package.Applications.Application |
-    Where-Object {{
-        @($_.Extensions.Extension) | Where-Object {{
-            $_.Category -eq 'windows.protocol' -and $_.Protocol.Name -eq 'codex'
-        }}
-    }} |
-    Select-Object -First 1
-if ($null -eq $application -or [string]::IsNullOrWhiteSpace($application.Executable)) {{
-    Write-Error 'Desktop app package does not declare a codex protocol executable'
-    exit 1
-}}
-
-# Launch the package-declared protocol executable rather than an internal Electron shim.
-# Windows can deny direct starts of internal executables under WindowsApps.
-$exe = Join-Path $package.InstallLocation $application.Executable
-$appDir = Split-Path -Parent $exe
-$app = Join-Path $appDir 'resources\app.asar'
-if (-not (Test-Path $exe)) {{
-    Write-Error "Desktop app executable not found at $exe"
-    exit 1
-}}
-if (-not (Test-Path $app)) {{
-    Write-Error "Desktop app bundle not found at $app"
-    exit 1
-}}
-
-Start-Process -FilePath $exe -WorkingDirectory $appDir -ArgumentList @('resources\app.asar', $url)
-"#
-    )
-}
-
-#[cfg(target_os = "windows")]
-fn powershell_single_quoted_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn open_desktop_thread_url(_url: &str) -> Result<(), String> {
-    Err("The Desktop app is only available on macOS and Windows".to_string())
-}
-
-#[cfg(test)]
-#[path = "history_ui_tests.rs"]
-mod tests;

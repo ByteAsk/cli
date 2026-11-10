@@ -6,6 +6,9 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod apply_patch;
+mod byteask_compaction;
+pub mod byteask_context;
+pub mod byteask_harness;
 mod apps;
 mod client;
 mod client_common;

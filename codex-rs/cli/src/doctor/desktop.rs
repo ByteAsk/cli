@@ -141,7 +141,7 @@ fn desktop_log_root(identity: &str) -> Option<PathBuf> {
             let local = env::var_os("LOCALAPPDATA").map(PathBuf::from).or_else(|| {
                 env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join("AppData/Local"))
             })?;
-            local.join("Codex/Logs")
+            local.join("ByteAsk/Logs")
         }
         _ => return None,
     };
@@ -302,7 +302,7 @@ fn stopped_desktop_check() -> DoctorCheck {
 
 fn unavailable(id: &'static str, summary: &'static str) -> DoctorCheck {
     platform::desktop_check(id, CheckStatus::Warning, summary)
-        .remediation("restore desktop diagnostic access and rerun codex doctor")
+        .remediation("restore desktop diagnostic access and rerun byteask doctor")
 }
 
 fn redacted_path(path: &Path) -> String {

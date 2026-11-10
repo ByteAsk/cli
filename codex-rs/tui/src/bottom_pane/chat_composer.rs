@@ -408,7 +408,6 @@ fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
                 | SlashCommand::New
                 | SlashCommand::Clear
                 | SlashCommand::Resume
-                | SlashCommand::App
                 | SlashCommand::Side
                 | SlashCommand::Btw
                 | SlashCommand::Agents
@@ -510,6 +509,16 @@ pub(crate) struct ChatComposer {
     footer: FooterState,
     has_focus: bool,
     frame_requester: Option<FrameRequester>,
+    /// ByteAsk rotating footer hint: enabled only for gateway accounts; the
+    /// usage % feeds the live usage line; `started` drives the ~10s rotation.
+    byteask_marketing_enabled: bool,
+    /// Live weekly-usage % written by an async probe, read each render (-1 = unknown).
+    byteask_usage_pct: Option<std::sync::Arc<std::sync::atomic::AtomicI64>>,
+    byteask_marketing_started: Instant,
+    /// ByteAsk occasional in-chat nudge: cadence state + the currently-armed prompt
+    /// (None = nothing showing). Rendered in the marketing row; keys handled in the composer.
+    byteask_nudge_state: crate::byteask_nudge::NudgeState,
+    pending_nudge: Option<crate::byteask_nudge::Nudge>,
     effort_tier: Option<EffortTier>,
     effort_animation_style: Option<IgnitionStyle>,
     effort_ignition: Option<EffortIgnition>,
@@ -689,6 +698,11 @@ impl ChatComposer {
             },
             has_focus: has_input_focus,
             frame_requester: None,
+            byteask_marketing_enabled: false,
+            byteask_usage_pct: None,
+            byteask_marketing_started: Instant::now(),
+            byteask_nudge_state: crate::byteask_nudge::NudgeState::default(),
+            pending_nudge: None,
             effort_tier: None,
             effort_animation_style: None,
             effort_ignition: None,
@@ -737,6 +751,107 @@ impl ChatComposer {
 
     pub(crate) fn set_frame_requester(&mut self, frame_requester: FrameRequester) {
         self.frame_requester = Some(frame_requester);
+    }
+
+    /// Enable/disable the ByteAsk rotating footer hint and refresh the live
+    /// usage percentage shown in its usage slot. Called from the chat widget
+    /// once the account is known and whenever fresh usage is fetched.
+    pub(crate) fn set_byteask_marketing(
+        &mut self,
+        enabled: bool,
+        usage_slot: Option<std::sync::Arc<std::sync::atomic::AtomicI64>>,
+    ) {
+        self.byteask_marketing_enabled = enabled;
+        if usage_slot.is_some() {
+            self.byteask_usage_pct = usage_slot;
+        }
+    }
+
+    /// Called when an agent turn completes: advance the nudge cadence and maybe arm
+    /// the occasional in-chat prompt (feedback or referral). Gateway accounts only,
+    /// never under test; no-op if one is already showing.
+    pub(crate) fn byteask_on_turn_complete(&mut self) {
+        if cfg!(test) || !self.byteask_marketing_enabled || self.pending_nudge.is_some() {
+            return;
+        }
+        use rand::Rng as _;
+        let mut s = self.byteask_nudge_state;
+        s.turn = s.turn.saturating_add(1);
+        let mut rng = rand::rng();
+        let (show, pick) = (rng.random::<f64>(), rng.random::<f64>());
+        if let Some(n) = crate::byteask_nudge::decide(&s, show, pick) {
+            s.last_shown_turn = Some(s.turn);
+            self.pending_nudge = Some(n);
+        }
+        self.byteask_nudge_state = s;
+    }
+
+    /// While a nudge is armed, intercept its keys — but ONLY when the composer is
+    /// empty, so normal typing is never hijacked. Returns Some(consumed) to swallow
+    /// the key, or None to let it fall through (also dismissing the prompt).
+    fn handle_byteask_nudge_key(&mut self, key_event: KeyEvent) -> Option<(InputResult, bool)> {
+        let nudge = self.pending_nudge?;
+        if !self.is_empty() {
+            self.pending_nudge = None; // typing started -> drop it, handle key normally
+            return None;
+        }
+        match key_event.code {
+            KeyCode::Char(c @ ('1' | '2' | '3'))
+                if nudge == crate::byteask_nudge::Nudge::Feedback =>
+            {
+                self.app_event_tx.send(AppEvent::ByteAskFeedback {
+                    rating: c as u8 - b'0',
+                });
+                self.pending_nudge = None;
+                Some((InputResult::None, true))
+            }
+            KeyCode::Char('0') | KeyCode::Esc => {
+                self.pending_nudge = None;
+                Some((InputResult::None, true))
+            }
+            _ => {
+                self.pending_nudge = None; // any other key dismisses + falls through
+                None
+            }
+        }
+    }
+
+    /// Whether the rotating hint row should be drawn: gateway accounts only, and
+    /// never under test (keeps composer snapshots deterministic / unchanged).
+    fn byteask_marketing_active(&self) -> bool {
+        !cfg!(test)
+            && self.byteask_marketing_enabled
+            && matches!(self.popups.active, ActivePopup::None)
+    }
+
+    /// The current rotating ByteAsk hint line, or None when inactive.
+    fn byteask_marketing_line(&self) -> Option<Line<'static>> {
+        if !self.byteask_marketing_active() {
+            return None;
+        }
+        // An armed occasional nudge takes over the row (until answered/dismissed).
+        if let Some(nudge) = self.pending_nudge {
+            return Some(Line::from(
+                crate::byteask_nudge::prompt_line(nudge).fg(crate::style::accent_color()),
+            ));
+        }
+        let tick = self.byteask_marketing_started.elapsed().as_secs()
+            / crate::byteask_marketing::ROTATE_SECS;
+        let pct = self
+            .byteask_usage_pct
+            .as_ref()
+            .map(|slot| slot.load(std::sync::atomic::Ordering::Relaxed))
+            .filter(|&v| v >= 0);
+        let text = crate::byteask_marketing::hint_for(tick, pct);
+        Some(Line::from(text.fg(crate::style::accent_color())))
+    }
+
+    /// Duration until the next rotation boundary, so the next redraw advances the
+    /// hint. Clamped to >= 1s so we never busy-loop.
+    fn byteask_marketing_next_tick_in(&self) -> std::time::Duration {
+        let rot = crate::byteask_marketing::ROTATE_SECS;
+        let remaining = rot - (self.byteask_marketing_started.elapsed().as_secs() % rot);
+        std::time::Duration::from_secs(remaining.max(1))
     }
 
     /// Records the effective reasoning tier, captures the outgoing status
@@ -2016,6 +2131,16 @@ impl ChatComposer {
 
         if Self::is_history_search_key(&key_event, &self.history_search_previous_keys) {
             return self.begin_history_search();
+        }
+
+        // ByteAsk nudge: intercept the rating/dismiss keys before normal dispatch —
+        // only while a prompt is armed and no popup is open (the helper also requires
+        // the composer be empty, so typing is never hijacked).
+        if self.pending_nudge.is_some()
+            && matches!(self.popups.active, ActivePopup::None)
+            && let Some(consumed) = self.handle_byteask_nudge_key(key_event)
+        {
+            return consumed;
         }
 
         let result = match &mut self.popups.active {
@@ -4619,6 +4744,31 @@ impl Renderable for ChatComposer {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.render_with_mask(area, buf, /*mask_char*/ None);
+        // Overlay the ByteAsk rotating hint right-aligned on the footer's last
+        // row (same line as the model/dir status), confined to the right half so
+        // the model/dir on the left is preserved. byteask_marketing_line() is
+        // None under test / non-gateway / popup-open, so snapshots stay stable.
+        if let Some(line) = self.byteask_marketing_line() {
+            let row = area.bottom().saturating_sub(1);
+            // A pending nudge is a REAL prompt (rate 1/2/3, or a referral) — render it
+            // full-width and left-aligned so it's clearly visible and reads as a prompt.
+            // The passive rotating marketing hint stays in the right half as before.
+            let (x, hint_w) = if self.pending_nudge.is_some() {
+                (area.left(), area.width.saturating_sub(1))
+            } else {
+                let w = (line.width() as u16).min((area.width / 2).saturating_sub(1));
+                (area.right().saturating_sub(w).saturating_sub(1), w)
+            };
+            if hint_w >= 10 {
+                let hint_area = Rect::new(x, row, hint_w, 1);
+                Line::from(" ".repeat(hint_w as usize)).render(hint_area, buf);
+                truncate_line_with_ellipsis_if_overflow(line, hint_w as usize)
+                    .render(hint_area, buf);
+            }
+            if let Some(fr) = &self.frame_requester {
+                fr.schedule_frame_in(self.byteask_marketing_next_tick_in());
+            }
+        }
     }
 }
 
@@ -5080,7 +5230,7 @@ mod tests {
                 /*has_input_focus*/ true,
                 sender,
                 /*enhanced_keys_supported*/ false,
-                "Ask Codex to do anything".to_string(),
+                "Ask ByteAsk to do anything".to_string(),
                 /*disable_paste_burst*/ false,
             ),
             rx,
@@ -5204,7 +5354,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -5258,7 +5408,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_footer_hint_override(Some(vec![("K".to_string(), "label".to_string())]));
@@ -5296,7 +5446,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_footer_hint_override(Some(vec![("K".to_string(), "label".to_string())]));
@@ -5345,7 +5495,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             enhanced_keys_supported,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         setup(&mut composer);
@@ -5533,7 +5683,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let area = Rect::new(0, 0, 40, 5);
@@ -5555,7 +5705,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_status_line_enabled(/*enabled*/ true);
@@ -5614,7 +5764,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content_with_mention_bindings(
@@ -5642,7 +5792,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content_with_mention_bindings(
@@ -5693,7 +5843,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content_with_mention_bindings(
@@ -5729,14 +5879,16 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let url = "https://github.com/openai/codex/pull/20252";
         composer.set_status_line_enabled(/*enabled*/ true);
         composer.set_status_line(Some(Line::from(Span::styled(
             "PR #20252",
-            Style::default().cyan().underlined(),
+            Style::default()
+                .fg(crate::style::accent_color())
+                .underlined(),
         ))));
         composer.set_status_line_hyperlink(Some(url.to_string()));
 
@@ -5766,7 +5918,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -5795,7 +5947,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6064,7 +6216,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6093,7 +6245,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_vim_enabled(/*enabled*/ true);
@@ -6131,7 +6283,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ true,
         );
         composer.set_vim_enabled(/*enabled*/ true);
@@ -6163,7 +6315,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ true,
         );
         composer.set_vim_enabled(/*enabled*/ true);
@@ -6198,7 +6350,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ true,
         );
         composer.set_collaboration_modes_enabled(/*enabled*/ true);
@@ -6244,7 +6396,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ true,
         );
         composer.set_vim_enabled(/*enabled*/ true);
@@ -6275,7 +6427,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ true,
         );
         composer.set_vim_enabled(/*enabled*/ true);
@@ -6300,7 +6452,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6324,7 +6476,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6350,7 +6502,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6418,7 +6570,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6451,7 +6603,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(/*enabled*/ true);
@@ -6492,7 +6644,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(/*enabled*/ true);
@@ -6526,7 +6678,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(/*enabled*/ true);
@@ -6557,7 +6709,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_vim_enabled(/*enabled*/ true);
@@ -6597,7 +6749,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ true,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let area = Rect::new(0, 0, 80, 10);
@@ -6630,7 +6782,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6676,7 +6828,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let remote_image_url = "https://example.com/one.png".to_string();
@@ -6718,7 +6870,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6761,7 +6913,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6801,7 +6953,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(true);
@@ -6827,7 +6979,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -6857,7 +7009,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_connectors_enabled(/*enabled*/ true);
@@ -6901,7 +7053,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_connectors_enabled(/*enabled*/ true);
@@ -6941,7 +7093,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content("$".to_string(), Vec::new(), Vec::new());
@@ -7613,7 +7765,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content("$".to_string(), Vec::new(), Vec::new());
@@ -7622,7 +7774,7 @@ mod tests {
         let skill_path = test_path_buf("/tmp/skill/SKILL.md").abs();
         composer.set_skill_mentions(Some(vec![SkillMetadata {
             name: "codex".to_string(),
-            description: "Primary personal Codex repo skill.".to_string(),
+            description: "Primary personal ByteAsk repo skill.".to_string(),
             short_description: None,
             interface: None,
             dependencies: None,
@@ -7651,7 +7803,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_connectors_enabled(/*enabled*/ true);
@@ -7850,7 +8002,7 @@ mod tests {
                         let area = Rect::new(0, 0, 40, 5);
                         let mut buf = Buffer::empty(area);
                         composer.render(area, &mut buf);
-                        assert_eq!(buf[(2, 1)].style().fg, Some(Color::Cyan));
+                        assert_eq!(buf[(2, 1)].style().fg, Some(crate::style::accent_color()));
                     }
                 },
             );
@@ -8054,7 +8206,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_connectors_enabled(/*enabled*/ true);
@@ -8094,7 +8246,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8340,7 +8492,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8367,7 +8519,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8400,7 +8552,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8443,7 +8595,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8484,7 +8636,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8528,7 +8680,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8577,7 +8729,7 @@ mod tests {
                 /*has_input_focus*/ true,
                 sender,
                 /*enhanced_keys_supported*/ false,
-                "Ask Codex to do anything".to_string(),
+                "Ask ByteAsk to do anything".to_string(),
                 /*disable_paste_burst*/ false,
             );
             composer.set_plugin_mentions(Some(vec![PluginCapabilitySummary {
@@ -8630,7 +8782,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8662,7 +8814,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_mentions_v2_enabled(/*enabled*/ true);
@@ -8698,7 +8850,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8729,7 +8881,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8753,7 +8905,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8787,7 +8939,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8836,7 +8988,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8924,7 +9076,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8969,7 +9121,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -8999,7 +9151,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9035,7 +9187,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9068,7 +9220,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9099,7 +9251,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9128,7 +9280,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9162,7 +9314,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(true);
@@ -9190,7 +9342,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(true);
@@ -9232,7 +9384,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(false);
@@ -9277,7 +9429,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9318,7 +9470,7 @@ mod tests {
                 /*has_input_focus*/ true,
                 sender.clone(),
                 /*enhanced_keys_supported*/ false,
-                "Ask Codex to do anything".to_string(),
+                "Ask ByteAsk to do anything".to_string(),
                 /*disable_paste_burst*/ false,
             );
 
@@ -9434,7 +9586,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9462,7 +9614,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         type_chars_humanlike(&mut composer, &['/', 'm', 'o']);
@@ -9493,7 +9645,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9521,7 +9673,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9544,7 +9696,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         type_chars_humanlike(&mut composer, &['/', 'r', 'e', 's']);
@@ -9575,7 +9727,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9598,7 +9750,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         type_chars_humanlike(&mut composer, &['/', 'p', 'e', 't']);
@@ -9629,7 +9781,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9652,7 +9804,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         type_chars_humanlike(&mut composer, &['/', 'b', 't']);
@@ -9683,7 +9835,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9706,7 +9858,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         type_chars_humanlike(&mut composer, &['/', 's', 'i']);
@@ -9733,7 +9885,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_service_tier_commands_enabled(/*enabled*/ true);
@@ -9794,7 +9946,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -9846,7 +9998,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(true);
@@ -9880,7 +10032,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.draft.textarea.insert_str("restore me");
@@ -9918,7 +10070,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_task_running(/*running*/ true);
@@ -9962,7 +10114,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_queue_submissions(/*queue_submissions*/ true);
@@ -9998,7 +10150,7 @@ mod tests {
                 /*has_input_focus*/ true,
                 sender,
                 /*enhanced_keys_supported*/ false,
-                "Ask Codex to do anything".to_string(),
+                "Ask ByteAsk to do anything".to_string(),
                 /*disable_paste_burst*/ false,
             );
             composer.set_task_running(/*running*/ true);
@@ -10047,7 +10199,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer
@@ -10083,7 +10235,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_task_running(/*running*/ true);
@@ -10116,7 +10268,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let mut keymap = RuntimeKeymap::defaults();
@@ -10142,7 +10294,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_task_running(/*running*/ true);
@@ -10176,7 +10328,7 @@ mod tests {
                 /*has_input_focus*/ true,
                 sender,
                 /*enhanced_keys_supported*/ false,
-                "Ask Codex to do anything".to_string(),
+                "Ask ByteAsk to do anything".to_string(),
                 /*disable_paste_burst*/ false,
             );
             composer.set_task_running(/*running*/ true);
@@ -10222,7 +10374,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -10250,7 +10402,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_task_running(/*running*/ true);
@@ -10280,7 +10432,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -10305,7 +10457,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -10349,7 +10501,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_collaboration_modes_enabled(/*enabled*/ true);
@@ -10371,7 +10523,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_collaboration_modes_enabled(/*enabled*/ true);
@@ -10392,7 +10544,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -10424,7 +10576,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -10452,7 +10604,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_task_running(/*running*/ false);
@@ -10481,7 +10633,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -10508,7 +10660,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -10558,7 +10710,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_collaboration_modes_enabled(/*enabled*/ true);
@@ -10596,7 +10748,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -10863,7 +11015,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -10942,7 +11094,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11019,7 +11171,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11061,7 +11213,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11106,7 +11258,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11143,7 +11295,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11192,7 +11344,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let path = PathBuf::from("/tmp/image1.png");
@@ -11230,7 +11382,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11264,7 +11416,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let remote_image_url = "https://example.com/remote.png".to_string();
@@ -11298,7 +11450,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let remote_image_urls = vec![
@@ -11330,7 +11482,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11385,7 +11537,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content("hello".to_string(), Vec::new(), Vec::new());
@@ -11417,7 +11569,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11451,7 +11603,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11483,7 +11635,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11518,7 +11670,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11543,7 +11695,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11586,7 +11738,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11629,7 +11781,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11672,7 +11824,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11725,7 +11877,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let path = PathBuf::from("/tmp/image2.png");
@@ -11764,7 +11916,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let path = PathBuf::from("/tmp/image_dup.png");
@@ -11793,7 +11945,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         let path = PathBuf::from("/tmp/image3.png");
@@ -11836,7 +11988,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11862,7 +12014,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11922,7 +12074,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -11985,7 +12137,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12026,7 +12178,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12050,7 +12202,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12087,7 +12239,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12268,7 +12420,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12297,7 +12449,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12344,7 +12496,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12383,7 +12535,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12416,7 +12568,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12446,7 +12598,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12489,7 +12641,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12514,7 +12666,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12539,7 +12691,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_collaboration_modes_enabled(/*enabled*/ true);
@@ -12573,7 +12725,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12614,7 +12766,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content("!git status".to_string(), Vec::new(), Vec::new());
@@ -12634,7 +12786,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content("!git status".to_string(), Vec::new(), Vec::new());
@@ -12654,7 +12806,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
         composer.set_text_content("git status".to_string(), Vec::new(), Vec::new());
@@ -12674,7 +12826,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12699,7 +12851,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12733,7 +12885,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12759,7 +12911,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12786,7 +12938,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12814,7 +12966,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12835,7 +12987,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12860,7 +13012,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12897,7 +13049,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12917,7 +13069,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12962,7 +13114,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 
@@ -12999,7 +13151,7 @@ mod tests {
             /*has_input_focus*/ true,
             sender,
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ByteAsk to do anything".to_string(),
             /*disable_paste_burst*/ false,
         );
 

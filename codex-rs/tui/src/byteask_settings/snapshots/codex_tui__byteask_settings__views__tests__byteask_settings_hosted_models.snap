@@ -1,0 +1,14 @@
+---
+source: tui/src/byteask_settings/views.rs
+expression: "render(hosted_models_params(&view, &sample_presets()), 76)"
+---
+
+  Hosted models
+  Selecting a model removes it — add it again anytime
+
+› 1. self/dgx     https://dgx.internal:8000                    your server
+  2. self/tiny    http://localhost:11434                     no tool calls
+  3. Add a model  Pick a provider or enter a URL
+  4. Back         Return to settings
+
+  Press enter to confirm or esc to go back

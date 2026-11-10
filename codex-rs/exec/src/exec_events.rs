@@ -119,6 +119,11 @@ pub enum ThreadItemDetails {
     /// Represents a call to an MCP tool. The item starts when the invocation is
     /// dispatched and completes when the MCP server reports success or failure.
     McpToolCall(McpToolCallItem),
+    /// Represents a call to a dynamic (extension-provided) tool such as the
+    /// `cpp_*`, `debug*`, `*_ref`, skills, memories and image-generation tools.
+    /// The item starts when the call is dispatched and completes when the
+    /// extension reports success or failure.
+    DynamicToolCall(DynamicToolCallItem),
     /// Represents a call to a collab tool. The item starts when the collab tool is
     /// invoked and completes when the collab tool reports success or failure.
     CollabToolCall(CollabToolCallItem),
@@ -130,6 +135,10 @@ pub enum ThreadItemDetails {
     TodoList(TodoListItem),
     /// Describes a non-fatal error surfaced as an item.
     Error(ErrorItem),
+    /// ByteAsk Context's turn-0 pack for one user message (only with ByteAsk Context
+    /// configured): whether the harness called `find_code_for_task`, its latency, the answer's
+    /// size, whether it went into the user turn, and why not.
+    ContextPack(ContextPackItem),
 }
 
 /// Response from the agent.
@@ -293,12 +302,75 @@ pub struct McpToolCallItem {
     pub status: McpToolCallStatus,
 }
 
+/// The status of a dynamic (extension-provided) tool call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicToolCallStatus {
+    #[default]
+    InProgress,
+    Completed,
+    Failed,
+}
+
+/// One block of output produced by a dynamic tool call.
+///
+/// Text is carried at **full fidelity, uncapped**: a CI consumer
+/// that silently receives a truncated sanitizer trace would conclude the run
+/// was clean. Images are replaced by a descriptor because extension tools such
+/// as image generation return multi-megabyte `data:` URLs. Audio is described the
+/// same way, for the same reason.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DynamicToolCallContent {
+    Text { text: String },
+    Image { mime_type: String, bytes: u64 },
+    Audio { mime_type: String, bytes: u64 },
+}
+
+/// A call to a dynamic (extension-provided) tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct DynamicToolCallItem {
+    /// Extension namespace the tool belongs to, when the extension declares one.
+    pub namespace: Option<String>,
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: JsonValue,
+    pub status: DynamicToolCallStatus,
+    #[serde(default)]
+    pub content: Vec<DynamicToolCallContent>,
+    pub success: Option<bool>,
+    pub duration_ms: Option<i64>,
+}
+
 /// A web search request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct WebSearchItem {
     pub id: String,
     pub query: String,
     pub action: WebSearchAction,
+}
+
+/// ByteAsk Context's turn-0 pack attempt for one user message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ContextPackItem {
+    /// The harness called `find_code_for_task` for this message.
+    pub attempted: bool,
+    /// The answer went into the user turn before the first model request.
+    pub injected: bool,
+    /// Why nothing was injected: `not_a_task`, `not_cpp_repo`, `not_git_repo`, `not_indexed`,
+    /// `indexing`, `timeout` or `error`; null when injected.
+    pub reason: Option<String>,
+    pub latency_ms: Option<u64>,
+    pub answer_bytes: Option<u64>,
+    pub approx_tokens: Option<u64>,
+    /// The test programs the answer names as exercising its top places.
+    pub test_programs: Vec<String>,
+    /// A background build of those test programs was started.
+    pub warm_build_started: bool,
+    /// Pre-approved indexing of an unindexed repository: `started` or `failed`.
+    pub auto_index: Option<String>,
+    /// The one line shown to the user, if any.
+    pub message: Option<String>,
 }
 
 /// An error notification.

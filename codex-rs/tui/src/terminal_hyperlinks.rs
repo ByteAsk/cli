@@ -14,7 +14,6 @@ use ratatui::buffer::Buffer;
 use ratatui::buffer::CellDiffOption;
 use ratatui::buffer::CellWidth;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -600,7 +599,7 @@ pub(crate) fn mark_buffer_hyperlinks(
 
 pub(crate) fn mark_url_hyperlink(buf: &mut Buffer, area: Rect, destination: &str) {
     mark_matching_cells(buf, area, destination, |cell| {
-        cell.fg == Color::Cyan && cell.modifier.contains(Modifier::UNDERLINED)
+        cell.fg == crate::style::accent_color() && cell.modifier.contains(Modifier::UNDERLINED)
     });
 }
 

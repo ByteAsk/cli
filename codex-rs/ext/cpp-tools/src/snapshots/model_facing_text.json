@@ -1,0 +1,808 @@
+{
+  "guidance": "This is a C/C++ workspace. Build and test with the project's own build system, flags and test framework. After a behaviour change, build the affected targets and run the tests that cover it. Keep useful regression tests unless the user says otherwise; do not edit existing tests unless the request changes what they assert.\n- Reuse an existing build tree incrementally; never reconfigure or delete a build directory you did not create. Preserve the user's files and edits; remove only your own scratch files.\n- Crash, sanitizer report, or suspected memory error/UB: run the failing program or test under ASan+UBSan and read the real report. Suspected race: TSan; intermittent failure: rr where supported. A tool that did not run verifies nothing.\n- Core dump: analyse it read-only; get the user's consent before running the program or changing a live process.\n- Claim a speedup only after a measurement shows a significant difference.\n- Specialist tools (debuggers, profilers, layout, change impact) load through tool_search when needed. Before saying a change works, use cpp_finish_check when extra verification helps, and report what you checked and what is still unverified.",
+  "tools": [
+    {
+      "description": "AI pair-debugging on the user's LIVE gdb. The user arms a bridge in their own gdb (you tell them to run `byteask-bridge`), then you attach to help while they watch every command echoed on their terminal — unlike debug_session (which runs its own private gdb) and debug (one-shot). Read-only/navigation commands (bt, info, print of a plain variable, list, frame) run automatically; commands that change state or run code (call, set, run/continue/step, breakpoints, or anything unrecognized) are PROPOSED for the user to approve — relay the proposal and only re-send with approved=true once they say yes. `action=\"attach\"` first; `action=\"interrupt\"` pauses a running program. C/C++ only.",
+      "name": "debug_attach",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "attach: connect to the user's armed gdb (returns state + history); cmd: run one gdb command (read-only runs automatically; anything else is proposed for the user to approve); snapshot: current frame/backtrace/breakpoints; history: commands the user + you have run; list: show armed sessions; interrupt: pause a running program; detach: stop targeting the session (does NOT close the user's gdb).",
+            "enum": [
+              "attach",
+              "cmd",
+              "snapshot",
+              "history",
+              "list",
+              "interrupt",
+              "detach"
+            ],
+            "type": "string"
+          },
+          "approved": {
+            "description": "cmd: set true ONLY after the user explicitly approves a command you previously proposed (bypasses the read-only allowlist for that call).",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "cmd: the gdb command to run (e.g. \"bt\", \"print x\", \"info locals\").",
+            "type": "string"
+          },
+          "session": {
+            "description": "Session id (from attach/list). Optional when exactly one gdb is armed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Build C/C++ with a sanitizer and run it, returning the FULL report (header + stack traces) plus structured findings. Default \"asan_ubsan\" catches use-after-free, buffer overflow, UB and leaks; \"tsan\" catches DATA RACES in multithreaded code (the tool to reach for on an intermittent/heisen concurrency bug); \"valgrind\" runs memcheck. Use proactively to verify C/C++ you wrote or are reviewing — this is the tool that PROVES a bug at runtime, so prefer it over reasoning about the source. Do NOT tell the user that C/C++ you just wrote works until you have run it here, especially when it parses untrusted or malformed input. It compiles the named `source` plus any files listed in `extra_sources`, taking per-file flags (includes, defines, -std, -march/-mavx2) from compile_commands.json when present; for a multi-file program you MUST list the other .cpp it links against in `extra_sources` or the build fails with 'undefined reference'. There is deliberately no free-form compiler-flag argument: the sanitizer flags are fixed so a clean verdict cannot be faked. For a real project that has its own build system, set `project`: true INSTEAD of passing `source` — cpp_sanitize then configures a FRESH CMake build outside your workspace (or runs make) with the sanitizer flags injected, builds the project's own target (name one with `target`), and runs it, so you never have to enumerate translation units. Reach for project mode when the single-TU build fails to link, when the bug needs the project's real binary rather than a reproducer, or whenever the workspace root has a CMakeLists.txt. A CMake build is checked for instrumentation by reading back the compile_commands.json it generates; a Makefile build is best-effort, is audited with `make -n`, and must be opted into with `allow_in_tree_build`: true because make writes into your working tree. Either way, if the project's own flags would switch the sanitizer off, the output says so instead of reporting a clean run.",
+      "name": "cpp_sanitize",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "allow_in_tree_build": {
+            "description": "Project mode, Makefile projects only: permit building IN YOUR WORKING TREE. Make has no out-of-tree build, so object files and binaries are written next to your sources. CMake projects never need this — they are configured fresh in a temporary directory. Defaults to false.",
+            "type": "boolean"
+          },
+          "compiler": {
+            "description": "Compiler to use; one of gcc, g++, clang, clang++. Default g++.",
+            "type": "string"
+          },
+          "defines": {
+            "description": "Preprocessor definitions as NAME or NAME=VALUE (become -D).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "extra_sources": {
+            "description": "Additional .c/.cpp translation units to compile and link alongside `source`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "include_dirs": {
+            "description": "Header search paths (become -I). Use this for a project layout like include/foo.hpp — without it the build fails with 'No such file or directory'. Ignored for paths already supplied by compile_commands.json.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "project": {
+            "description": "Build the PROJECT's own target with sanitizers injected, instead of compiling `source` plus `extra_sources`. Needs a CMakeLists.txt (preferred) or a Makefile in the workspace root. Use it for any real multi-file project: it removes the need to enumerate translation units, and it is the only way to sanitize the project's real binary rather than a reproducer. Defaults to false.",
+            "type": "boolean"
+          },
+          "run_args": {
+            "description": "Optional arguments passed to the compiled program, written like a shell command line: space-separated, quote with '…' or \"…\" to keep spaces, \"\" is an empty argument. No shell runs: pipes, redirection and $VAR are rejected.",
+            "type": "string"
+          },
+          "sanitizer": {
+            "description": "Which checker to use: \"asan_ubsan\" (AddressSanitizer + UBSan, the default — use-after-free / overflow / UB / leaks), \"tsan\" (ThreadSanitizer — DATA RACES in multithreaded code), or \"valgrind\" (memcheck).",
+            "type": "string"
+          },
+          "source": {
+            "description": "Path to the main .c/.cpp file, relative to the workspace or absolute. Required unless you pass project=true, which builds the project's own target instead of a named translation unit.",
+            "type": "string"
+          },
+          "std": {
+            "description": "C/C++ standard, e.g. \"c++23\". Defaults to the value in compile_commands.json when an entry for this file exists, else c++23.",
+            "type": "string"
+          },
+          "target": {
+            "description": "Project mode only: the build target / executable to build and run (e.g. \"hft_engine\"). Omit it when the project builds exactly one executable. If the build produces several and you omit this, the tool lists them and asks.",
+            "type": "string"
+          },
+          "timeout_sec": {
+            "description": "Wall-clock cap applied to the build and, separately, to the run. Defaults: 600s build, 300s run. Raise it for heavy template instantiation, and for a whole-project build.",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Catch a NONDETERMINISTIC bug: record one real execution with rr and replay that exact execution as often as you like, stepping BACKWARDS through it. This is the only tool here that can run time in reverse, and the only one that makes an intermittent failure reproducible on demand. REACH FOR IT whenever a bug will not reproduce or changes under observation — 'fails about 1 in 20', 'only fails in CI', 'passes when I run it under gdb/valgrind', 'goes away when I add a print', 'works in debug but not release', a flaky or racy test, an occasional crash or wrong answer — and whenever you need to know WHAT WROTE A VALUE: set a hardware watchpoint and `reverse-continue` to land on the exact instruction that wrote it, which no forward debugger can do. mode=\"chaos\" records under rr's chaos scheduler and keeps re-running until it CATCHES the failure, then replays that failing trace — this is how you reproduce a rare race deliberately instead of waiting for luck; `repeat` sets how many attempts. Replay is deterministic, so reverse-execution commands (`reverse-continue`, `reverse-step`, `reverse-finish`, `watch -l <expr>`) all work in `commands`. Recording needs hardware performance counters: where they are missing this tool says exactly why and what to use instead, so it is always worth trying. C/C++ only.",
+      "name": "debug_record",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "description": "Optional program arguments, written like a shell command line: space-separated, quote with '…' or \"…\" to keep spaces, \"\" is an empty argument. No shell runs: pipes, redirection and $VAR are rejected.",
+            "type": "string"
+          },
+          "commands": {
+            "description": "Optional gdb commands to run during deterministic replay (default: continue, bt). Reverse-execution commands such as `reverse-continue`, `reverse-step`, and `watch` work here.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "description": "\"replay\" (default) records ONE run then replays it. \"chaos\" records under rr's chaos scheduler and repeats until the run FAILS, then replays that failing trace — use it for a flaky/intermittent/racy failure you cannot reproduce on demand.",
+            "type": "string"
+          },
+          "program": {
+            "description": "Path to the executable to record, relative to the workspace or absolute.",
+            "type": "string"
+          },
+          "repeat": {
+            "description": "How many recording attempts to make while hunting an intermittent failure. Default 1 for \"replay\", 12 for \"chaos\"; capped at 50. Recording stops at the first FAILING run, which is the one replayed.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "program"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Compile a self-contained C/C++ snippet via Compiler Explorer and return the assembly (with source-mapped diagnostics) or run it. Use proactively to inspect codegen, check a snippet compiles, compare optimization, or run a small experiment. Do NOT use for the user's full project build (use the local compiler / compile_commands.json) or non-C/C++.",
+      "name": "cpp_godbolt",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "\"asm\" (default) returns the generated assembly with source-mapped diagnostics; \"run\" compiles and executes the snippet and returns its stdout/stderr/exit code; \"link\" returns a shareable Compiler Explorer URL (godbolt.org/z/...) preloaded with this source, compiler, flags, and libraries. Use \"link\" ONLY when the user would value an interactive page to open/tweak themselves (e.g. they asked to share/open in godbolt, or will want to edit flags/compiler) — not for routine compiles.",
+            "enum": [
+              "asm",
+              "run",
+              "link"
+            ],
+            "type": "string"
+          },
+          "compiler": {
+            "description": "Compiler: either an exact Compiler Explorer id (e.g. \"g142\", \"armg1420\", \"clang_trunk\") OR a friendly name that is resolved against CE's catalogue, e.g. \"arm gcc 14\", \"x86-64 gcc 14\", \"clang 18\". Default \"g142\" (x86-64 gcc 14.2). On no/ambiguous match the tool returns candidate ids to retry with.",
+            "type": "string"
+          },
+          "flags": {
+            "description": "Extra compiler arguments appended verbatim, e.g. \"-O2 -Wall\".",
+            "type": "string"
+          },
+          "language": {
+            "description": "Source language, \"c\" or \"cpp\" (default \"cpp\"). Advisory only: the `compiler` id ultimately selects the language, so for C pass a C compiler id and an appropriate `std`.",
+            "enum": [
+              "c",
+              "cpp"
+            ],
+            "type": "string"
+          },
+          "libraries": {
+            "description": "Libraries to make available for #include, each as \"<name>\" or \"<name> <version>\" (e.g. \"fmt\", \"fmt 11\", \"boost\", \"range-v3\"). Resolved to CE library + version ids; version may be omitted (newest is used). REQUIRED whenever the source #includes a third-party library header.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "description": "Self-contained C/C++ snippet to compile (a full translation unit, including any #includes and a main if you want to run it).",
+            "type": "string"
+          },
+          "std": {
+            "description": "Language standard, mapped to -std=<value> (default \"c++20\", or \"c17\" for language \"c\"). Pass an empty string to omit.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Compiler-accurate C/C++ code navigation via clangd (LSP): diagnostics, hover (types/signatures), go-to-definition, find-references — resolves overloads/templates/macros that grep can't. Best with a compile_commands.json (run cpp_compile_db first). Use for understanding/navigating real C/C++ code. C/C++ only.",
+      "name": "cpp_nav",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "Navigation action (default: diagnostics). hover/definition/references require line+column.",
+            "enum": [
+              "diagnostics",
+              "hover",
+              "definition",
+              "references"
+            ],
+            "type": "string"
+          },
+          "column": {
+            "description": "1-based column of the symbol (required for hover/definition/references).",
+            "type": "integer"
+          },
+          "file": {
+            "description": "C/C++ source file to analyze, relative to the workspace or absolute.",
+            "type": "string"
+          },
+          "line": {
+            "description": "1-based line of the symbol (required for hover/definition/references).",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Decompile or disassemble a function in a compiled/stripped/closed binary using radare2 (decompile via r2ghidra's pdg when available, else disassembly via pdf), list functions, or show binary info. For reverse-engineering / understanding binaries without source. C/C++ binaries only.",
+      "name": "cpp_decompile",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "\"decompile\" (default) emits C-like pseudocode for one function via r2ghidra (`pdg`), falling back to disassembly when r2ghidra is absent; \"disasm\" disassembles one function (`pdf`); \"functions\" lists analyzed functions; \"info\" shows binary metadata (arch, bits, PIE, stripped).",
+            "enum": [
+              "decompile",
+              "disasm",
+              "functions",
+              "info"
+            ],
+            "type": "string"
+          },
+          "binary": {
+            "description": "Path to the compiled/stripped/closed binary to analyze, relative to the workspace or absolute.",
+            "type": "string"
+          },
+          "function": {
+            "description": "Function to target for \"decompile\"/\"disasm\": a symbol name or address (default \"main\"). Ignored for \"functions\"/\"info\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binary"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Detect or generate compile_commands.json (the compile database that powers clang-tidy, clangd, and sanitizer project builds). With generate=true it handles both CMake (cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON) and Makefile-only projects (bear -- make). C/C++ projects.",
+      "name": "cpp_compile_db",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "generate": {
+            "description": "When true and no compile database is found, attempt to generate one: CMake projects are configured with -DCMAKE_EXPORT_COMPILE_COMMANDS=ON; a Makefile-only project is built once under `bear -- make`, which RUNS the project's real build and so requires a trusted project. Defaults to false.",
+            "type": "boolean"
+          },
+          "timeout_sec": {
+            "description": "Wall-clock cap on the `bear -- make` build (default 600s). Raise it for a large project whose full build is slow. It also caps a CMake configure.",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Diagnose linker/ABI errors and inspect compiled binaries/objects/libraries with objdump/nm/readelf. Reach for it on an 'undefined reference' or an ABI mismatch (e.g. std::__cxx11::basic_string vs std::string) — `nm -C` the archive to see which symbol is missing or differently mangled. Also: ELF headers & sections, dynamic deps/RPATH/RUNPATH, symbol tables, security hardening (PIE/RELRO/NX/stack canary), or disassembly of a function. Use to triage link failures, check what a binary links against, inspect stripped/third-party binaries, or verify codegen. C/C++ binaries only.",
+      "name": "cpp_binary",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "What to inspect (default \"headers\"). \"abi\": diagnose a link failure — pass the symbol from the \"undefined reference\" error as `symbol` and it reports whether this artifact DEFINES it, merely references it (U), or does not have it at all, and detects the libstdc++ dual-ABI mismatch (std::__cxx11::basic_string vs std::string) that makes a correct-looking symbol un-linkable; with no `symbol` it summarises the artifact's ABI posture so you can compare two artifacts. \"headers\": ELF header + program headers + section headers — class/type (PIE), machine/entry, sections, and the hardening segments GNU_STACK (NX) and GNU_RELRO. \"dynamic\": dynamic section — NEEDED libraries, SONAME, RPATH/RUNPATH, BIND_NOW (full RELRO). \"symbols\": demangled symbol table, also how you check for a stack canary (__stack_chk_fail) (falls back to dynamic symbols when stripped). \"disasm\": Intel-syntax disassembly — pass `symbol` to scope it to one function.",
+            "enum": [
+              "disasm",
+              "symbols",
+              "headers",
+              "dynamic",
+              "abi"
+            ],
+            "type": "string"
+          },
+          "binary": {
+            "description": "Path to the compiled artifact to inspect — an ELF executable, object (.o), static archive (.a), or shared object (.so) — relative to the workspace or absolute.",
+            "type": "string"
+          },
+          "symbol": {
+            "description": "For action=\"disasm\": disassemble only this (demangled) function name instead of the whole binary. Strongly recommended — a full disassembly is truncated. For action=\"abi\": the symbol from the linker's \"undefined reference\" error, copied verbatim — demangled (metrics::record(std::string const&, double)) or mangled (_ZN7metrics6recordERKSsd) both work, and a bare name (metrics::record) matches every overload. For action=\"symbols\": list only the symbols whose name contains this text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binary"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Format C/C++ code with clang-format — in place, as a diff preview, or format an inline snippet. Respects the project's .clang-format. Use to normalize style after edits. C/C++ only.",
+      "name": "cpp_format",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "in_place": {
+            "description": "Only with `path`: when true, rewrite the file in place (default false, which returns a diff preview).",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "C/C++ file to format, relative to the workspace or absolute. Mutually exclusive with `source`.",
+            "type": "string"
+          },
+          "source": {
+            "description": "Inline C/C++ snippet to format. Returns the formatted code. Mutually exclusive with `path`.",
+            "type": "string"
+          },
+          "style": {
+            "description": "clang-format style: empty (default) uses the project's .clang-format if present, else clang-format's built-in default. Accepts Google, LLVM, Mozilla, Chromium, WebKit, Microsoft, GNU, or file.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Inspect a Linux kernel using KDB through a persistent remote KGDB connection: kernel summary, tasks, modules, dmesg, backtrace and registers when supported. Use for kernel/driver bugs, not user-process debugging. Linux debugging hosts only. The user must configure CONFIG_KGDB_KDB and the KGDB transport and already stop the target; ByteAsk must run outside that target (a separate host or outside a guest VM). Does not trigger SysRq, run/continue/reboot, set breakpoints or write memory. connect returns a session id; inspect reads it; disconnect closes the connection and may leave the target stopped. Native execution requires project trust or BYTEASK_ALLOW_NATIVE_TOOLS=1. Kernel output is sent to the model and follows normal local tool logging.",
+      "name": "cpp_kdb",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "connect opens a prepared, already stopped remote kernel; inspect reads it; status/list show this thread's sessions; disconnect closes without resuming.",
+            "enum": [
+              "connect",
+              "inspect",
+              "status",
+              "list",
+              "disconnect"
+            ],
+            "type": "string"
+          },
+          "command": {
+            "description": "inspect: typed read-only KDB inspection. Availability is discovered on the target. Processes shows all tasks; dmesg returns the most recent lines.",
+            "enum": [
+              "help",
+              "summary",
+              "processes",
+              "modules",
+              "dmesg",
+              "backtrace",
+              "registers"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "inspect: maximum output lines, 1..200, default 80; output is also byte capped.",
+            "type": "integer"
+          },
+          "session": {
+            "description": "inspect/status/disconnect: id returned by connect.",
+            "type": "integer"
+          },
+          "timeout_secs": {
+            "description": "connect: connection and per-command wall-clock budget, 1..60 seconds, default 15.",
+            "type": "integer"
+          },
+          "transport": {
+            "additionalProperties": false,
+            "properties": {
+              "baud": {
+                "description": "serial: baud rate, default 115200.",
+                "type": "integer"
+              },
+              "device": {
+                "description": "serial: absolute /dev/ character device, e.g. /dev/ttyUSB0.",
+                "type": "string"
+              },
+              "host": {
+                "description": "tcp: hostname or IP of a proxy to the KGDB serial transport, not a QEMU GDB stub.",
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "tcp",
+                  "serial"
+                ],
+                "type": "string"
+              },
+              "port": {
+                "description": "tcp: port, 1..65535.",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          "vmlinux": {
+            "description": "connect: optional matching uncompressed kernel symbol image; omit for monitor-only inspection. Matching build and KASLR relocation are user-supplied.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Interactive GDB session for C/C++: a persistent debugger you drive across calls — set breakpoints, run, step, and inspect state to trace WHY code produces a WRONG RESULT or takes a wrong branch (not only crashes) — unlike the one-shot post-mortem debug. `action=\"start\"` (with `program` or `core`) opens a session and returns its id; `action=\"cmd\"` runs one gdb command on that `session` and returns clean console output (execution commands lead with a one-line stop summary, and what the program printed follows); `action=\"stop\"` ends it; `action=\"list\"` shows open sessions. The program's stdin is empty (reads see end-of-file): give it input through a file argument. Host-side escapes (shell/python/source) and inferior function calls are disabled for safety. On macOS (gdb does not run on Apple Silicon) the session is lldb: commands use lldb syntax, the same escapes and function calls are refused, and a program still running after 30s is stopped so it can be inspected. C/C++ only.",
+      "name": "debug_session",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "start: open a session (returns its id); cmd: run one debugger command on a session (gdb syntax in a gdb session, lldb syntax in an lldb one); stop: end a session; list: show open sessions.",
+            "enum": [
+              "start",
+              "cmd",
+              "stop",
+              "list"
+            ],
+            "type": "string"
+          },
+          "args": {
+            "description": "start: optional program arguments, applied via `set args` and written like a shell command line: space-separated, quote with '…' or \"…\" to keep spaces, \"\" is an empty argument. No shell runs: pipes, redirection and $VAR are rejected.",
+            "type": "string"
+          },
+          "backend": {
+            "description": "start: \"gdb\" or \"lldb\". Default: lldb on macOS (gdb does not run on Apple Silicon Macs), otherwise gdb where it is installed, else lldb. The start result names the debugger; send commands in its syntax.",
+            "enum": [
+              "gdb",
+              "lldb"
+            ],
+            "type": "string"
+          },
+          "command": {
+            "description": "cmd: the gdb command to run (e.g. \"break main\", \"run\", \"next\", \"print x\", \"bt\"). In an lldb session, lldb syntax (e.g. \"b main\", \"run\", \"next\", \"frame variable\", \"p x\", \"bt\", \"memory read -c 16 ptr\").",
+            "type": "string"
+          },
+          "core": {
+            "description": "start: optional core dump path; the session loads it and reports the crash backtrace.",
+            "type": "string"
+          },
+          "program": {
+            "description": "start: path to the executable to debug, relative to the workspace or absolute.",
+            "type": "string"
+          },
+          "session": {
+            "description": "Session id (returned by start). Required for cmd and stop.",
+            "type": "integer"
+          },
+          "sysroot": {
+            "description": "start, with `core`: for a core dump from ANOTHER machine (e.g. a Linux production core read on a Mac), a directory holding copies of that machine's files at their original absolute paths. Shared libraries are resolved from it so library frames get names and the stack unwinds through them; the start result says which were not found.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Look up an Intel SIMD intrinsic (e.g. _mm_add_ps) — exact signature, required CPUID feature, header, underlying instruction, and semantics — or search intrinsics by substring. Authoritative (no hallucination). Use when writing/reading SIMD/vector C/C++. C/C++ only.",
+      "name": "cpp_intrinsic",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Exact intrinsic name to look up, e.g. \"_mm_add_ps\". Returns its signature, required CPUID feature, header, underlying instruction, category and semantics.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Substring to search intrinsic names by, e.g. \"_mm_add\". Returns a list of matching names with their signatures. Use when you don't know the exact name.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Measure C/C++ performance and answer it HONESTLY: noise-gated A/B wall-clock timing ('is it really faster?' — never claims a win inside measurement noise), a ranked hot-function profile ('where does time go?'), or a topdown bottleneck classification ('why is it slow?'). Falls back gracefully per-OS when perf/valgrind are unavailable. Use after perf-relevant changes.",
+      "name": "cpp_perf",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "command_a": {
+            "description": "Shell command to run and measure, e.g. \"./bench\". Must be repeatable / idempotent — it is run multiple times (a warmup plus each repeat).",
+            "type": "string"
+          },
+          "command_b": {
+            "description": "Optional second shell command to A/B compare against command_a (time mode).",
+            "type": "string"
+          },
+          "mode": {
+            "description": "\"time\" (default) = noise-gated A/B wall-clock timing (never claims a speedup inside measurement noise); \"profile\" = ranked hot-function summary; \"topdown\" = bottleneck classification (memory/core/frontend/bad-speculation); \"callgrind\" = hot-function profile with the callgrind backend.",
+            "type": "string"
+          },
+          "repeat": {
+            "description": "How many times to run each command in time mode (default: 5, max: 100). Use >=5 for a usable noise estimate.",
+            "type": "integer"
+          },
+          "timeout_sec": {
+            "description": "Per-run wall-clock cap in seconds (default: 300). A profiler can run a command 20-100x slower, so cap long runs or raise this deliberately. In time mode it bounds the whole A/B measurement: runs that would not fit are skipped and the report says how many completed.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command_a"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Microbenchmark C++ with Google Benchmark. Two modes: REMOTE (`source` = inline BENCHMARK() cases run on quick-bench.com; RELATIVE cpu_time, foreign hardware), or LOCAL (`binary` = an already-built Google Benchmark executable run on THIS machine, pinned + repeated + noise-gated, ABSOLUTE ns — never claims a difference inside measurement noise). Use to answer 'which is faster?'. Provide exactly one of source|binary. C++ only.",
+      "name": "cpp_bench",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "binary": {
+            "description": "LOCAL mode. Path to an already-built Google Benchmark executable to run on THIS machine (pinned, repeated, noise-gated, ABSOLUTE ns). Build the bench target first. Provide EITHER binary OR source, not both.",
+            "type": "string"
+          },
+          "compiler": {
+            "description": "quick-bench compiler id, default \"clang-17.0\". Examples: \"gcc-13.1\", \"clang-16.0\".",
+            "type": "string"
+          },
+          "filter": {
+            "description": "LOCAL mode. Optional --benchmark_filter regex to select which benchmarks in the binary to run (default: all).",
+            "type": "string"
+          },
+          "flags": {
+            "description": "REMOTE mode. Extra compiler flags, whitespace-separated (default none), e.g. \"-march=native\".",
+            "type": "string"
+          },
+          "lib": {
+            "description": "Standard library: \"gnu\" (libstdc++) or \"llvm\" (libc++), default \"gnu\".",
+            "type": "string"
+          },
+          "optim": {
+            "description": "Optimization level (the -O digit), default \"3\". Use release optimization (\"2\" or \"3\") for meaningful numbers.",
+            "type": "string"
+          },
+          "repetitions": {
+            "description": "LOCAL mode. Google Benchmark repetitions (default: 9). Use >=5 for a usable noise estimate.",
+            "type": "integer"
+          },
+          "source": {
+            "description": "REMOTE mode. Inline C++ containing ONLY your benchmark function(s), e.g. `static void BM_X(benchmark::State& state){ for (auto _ : state){ /* work */ } } BENCHMARK(BM_X);`. Do NOT add `#include <benchmark/benchmark.h>`, a `main`, or `BENCHMARK_MAIN()` — quick-bench.com wraps the snippet for you. Define two BENCHMARK() cases to compare A vs B. Provide EITHER source OR binary, not both.",
+            "type": "string"
+          },
+          "std": {
+            "description": "C++ standard (quick-bench `cppVersion`), default \"c++20\". Examples: \"c++17\", \"c++23\".",
+            "type": "string"
+          },
+          "timeout_sec": {
+            "description": "LOCAL mode. Per-run wall-clock cap in seconds (default: 300).",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Report C/C++ struct/class layout FACTS: exact field offsets, size, alignment, padding holes, and cacheline straddles — so alignment/packing reasoning uses ground truth, not guesses. Uses pahole (exact, Linux) or clang's record-layout dump (portable). C/C++ only.",
+      "name": "cpp_layout",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "cacheline": {
+            "description": "Cacheline size in bytes for straddle detection (default: 64).",
+            "type": "integer"
+          },
+          "file": {
+            "description": "Path to the C/C++ source (or header) defining the type(s), relative to the workspace or absolute.",
+            "type": "string"
+          },
+          "flags": {
+            "description": "Optional extra compiler flags, whitespace-separated (e.g. \"-std=c++20 -I include\"). A compile_commands.json entry for the file is used automatically when present.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Optional record-name substring filter (e.g. \"Order\"). Omit to report every record in the file.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Run a debugger in batch mode for crash/core-dump post-mortem (backtrace, locals, args) — non-interactive and hardened (no inferior calls, no auto-load). Uses a gdb or lldb backend (lldb by default on macOS, where gdb does not run). C/C++ only; for a core dump pass `core` (plus `sysroot` when the core comes from another machine), for a live crash pass `program`+`args`.",
+      "name": "debug",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "description": "Optional program arguments for a live run, written like a shell command line: space-separated, quote with '…' or \"…\" to keep spaces, \"\" is an empty argument. No shell runs: pipes, redirection and $VAR are rejected.",
+            "type": "string"
+          },
+          "backend": {
+            "description": "Debugger backend: \"gdb\" or \"lldb\". Default: lldb on macOS (gdb does not run on Apple Silicon Macs), otherwise gdb where it is installed, else lldb; the result says when lldb was chosen. `commands` must be in the chosen debugger's syntax.",
+            "enum": [
+              "gdb",
+              "lldb"
+            ],
+            "type": "string"
+          },
+          "commands": {
+            "description": "Optional debugger commands to run (gdb default: bt full, info locals, info args; lldb default: bt, frame variable, frame variable). A live program is run before them unless they include their own `run`/`start` — put breakpoints first, then `run`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "core": {
+            "description": "Optional core dump path for post-mortem analysis (relative or absolute).",
+            "type": "string"
+          },
+          "program": {
+            "description": "Path to the executable to debug, relative to the workspace or absolute.",
+            "type": "string"
+          },
+          "sysroot": {
+            "description": "Optional, for a core dump from ANOTHER machine (e.g. a Linux production core read on a Mac or a different box): a directory holding copies of that machine's files at their original absolute paths (sysroot/usr/lib/…, sysroot/opt/app/lib/…). Shared libraries are resolved from it, so library frames get names and the stack unwinds through them: gdb uses `set sysroot`; with lldb every library the core mapped is loaded from it at the address the core recorded. The result says which libraries were not found.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "program"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Run clang-tidy static analysis on a C/C++ file and return structured findings with check names and fix hints. Use proactively after editing C/C++ to catch bugs and modern-C++ issues. Do NOT use for non-C/C++ files or comment-only edits.",
+      "name": "cpp_tidy",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "build_dir": {
+            "description": "Optional directory containing compile_commands.json. If omitted, the workspace, build/, and out/ are searched.",
+            "type": "string"
+          },
+          "checks": {
+            "description": "Optional clang-tidy check filter passed as -checks=<checks> (e.g. \"bugprone-*,modernize-*\").",
+            "type": "string"
+          },
+          "path": {
+            "description": "C/C++ source file to analyze, relative to the workspace or absolute.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Run cppcheck static analysis on a C/C++ file or directory and return structured findings (file:line: severity: message). Uses compile_commands.json automatically when one exists; otherwise pass include_dirs for a project with a separate include/ tree. Run it on C/C++ you just wrote or edited — including brand-new code in an otherwise empty directory — BEFORE telling the user it works; needs no build system.",
+      "name": "cpp_check",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "enable": {
+            "description": "Comma-separated cppcheck check categories (default: warning,performance,portability).",
+            "type": "string"
+          },
+          "include_dirs": {
+            "description": "Header search paths (become -I). Pass these for a project layout like include/foo.hpp, or cppcheck analyses the file with its includes unresolved.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "path": {
+            "description": "File or directory to analyze, relative to the workspace or absolute.",
+            "type": "string"
+          },
+          "timeout_sec": {
+            "description": "Wall-clock cap in seconds (default 300). Raise it for a large tree or a whole-project --project= run.",
+            "type": "number"
+          },
+          "use_compile_db": {
+            "description": "Analyse via compile_commands.json (--project=) when one is present, so cppcheck sees the project's real include paths and defines. Defaults to true; set false to analyse just `path` in isolation.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Show desugared C++ via C++ Insights — how the compiler sees the code (template instantiations, implicit conversions/copies, generated special members, lambda closures, range-for expansion). Use proactively to explain *why* C++ behaves a certain way. Complements cpp_godbolt (which shows assembly). C++ only.",
+      "name": "cpp_insights",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "description": "Path to a .cpp file (relative to the workspace or absolute) OR inline C++ source code to transform.",
+            "type": "string"
+          },
+          "std": {
+            "description": "C++ standard to compile against (default: c++20).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Symbolize a crash/backtrace runtime address to function + file:line using addr2line, correctly handling the PIE load-base offset (runtime_addr - load_base) that is easy to get wrong. C/C++ binaries only.",
+      "name": "cpp_symbolize",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "description": "A single runtime crash/backtrace address in hex (e.g. 0x55a3...c4), or a comma/space-separated list of such addresses.",
+            "type": "string"
+          },
+          "binary": {
+            "description": "Path to the ELF binary (executable or shared object), relative to the workspace or absolute.",
+            "type": "string"
+          },
+          "load_base": {
+            "description": "Optional hex module load base from /proc/<pid>/maps. For a PIE binary the file-relative address is computed as runtime_addr - load_base. The load base is the start of the module's FIRST mapping (the line whose file offset is 00000000), not the start of its r-xp (code) line; the r-xp start gives a confidently wrong function.",
+            "type": "string"
+          },
+          "return_addresses": {
+            "description": "How to handle the return-address off-by-one. A return address points just AFTER its call, so addr2line needs `addr - 1` to name the calling line. Omit (default) for the gdb-backtrace convention: the first address is the leaf/fault PC (exact) and later ones are return addresses (-1). Set true when every address is a return address, false to disable the adjustment.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "binary",
+          "address"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

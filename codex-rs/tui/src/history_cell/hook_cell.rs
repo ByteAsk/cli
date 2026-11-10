@@ -560,7 +560,13 @@ mod tests {
             HookRunStatus::Completed,
             vec![HookOutputEntry {
                 kind: HookOutputEntryKind::Context,
-                text: "## Working Memory Recall\n\nSource: Codex compaction".to_string(),
+                // Kept at HOOK_CONTEXT_MAX_DISPLAY_ROWS rows so it stays a
+                // *short* context: upstream #31252 added the 3-row display cap
+                // after this test was written, and the old 4-row fixture (it had
+                // a blank line here) collapsed to the "… +N lines" hint, which is
+                // the opposite of what this test exists to pin.
+                text: "## Working Memory Recall\nSource: ByteAsk compaction\nScope: Durable workspace memory"
+                    .to_string(),
             }],
         );
 

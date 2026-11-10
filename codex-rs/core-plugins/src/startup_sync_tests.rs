@@ -1382,3 +1382,87 @@ fn curated_repo_backup_archive_zip_bytes(sha: &str) -> Vec<u8> {
 
     writer.finish().expect("finish zip writer").into_inner()
 }
+
+/// ByteAsk: with the plugins feature off, startup removes everything the plugin machinery
+/// auto-created in an existing home:
+/// - the curated marketplace clone and every artifact its sync writes under `.tmp`
+///   (sha + lock files, `plugins-clone-*` staging, `plugins-backup-*` activation backups
+///   that survive a failed rollback, `git-*` trusted repositories);
+/// - the remote marketplace caches under `plugins/cache` (`openai-curated-remote`,
+///   `created-by-me-remote`, `workspace-*`). Those are a mirror the remote installed-plugin
+///   sync rebuilds from the account's server-side install list and prunes on its own; an
+///   explicit install writes the same metadata, so nothing on disk proves a local user
+///   install, and re-enabling plugins re-materializes them.
+/// Kept: plugins from local marketplaces (including the configured-curated `openai-curated`
+/// cache), user-added marketplaces under `.tmp/marketplaces`, and unrelated `.tmp` entries.
+#[test]
+fn disabled_plugins_cleanup_removes_sync_artifacts_and_remote_mirrors_only() {
+    let home = tempdir().expect("temp home");
+    let home = home.path();
+    let mkdir = |rel: &str| std::fs::create_dir_all(home.join(rel)).expect("create dir");
+    let write = |rel: &str, body: &str| {
+        let path = home.join(rel);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        std::fs::write(path, body).expect("write file");
+    };
+    write(".tmp/plugins/.agents/plugins/marketplace.json", "{}");
+    write(".tmp/plugins.sha", "abc123\n");
+    write(".tmp/plugins.sync.lock", "");
+    mkdir(".tmp/plugins-clone-AbC123/.git");
+    write(".tmp/plugins-backup-QwE456/repo/plugins/linear/.codex-plugin/plugin.json", "{}");
+    mkdir(".tmp/git-XyZ789/objects");
+    write(
+        "plugins/cache/openai-curated-remote/openai-templates/.codex-remote-plugin-install.json",
+        "{}",
+    );
+    write(
+        "plugins/cache/openai-curated-remote/openai-templates/0.1.0/.codex-plugin/plugin.json",
+        "{}",
+    );
+    write("plugins/cache/created-by-me-remote/mine/1.0.0/.codex-plugin/plugin.json", "{}");
+    write("plugins/cache/workspace-directory/team/1.0.0/.codex-plugin/plugin.json", "{}");
+
+    let kept = [
+        "plugins/cache/my-local-marketplace/tool/1.0.0/.codex-plugin/plugin.json",
+        "plugins/cache/openai-curated/linear/1.0.0/.codex-plugin/plugin.json",
+        ".tmp/marketplaces/user-added/.agents/plugins/marketplace.json",
+        ".tmp/unrelated/file.txt",
+    ];
+    for rel in kept {
+        write(rel, "{}");
+    }
+
+    remove_curated_marketplace_sync_artifacts(home);
+
+    for removed in [
+        ".tmp/plugins",
+        ".tmp/plugins.sha",
+        ".tmp/plugins.sync.lock",
+        ".tmp/plugins-clone-AbC123",
+        ".tmp/plugins-backup-QwE456",
+        ".tmp/git-XyZ789",
+        "plugins/cache/openai-curated-remote",
+        "plugins/cache/created-by-me-remote",
+        "plugins/cache/workspace-directory",
+    ] {
+        assert!(!home.join(removed).exists(), "{removed} should be removed");
+    }
+    for rel in kept {
+        assert!(home.join(rel).is_file(), "{rel} must be kept");
+    }
+}
+
+#[test]
+fn disabled_plugins_cleanup_leaves_everything_while_a_sync_holds_the_lock() {
+    let home = tempdir().expect("temp home");
+    let home = home.path();
+    std::fs::create_dir_all(home.join(".tmp/plugins")).expect("clone dir");
+    std::fs::write(home.join(".tmp/plugins.sha"), "abc123\n").expect("sha file");
+    let _held = lock_curated_plugins_startup_sync(home).expect("hold sync lock");
+
+    remove_curated_marketplace_sync_artifacts(home);
+
+    assert!(home.join(".tmp/plugins").is_dir());
+    assert!(home.join(".tmp/plugins.sha").is_file());
+    assert!(home.join(".tmp/plugins.sync.lock").is_file());
+}

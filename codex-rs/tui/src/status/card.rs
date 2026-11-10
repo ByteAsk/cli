@@ -7,7 +7,6 @@ use crate::legacy_core::config::Config;
 use crate::line_truncation::line_width;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
-use crate::version::CODEX_CLI_VERSION;
 use crate::width::display_width;
 use chrono::DateTime;
 use chrono::Local;
@@ -727,9 +726,9 @@ impl HistoryCell for StatusHistoryCell {
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(vec![
             Span::from(format!("{}>_ ", FieldFormatter::INDENT)).dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from(std::env::var("BYTEASK_BRAND").or_else(|_| std::env::var("CODEX_BRAND")).unwrap_or_else(|_| "ByteAsk".to_string())).bold(),
             Span::from(" ").dim(),
-            Span::from(format!("(v{CODEX_CLI_VERSION})")).dim(),
+            Span::from(format!("(v{})", crate::version::display_version())).dim(),
         ]));
 
         let available_inner_width = usize::from(width.saturating_sub(4));
@@ -745,7 +744,7 @@ impl HistoryCell for StatusHistoryCell {
                 (None, None) => "ChatGPT".to_string(),
             },
             StatusAccountDisplay::ApiKey => {
-                "API key configured (run codex login to use ChatGPT)".to_string()
+                "API key configured (run byteask login to use ChatGPT)".to_string()
             }
         });
 
@@ -796,12 +795,12 @@ impl HistoryCell for StatusHistoryCell {
         let value_width = formatter.value_width(available_inner_width);
 
         let note_first_line = Line::from(vec![
-            Span::from("Visit ").cyan(),
-            CHATGPT_USAGE_URL.cyan().underlined(),
-            Span::from(" for up-to-date").cyan(),
+            Span::from("Visit ").fg(crate::style::accent_color()),
+            CHATGPT_USAGE_URL.fg(crate::style::accent_color()).underlined(),
+            Span::from(" for up-to-date").fg(crate::style::accent_color()),
         ]);
         let note_second_line = Line::from(vec![
-            Span::from("information on rate limits and credits").cyan(),
+            Span::from("information on rate limits and credits").fg(crate::style::accent_color()),
         ]);
         let note_lines = adaptive_wrap_lines(
             [note_first_line, note_second_line],

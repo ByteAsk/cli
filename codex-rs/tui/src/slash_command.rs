@@ -35,7 +35,6 @@ pub enum SlashCommand {
     Delete,
     Resume,
     Fork,
-    App,
     Init,
     Compact,
     Recap,
@@ -54,6 +53,9 @@ pub enum SlashCommand {
     #[strum(to_string = "pwd", serialize = "cwd")]
     Pwd,
     Usage,
+    ReferralCode,
+    Upgrade,
+    Voucher,
     DebugConfig,
     Title,
     Statusline,
@@ -63,6 +65,7 @@ pub enum SlashCommand {
     Mcp,
     Apps,
     Plugins,
+    Login,
     Logout,
     Quit,
     Exit,
@@ -89,7 +92,7 @@ impl SlashCommand {
         match self {
             SlashCommand::Feedback => "send logs to maintainers",
             SlashCommand::New => "start a new chat during a conversation",
-            SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
+            SlashCommand::Init => "create an AGENTS.md file with instructions for ByteAsk",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
             SlashCommand::Recap => "summarize the current conversation now",
             SlashCommand::Review => "review my current changes and find issues",
@@ -99,20 +102,23 @@ impl SlashCommand {
             SlashCommand::Delete => "permanently delete this session and exit",
             SlashCommand::Clear => "clear the terminal and start a new chat",
             SlashCommand::Fork => "fork the current chat",
-            SlashCommand::App => "continue this session in the Desktop app",
-            SlashCommand::Quit | SlashCommand::Exit => "exit Codex",
+            SlashCommand::Quit | SlashCommand::Exit => "exit ByteAsk",
             SlashCommand::Copy => "copy the last response, code block, or quote",
             SlashCommand::Export => "export the conversation as markdown",
             SlashCommand::Raw => "toggle raw scrollback mode for copy-friendly terminal selection",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
-            SlashCommand::Skills => "use skills to improve how Codex performs specific tasks",
+            SlashCommand::Skills => "use skills to improve how ByteAsk performs specific tasks",
             SlashCommand::Import => "import setup, this project, and recent chats from Claude Code",
             SlashCommand::Hooks => "view and manage lifecycle hooks",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Cd => "change the current working directory",
             SlashCommand::Pwd => "show the current working directory",
-            SlashCommand::Usage => "view account usage or use a usage limit reset",
+            // ByteAsk command copy.
+            SlashCommand::Usage => "show your plan limits and when they reset",
+            SlashCommand::ReferralCode => "show your referral code",
+            SlashCommand::Upgrade => "upgrade to Pro, Max or Ultra",
+            SlashCommand::Voucher => "redeem a voucher code",
             SlashCommand::DebugConfig => "show config layers and requirement sources for debugging",
             SlashCommand::Title => "configure which items appear in the terminal title",
             SlashCommand::Statusline => "configure which items appear in the status line",
@@ -126,7 +132,7 @@ impl SlashCommand {
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
-            SlashCommand::Personality => "choose a communication style for Codex",
+            SlashCommand::Personality => "choose a communication style for ByteAsk",
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agents => "view and switch between all active agent sessions",
@@ -134,7 +140,7 @@ impl SlashCommand {
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
             }
-            SlashCommand::Permissions => "choose what Codex is allowed to do",
+            SlashCommand::Permissions => "choose what ByteAsk is allowed to do",
             SlashCommand::Keymap => "remap TUI shortcuts",
             SlashCommand::Vim => "toggle Vim mode for the composer",
             SlashCommand::ElevateSandbox => "set up elevated agent sandbox",
@@ -147,7 +153,8 @@ impl SlashCommand {
             SlashCommand::Mcp => "list configured MCP tools; use /mcp verbose for details",
             SlashCommand::Apps => "manage apps",
             SlashCommand::Plugins => "browse plugins",
-            SlashCommand::Logout => "log out of Codex",
+            SlashCommand::Login => "sign in, or change how ByteAsk answers",
+            SlashCommand::Logout => "sign out of ByteAsk",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
         }
@@ -178,6 +185,8 @@ impl SlashCommand {
                 | SlashCommand::Cd
                 | SlashCommand::Pwd
                 | SlashCommand::Usage
+                | SlashCommand::Upgrade
+                | SlashCommand::Voucher
                 | SlashCommand::Pets
                 | SlashCommand::Side
                 | SlashCommand::Btw
@@ -199,6 +208,7 @@ impl SlashCommand {
                 | SlashCommand::Status
                 | SlashCommand::Pwd
                 | SlashCommand::Usage
+                | SlashCommand::Upgrade
                 | SlashCommand::Ide
         )
     }
@@ -225,6 +235,7 @@ impl SlashCommand {
             | SlashCommand::Plan
             | SlashCommand::Cd
             | SlashCommand::Clear
+            | SlashCommand::Login
             | SlashCommand::Logout
             | SlashCommand::MemoryDrop
             | SlashCommand::MemoryUpdate => false,
@@ -242,10 +253,12 @@ impl SlashCommand {
             | SlashCommand::Status
             | SlashCommand::Pwd
             | SlashCommand::Usage
+            | SlashCommand::ReferralCode
+            | SlashCommand::Upgrade
+            | SlashCommand::Voucher
             | SlashCommand::DebugConfig
             | SlashCommand::Ps
             | SlashCommand::Stop
-            | SlashCommand::App
             | SlashCommand::Goal
             | SlashCommand::Mcp
             | SlashCommand::Apps
@@ -270,7 +283,6 @@ impl SlashCommand {
         match self {
             SlashCommand::SandboxReadRoot => cfg!(target_os = "windows"),
             SlashCommand::Copy => !cfg!(target_os = "android"),
-            SlashCommand::App => cfg!(any(target_os = "macos", target_os = "windows")),
             SlashCommand::Rollout | SlashCommand::TestApproval => cfg!(debug_assertions),
             _ => true,
         }
@@ -317,7 +329,28 @@ mod tests {
         assert!(SlashCommand::Raw.available_during_task());
         assert!(SlashCommand::Raw.available_in_side_conversation());
         assert!(SlashCommand::Raw.supports_inline_args());
-        assert!(SlashCommand::App.available_during_task());
+    }
+
+    /// The first words a user reads about each ByteAsk command.
+    /// Pinned because these are
+    /// product copy, not incidental strings.
+    #[test]
+    fn byteask_command_descriptions_match_the_design() {
+        assert_eq!(
+            SlashCommand::Usage.description(),
+            "show your plan limits and when they reset"
+        );
+        assert_eq!(
+            SlashCommand::ReferralCode.description(),
+            "show your referral code"
+        );
+        assert_eq!(SlashCommand::Upgrade.description(), "upgrade to Pro, Max or Ultra");
+        assert_eq!(SlashCommand::Voucher.description(), "redeem a voucher code");
+        assert_eq!(
+            SlashCommand::Login.description(),
+            "sign in, or change how ByteAsk answers"
+        );
+        assert_eq!(SlashCommand::Logout.description(), "sign out of ByteAsk");
     }
 
     #[test]

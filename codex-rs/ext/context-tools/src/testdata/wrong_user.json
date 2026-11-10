@@ -1,0 +1,9 @@
+{
+ "content": [
+  {
+   "text": "local:someone-else may not read any partition; returning nothing",
+   "type": "text"
+  }
+ ],
+ "isError": true
+}

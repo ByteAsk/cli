@@ -740,3 +740,35 @@ fn built_in_config_file_contents_resolves_explorer_only() {
         None
     );
 }
+
+// ---- ByteAsk: the policy-driven explorer role --------------------------------------
+
+#[test]
+fn byteask_explorer_role_is_upstreams_empty_file_unless_the_policy_names_a_model() {
+    // No policy is installed in this test process, so the role is exactly as upstream
+    // ships it: empty, i.e. the explorer inherits the parent's model.
+    if byteask_output_reducers::policy::active().explorer.is_none() {
+        assert_eq!(
+            built_in::config_file_contents(Path::new("explorer.toml")).as_deref(),
+            Some("")
+        );
+    }
+}
+
+#[test]
+fn byteask_explorer_toml_is_a_valid_read_only_role_layer() {
+    let text = built_in::byteask_explorer_toml("gpt-5.6-luna", "low");
+    let value: toml::Value = toml::from_str(&text).expect("valid TOML");
+    assert_eq!(value.get("model").and_then(toml::Value::as_str), Some("gpt-5.6-luna"));
+    assert_eq!(value.get("model_reasoning_effort").and_then(toml::Value::as_str), Some("low"));
+    assert_eq!(value.get("sandbox_mode").and_then(toml::Value::as_str), Some("read-only"));
+    let instructions = value
+        .get("developer_instructions")
+        .and_then(toml::Value::as_str)
+        .expect("instructions");
+    assert!(instructions.contains("path:START-END"));
+    assert!(instructions.contains("Never modify"));
+    // It must also be accepted as a real config layer, not merely parse as TOML.
+    let tempdir = TempDir::new().expect("tempdir");
+    deserialize_config_toml_with_base(value, tempdir.path()).expect("a valid role config layer");
+}

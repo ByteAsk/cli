@@ -114,8 +114,69 @@ pub(crate) fn seek_sequence(
     None
 }
 
+/// How loosely a window of lines had to be compared to match a pattern.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Strictness {
+    Exact,
+    TrimEnd,
+    Trim,
+    Normalized,
+}
+
+fn normalise_punctuation(s: &str) -> String {
+    s.trim()
+        .chars()
+        .map(|c| match c {
+            '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2015}'
+            | '\u{2212}' => '-',
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => '\'',
+            '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => '"',
+            '\u{00A0}' | '\u{2002}' | '\u{2003}' | '\u{2004}' | '\u{2005}' | '\u{2006}'
+            | '\u{2007}' | '\u{2008}' | '\u{2009}' | '\u{200A}' | '\u{202F}' | '\u{205F}'
+            | '\u{3000}' => ' ',
+            other => other,
+        })
+        .collect()
+}
+
+/// The strictest comparison under which `pattern` matches `lines` at `at`, if any (the same
+/// four comparisons, in the same order, as [`seek_sequence`]).
+fn strictness_at(lines: &[String], pattern: &[String], at: usize) -> Option<Strictness> {
+    let window = lines.get(at..at + pattern.len())?;
+    let all = |eq: &dyn Fn(&str, &str) -> bool| {
+        window.iter().zip(pattern).all(|(line, pat)| eq(line, pat))
+    };
+    if all(&|a, b| a == b) {
+        Some(Strictness::Exact)
+    } else if all(&|a, b| a.trim_end() == b.trim_end()) {
+        Some(Strictness::TrimEnd)
+    } else if all(&|a, b| a.trim() == b.trim()) {
+        Some(Strictness::Trim)
+    } else if all(&|a, b| normalise_punctuation(a) == normalise_punctuation(b)) {
+        Some(Strictness::Normalized)
+    } else {
+        None
+    }
+}
+
+/// ByteAsk: another place after `found` where `pattern` matches at least as strictly as it
+/// matched at `found`. `Some` means the match at `found` was a guess between several places.
+pub(crate) fn next_match_as_strict(
+    lines: &[String],
+    pattern: &[String],
+    found: usize,
+) -> Option<usize> {
+    if pattern.is_empty() || pattern.len() > lines.len() {
+        return None;
+    }
+    let level = strictness_at(lines, pattern, found)?;
+    (found + 1..=lines.len() - pattern.len())
+        .find(|&at| strictness_at(lines, pattern, at).is_some_and(|other| other <= level))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::next_match_as_strict;
     use super::seek_sequence;
     use crate::ApplyPatchFileUpdateMode;
     use std::string::ToString;
@@ -189,5 +250,25 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn a_second_match_as_strict_as_the_first_is_found() {
+        let lines = to_vec(&["a", "}", "b", "}", "c"]);
+        let pattern = to_vec(&["}"]);
+        assert_eq!(next_match_as_strict(&lines, &pattern, 1), Some(3));
+        let unique = to_vec(&["b", "}"]);
+        assert_eq!(next_match_as_strict(&lines, &unique, 2), None);
+    }
+
+    /// An exact match is not made ambiguous by a later line that only matches loosely.
+    #[test]
+    fn a_looser_later_match_does_not_count() {
+        let lines = to_vec(&["    x = 1;", "x = 1;"]);
+        let pattern = to_vec(&["    x = 1;"]);
+        assert_eq!(next_match_as_strict(&lines, &pattern, 0), None);
+        // ... but when the first match was itself loose, an equally loose one does.
+        let loose = to_vec(&["  x = 1;"]);
+        assert_eq!(next_match_as_strict(&lines, &loose, 0), Some(1));
     }
 }

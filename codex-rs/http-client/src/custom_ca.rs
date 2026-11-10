@@ -58,9 +58,11 @@ use thiserror::Error;
 use tracing::info;
 use tracing::warn;
 
+/// ByteAsk's name for the custom CA bundle; wins over the legacy upstream name.
+pub const BYTEASK_CA_CERT_ENV: &str = "BYTEASK_CA_CERTIFICATE";
 pub const CODEX_CA_CERT_ENV: &str = "CODEX_CA_CERTIFICATE";
 pub const SSL_CERT_FILE_ENV: &str = "SSL_CERT_FILE";
-const CA_CERT_HINT: &str = "If you set CODEX_CA_CERTIFICATE or SSL_CERT_FILE, ensure it points to a PEM file containing one or more CERTIFICATE blocks, or unset it to use system roots.";
+const CA_CERT_HINT: &str = "If you set BYTEASK_CA_CERTIFICATE or SSL_CERT_FILE, ensure it points to a PEM file containing one or more CERTIFICATE blocks, or unset it to use system roots.";
 type PemSection = (SectionKind, Vec<u8>);
 
 /// Describes why a transport using shared custom CA support could not be constructed.
@@ -396,10 +398,17 @@ trait EnvSource {
     /// Keeping the winning variable name with the path lets later logging explain not only which
     /// file was used but also why that file was chosen.
     fn configured_ca_bundle(&self) -> Option<ConfiguredCaBundle> {
-        self.non_empty_path(CODEX_CA_CERT_ENV)
+        self.non_empty_path(BYTEASK_CA_CERT_ENV)
             .map(|path| ConfiguredCaBundle {
-                source_env: CODEX_CA_CERT_ENV,
+                source_env: BYTEASK_CA_CERT_ENV,
                 path,
+            })
+            .or_else(|| {
+                self.non_empty_path(CODEX_CA_CERT_ENV)
+                    .map(|path| ConfiguredCaBundle {
+                        source_env: CODEX_CA_CERT_ENV,
+                        path,
+                    })
             })
             .or_else(|| {
                 self.non_empty_path(SSL_CERT_FILE_ENV)
@@ -720,6 +729,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
+    use super::BYTEASK_CA_CERT_ENV;
     use super::BuildCustomCaTransportError;
     use super::CODEX_CA_CERT_ENV;
     use super::EnvSource;
@@ -765,6 +775,20 @@ mod tests {
         assert_eq!(
             env.configured_ca_bundle().map(|bundle| bundle.path),
             Some(PathBuf::from("/tmp/codex.pem"))
+        );
+    }
+
+    #[test]
+    fn ca_path_prefers_byteask_env_over_the_legacy_name() {
+        let env = map_env(&[
+            (BYTEASK_CA_CERT_ENV, "/tmp/byteask.pem"),
+            (CODEX_CA_CERT_ENV, "/tmp/codex.pem"),
+            (SSL_CERT_FILE_ENV, "/tmp/fallback.pem"),
+        ]);
+
+        assert_eq!(
+            env.configured_ca_bundle().map(|bundle| bundle.path),
+            Some(PathBuf::from("/tmp/byteask.pem"))
         );
     }
 

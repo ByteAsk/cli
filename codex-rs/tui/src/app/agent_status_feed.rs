@@ -112,7 +112,7 @@ impl AgentStatusThreadPreview {
     }
 
     fn title_line(&self) -> Line<'static> {
-        vec!["  • ".dim(), format!("`{}`", self.agent_path).cyan()].into()
+        vec!["  • ".dim(), format!("`{}`", self.agent_path).fg(crate::style::accent_color())].into()
     }
 
     fn preview_lines(&self, width: u16) -> Vec<Line<'static>> {

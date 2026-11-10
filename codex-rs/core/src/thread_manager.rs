@@ -963,6 +963,36 @@ impl ThreadManager {
         Box::pin(self.state.spawn_thread(request)).await
     }
 
+    /// Starts a fresh sub-agent session (no inherited transcript) attributed to an existing
+    /// parent thread.
+    ///
+    /// Unlike [`Self::spawn_subagent`], nothing of the parent's history is copied. The child
+    /// records `parent_thread_id` in its rollout metadata and inherits the parent's user
+    /// instructions, originator and multi-agent version. It gets its own agent-control scope,
+    /// so it does not count against the parent's sub-agent limit. The source must be a
+    /// `SessionSource::SubAgent` so the rollout is never mistaken for a root session.
+    pub async fn spawn_fresh_subagent(
+        &self,
+        parent_thread_id: ThreadId,
+        mut options: StartThreadOptions,
+    ) -> CodexResult<NewThread> {
+        if !matches!(options.session_source, Some(SessionSource::SubAgent(_))) {
+            return Err(CodexErr::InvalidRequest(
+                "fresh sub-agents require a sub-agent session source".to_string(),
+            ));
+        }
+        let parent = self.get_thread(parent_thread_id).await?;
+        options.initial_history = InitialHistory::New;
+        let agent_control = self.agent_control_for_config(&options.config);
+        let mut request = ThreadSpawnRequest::new(
+            options,
+            Arc::clone(&parent.session.services.auth_manager),
+            agent_control,
+        );
+        request.parent_thread_id = Some(parent_thread_id);
+        Box::pin(self.state.spawn_thread(request)).await
+    }
+
     /// Allocates a thread ID before startup so a caller can associate host-owned state with it.
     pub fn reserve_thread_id(&self) -> ThreadId {
         self.state.thread_id_generator.as_ref()()

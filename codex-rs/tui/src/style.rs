@@ -10,7 +10,10 @@ use crate::terminal_palette::stdout_color_level;
 use ratatui::style::Color;
 use ratatui::style::Style;
 
-const LIGHT_BG_ACCENT_RGB: (u8, u8, u8) = (0, 95, 135);
+// ByteAsk brand accent (#86AEA5, a muted sage-teal). Used for active/selected
+// controls, prompts, mentions, links, and the user-input accent.
+const LIGHT_BG_ACCENT_RGB: (u8, u8, u8) = (134, 174, 165);
+const DARK_BG_ACCENT_RGB: (u8, u8, u8) = (134, 174, 165);
 
 #[derive(Clone, Copy)]
 pub(crate) enum StatusTone {
@@ -81,8 +84,13 @@ pub(crate) fn accent_style_for(terminal_bg: Option<(u8, u8, u8)>) -> Style {
     if terminal_bg.is_some_and(is_light) {
         Style::default().fg(best_color(LIGHT_BG_ACCENT_RGB)).bold()
     } else {
-        Style::default().fg(Color::Cyan).bold()
+        Style::default().fg(best_color(DARK_BG_ACCENT_RGB)).bold()
     }
+}
+
+/// Returns the brand accent foreground color, adapted to the terminal palette.
+pub(crate) fn accent_color() -> Color {
+    best_color(DARK_BG_ACCENT_RGB)
 }
 
 fn table_separator_style_for(
@@ -175,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn accent_style_uses_darker_cyan_on_light_backgrounds() {
+    fn accent_style_uses_brand_accent_on_light_backgrounds() {
         let style = accent_style_for(Some((255, 255, 255)));
 
         assert_eq!(style.fg, Some(best_color(LIGHT_BG_ACCENT_RGB)));
@@ -183,8 +191,8 @@ mod tests {
     }
 
     #[test]
-    fn accent_style_uses_cyan_on_dark_or_unknown_backgrounds() {
-        let expected = Style::default().fg(Color::Cyan).bold();
+    fn accent_style_uses_brand_accent_on_dark_or_unknown_backgrounds() {
+        let expected = Style::default().fg(best_color(DARK_BG_ACCENT_RGB)).bold();
 
         assert_eq!(accent_style_for(Some((0, 0, 0))), expected);
         assert_eq!(accent_style_for(/*terminal_bg*/ None), expected);

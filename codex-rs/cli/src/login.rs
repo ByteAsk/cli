@@ -7,6 +7,10 @@
 //! into a one-shot CLI command while still producing a durable `codex-login.log` artifact that
 //! support can request from users.
 
+const LOGIN_LOG_FILENAME: &str = "byteask-login.log";
+/// The pre-rebrand name, read once to migrate an existing log.
+const LEGACY_LOGIN_LOG_FILENAME: &str = "codex-login.log";
+
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::config::Config;
 use codex_core::config::edit::ConfigEdit;
@@ -78,7 +82,13 @@ fn init_login_file_logging(config: &Config) -> Option<WorkerGuard> {
         log_file_opts.mode(0o600);
     }
 
-    let log_path = log_dir.join("codex-login.log");
+    let log_path = log_dir.join(LOGIN_LOG_FILENAME);
+    // ByteAsk: this log was named after the upstream product. Carry an existing one
+    // over once so support history is not lost; never overwrite a newer log.
+    let legacy_log_path = log_dir.join(LEGACY_LOGIN_LOG_FILENAME);
+    if legacy_log_path.exists() && !log_path.exists() {
+        let _ = std::fs::rename(&legacy_log_path, &log_path);
+    }
     let log_file = match log_file_opts.open(&log_path) {
         Ok(log_file) => log_file,
         Err(err) => {
@@ -113,9 +123,15 @@ fn init_login_file_logging(config: &Config) -> Option<WorkerGuard> {
     Some(guard)
 }
 
-fn print_login_server_start(actual_port: u16, auth_url: &str) {
+// ByteAsk: the browser half of the sign-in screen, kept in the same shape and voice
+// as the device-code half (login/src/device_code_auth.rs) so the two read alike:
+// title, one indented action, the link on its own line.
+// Upstream opened with the local callback server's port, which is a
+// detail the user cannot act on, so it is gone; the remaining lines are the two
+// things they can actually do.
+fn print_login_server_start(_actual_port: u16, auth_url: &str) {
     eprintln!(
-        "Starting local login server on http://localhost:{actual_port}.\nIf your browser did not open, navigate to this URL to authenticate:\n\n{auth_url}\n\nOn a remote or headless machine? Use `codex login --device-auth` instead."
+        "\nSign in with your ChatGPT subscription\n\n  Your browser should open automatically. If it did not, open this link\n     {auth_url}\n\n  No browser here? Cancel and run byteask login --device-auth\n"
     );
 }
 
@@ -276,7 +292,7 @@ pub async fn run_login_with_access_token(
 
 pub fn read_api_key_from_stdin() -> String {
     read_stdin_secret(
-        "--with-api-key expects the API key on stdin. Try piping it, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`.",
+        "--with-api-key expects the API key on stdin. Try piping it, e.g. `printenv OPENAI_API_KEY | byteask login --with-api-key`.",
         "Reading API key from stdin...",
         "No API key provided via stdin.",
     )
@@ -284,7 +300,7 @@ pub fn read_api_key_from_stdin() -> String {
 
 pub fn read_access_token_from_stdin() -> String {
     read_stdin_secret(
-        "--with-access-token expects the access token on stdin. Try piping it, e.g. `printenv CODEX_ACCESS_TOKEN | codex login --with-access-token`.",
+        "--with-access-token expects the access token on stdin. Try piping it, e.g. `byteask login --with-access-token < token.txt`.",
         "Reading access token from stdin...",
         "No access token provided via stdin.",
     )
@@ -599,7 +615,7 @@ mod tests {
 
     #[tokio::test]
     async fn clears_existing_auth_before_login() {
-        let codex_home = tempdir().expect("create temporary Codex home");
+        let codex_home = tempdir().expect("create temporary ByteAsk home");
         login_with_api_key(
             codex_home.path(),
             "sk-existing",

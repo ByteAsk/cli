@@ -1,0 +1,27 @@
+{
+  "tools": [
+    {
+      "description": "Intel PT latency-spike capture: NOT BUILT YET. It only checks whether this machine has Intel PT and always answers NOT RUN with the reason. For where time goes, use cpp_perf.",
+      "name": "cpp_spike_trace",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "description": "Optional program arguments.",
+            "type": "string"
+          },
+          "program": {
+            "description": "The executable whose latency spikes to capture.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "program"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

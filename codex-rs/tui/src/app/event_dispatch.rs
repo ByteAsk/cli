@@ -401,7 +401,7 @@ impl App {
                                         if let Some(command) = summary.resume_hint {
                                             let spans = vec![
                                                 "To continue this session, run ".into(),
-                                                command.cyan(),
+                                                command.fg(crate::style::accent_color()),
                                             ];
                                             lines.push(spans.into());
                                         }
@@ -569,6 +569,10 @@ impl App {
             }
             AppEvent::InsertHistoryCell(cell) => {
                 self.insert_history_cell(tui, cell);
+            }
+            AppEvent::ByteAskFeedback { rating } => {
+                let model = self.chat_widget.current_model().to_string();
+                self.chat_widget.submit_byteask_feedback(rating, model);
             }
             AppEvent::EndInitialHistoryReplayBuffer => {
                 self.scrollback_has_older_history = self
@@ -868,9 +872,6 @@ impl App {
             }
             AppEvent::OpenUrlInBrowser { url } => {
                 self.open_url_in_browser(url);
-            }
-            AppEvent::OpenDesktopThread { thread_id } => {
-                self.open_desktop_thread(thread_id);
             }
             AppEvent::PetSelected { pet_id } => {
                 self.handle_pet_selected(tui, pet_id);
@@ -1230,6 +1231,12 @@ impl App {
             }
             AppEvent::RefreshStatusLineWorkspaceHeadline { request_id } => {
                 self.refresh_status_line_workspace_headline(app_server, request_id);
+            }
+            AppEvent::ByteAskSettings(request) => {
+                self.chat_widget.handle_byteask_settings(request);
+            }
+            AppEvent::ByteAskSettingsKeyEntered { provider_id, key } => {
+                self.chat_widget.apply_byteask_key(&provider_id, key);
             }
             AppEvent::OpenThreadGoalMenu { thread_id } => {
                 self.open_thread_goal_menu(app_server, thread_id).await;
@@ -1646,6 +1653,9 @@ impl App {
             }
             AppEvent::OpenAllModelsPopup => {
                 self.chat_widget.open_all_models_popup();
+            }
+            AppEvent::OpenModelsPopupForGroup { models } => {
+                self.chat_widget.open_models_popup_for_group(models);
             }
             AppEvent::OpenFullAccessConfirmation {
                 preset,
@@ -2103,7 +2113,7 @@ impl App {
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
                                     Line::from(vec![
                                         "  ".into(),
-                                        "Codex can now safely edit files and execute commands in your computer"
+                                        "ByteAsk can now safely edit files and execute commands in your computer"
                                             .dark_gray(),
                                     ]),
                                 ]);
@@ -2136,7 +2146,7 @@ impl App {
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
                                     Line::from(vec![
                                         "  ".into(),
-                                        "Codex can now safely edit files and execute commands in your computer"
+                                        "ByteAsk can now safely edit files and execute commands in your computer"
                                             .dark_gray(),
                                     ]),
                                 ]);
@@ -2615,7 +2625,7 @@ impl App {
             #[cfg(unix)]
             AppEvent::AgentsDaemonStarted { result } => match result {
                 Ok(()) => self.chat_widget.add_info_message(
-                    "Background server started. Run `codex agents` in another terminal; this session remains unchanged."
+                    "Background server started. Run `byteask agents` in another terminal; this session remains unchanged."
                         .to_string(),
                     /*hint*/ None,
                 ),
@@ -2804,7 +2814,7 @@ impl App {
                     {
                         lines.push(Line::from(vec![
                             "Permission rule: ".into(),
-                            rule_line.cyan(),
+                            rule_line.fg(crate::style::accent_color()),
                         ]));
                     }
                     self.overlay = Some(Overlay::new_static_with_renderables(
@@ -3037,6 +3047,12 @@ impl App {
                 ) {
                     self.insert_history_cell(tui, Box::new(cell));
                 }
+            }
+            AppEvent::ByteAskPaneAction { pane, action } => {
+                self.chat_widget.handle_byteask_pane_action(pane, action);
+            }
+            AppEvent::ByteAskPaneResult(outcome) => {
+                self.chat_widget.handle_byteask_pane_result(outcome);
             }
         }
         Ok(AppRunControl::Continue)

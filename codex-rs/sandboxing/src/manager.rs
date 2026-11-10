@@ -729,7 +729,10 @@ fn os_string_to_command_component(value: OsString) -> String {
 }
 
 fn linux_sandbox_arg0_override(exe: &Path) -> String {
-    if exe.file_name().and_then(|name| name.to_str()) == Some(CODEX_LINUX_SANDBOX_ARG0) {
+    if matches!(
+        exe.file_name().and_then(|name| name.to_str()),
+        Some(CODEX_LINUX_SANDBOX_ARG0 | crate::landlock::LEGACY_LINUX_SANDBOX_ARG0)
+    ) {
         os_string_to_command_component(exe.as_os_str().to_owned())
     } else {
         CODEX_LINUX_SANDBOX_ARG0.to_string()

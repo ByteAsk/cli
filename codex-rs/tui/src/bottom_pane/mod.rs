@@ -114,6 +114,7 @@ mod effort_status_line;
 mod experimental_features_view;
 mod file_search_popup;
 mod footer;
+pub(crate) mod info_pane_view;
 mod list_selection_view;
 mod memories_settings_view;
 mod mentions_v2;
@@ -266,6 +267,10 @@ pub(crate) struct BottomPane {
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
     keymap: RuntimeKeymap,
+    /// The spec the open ByteAsk info pane was built from. Kept so a transient
+    /// footer (`✓ Copied`) can be applied without re-running the gateway call
+    /// that produced the pane.
+    info_pane_spec: Option<info_pane_view::InfoPaneSpec>,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -335,6 +340,7 @@ impl BottomPane {
             context_window_percent: None,
             context_window_used_tokens: None,
             keymap,
+            info_pane_spec: None,
         }
     }
 
@@ -409,6 +415,24 @@ impl BottomPane {
 
     pub fn set_plugins_command_enabled(&mut self, enabled: bool) {
         self.composer.set_plugins_command_enabled(enabled);
+        self.request_redraw();
+    }
+
+    /// Enable the ByteAsk rotating footer hint (gateway accounts only) and
+    /// optionally refresh the live usage percentage in its usage slot.
+    pub(crate) fn set_byteask_marketing(
+        &mut self,
+        enabled: bool,
+        usage_slot: Option<std::sync::Arc<std::sync::atomic::AtomicI64>>,
+    ) {
+        self.composer.set_byteask_marketing(enabled, usage_slot);
+        self.request_redraw();
+    }
+
+    /// Advance the ByteAsk in-chat nudge after a completed turn (may arm an
+    /// occasional feedback/referral prompt in the composer row).
+    pub(crate) fn byteask_on_turn_complete(&mut self) {
+        self.composer.byteask_on_turn_complete();
         self.request_redraw();
     }
 
@@ -590,9 +614,89 @@ impl BottomPane {
     }
 
     fn push_view(&mut self, view: Box<dyn BottomPaneView>) {
+        // ByteAsk info panes never stack:
+        // pushing any interactive view — an approval, `request_user_input`, a
+        // picker, or another readout — dismisses an open readout first, so a
+        // dashboard pane can never hide the thing that needs an answer.
+        while self
+            .view_stack
+            .last()
+            .and_then(|open| open.view_id())
+            .is_some_and(info_pane_view::ByteAskPane::is_info_pane_id)
+        {
+            self.view_stack.pop();
+        }
         self.view_stack.push(view);
         self.schedule_active_view_frame();
         self.request_redraw();
+    }
+
+    /// Open a ByteAsk info pane (`/usage`, `/referral-code`, `/upgrade`,
+    /// `/voucher`), carrying the composer's editing preferences into any text
+    /// field so vim mode behaves the same as it does in `CustomPromptView`.
+    pub(crate) fn show_info_pane(&mut self, spec: info_pane_view::InfoPaneSpec) {
+        let mut view = info_pane_view::InfoPaneView::new(spec.clone(), self.app_event_tx.clone());
+        view.apply_editor_prefs(&self.keymap, self.composer_is_vim_enabled());
+        self.info_pane_spec = Some(spec);
+        self.push_view(Box::new(view));
+    }
+
+    /// Replace an open info pane in place. Returns false when the pane is gone,
+    /// which is how a network result for a closed pane is dropped.
+    pub(crate) fn update_info_pane(&mut self, spec: info_pane_view::InfoPaneSpec) -> bool {
+        let mut view = info_pane_view::InfoPaneView::new(spec.clone(), self.app_event_tx.clone());
+        view.apply_editor_prefs(&self.keymap, self.composer_is_vim_enabled());
+        if self.replace_info_pane(view) {
+            self.info_pane_spec = Some(spec);
+            return true;
+        }
+        false
+    }
+
+    fn replace_info_pane(&mut self, view: info_pane_view::InfoPaneView) -> bool {
+        let view_id = view.pane().view_id();
+        let Some(index) = self
+            .view_stack
+            .iter()
+            .rposition(|existing| existing.view_id() == Some(view_id))
+        else {
+            return false;
+        };
+        self.view_stack[index] = Box::new(view);
+        self.schedule_active_view_frame();
+        self.request_redraw();
+        true
+    }
+
+    /// Swap the open pane's footer for `duration` (`✓ Copied`), then let it fall
+    /// back to whatever the pane's own footer was. Returns false when the pane
+    /// closed before the clipboard answered.
+    pub(crate) fn set_info_pane_transient_footer(
+        &mut self,
+        pane: info_pane_view::ByteAskPane,
+        footer: Vec<String>,
+        duration: Duration,
+    ) -> bool {
+        let Some(spec) = self
+            .info_pane_spec
+            .as_ref()
+            .filter(|spec| spec.pane == pane)
+            .cloned()
+        else {
+            return false;
+        };
+        let after = spec.footer.clone();
+        let mut view = info_pane_view::InfoPaneView::new(spec, self.app_event_tx.clone());
+        view.apply_editor_prefs(&self.keymap, self.composer_is_vim_enabled());
+        view.set_transient_footer(footer, duration, after);
+        self.replace_info_pane(view)
+    }
+
+    /// True when a view with `view_id` is anywhere on the stack.
+    pub(crate) fn has_view_with_id(&self, view_id: &'static str) -> bool {
+        self.view_stack
+            .iter()
+            .any(|view| view.view_id() == Some(view_id))
     }
 
     fn pop_active_view_with_completion(&mut self, completion: Option<ViewCompletion>) {
@@ -2095,7 +2199,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2284,7 +2388,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: true,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2304,7 +2408,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: true,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2337,7 +2441,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2632,7 +2736,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2679,7 +2783,7 @@ mod tests {
             for x in 0..area.width {
                 row.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
             }
-            if row.contains("Ask Codex") {
+            if row.contains("Ask ByteAsk") {
                 found_composer = true;
                 break;
             }
@@ -2699,7 +2803,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2773,7 +2877,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2804,7 +2908,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2827,7 +2931,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2856,7 +2960,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2893,7 +2997,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2925,7 +3029,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2956,7 +3060,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -2985,7 +3089,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -3008,7 +3112,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(vec![SkillMetadata {
@@ -3056,7 +3160,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -3103,7 +3207,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -3139,7 +3243,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -3187,7 +3291,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -3298,7 +3402,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -3346,7 +3450,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),
@@ -3424,7 +3528,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ByteAsk to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: true,
             skills: Some(Vec::new()),

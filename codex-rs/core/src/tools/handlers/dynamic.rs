@@ -100,7 +100,7 @@ impl ToolExecutor<ToolInvocation> for DynamicToolHandler {
             self.spec(),
             Some(ToolSearchSourceInfo {
                 name: "Dynamic tools".to_string(),
-                description: Some("Tools provided by the current Codex thread.".to_string()),
+                description: Some("Tools provided by the current ByteAsk thread.".to_string()),
             }),
         )
     }
@@ -210,6 +210,7 @@ async fn request_dynamic_tool(
                 success: None,
                 error: None,
                 duration: None,
+                host_executed: false,
             }),
         )
         .await;
@@ -230,6 +231,7 @@ async fn request_dynamic_tool(
             success: Some(response.success),
             error: None,
             duration: Some(started_at.elapsed()),
+            host_executed: false,
         },
         None => DynamicToolCallItem {
             id: call_id,
@@ -241,6 +243,7 @@ async fn request_dynamic_tool(
             success: Some(false),
             error: Some("dynamic tool call was cancelled before receiving a response".to_string()),
             duration: Some(started_at.elapsed()),
+            host_executed: false,
         },
     };
     session

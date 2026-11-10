@@ -1056,9 +1056,16 @@ impl Session {
             .await;
         }
 
+        // ByteAsk: key this on the EFFECTIVE mode, not the requested one. When a
+        // code-mode(-only) model degrades to Direct (the normal case here — we
+        // never ship the host), the tools work fine, so stay silent rather than
+        // emit a warning that names `codex-code-mode-host` (a "codex" leak, rule
+        // 4) and tells the user to install a binary we don't ship. The warning
+        // now fires only when the mode is genuinely stuck (in-process fallback
+        // explicitly disabled), which is the only case the user can act on.
         if !tc.code_mode_available
             && matches!(
-                crate::tools::requested_tool_mode(tc, tc.model_info()),
+                crate::tools::effective_tool_mode(tc, tc.model_info()),
                 codex_protocol::openai_models::ToolMode::CodeMode
                     | codex_protocol::openai_models::ToolMode::CodeModeOnly
             )

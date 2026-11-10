@@ -1,0 +1,215 @@
+name: byteask-release
+
+# Builds the ByteAsk engine (codex-cli, rebranded to ByteAsk in source) as a native
+# binary per target, packages it as byteask-engine-<os>-<arch>[.exe].gz, uploads it as
+# a workflow artifact, and (on a v* tag) attaches it to the GitHub Release.
+#
+# ACTIVE for Windows: the engine .exe can only be built on a real Windows runner
+# (v8/rusty_v8 prebuilts + the MSVC toolchain), so Windows lives here. Linux
+# x86_64/arm64 are built on the prod VM and macOS on the maintainer's Mac (to save
+# the 10x macOS Actions minutes); their matrix entries are kept commented for re-enable.
+
+on:
+  workflow_dispatch:        # manual: `gh workflow run byteask-release.yml -f engine_version=X.Y.Z`
+    inputs:
+      engine_version:
+        description: "Release version stamped into the engine (x-byteask-engine header)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"                # tagging v* also builds + attaches to the Release
+
+permissions:
+  contents: write
+  id-token: write        # Azure Trusted Signing logs in over OIDC (see the signing step)
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x86_64 (native MSVC) — the reason this workflow is active.
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: byteask-engine-windows-x86_64.exe
+            os: windows
+          # Built off-CI today (uncomment to build here):
+          # - { runner: macos-14, target: aarch64-apple-darwin, asset: byteask-engine-darwin-arm64, os: macos }
+          # - { runner: macos-13, target: x86_64-apple-darwin,  asset: byteask-engine-darwin-x86_64, os: macos }
+
+    env:
+      # The release version the engine reports to the gateway (off-CI builds set it too);
+      # a tag build uses the tag, an unlabelled manual build reports "dev".
+      BYTEASK_ENGINE_VERSION: ${{ inputs.engine_version || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || 'dev' }}
+      # `secrets` cannot appear in a step's `if:` (GitHub refuses the whole workflow file), so the
+      # signing step reads this instead.
+      HAS_TRUSTED_SIGNING: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      # Strip via cargo (windows-msvc has no external `strip`); keeps the .exe small.
+      CARGO_PROFILE_RELEASE_STRIP: "symbols"
+      # Same directory cargo would have chosen on its own (the build runs in
+      # codex-rs/), named explicitly so the signing step can address the binary
+      # without guessing at the working directory.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/codex-rs/target
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Windows: aws-lc-sys / openssl-sys build.rs assemble crypto with NASM (Perl +
+      # CMake are already on windows-latest). rusty_v8 no longer self-downloads --
+      # see the "Fetch prebuilt rusty_v8" step below.
+      - name: Install NASM (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "$env:ProgramFiles\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install pinned toolchain and add target
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -eux
+          rustc --version
+          rustup target add ${{ matrix.target }}
+
+      # scripts/fetch_rusty_v8.py needs tomllib (Cargo.lock parsing), i.e. >= 3.11.
+      # The runner image's default python3 is not pinned by us, so pin it here --
+      # the previous inline step depended on the same thing implicitly.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Upstream builds V8 with pointer compression + the V8 sandbox
+      # (ptrcomp_sandbox_release) and publishes the prebuilt lib on openai/codex
+      # releases; denoland publishes NO archive for that profile, so the v8 crate's
+      # own downloader 404s and the build dies in its build script. This mirrors
+      # upstream's .github/actions/setup-rusty-v8/action.yml, which we cannot use
+      # because every upstream workflow is deleted from this fork.
+      #
+      # The fetch/cache/checksum logic is NOT duplicated here: scripts/fetch_rusty_v8.py
+      # wraps scripts/codex_package/v8.py (upstream code we re-inherit on every merge)
+      # and is the same script the off-CI builds run.
+      # It picks rusty_v8_*.lib.gz for *-pc-windows-msvc and librusty_v8_*.a.gz
+      # elsewhere, verifies the sha256 manifest (upstream ships the Windows one with
+      # CRLF), and fails closed on any mismatch.
+      - name: Fetch prebuilt rusty_v8
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/fetch_rusty_v8.py \
+            --target "${{ matrix.target }}" \
+            --cache-root "${RUNNER_TEMP}/rusty_v8" \
+            --github-env
+
+      - name: Build codex-cli (release)
+        working-directory: codex-rs
+        shell: bash
+        env:
+          OPENSSL_VENDORED: "1"
+        run: |
+          set -eux
+          cargo build --release -p codex-cli --target ${{ matrix.target }}
+
+      # --- Authenticode signing --------------------------------
+      #
+      # Why: every ByteAsk Windows engine through 0.1.12 shipped unsigned, and
+      # Windows 11 Smart App Control blocks an unsigned engine outright (CodeIntegrity
+      # 3033/3077/3118). SAC admits a binary signed by a signer it trusts, or one
+      # Microsoft's reputation service already knows -- a fresh unsigned hash is
+      # neither, so every release re-breaks those users until this step runs.
+      #
+      # Inlined rather than calling .github/actions/windows-code-sign: that action
+      # is upstream's and an upstream merge can rewrite its inputs underneath us.
+      # It is still the reference for the credential-exclusion flags below.
+      #
+      # DORMANT until the six Trusted Signing secrets exist -- HAS_TRUSTED_SIGNING false
+      # skips the whole step, so the workflow keeps building today exactly as it
+      # does now.
+      - name: Sign the engine (Azure Trusted Signing)
+        id: sign
+        if: ${{ matrix.os == 'windows' && env.HAS_TRUSTED_SIGNING == 'true' }}
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Apply the signature
+        id: sign_apply
+        if: ${{ steps.sign.outcome == 'success' }}
+        uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0.5.11
+        with:
+          endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+          cache-dependencies: false
+          files: ${{ env.CARGO_TARGET_DIR }}/${{ matrix.target }}/release/codex-byteask.exe
+
+      # A signing step that silently no-ops is how the binary shipped unsigned in
+      # the first place, so assert the outcome instead of trusting the step. When
+      # signing was skipped this only reports -- it must not block a release cut
+      # before the certificate exists.
+      - name: Verify the signature landed
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: |
+          $bin = "${env:CARGO_TARGET_DIR}/${{ matrix.target }}/release/codex-byteask.exe"
+          $sig = Get-AuthenticodeSignature -LiteralPath $bin
+          Write-Host "Authenticode status: $($sig.Status) — $($sig.StatusMessage)"
+          if ($sig.SignerCertificate) { Write-Host "Signer: $($sig.SignerCertificate.Subject)" }
+          if ("${{ steps.sign_apply.outcome }}" -eq "success") {
+            if ($sig.Status -ne "Valid") {
+              throw "signing ran but the binary is $($sig.Status) — refusing to package it"
+            }
+            Write-Host "::notice::engine signed and verified"
+          } else {
+            Write-Host "::warning::UNSIGNED Windows engine — Smart App Control will block it. Trusted Signing secrets are not configured for this repository."
+          }
+
+      - name: Package binary (rename + gzip)
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -eux
+          EXT=""
+          [ "${{ matrix.os }}" = "windows" ] && EXT=".exe"
+          BIN="target/${{ matrix.target }}/release/codex-byteask${EXT}"
+          if [ ! -f "$BIN" ]; then
+            echo "expected binary not found at $BIN" >&2
+            ls -la "target/${{ matrix.target }}/release" >&2 || true
+            exit 1
+          fi
+          OUT="${{ matrix.asset }}"
+          cp "$BIN" "$OUT"
+          gzip -9 -f "$OUT"
+          ls -la "${OUT}.gz"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: codex-rs/${{ matrix.asset }}.gz
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: codex-rs/${{ matrix.asset }}.gz

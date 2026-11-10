@@ -15,6 +15,34 @@ pub struct AuthRecoveryNotification {
     pub message: String,
 }
 
+/// ByteAsk Context: one turn-0 pack attempt for a user message (sent only in sessions with
+/// ByteAsk Context configured).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ContextPackNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    /// The harness called `find_code_for_task` for this message.
+    pub attempted: bool,
+    /// The answer went into the user turn before the first model request.
+    pub injected: bool,
+    /// Why nothing was injected (`not_a_task`, `not_cpp_repo`, `not_git_repo`, `not_indexed`,
+    /// `indexing`, `timeout`, `error`); null when injected.
+    pub reason: Option<String>,
+    pub latency_ms: Option<u64>,
+    pub answer_bytes: Option<u64>,
+    pub approx_tokens: Option<u64>,
+    /// The test programs the answer names as exercising its top places.
+    pub test_programs: Vec<String>,
+    /// A background build of those test programs was started.
+    pub warm_build_started: bool,
+    /// Pre-approved indexing of an unindexed repository: `started` or `failed`.
+    pub auto_index: Option<String>,
+    /// The one line for the user, if any.
+    pub message: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

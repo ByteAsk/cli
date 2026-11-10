@@ -53,6 +53,10 @@ async fn models_client_hits_models_endpoint() {
 
     let response = ModelsResponse {
         models: vec![ModelInfo {
+            // picker_group was missing here before locked_reason existed — this test
+            // target has not compiled since the ByteAsk two-level picker landed.
+            picker_group: None,
+            locked_reason: None,
             slug: "gpt-test".to_string(),
             display_name: "gpt-test".to_string(),
             description: Some("desc".to_string()),

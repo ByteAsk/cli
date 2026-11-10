@@ -50,7 +50,7 @@ async fn connector_auth(config: &Config) -> anyhow::Result<CodexAuth> {
         .ok_or_else(|| anyhow::anyhow!("ChatGPT auth not available"))?;
     anyhow::ensure!(
         auth.uses_codex_backend(),
-        "ChatGPT connectors require Codex backend auth"
+        "ChatGPT connectors require ByteAsk backend auth"
     );
     Ok(auth)
 }
@@ -142,11 +142,11 @@ pub async fn read_connector_metadata(
 ) -> anyhow::Result<ConnectorMetadataReadResult> {
     anyhow::ensure!(
         auth.uses_codex_backend(),
-        "ChatGPT backend requests require Codex backend auth"
+        "ChatGPT backend requests require ByteAsk backend auth"
     );
     anyhow::ensure!(
         auth.get_account_id().is_some(),
-        "ChatGPT account ID not available, please re-run codex login"
+        "ChatGPT account ID not available, please re-run byteask login"
     );
 
     let store = ConnectorMetadataStore::new(

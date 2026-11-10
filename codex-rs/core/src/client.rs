@@ -158,6 +158,26 @@ pub const X_CODEX_PARENT_THREAD_ID_HEADER: &str = "x-codex-parent-thread-id";
 pub const X_CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
 pub const X_OPENAI_MEMGEN_REQUEST_HEADER: &str = "x-openai-memgen-request";
 pub const X_OPENAI_SUBAGENT_HEADER: &str = "x-openai-subagent";
+/// ByteAsk: the REAL release version of this engine, on inference requests to the managed
+/// gateway. `CARGO_PKG_VERSION` is `0.1.0` on every build and the User-Agent carries that,
+/// so without this the gateway cannot tell one release from another (and so cannot stop
+/// sending compatibility text a newer engine no longer needs). The release build sets
+/// `BYTEASK_ENGINE_VERSION`; a local build reports `dev`.
+pub const X_BYTEASK_ENGINE_HEADER: &str = "x-byteask-engine";
+/// What this request IS, so the managed gateway can price and route a compaction or a
+/// side thread differently from a user turn.
+pub const X_BYTEASK_KIND_HEADER: &str = "x-byteask-kind";
+
+tokio::task_local! {
+    /// Set around a request whose kind the session source cannot tell (local compaction
+    /// goes out as an ordinary `/responses` call).
+    pub(crate) static BYTEASK_REQUEST_KIND: &'static str;
+}
+pub const BYTEASK_ENGINE_VERSION: &str = match option_env!("BYTEASK_ENGINE_VERSION") {
+    Some(v) => v,
+    None => "dev",
+};
+const BYTEASK_MANAGED_PROVIDER_NAME: &str = "ByteAsk";
 pub const X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER: &str =
     "x-responsesapi-include-timing-metrics";
 const X_CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY: &str =
@@ -686,6 +706,11 @@ impl ModelClient {
             turn_state.as_ref(),
         ));
         add_originator_header(&mut extra_headers, self.state.originator.as_str());
+        self.add_byteask_engine_header(&mut extra_headers);
+        if extra_headers.contains_key(X_BYTEASK_KIND_HEADER) {
+            // This function only ever serves `/responses/compact`.
+            extra_headers.insert(X_BYTEASK_KIND_HEADER, HeaderValue::from_static("compact"));
+        }
         extra_headers.extend(self.build_responses_compatibility_headers(responses_metadata));
         extra_headers.extend(build_session_headers(
             Some(responses_metadata.session_id.to_string()),
@@ -818,6 +843,32 @@ impl ModelClient {
             .summarize_input(&payload, self.build_subagent_headers())
             .await
             .map_err(|error| self.state.provider.map_api_error(error))
+    }
+
+    /// Adds `x-byteask-engine`, but ONLY toward the managed ByteAsk gateway: a user's own
+    /// endpoint, a BYOK key or a subscription backend has no business learning it.
+    fn add_byteask_engine_header(&self, headers: &mut ApiHeaderMap) {
+        if self.state.provider.info().name == BYTEASK_MANAGED_PROVIDER_NAME {
+            headers.insert(
+                X_BYTEASK_ENGINE_HEADER,
+                HeaderValue::from_static(BYTEASK_ENGINE_VERSION),
+            );
+            headers.insert(
+                X_BYTEASK_KIND_HEADER,
+                HeaderValue::from_static(self.byteask_request_kind()),
+            );
+        }
+    }
+
+    fn byteask_request_kind(&self) -> &'static str {
+        if let Ok(kind) = BYTEASK_REQUEST_KIND.try_with(|kind| *kind) {
+            return kind;
+        }
+        match &self.state.session_source {
+            SessionSource::SubAgent(_) => "subagent",
+            SessionSource::Internal(_) => "internal",
+            _ => "turn",
+        }
     }
 
     fn build_subagent_headers(&self) -> ApiHeaderMap {
@@ -1016,7 +1067,7 @@ impl ModelClient {
             instructions,
             input,
             tools,
-            tool_choice: "auto".to_string(),
+            tool_choice: if prompt.byteask_tool_choice_none { "none" } else { "auto" }.to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning: Some(reasoning),
             store: false,
@@ -1314,6 +1365,7 @@ impl ModelClientSession {
                     Some(&self.turn_state),
                 );
                 add_originator_header(&mut headers, self.client.state.originator.as_str());
+                self.client.add_byteask_engine_header(&mut headers);
                 headers.extend(
                     self.client
                         .build_responses_compatibility_headers(responses_metadata),

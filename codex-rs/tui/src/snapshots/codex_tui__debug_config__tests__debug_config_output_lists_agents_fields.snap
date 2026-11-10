@@ -1,6 +1,5 @@
 ---
 source: tui/src/debug_config.rs
-assertion_line: 667
 expression: render_to_text(&render_agents_config_lines(&config))
 ---
 

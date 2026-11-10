@@ -113,20 +113,20 @@ pub(super) fn render_device_code_login(
         lines.push("".into());
         lines.push(Line::from(vec![
             "  ".into(),
-            verification_url.as_str().cyan().underlined(),
+            verification_url.as_str().fg(crate::style::accent_color()).underlined(),
         ]));
         lines.push("".into());
         lines.push(
-            "  2. Enter this one-time code after you are signed in (expires in 15 minutes)".into(),
+            "  2. Enter this one-time code (expires in 15 minutes)".into(),
         );
         lines.push("".into());
         lines.push(Line::from(vec![
             "  ".into(),
-            user_code.as_str().cyan().bold(),
+            user_code.as_str().fg(crate::style::accent_color()).bold(),
         ]));
         lines.push("".into());
         lines.push(
-            "  Continue only if you started this login in Codex. If a website or another person gave you this code, cancel."
+            "  Continue only if you started this sign-in in ByteAsk. If a website or another person gave you this code, cancel."
                 .dim()
                 .into(),
         );

@@ -3148,6 +3148,9 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
     let image_generation = probe_with(
         |turn| {
             use_chatgpt_auth(turn);
+            // ByteAsk ships image generation OFF by default,
+            // so the "gate open" half of this test has to open the gate itself.
+            set_feature(turn, Feature::ImageGeneration, /*enabled*/ true);
             update_turn_settings_for_test(turn, |settings| {
                 Arc::make_mut(&mut settings.model_info).input_modalities =
                     vec![InputModality::Image];
@@ -3340,4 +3343,245 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
     .await;
     bedrock_with_standalone_web_search.assert_visible_contains(&["web_search"]);
     bedrock_with_standalone_web_search.assert_visible_lacks(&["web"]);
+}
+
+// ---- ByteAsk: `[byteask_harness]` defers rarely used tools behind tool_search ----------
+
+/// A plain (direct) extension tool with the given name.
+struct NamedExtensionTool(&'static str);
+
+impl<'call> ToolExecutor<ExtensionToolCall<'call>> for NamedExtensionTool {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain(self.0)
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
+            name: self.0.to_string(),
+            description: format!("{} test tool. Second sentence.", self.0),
+            strict: false,
+            defer_loading: None,
+            parameters: codex_tools::JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                Some(false.into()),
+            ),
+            output_schema: None,
+        })
+    }
+
+    fn handle<'a>(&'a self, _call: ExtensionToolCall<'call>) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
+        Box::pin(async { panic!("spec planning should not execute extension tools") })
+    }
+}
+
+fn set_harness(turn: &mut TurnContext, table: &str) {
+    let value: toml::Value = toml::from_str(table).expect("harness table");
+    update_config(turn, |config| {
+        config.config_layer_stack = codex_config::ConfigLayerStack::new(
+            vec![codex_config::ConfigLayerEntry::new(
+                codex_config::ConfigLayerSource::SessionFlags,
+                value,
+            )],
+            codex_config::ConfigRequirements::default(),
+            codex_config::ConfigRequirementsToml::default(),
+        )
+        .expect("config layer stack");
+    });
+}
+
+fn harness_inputs() -> ToolPlanInputs {
+    ToolPlanInputs {
+        extension_tool_executors: vec![
+            Arc::new(NamedExtensionTool("cpp_kdb")),
+            Arc::new(NamedExtensionTool("fpga_ref")),
+            Arc::new(NamedExtensionTool("cpp_check")),
+        ],
+        ..ToolPlanInputs::default()
+    }
+}
+
+#[tokio::test]
+async fn lean_prefix_defers_listed_tools_and_names_them_in_tool_search() {
+    let plan = probe_with(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
+            set_harness(turn, "[byteask_harness]\nlean_prefix = true\n");
+        },
+        harness_inputs(),
+    )
+    .await;
+
+    plan.assert_visible_contains(&["tool_search", "cpp_check", "exec_command"]);
+    plan.assert_visible_lacks(&["cpp_kdb", "fpga_ref"]);
+    assert_eq!(plan.exposure("cpp_kdb"), ToolExposure::Deferred);
+    assert_eq!(plan.exposure("fpga_ref"), ToolExposure::Deferred);
+    assert_eq!(plan.exposure("cpp_check"), ToolExposure::Direct);
+    let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
+        panic!("tool_search spec");
+    };
+    assert!(
+        description.contains("\n- cpp_kdb\n- fpga_ref\n"),
+        "{description}"
+    );
+}
+
+#[tokio::test]
+async fn an_explicit_defer_list_replaces_the_lean_list() {
+    let plan = probe_with(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
+            set_harness(
+                turn,
+                "[byteask_harness]\nlean_prefix = true\ndefer_tools = [\"cpp_check\"]\n",
+            );
+        },
+        harness_inputs(),
+    )
+    .await;
+    assert_eq!(plan.exposure("cpp_check"), ToolExposure::Deferred);
+    assert_eq!(plan.exposure("cpp_kdb"), ToolExposure::Direct);
+}
+
+/// With the ByteAsk provider the lean list applies unless `lean_prefix = false`.
+#[tokio::test]
+async fn the_byteask_provider_defers_by_default() {
+    let byteask = |turn: &mut TurnContext| {
+        update_turn_settings_for_test(turn, |settings| {
+            Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+        });
+        update_config(turn, |config| config.model_provider_id = "byteask".to_string());
+    };
+    let plan = probe_with(byteask, harness_inputs()).await;
+    assert_eq!(plan.exposure("cpp_kdb"), ToolExposure::Deferred);
+    assert_eq!(plan.exposure("cpp_check"), ToolExposure::Direct);
+
+    let off = probe_with(
+        |turn| {
+            byteask(turn);
+            set_harness(turn, "[byteask_harness]\nlean_prefix = false\n");
+        },
+        harness_inputs(),
+    )
+    .await;
+    assert_eq!(off.exposure("cpp_kdb"), ToolExposure::Direct);
+}
+
+/// Without the setting, or without tool_search on the model, nothing changes.
+#[tokio::test]
+async fn without_the_harness_setting_or_tool_search_every_tool_stays_up_front() {
+    let plain = probe_with(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
+        },
+        harness_inputs(),
+    )
+    .await;
+    plain.assert_visible_contains(&["cpp_kdb", "fpga_ref", "cpp_check"]);
+    assert_eq!(plain.exposure("cpp_kdb"), ToolExposure::Direct);
+    assert_eq!(plain.exposure("fpga_ref"), ToolExposure::Direct);
+
+    let no_search = probe_with(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = false;
+            });
+            set_harness(turn, "[byteask_harness]\nlean_prefix = true\n");
+        },
+        harness_inputs(),
+    )
+    .await;
+    no_search.assert_visible_contains(&["cpp_kdb", "fpga_ref", "cpp_check"]);
+    assert_eq!(no_search.exposure("cpp_kdb"), ToolExposure::Direct);
+}
+
+// ---- `[byteask_harness] disable_tools` --------------------------------------------------------
+
+/// A disabled tool is in neither list (direct, deferred) and `tool_search` does not name it.
+#[tokio::test]
+async fn disabled_tools_are_neither_sent_nor_deferred_nor_searchable() {
+    let plan = probe_with(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
+            set_harness(
+                turn,
+                "[byteask_harness]\nlean_prefix = true\ndisable_tools = [\"*_ref\", \"ref_*\", \"cpp_intrinsic\", \"cpp_godbolt\", \"cpp_insights\"]\n",
+            );
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![
+                Arc::new(NamedExtensionTool("cpp_kdb")),
+                Arc::new(NamedExtensionTool("fpga_ref")),
+                Arc::new(NamedExtensionTool("ref_context")),
+                Arc::new(NamedExtensionTool("cpp_godbolt")),
+                Arc::new(NamedExtensionTool("cpp_bench")),
+                Arc::new(NamedExtensionTool("cpp_check")),
+            ],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    plan.assert_visible_lacks(&["fpga_ref", "ref_context", "cpp_godbolt"]);
+    plan.assert_registered_lacks(&["fpga_ref", "ref_context", "cpp_godbolt"]);
+    plan.assert_visible_contains(&["cpp_check", "tool_search"]);
+    // Not disabled: still deferred by the lean list, as before.
+    assert_eq!(plan.exposure("cpp_kdb"), ToolExposure::Deferred);
+    assert_eq!(plan.exposure("cpp_bench"), ToolExposure::Deferred);
+    let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
+        panic!("tool_search spec");
+    };
+    assert!(description.contains("- cpp_kdb"), "{description}");
+    for disabled in ["fpga_ref", "ref_context", "cpp_godbolt"] {
+        assert!(
+            !description.contains(disabled),
+            "{disabled} in {description}"
+        );
+    }
+}
+
+/// The default (no `disable_tools`) leaves every tool where it was.
+#[tokio::test]
+async fn without_disable_tools_nothing_is_removed() {
+    let plan = probe_with(
+        |turn| {
+            update_turn_settings_for_test(turn, |settings| {
+                Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
+            });
+        },
+        harness_inputs(),
+    )
+    .await;
+    plan.assert_visible_contains(&["cpp_kdb", "fpga_ref", "cpp_check"]);
+}
+
+/// `!name` excludes a name from a pattern list (the gated lean list keeps `cpp_finish_check`).
+#[test]
+fn an_exclusion_pattern_wins() {
+    let patterns: Vec<String> = ["cpp_*", "!cpp_finish_check"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    assert!(crate::byteask_harness::matches_any(
+        &patterns,
+        "cpp_test_select"
+    ));
+    assert!(!crate::byteask_harness::matches_any(
+        &patterns,
+        "cpp_finish_check"
+    ));
+    assert!(!crate::byteask_harness::matches_any(
+        &["!cpp_finish_check".to_string()],
+        "exec_command"
+    ));
 }

@@ -223,6 +223,8 @@ pub enum Feature {
     RecommendedPlugins,
     /// Enable plugins.
     Plugins,
+    /// ByteAsk: add ByteAsk as a co-author on commits and pull requests the agent makes.
+    CommitAttribution,
     /// Discover selected-root plugin and skill manifests through one high-level exec-server RPC.
     ExecutorCapabilityDiscovery,
     /// Skip host skill snapshots when no registered contributor requires them.
@@ -1207,7 +1209,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Experimental {
             name: "Network proxy",
             menu_description: "Apply network proxy restrictions to sandboxed sessions that already have network access.",
-            announcement: "NEW: Network proxy can now be enabled from /experimental. Restart Codex after enabling it.",
+            announcement: "NEW: Network proxy can now be enabled from /experimental. Restart ByteAsk after enabling it.",
         },
         default_enabled: false,
     },
@@ -1319,9 +1321,20 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Stable,
         default_enabled: false,
     },
+    // ByteAsk: off by default. Enabled, startup clones OpenAI's curated plugins repo into the
+    // home dir on every launch; `features.plugins = true` restores that behaviour exactly.
     FeatureSpec {
         id: Feature::Plugins,
         key: "plugins",
+        stage: Stage::Stable,
+        default_enabled: false,
+    },
+    // ByteAsk: the user's own opt-out for commit attribution. On here, but attribution also
+    // needs the served catalog's `byteask_attribution.enabled`, which is off by default
+    // (`ext/git-attribution/src/served.rs`).
+    FeatureSpec {
+        id: Feature::CommitAttribution,
+        key: "commit_attribution",
         stage: Stage::Stable,
         default_enabled: true,
     },
@@ -1415,11 +1428,15 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Removed,
         default_enabled: false,
     },
+    // ByteAsk: off by default. The hosted
+    // `image_gen` tool definition costs 551 tokens on EVERY call (counted) and is rarely
+    // used. `features.image_generation = true` restores it. Use this
+    // flag, never the `x-openai-actor-authorization` header: that header also gates web_search.
     FeatureSpec {
         id: Feature::ImageGeneration,
         key: "image_generation",
         stage: Stage::Stable,
-        default_enabled: true,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::OmitAppServerNotificationMedia,
@@ -1653,7 +1670,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         )) {
             Stage::Experimental {
                 name: "Prevent sleep while running",
-                menu_description: "Keep your computer awake while Codex is running a thread.",
+                menu_description: "Keep your computer awake while ByteAsk is running a thread.",
                 announcement: "NEW: Prevent sleep while running is now available in /experimental.",
             }
         } else {

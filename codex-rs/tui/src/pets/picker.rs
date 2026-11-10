@@ -252,8 +252,8 @@ mod tests {
             vec![
                 "Disable terminal pets",
                 "BSOD",
+                "ByteAsk",
                 "Chefito",
-                "Codex",
                 "Dewey",
                 "Fireball",
                 "Null Signal",
@@ -262,9 +262,9 @@ mod tests {
                 "Stacky",
             ],
         );
-        assert_eq!(params.initial_selected_idx, Some(2));
+        assert_eq!(params.initial_selected_idx, Some(3));
         assert_eq!(
-            params.items[2].search_value.as_deref(),
+            params.items[3].search_value.as_deref(),
             Some("custom:chefito")
         );
     }
@@ -279,7 +279,7 @@ mod tests {
         );
 
         assert_eq!(params.initial_selected_idx, Some(2));
-        assert_eq!(params.items[2].name, "Codex");
+        assert_eq!(params.items[2].name, "ByteAsk");
         assert!(!params.items[2].is_current);
     }
 

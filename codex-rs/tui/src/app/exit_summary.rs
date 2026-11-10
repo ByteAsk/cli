@@ -117,32 +117,31 @@ impl AppExitInfo {
                     disconnect.stop_hint,
                 ));
             }
-            if !self.token_usage.is_zero() {
-                let usage = self.token_usage.to_string();
-                lines.push(if turn_interrupted {
-                    usage
-                } else {
-                    usage.replacen("Token usage:", "Token usage so far:", /*count*/ 1)
-                });
-            }
+            // ByteAsk: no raw token counts — see the note on the normal exit path below.
             return lines;
         }
 
-        if !self.token_usage.is_zero() {
-            lines.push(self.token_usage.to_string());
-        }
+        // ByteAsk: the raw "Token usage: total=32,857 input=31,987 (+186,624 cached)
+        // output=870 (reasoning 6)" line is removed from every exit. It is internal
+        // accounting the user cannot act on, and it is the wrong unit for this product:
+        // ByteAsk meters a plan in PERCENT of an allowance and deliberately never shows
+        // dollars or tokens (`/usage` renders percentages). Printing a
+        // token total at the end of every session both contradicts that and is the kind
+        // of unsolicited chrome the terminal design keeps off the healthy
+        // path. `self.token_usage` stays on AppExitInfo: it is still reported through
+        // `/usage` and the gateway meter, just not dumped at the shell.
         if let ExitReason::Archived(thread_id) = self.exit_reason {
             lines.push(format!("Session archived: {thread_id}"));
         } else if let Some(thread) = self.resume_hint {
             lines.push("To continue this session, run:".to_string());
             lines.push(format!(
                 "  {}",
-                color_command(format!("codex resume {}", thread.thread_id)),
+                color_command(format!("byteask resume {}", thread.thread_id)),
             ));
             if let Some(thread_name) = thread.thread_name.filter(|name| !name.is_empty()) {
                 lines.push(format!(
                     "Or run {} and select {}.",
-                    color_command("codex resume".to_string()),
+                    color_command("byteask resume".to_string()),
                     color_command(thread_name),
                 ));
             }

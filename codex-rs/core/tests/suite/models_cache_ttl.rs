@@ -481,6 +481,7 @@ struct ModelsCache {
 
 fn test_remote_model(slug: &str, priority: i32) -> ModelInfo {
     ModelInfo {
+        locked_reason: None,
         slug: slug.to_string(),
         display_name: "Remote Test".to_string(),
         description: Some("remote model".to_string()),
@@ -499,6 +500,7 @@ fn test_remote_model(slug: &str, priority: i32) -> ModelInfo {
         visibility: ModelVisibility::List,
         supported_in_api: true,
         priority,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,

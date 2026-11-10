@@ -1608,6 +1608,7 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
         .await;
     let model_slug = "text-only-view-image-test-model";
     let text_only_model = ModelInfo {
+        locked_reason: None,
         slug: model_slug.to_string(),
         display_name: "Text-only view_image test model".to_string(),
         description: Some("Remote model for view_image unsupported-path coverage".to_string()),
@@ -1631,6 +1632,7 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
         multi_agent_version: None,
         multi_agent_reasoning_effort: None,
         priority: 1,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,

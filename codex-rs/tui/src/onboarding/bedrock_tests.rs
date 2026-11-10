@@ -449,10 +449,10 @@ fn credential_entries_share_region_and_keep_aws_secrets_hidden() {
     "###);
 
     access_keys.view = BedrockView::EnvironmentInstructions;
-    insta::assert_snapshot!(render_visible(&access_keys), @r###"
+    insta::assert_snapshot!(render_visible(&access_keys), @"
     > Set up Amazon Bedrock
 
-      Configure AWS credentials in your environment, then restart Codex.
+      Configure AWS credentials in your environment, then restart ByteAsk.
 
       Setup guide: https://learn.chatgpt.com/docs/amazon-bedrock
 
@@ -461,7 +461,7 @@ fn credential_entries_share_region_and_keep_aws_secrets_hidden() {
 
       Press enter to continue
       Press esc to go back
-    "###);
+    ");
 
     for view in [
         BedrockView::ProfileEntry(String::new()),

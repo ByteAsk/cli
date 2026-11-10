@@ -41,7 +41,7 @@ const MANUAL_RECAP_FAILURE_MESSAGE: &str = "Could not generate a recap. Please t
 const MANUAL_RECAP_IN_PROGRESS_MESSAGE: &str = "A recap is already being generated.";
 const MANUAL_RECAP_EMPTY_HISTORY_MESSAGE: &str = "There is no conversation history to recap.";
 const RECAP_PROMPT_PREFIX: &str = concat!(
-    "Write a brief catch-up for a user returning to this Codex task. ",
+    "Write a brief catch-up for a user returning to this ByteAsk task. ",
     "In at most 40 words and one or two plain-text sentences, explain the ",
     "objective, what was completed or learned, and the next step or blocker. ",
     "Mention changed files, tests, approvals, or requested decisions only ",
@@ -281,7 +281,8 @@ impl App {
             turn_revision: self.recap.turn_revision,
         };
         let request_handle = app_server.request_handle();
-        let model = self.chat_widget.current_model().to_string();
+        // A side request: the cheap model where the backend serves it (thread_title.rs).
+        let (model, _effort) = self.side_request_model_here();
         let config = self.chat_widget.config_ref();
         let cwd = if app_server.uses_remote_workspace() {
             app_server
@@ -388,6 +389,8 @@ impl App {
             return;
         }
 
+        // Low effort when request_recap chose the cheap model for it.
+        let (_, effort) = self.side_request_model_here();
         let (sender, receiver) = mpsc::unbounded_channel();
         self.temporary_structured_requests
             .insert(temporary_thread_id, sender);
@@ -400,7 +403,7 @@ impl App {
                 temporary_thread_id_text,
                 recap_prompt(&history),
                 recap_output_schema(),
-                /*effort*/ None,
+                effort,
                 receiver,
             )
             .await

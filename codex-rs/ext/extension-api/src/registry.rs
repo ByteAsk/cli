@@ -18,6 +18,7 @@ use crate::ThreadLifecycleContributor;
 use crate::TokenUsageContributor;
 use crate::ToolContributor;
 use crate::ToolLifecycleContributor;
+use crate::TurnGateContributor;
 use crate::TurnInputContributor;
 use crate::TurnItemContributor;
 use crate::TurnLifecycleContributor;
@@ -44,6 +45,7 @@ impl<C: Sync> Default for ExtensionRegistryBuilder<C> {
                 tool_contributors: Vec::new(),
                 tool_lifecycle_contributors: Vec::new(),
                 turn_item_contributors: Vec::new(),
+                turn_gate_contributors: Vec::new(),
             },
         }
     }
@@ -137,6 +139,11 @@ impl<C: Sync> ExtensionRegistryBuilder<C> {
         self.registry.turn_item_contributors.push(contributor);
     }
 
+    /// Registers one turn-gate contributor.
+    pub fn turn_gate_contributor(&mut self, contributor: Arc<dyn TurnGateContributor>) {
+        self.registry.turn_gate_contributors.push(contributor);
+    }
+
     /// Finishes construction and returns the immutable registry.
     pub fn build(self) -> ExtensionRegistry<C> {
         self.registry
@@ -157,6 +164,7 @@ pub struct ExtensionRegistry<C: Sync> {
     tool_contributors: Vec<Arc<dyn ToolContributor>>,
     tool_lifecycle_contributors: Vec<Arc<dyn ToolLifecycleContributor>>,
     turn_item_contributors: Vec<Arc<dyn TurnItemContributor>>,
+    turn_gate_contributors: Vec<Arc<dyn TurnGateContributor>>,
     approval_review_contributors: Vec<Arc<dyn ApprovalReviewContributor>>,
 }
 
@@ -169,6 +177,11 @@ impl<C: Sync> ExtensionRegistry<C> {
     /// Returns the registered thread-lifecycle contributors.
     pub fn thread_lifecycle_contributors(&self) -> &[Arc<dyn ThreadLifecycleContributor<C>>] {
         &self.thread_lifecycle_contributors
+    }
+
+    /// Returns the registered turn-gate contributors.
+    pub fn turn_gate_contributors(&self) -> &[Arc<dyn TurnGateContributor>] {
+        &self.turn_gate_contributors
     }
 
     /// Returns the registered turn-lifecycle contributors.

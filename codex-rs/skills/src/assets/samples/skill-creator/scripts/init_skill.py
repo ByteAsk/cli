@@ -30,7 +30,7 @@ description: "[TODO: Briefly describe what this skill does and when it applies.]
 
 # {skill_title}
 
-[TODO: Add the task-specific guidance Codex needs. Reference supporting files only when they are relevant.]
+[TODO: Add the task-specific guidance ByteAsk needs. Reference supporting files only when they are relevant.]
 """
 
 EXAMPLE_SCRIPT = '''#!/usr/bin/env python3
@@ -56,7 +56,7 @@ if __name__ == "__main__":
 
 EXAMPLE_REFERENCE = """# Reference for {skill_title}
 
-Replace this placeholder with maintained, task-specific details that Codex
+Replace this placeholder with maintained, task-specific details that ByteAsk
 would not reliably know, such as operational constraints, local schemas, or
 fragile integration behavior.
 
@@ -69,7 +69,7 @@ This placeholder represents where asset files would be stored.
 Replace with actual asset files (templates, images, fonts, etc.) or delete if not needed.
 
 Asset files are NOT intended to be loaded into context, but rather used within
-the output Codex produces.
+the output ByteAsk produces.
 
 Example asset files from other skills:
 - Brand guidelines: logo.png, slides_template.pptx

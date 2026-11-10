@@ -279,9 +279,26 @@ async fn run_compact_task_inner_impl(
             .clone()
             .for_prompt(&turn_context.model_info().input_modalities);
         let turn_input_len = turn_input.len();
+        // ByteAsk: a compaction
+        // request WITHOUT tools gets 0 cached tokens, because the tools array
+        // sits in front of the history in the cached prefix; with the same tools and
+        // `tool_choice: none` almost the whole prompt is read from cache. Only for
+        // OpenAI models: our Anthropic, Gemini and open-model translators drop
+        // `tool_choice`, so a visible tool there could actually be called mid-summary.
+        let byteask_tools = if byteask_compaction_may_carry_tools(&turn_context.model_info().slug) {
+            sess.byteask_last_known_tool_specs().await
+        } else {
+            None
+        };
         let prompt = Prompt {
             input: turn_input,
             base_instructions: sess.get_prompt_base_instructions().await,
+            byteask_tool_choice_none: byteask_tools.is_some(),
+            // `parallel_tool_calls` is rendered into the prompt right after the tools, so it
+            // must match the working calls (true) or the cache match stops there: probed
+            // 9,984 cached with false against 106,880 with true on the same 107K prompt.
+            parallel_tool_calls: byteask_tools.is_some(),
+            tools: byteask_tools.unwrap_or_default(),
             ..Default::default()
         };
         let attempt_result = drain_to_completed(
@@ -353,7 +370,17 @@ async fn run_compact_task_inner_impl(
     let history_items = history_snapshot.annotated_items();
     let summary_suffix =
         get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default();
-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+    let mut summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+    // ByteAsk: tell the agent what it had open, and keep its last few tool results, so
+    // it does not re-explore the repository right after a compaction. Both are computed
+    // ONCE here and stored in the replacement history, so a resumed thread replays them.
+    let byteask_policy = byteask_output_reducers::policy::active();
+    let byteask_raw: Vec<ResponseItem> = history_snapshot.raw_items().cloned().collect();
+    if byteask_policy.flag("compact_working_set")
+        && let Some(note) = crate::byteask_compaction::working_set_note(&byteask_raw)
+    {
+        summary_text.push_str(&note);
+    }
     let user_messages = collect_annotated_user_messages(history_items);
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
@@ -361,6 +388,18 @@ async fn run_compact_task_inner_impl(
         // This replacement history skips `record_conversation_items`; only the appended summary
         // belongs to this compaction turn.
         summary_item.set_turn_id_if_missing(&turn_context.sub_id);
+    }
+    if let Some(pairs) = byteask_policy.number("compact_keep_pairs")
+        && pairs > 0
+    {
+        let budget = byteask_policy
+            .number("compact_keep_bytes")
+            .and_then(|b| usize::try_from(b).ok())
+            .unwrap_or(16_000);
+        let pairs = usize::try_from(pairs).unwrap_or(0);
+        for item in crate::byteask_compaction::last_tool_pairs(&byteask_raw, pairs, budget) {
+            new_history.push(ResponseItemEnvelope::new(item));
+        }
     }
     let (window_number, window_ids) = sess.advance_auto_compact_window().await;
 
@@ -392,10 +431,15 @@ async fn run_compact_task_inner_impl(
 
     sess.emit_turn_item_completed(&turn_context, compaction_item)
         .await;
-    let warning = EventMsg::Warning(WarningEvent {
-        message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.".to_string(),
-    });
-    sess.send_event(&turn_context, warning).await;
+    // ByteAsk: "multiple compactions" is only true once compaction has repeated in this
+    // thread (`window_number` counts compactions, restored on resume, reset on fork).
+    // Warning on the first, routine compaction alarmed every user of a short thread.
+    if window_number >= 2 {
+        let warning = EventMsg::Warning(WarningEvent {
+            message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.".to_string(),
+        });
+        sess.send_event(&turn_context, warning).await;
+    }
     Ok(summary_suffix)
 }
 
@@ -733,6 +777,17 @@ fn build_compacted_history_with_limit(
     history
 }
 
+/// True when the policy turned cache-aware compaction on AND the model is one whose
+/// request reaches the provider with `tool_choice` intact (the OpenAI passthrough).
+pub(crate) fn byteask_compaction_may_carry_tools(model_slug: &str) -> bool {
+    byteask_output_reducers::policy::active().flag("compact_with_tools")
+        && byteask_is_openai_passthrough_model(model_slug)
+}
+
+pub(crate) fn byteask_is_openai_passthrough_model(model_slug: &str) -> bool {
+    model_slug.starts_with("gpt-") || model_slug == "auto"
+}
+
 async fn drain_to_completed(
     sess: &Session,
     turn_context: &TurnContext,
@@ -740,18 +795,22 @@ async fn drain_to_completed(
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
 ) -> CodexResult<String> {
-    let mut stream = client_session
-        .stream(
-            prompt,
-            turn_context.model_info(),
-            &turn_context.session_telemetry,
-            turn_context.reasoning_effort().cloned(),
-            turn_context.reasoning_summary(),
-            turn_context.config.service_tier.clone(),
-            responses_metadata,
-            // Rollout tracing currently models remote compaction only; local compaction streams
-            // are left untraced until the reducer has a first-class local compaction lifecycle.
-            &InferenceTraceContext::disabled(),
+    // ByteAsk: label this request so the managed gateway can tell a compaction from a turn.
+    let mut stream = crate::client::BYTEASK_REQUEST_KIND
+        .scope(
+            "compact",
+            client_session.stream(
+                prompt,
+                turn_context.model_info(),
+                &turn_context.session_telemetry,
+                turn_context.reasoning_effort().cloned(),
+                turn_context.reasoning_summary(),
+                turn_context.config.service_tier.clone(),
+                responses_metadata,
+                // Rollout tracing currently models remote compaction only; local compaction streams
+                // are left untraced until the reducer has a first-class local compaction lifecycle.
+                &InferenceTraceContext::disabled(),
+            ),
         )
         .await?;
     loop {

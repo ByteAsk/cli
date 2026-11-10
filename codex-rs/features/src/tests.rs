@@ -23,6 +23,24 @@ fn transcript_v2_resolves_explicit_config_overrides() {
     }
 }
 
+/// ByteAsk: the plugin marketplace is opt-in. Enabled, every launch clones OpenAI's curated
+/// plugins repo into the home dir; `features.plugins = true` restores that exactly.
+#[test]
+fn plugins_marketplace_is_opt_in() {
+    assert_eq!(Features::with_defaults().enabled(Feature::Plugins), false);
+
+    let mut features = Features::with_defaults();
+    features.apply_map(&BTreeMap::from([("plugins".to_string(), true)]));
+    assert_eq!(features.enabled(Feature::Plugins), true);
+    assert_eq!(
+        crate::FEATURES
+            .iter()
+            .find(|spec| spec.id == Feature::Plugins)
+            .map(|spec| spec.default_enabled),
+        Some(false)
+    );
+}
+
 #[test]
 fn sleep_tool_config_rejects_unknown_mode() {
     assert!(toml::from_str::<FeaturesToml>("[sleep_tool]\nmode = 'off'").is_err());

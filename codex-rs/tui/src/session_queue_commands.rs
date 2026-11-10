@@ -30,7 +30,7 @@ pub async fn run_session_queue_command(
     message: String,
     options: SessionArchiveCommandOptions,
 ) -> Result<String> {
-    let codex_home = find_codex_home().wrap_err("failed to find Codex home")?;
+    let codex_home = find_codex_home().wrap_err("failed to find ByteAsk home")?;
     let explicit_remote = options.explicit_remote_endpoint.is_some();
     let mut app_server =
         start_app_server_for_session_command(options, codex_home.to_path_buf()).await?;

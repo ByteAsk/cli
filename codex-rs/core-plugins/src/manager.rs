@@ -83,6 +83,7 @@ use crate::startup_sync::OPENAI_PLUGINS_GIT_URL;
 use crate::startup_sync::curated_plugins_api_marketplace_path;
 use crate::startup_sync::curated_plugins_repo_path;
 use crate::startup_sync::read_curated_plugins_sha;
+use crate::startup_sync::remove_curated_marketplace_sync_artifacts;
 use crate::startup_sync::sync_openai_plugins_repo;
 use crate::store::PluginInstallResult as StorePluginInstallResult;
 use crate::store::PluginStore;
@@ -2738,6 +2739,17 @@ impl PluginsManager {
         reload_config: ConfigLayerReload,
         on_effective_plugins_changed: Option<EffectivePluginsChangedCallback>,
     ) {
+        if !config.plugins_enabled {
+            // ByteAsk: the marketplace is off by default. Clear the clone an earlier engine
+            // auto-created in this home, off the startup thread; user installs are kept.
+            let codex_home = self.codex_home.clone();
+            if let Err(err) = std::thread::Builder::new()
+                .name("plugins-disabled-cleanup".to_string())
+                .spawn(move || remove_curated_marketplace_sync_artifacts(codex_home.as_path()))
+            {
+                warn!("failed to start disabled-plugins cleanup: {err}");
+            }
+        }
         if config.plugins_enabled {
             self.maybe_start_curated_repo_sync_for_config(
                 config,

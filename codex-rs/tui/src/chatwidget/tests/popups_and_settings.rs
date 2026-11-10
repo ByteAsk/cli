@@ -3542,6 +3542,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
     let preset = |slug: &str, show_in_picker: bool| ModelPreset {
         id: slug.to_string(),
         model: slug.to_string(),
+        locked_reason: None,
         display_name: slug.to_string(),
         description: format!("{slug} description"),
         model_specialty: None,
@@ -3557,6 +3558,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
         is_default: false,
         upgrade: None,
         show_in_picker,
+        picker_group: None,
         multi_agent_version: None,
         availability_nux: None,
         supported_in_api: true,
@@ -3576,6 +3578,367 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
     assert!(
         !popup.contains("test-hidden-model"),
         "expected hidden model to be excluded from picker:\n{popup}"
+    );
+}
+
+#[tokio::test]
+async fn model_picker_marks_locked_models_and_keeps_them_visible() {
+    // A model this account cannot select stays in the list DELIBERATELY: hiding it
+    // would leave the user with no way to discover what upgrading buys. It is drawn
+    // with a `🔒` in the LEFT gutter (not a flush-right tag) and its reason
+    // in place of the description.
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("free-model")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let preset = |slug: &str, locked_reason: Option<String>| ModelPreset {
+        id: slug.to_string(),
+        model: slug.to_string(),
+        locked_reason,
+        model_specialty: None,
+        multi_agent_version: None,
+        display_name: slug.to_string(),
+        description: format!("{slug} description"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![ReasoningEffortPreset {
+            effort: ReasoningEffortConfig::Medium,
+            description: "medium".to_string(),
+        }],
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: None,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        picker_group: None,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+
+    chat.open_model_popup_with_presets(vec![
+        preset("free-model", None),
+        preset(
+            "paid-model",
+            Some("Available on ByteAsk Pro".to_string()),
+        ),
+    ]);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("paid-model"),
+        "a locked model must stay visible so the user can see what upgrading buys:\n{popup}"
+    );
+    assert!(
+        popup.contains("Pro"),
+        "expected the locked row to carry its lock tag:\n{popup}"
+    );
+    assert!(
+        popup.contains("Available on ByteAsk Pro"),
+        "expected the lock reason to replace the description:\n{popup}"
+    );
+    assert!(
+        popup.contains("free-model"),
+        "an unlocked model must be unaffected:\n{popup}"
+    );
+    let row = popup
+        .lines()
+        .find(|l| l.contains("paid-model"))
+        .expect("locked row rendered");
+    let lock = row.find('🔒').expect("the locked row carries a lock");
+    assert!(
+        lock < row.find("paid-model").unwrap(),
+        "the lock must sit LEFT of the model name, in the number gutter:\n{row}"
+    );
+    assert_eq!(row.matches('🔒').count(), 1, "one lock, no flush-right tag:\n{row}");
+    assert!(
+        !row.trim_end().ends_with("🔒 Pro"),
+        "the old flush-right tag must be gone:\n{row}"
+    );
+}
+
+#[tokio::test]
+async fn model_picker_arrow_keys_skip_a_locked_model() {
+    // A free user must not be able to land on a locked row at all,
+    // so Down from the first model goes straight past it to the next unlocked one.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("free-a")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let preset = |slug: &str, locked_reason: Option<String>| ModelPreset {
+        id: slug.to_string(),
+        model: slug.to_string(),
+        locked_reason,
+        model_specialty: None,
+        multi_agent_version: None,
+        display_name: slug.to_string(),
+        description: format!("{slug} description"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::Medium,
+                description: "medium".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::High,
+                description: "high".to_string(),
+            },
+        ],
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: None,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        picker_group: None,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+    chat.open_model_popup_with_presets(vec![
+        preset("free-a", None),
+        preset("paid-model", Some("Available on ByteAsk Pro".to_string())),
+        preset("free-b", None),
+    ]);
+    while rx.try_recv().is_ok() {}
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let opened: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|ev| match ev {
+            AppEvent::OpenReasoningPopup { model } => Some(model.model),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        opened,
+        vec!["free-b".to_string()],
+        "Down must skip the locked row and land on the next unlocked model"
+    );
+}
+
+#[tokio::test]
+async fn model_picker_selecting_a_locked_model_does_nothing() {
+    // Selecting a locked row must be a NO-OP, not an error: the gateway already
+    // answers a locked model by falling back to auto, so failing hard here would be
+    // the client inventing a stricter rule than the server actually enforces.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("free-model")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let locked = ModelPreset {
+        id: "paid-model".to_string(),
+        model: "paid-model".to_string(),
+        locked_reason: Some("Available on ByteAsk Pro".to_string()),
+        model_specialty: None,
+        multi_agent_version: None,
+        display_name: "paid-model".to_string(),
+        description: "paid".to_string(),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::Medium,
+                description: "medium".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::High,
+                description: "high".to_string(),
+            },
+        ],
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: None,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        picker_group: None,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+    chat.open_model_popup_with_presets(vec![locked]);
+    while rx.try_recv().is_ok() {}
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    // Two presets' worth of reasoning efforts are supplied, so an UNLOCKED row here
+    // would have opened the effort sub-popup. A locked one must not.
+    let opened_reasoning = std::iter::from_fn(|| rx.try_recv().ok())
+        .any(|ev| matches!(ev, AppEvent::OpenReasoningPopup { .. }));
+    assert!(
+        !opened_reasoning,
+        "selecting a locked model must not open the reasoning popup"
+    );
+    assert_eq!(
+        chat.config.model.as_deref(),
+        Some("free-model"),
+        "selecting a locked model must not change the active model"
+    );
+}
+
+fn grouped_preset(slug: &str, group: Option<&str>, efforts: &[ReasoningEffortConfig]) -> ModelPreset {
+    ModelPreset {
+        id: slug.to_string(),
+        model: slug.to_string(),
+        locked_reason: None,
+        model_specialty: None,
+        multi_agent_version: None,
+        display_name: slug.to_string(),
+        description: format!("{slug} description"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: efforts
+            .iter()
+            .map(|effort| ReasoningEffortPreset {
+                effort: effort.clone(),
+                description: format!("{effort:?} effort"),
+            })
+            .collect(),
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: None,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        picker_group: group.map(str::to_string),
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
+
+/// The ByteAsk catalog's shape: `auto` ungrouped, then one group per provider.
+fn grouped_catalog() -> Vec<ModelPreset> {
+    let efforts = [
+        ReasoningEffortConfig::Low,
+        ReasoningEffortConfig::Medium,
+        ReasoningEffortConfig::High,
+    ];
+    vec![
+        grouped_preset("gpt-5.4", Some("OpenAI"), &efforts),
+        grouped_preset("auto", None, &[]),
+        grouped_preset("gpt-6-astra", Some("OpenAI"), &efforts),
+        grouped_preset("claude-haiku-4-5", Some("Anthropic"), &efforts),
+        grouped_preset("gemini-3.8-flash", Some("Gemini"), &efforts),
+        grouped_preset("kimi-k3", Some("Open Source"), &[]),
+    ]
+}
+
+/// Route the picker's own navigation events back into the widget, the way the app
+/// loop does, and return everything else.
+fn pump_model_picker_events(
+    chat: &mut ChatWidget,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+) -> Vec<AppEvent> {
+    let mut rest = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::OpenModelsPopupForGroup { models } => {
+                chat.open_models_popup_for_group(models)
+            }
+            AppEvent::OpenReasoningPopup { model } => chat.open_reasoning_popup(model),
+            other => rest.push(other),
+        }
+    }
+    rest
+}
+
+#[tokio::test]
+async fn grouped_model_picker_is_provider_then_model_then_effort() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.open_model_popup_with_presets(grouped_catalog());
+    while rx.try_recv().is_ok() {}
+
+    let level_one = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("model_picker_grouped_providers", level_one);
+    for group in ["OpenAI", "Anthropic", "Gemini", "Open Source"] {
+        assert!(level_one.contains(group), "missing {group}:\n{level_one}");
+    }
+    assert!(
+        !level_one.contains("claude-haiku-4-5 description"),
+        "level 1 must list providers, not models:\n{level_one}"
+    );
+
+    // The cursor starts on the provider holding the current model (OpenAI).
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    pump_model_picker_events(&mut chat, &mut rx);
+    let level_two = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(level_two.contains("gpt-6-astra"), "{level_two}");
+    assert!(
+        !level_two.contains("claude-haiku-4-5") && !level_two.contains("kimi-k3"),
+        "level 2 must hold only the chosen provider's models:\n{level_two}"
+    );
+
+    // Cursor starts on the current model (gpt-5.4); one down is gpt-6-astra.
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    pump_model_picker_events(&mut chat, &mut rx);
+    let level_three = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        level_three.contains("Select Reasoning Level for gpt-6-astra"),
+        "{level_three}"
+    );
+
+    // Cursor starts on the default (Medium); one down is High.
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    let events = pump_model_picker_events(&mut chat, &mut rx);
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, AppEvent::UpdateModel(model) if model == "gpt-6-astra")),
+        "expected the model to switch to gpt-6-astra: {events:?}"
+    );
+    assert!(
+        events.iter().any(|ev| matches!(
+            ev,
+            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::High))
+        )),
+        "expected effort high: {events:?}"
+    );
+    assert!(
+        !chat.bottom_pane.has_active_view(),
+        "choosing an effort must close all three levels"
+    );
+}
+
+#[tokio::test]
+async fn grouped_model_picker_esc_on_models_returns_to_providers() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.open_model_popup_with_presets(grouped_catalog());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    pump_model_picker_events(&mut chat, &mut rx);
+    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("gpt-6-astra"));
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Esc));
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Anthropic") && popup.contains("Open Source"),
+        "Esc on the model list must step back to the providers, not close the picker:\n{popup}"
+    );
+}
+
+#[tokio::test]
+async fn grouped_model_picker_refresh_keeps_the_provider_list_narrow() {
+    // `/model` shows cached models at once and refreshes a present picker when the
+    // fetch returns. That refresh must not rebuild one provider's list as every model.
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.open_model_popup_with_presets(grouped_catalog());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    pump_model_picker_events(&mut chat, &mut rx);
+
+    let request_id = uuid::Uuid::new_v4();
+    chat.model_popup_request_id = Some(request_id);
+    let mut refreshed = grouped_catalog();
+    refreshed.push(grouped_preset("deepseek-v4", Some("Open Source"), &[]));
+    assert!(chat.on_models_loaded(request_id, Ok(refreshed)));
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(popup.contains("gpt-6-astra"), "{popup}");
+    assert!(
+        !popup.contains("claude-haiku-4-5") && !popup.contains("deepseek-v4"),
+        "a refresh widened the OpenAI list to every model:\n{popup}"
     );
 }
 
@@ -4043,6 +4406,7 @@ async fn single_reasoning_option_skips_selection() {
     let preset = ModelPreset {
         id: "model-with-single-reasoning".to_string(),
         model: "model-with-single-reasoning".to_string(),
+        locked_reason: None,
         display_name: "model-with-single-reasoning".to_string(),
         description: "".to_string(),
         model_specialty: None,
@@ -4055,6 +4419,7 @@ async fn single_reasoning_option_skips_selection() {
         is_default: false,
         upgrade: None,
         show_in_picker: true,
+        picker_group: None,
         multi_agent_version: None,
         availability_nux: None,
         supported_in_api: true,

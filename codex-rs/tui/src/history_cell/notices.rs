@@ -22,57 +22,34 @@ impl UpdateAvailableHistoryCell {
     }
 }
 
+#[cfg_attr(debug_assertions, allow(dead_code))]
+impl UpdateAvailableHistoryCell {
+    /// ByteAsk: a routine release is one quiet line inside the session. Only a
+    /// release the installed version is no longer supported against blocks startup
+    /// (see `update_prompt`).
+    fn update_command(&self) -> String {
+        self.update_action
+            .map(|action| action.command_str())
+            .unwrap_or_else(|| "byteask --update".to_string())
+    }
+}
+
 impl HistoryCell for UpdateAvailableHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        use ratatui_macros::line;
-        use ratatui_macros::text;
-        let update_instruction = if let Some(update_action) = self.update_action {
-            line!["Run ", update_action.command_str().cyan(), " to update."]
-        } else {
-            line![
-                "See ",
-                "https://github.com/openai/codex".cyan().underlined(),
-                " for installation options."
-            ]
-        };
-
-        let content = text![
-            line![
-                "✨\u{200A}".bold().cyan(),
-                "Update available!".bold().cyan(),
-                " ",
-                format!("{CODEX_CLI_VERSION} -> {}", self.latest_version).bold(),
-            ],
-            update_instruction,
-            "",
-            "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
-                .cyan()
-                .underlined(),
-        ];
-
-        let inner_width = content
-            .width()
-            .min(usize::from(width.saturating_sub(4)))
-            .max(1);
-        let lines = adaptive_wrap_lines(content.lines, RtOptions::new(inner_width));
-        with_border_with_inner_width(lines, inner_width)
+        let line = Line::from(vec![
+            format!("ByteAsk {} is available", self.latest_version).bold(),
+            format!(" {} run ", crate::byteask_a11y::glyph("·")).dim(),
+            self.update_command().fg(crate::style::accent_color()),
+        ]);
+        adaptive_wrap_lines(vec![line], RtOptions::new(usize::from(width.max(1))))
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let update_instruction = if let Some(update_action) = self.update_action {
-            format!("Run {} to update.", update_action.command_str())
-        } else {
-            "See https://github.com/openai/codex for installation options.".to_string()
-        };
-        vec![
-            Line::from("Update available!"),
-            Line::from(format!("{CODEX_CLI_VERSION} -> {}", self.latest_version)),
-            Line::from(update_instruction),
-            Line::from(""),
-            Line::from("See full release notes:"),
-            Line::from("https://github.com/openai/codex/releases/latest"),
-        ]
+        vec![Line::from(format!(
+            "ByteAsk {} is available · run {}",
+            self.latest_version,
+            self.update_command()
+        ))]
     }
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
@@ -127,7 +104,7 @@ impl HistoryCell for SafetyAccessBlockCell {
 
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
         let mut lines = vec![HyperlinkLine::new(
-            vec!["ⓘ ".cyan(), SAFETY_ACCESS_BLOCK_TITLE.bold()].into(),
+            vec!["ⓘ ".fg(crate::style::accent_color()), SAFETY_ACCESS_BLOCK_TITLE.bold()].into(),
         )];
         let body = Line::from(vec!["  ".into(), self.body.dim()]);
         let wrap_width = width.saturating_sub(2).max(1) as usize;
@@ -144,7 +121,7 @@ impl HistoryCell for SafetyAccessBlockCell {
             ("Learn more", SAFETY_ACCESS_BLOCK_LEARN_MORE_URL),
         ] {
             let source = crate::terminal_hyperlinks::annotate_web_urls_in_line(
-                vec![format!("  {label}: ").dim(), url.cyan().underlined()].into(),
+                vec![format!("  {label}: ").dim(), url.fg(crate::style::accent_color()).underlined()].into(),
             );
             let wrapped = crate::wrapping::word_wrap_line(
                 &source.line,

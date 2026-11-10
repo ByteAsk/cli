@@ -160,7 +160,7 @@ impl McpToolCallCell {
                 .filter(|title| !title.is_empty())
                 .map(|title| title.graphemes(true).take(80).collect::<String>())
                 .unwrap_or_else(|| format!("{}.{}", self.invocation.server, self.invocation.tool));
-            Line::from(title.cyan())
+            Line::from(title.fg(crate::style::accent_color()))
         } else {
             line_to_static(&format_mcp_invocation(&self.invocation))
         };
@@ -730,13 +730,24 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> Line<'_> {
         })
         .unwrap_or_default();
 
-    let invocation_spans = vec![
-        invocation.server.as_str().cyan(),
-        ".".into(),
-        invocation.tool.as_str().cyan(),
-        "(".into(),
-        args_str.dim(),
-        ")".into(),
-    ];
+    // Dynamic (non-MCP) tools have no server, so drop the leading `server.`
+    // prefix for them — otherwise the display reads `.autosar_ref(...)`.
+    let invocation_spans = if invocation.server.is_empty() {
+        vec![
+            invocation.tool.as_str().fg(crate::style::accent_color()),
+            "(".into(),
+            args_str.dim(),
+            ")".into(),
+        ]
+    } else {
+        vec![
+            invocation.server.as_str().fg(crate::style::accent_color()),
+            ".".into(),
+            invocation.tool.as_str().fg(crate::style::accent_color()),
+            "(".into(),
+            args_str.dim(),
+            ")".into(),
+        ]
+    };
     invocation_spans.into()
 }

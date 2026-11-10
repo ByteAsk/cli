@@ -87,6 +87,7 @@ use codex_tools::ToolExecutor;
 use codex_tools::ToolExposures;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchInfo;
+use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::UnifiedExecShellMode;
 use codex_tools::can_request_original_image_detail;
@@ -161,6 +162,7 @@ pub(crate) fn build_tool_router(
             apps_enabled,
             &mcp.config().mcp_server_catalog,
             search_tool_enabled(turn_context, model_info),
+            &turn_context.session_source,
             &mut registry,
         );
         apply_mcp_tool_exposure_policy(
@@ -201,10 +203,18 @@ fn apply_mcp_tool_exposure_policy(
     registry: &mut ToolRegistry,
 ) {
     let mut omitted_exposures_by_tool = HashMap::new();
+    // ByteAsk Context: its pack tool is sent up front, never behind tool_search.
+    let context_server = crate::byteask_context::server_name(&turn_context.config);
+    let mut always_loaded = HashSet::new();
     for tool in mcp.tools() {
         let tool_name = tool.canonical_tool_name();
         if !registered_mcp_tools.contains(&tool_name) {
             continue;
+        }
+        if context_server.as_deref() == Some(tool.server_name.as_str())
+            && crate::byteask_context::always_loaded(&tool.tool)
+        {
+            always_loaded.insert(tool_name.clone());
         }
         let Some(server) = mcp.config().mcp_server_catalog.server(&tool.server_name) else {
             continue;
@@ -264,6 +274,13 @@ fn apply_mcp_tool_exposure_policy(
             (false, true, true) => ToolExposure::Deferred,
             (true, true, _) => unreachable!("direct and deferred exposure are mutually exclusive"),
         };
+        if always_loaded.contains(&tool.runtime.tool_name()) {
+            tool.exposure = match tool.exposure {
+                ToolExposure::Deferred => ToolExposure::Direct,
+                ToolExposure::DeferredModelOnly => ToolExposure::DirectModelOnly,
+                other => other,
+            };
+        }
     }
 }
 
@@ -347,6 +364,69 @@ pub(crate) fn extension_tool_executors<'a>(
         })
 }
 
+/// `[byteask_harness] disable_tools`: the matching tools (by name, or by namespace) leave the
+/// registry before the direct/deferred split, so they are neither sent up front nor deferred, and
+/// `tool_search` neither lists nor finds them.
+fn remove_byteask_disabled_tools(turn_context: &TurnContext, registry: &mut ToolRegistry) {
+    let patterns = crate::byteask_harness::session_disabled_tool_patterns(
+        &turn_context.config,
+        &turn_context.session_source,
+    );
+    if patterns.is_empty() {
+        return;
+    }
+    let disabled: Vec<ToolName> = registry
+        .entries()
+        .map(|tool| tool.runtime.tool_name())
+        .filter(|name| {
+            crate::byteask_harness::matches_any(&patterns, &name.name)
+                || name.namespace.as_deref().is_some_and(|namespace| {
+                    crate::byteask_harness::matches_any(&patterns, namespace)
+                })
+        })
+        .collect();
+    for name in disabled {
+        registry.remove(&name);
+    }
+}
+
+/// ByteAsk (`[byteask_harness] lean_prefix` / `defer_tools`): the listed tools are not sent
+/// up front; `tool_search` returns their full, unchanged definitions when the model asks. The
+/// decision depends only on the session's config and the tool names, so the tools array is the
+/// same on every step of the session (no mid-run tool-list change).
+fn apply_byteask_deferral(
+    turn_context: &TurnContext,
+    model_info: &ModelInfo,
+    registry: &mut ToolRegistry,
+) {
+    if !search_tool_enabled(turn_context, model_info) {
+        return;
+    }
+    let patterns = crate::byteask_harness::deferred_tool_patterns(
+        &turn_context.config,
+        &turn_context.session_source,
+    );
+    if patterns.is_empty() {
+        return;
+    }
+    for tool in registry.entries_mut() {
+        let name = tool.runtime.tool_name();
+        let listed = crate::byteask_harness::matches_any(&patterns, &name.name)
+            || name
+                .namespace
+                .as_deref()
+                .is_some_and(|namespace| crate::byteask_harness::matches_any(&patterns, namespace));
+        if !listed || tool.runtime.search_info().is_none() {
+            continue;
+        }
+        tool.exposure = match tool.exposure {
+            ToolExposure::Direct => ToolExposure::Deferred,
+            ToolExposure::DirectModelOnly => ToolExposure::DeferredModelOnly,
+            other => other,
+        };
+    }
+}
+
 #[instrument(level = "trace", skip_all)]
 pub(crate) fn finalize_tool_router(
     turn_context: &TurnContext,
@@ -356,6 +436,8 @@ pub(crate) fn finalize_tool_router(
     tool_search_handler_cache: &ToolSearchHandlerCache,
 ) -> CodexResult<ToolRouter> {
     apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
+    remove_byteask_disabled_tools(turn_context, &mut registry);
+    apply_byteask_deferral(turn_context, model_info, &mut registry);
     let tool_mode = effective_tool_mode(turn_context, model_info);
     let code_mode_enabled = matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly);
     if code_mode_enabled {
@@ -1250,6 +1332,23 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         registry.add(TestSyncHandler);
     }
 
+    // ByteAsk native file tools: dark until the
+    // server-driven policy turns them on, so an old catalog changes nothing.
+    if environment_mode.has_environment() {
+        let byteask_policy = byteask_output_reducers::policy::active();
+        let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
+        if byteask_policy.flag("native_read") {
+            registry.add(crate::tools::handlers::byteask_files::ReadFileHandler::new(
+                include_environment_id,
+            ));
+        }
+        if byteask_policy.flag("native_search") {
+            registry.add(crate::tools::handlers::byteask_files::SearchHandler::new(
+                include_environment_id,
+            ));
+        }
+    }
+
     if environment_mode.has_environment() && features.enabled(Feature::ViewImage) {
         let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
         registry.add(ViewImageHandler::new(ViewImageToolOptions {
@@ -1263,6 +1362,14 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
             include_environment_id,
         }));
     }
+}
+
+/// Upstream shows the model `agent_type` only when the USER configured custom roles, so on
+/// a default install the built-in `explorer` role cannot be selected at all. ByteAsk
+/// also shows it when the server-driven policy configures that explorer.
+fn byteask_expose_agent_type(turn_context: &TurnContext) -> bool {
+    !turn_context.config.agent_roles.is_empty()
+        || byteask_output_reducers::policy::active().explorer.is_some()
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -1287,7 +1394,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     SpawnAgentHandlerV2::new(SpawnAgentToolOptions {
                         available_models: turn_context.available_models.clone(),
                         agent_type_description,
-                        expose_agent_type: !turn_context.config.agent_roles.is_empty(),
+                        expose_agent_type: byteask_expose_agent_type(turn_context),
                         hide_agent_type_model_reasoning: hide_spawn_agent_metadata,
                         expose_spawn_agent_model_overrides: turn_context
                             .config
@@ -1337,7 +1444,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 SpawnAgentHandler::new(SpawnAgentToolOptions {
                     available_models: turn_context.available_models.clone(),
                     agent_type_description,
-                    expose_agent_type: !turn_context.config.agent_roles.is_empty(),
+                    expose_agent_type: byteask_expose_agent_type(turn_context),
                     hide_agent_type_model_reasoning: false,
                     expose_spawn_agent_model_overrides: true,
                     multi_agent_version: turn_context.multi_agent_version,
@@ -1402,8 +1509,58 @@ fn append_tool_search_executor(
     } else {
         ToolSearchSourceListing::Include
     };
-    let handler = tool_search_handler_cache.get_or_build(registry, source_listing);
+    let listed = byteask_deferred_index(turn_context, registry);
+    let handler = tool_search_handler_cache.get_or_build_listing(registry, source_listing, listed);
     registry.register_trusted(handler);
+}
+
+/// ByteAsk: the names of the tools the harness deferred, listed in `tool_search`'s
+/// description so the model knows each one exists and can load it by name (its full description
+/// comes back from the search). Names only: the C/C++ guidance already describes most of them.
+/// Empty unless `[byteask_harness]` defers tools.
+fn byteask_deferred_index(
+    turn_context: &TurnContext,
+    registry: &ToolRegistry,
+) -> Vec<ToolSearchSourceInfo> {
+    let patterns = crate::byteask_harness::deferred_tool_patterns(
+        &turn_context.config,
+        &turn_context.session_source,
+    );
+    if patterns.is_empty() {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    for tool in registry.entries() {
+        if !tool.exposure.is_deferred() {
+            continue;
+        }
+        let name = tool.runtime.tool_name();
+        let display = if crate::byteask_harness::matches_any(&patterns, &name.name) {
+            match &name.namespace {
+                Some(namespace) => format!("{namespace}.{}", name.name),
+                None => name.name.clone(),
+            }
+        } else if let Some(namespace) = name
+            .namespace
+            .as_deref()
+            .filter(|namespace| crate::byteask_harness::matches_any(&patterns, namespace))
+        {
+            // One entry per deferred namespace (e.g. `collaboration`), not one per tool in it.
+            namespace.to_string()
+        } else {
+            continue;
+        };
+        if !names.contains(&display) {
+            names.push(display);
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| ToolSearchSourceInfo {
+            name,
+            description: None,
+        })
+        .collect()
 }
 
 fn append_extension_tool_executors(

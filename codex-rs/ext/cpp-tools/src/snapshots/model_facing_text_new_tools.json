@@ -1,0 +1,215 @@
+{
+  "tools": [
+    {
+      "description": "Build and run only the tests your change can affect, using the project's own build system (CMake File API and CTest, Meson introspection, Make dry runs). Builds only their programs, incrementally, in a tree of its own outside the project (CMake; configured once, already warm when a background build ran), states the exact targets built, the test filter and `git diff --check`, and returns failures with their first assertion plus a summary; the full log stays on disk. Use it after an edit instead of rebuilding and re-running the whole suite; the whole suite runs once, at the end (in the finish gate when one runs it, else full_suite=true). Long runs continue in the background and report when done. C/C++ projects; it runs the project's build, so it needs a trusted project.",
+      "name": "cpp_test_select",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "description": "\"run\" (default): build the selected tests' programs and run them. \"plan\": only show what each tier would build and run. \"wait\": block until a background run finishes (use only when you have nothing else to do). \"status\": list runs. \"cancel\": stop the running one.",
+            "type": "string"
+          },
+          "background": {
+            "description": "Return at once and keep running; the result is shown to you when it finishes. Default false.",
+            "type": "boolean"
+          },
+          "build_dir": {
+            "description": "A configured build directory to use instead (CMake, Meson or Make); it is built incrementally and never reconfigured or deleted. Default for CMake: the tool's own tree outside the project, configured once with the options of your build tree (yours is never built in).",
+            "type": "string"
+          },
+          "changed": {
+            "description": "Files to treat as changed, relative to the repository root. Default: the working tree's diff against the session-start commit plus new source files.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "compare_base": {
+            "description": "Also build and run the same selection on the session-start commit (in a tree of its own; cached for the session) and report the tests whose status flipped, plus untouched neighbouring cases that exercise the same names. Default false.",
+            "type": "boolean"
+          },
+          "full_suite": {
+            "description": "Build everything and run the whole suite (once, at the end, when no finish gate runs it). Default false.",
+            "type": "boolean"
+          },
+          "jobs": {
+            "description": "Parallel build/test jobs. Default and maximum: the CPUs available, capped by available memory (about 1.5 GB per job).",
+            "type": "number"
+          },
+          "run_id": {
+            "description": "For wait/cancel: which run (default: the latest).",
+            "type": "number"
+          },
+          "symbols": {
+            "description": "Function/type/macro names to select tests by. Default: the ones the diff changes.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tier": {
+            "description": "1 (default): only the test cases that mention the changed functions/types (fastest; picked by name, so not safe). 2: the whole test programs that mention them. 3: every test the build graph says the change reaches, plus tests it cannot map (script/data tests) — the safe superset.",
+            "type": "number"
+          },
+          "timeout_per_test": {
+            "description": "Seconds before one test is killed (default 120).",
+            "type": "number"
+          },
+          "wait_s": {
+            "description": "How long this call waits for the run (default 600, max 3600). A run still going after that continues in the background and its result is shown to you automatically when it ends; do not poll.",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Change-impact checklist for a C/C++ change: for the functions and types your diff touches (or the named symbols), lists overloads and look-alike functions, other labels of the same switch, related types that lack an operation you added, template specialisations, virtual overrides, declarations in other #if configurations, stale generated copies (combined single headers), callers, and the tests and docs that mention them. Textual scan confirmed by clangd when a compile database exists. Answer each item `[n] edited` or `[n] n/a: <reason>`; listing is not an instruction to edit.",
+      "name": "cpp_impact",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "base": {
+            "description": "Revision to diff the working tree against (default HEAD).",
+            "type": "string"
+          },
+          "budget_sec": {
+            "description": "Time budget in seconds (default 60, max 300).",
+            "type": "integer"
+          },
+          "max_items": {
+            "description": "Maximum checklist items (default 30).",
+            "type": "integer"
+          },
+          "symbols": {
+            "description": "Analyze these symbols instead of the working-tree diff (before editing): `ns::Type::method`, a plain name, or `path:line`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "The latest automatic ByteAsk check result for this workspace (the finish gate's verdict, and a background follow-up's when one finished) and whether it is still current for the code as it is now; a result taken before the latest edit is marked STALE. Use it before telling the user a change works, or after a background check finished. It runs nothing itself.",
+      "name": "check_status",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Verify a crash / memory-safety fix as strictly as a maintainer review would, to catch a fix that stops the one PoC but not the bug. Given the PATCHED sanitizer-instrumented binary and the PoC, it: checks the UNPATCHED binary (if given) still crashes on the PoC; replays the PoC on the patched binary (must no longer crash); optionally runs the project's functionality tests; and, given the UNPATCHED binary, diffs behaviour on benign inputs (the vulnerable build is the oracle for inputs that do not trigger the bug). It also runs the patch-shape critic on the diff. It BUILDS NOTHING — pass binaries built with the project's own sanitizer build. Reports a verdict with per-check evidence: VERIFIED only when the unpatched build crashes on the PoC, the patched one does not, and every other check that ran passed; PARTIAL (with what was and was not checked) when something was not checked or was inconclusive. Reach for it before finishing any crash/sanitizer/PoC fix.",
+      "name": "cpp_fix_verify",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline_binary": {
+            "description": "Path to the UNPATCHED build. When given, the tool first checks it still crashes on the PoC, then diffs exit code and stdout of the patched vs unpatched binary on benign (non-crashing) inputs: the vulnerable build is the oracle for inputs that do not trigger the bug, so a difference is a behaviour change the fix introduced. Build it the same way, at the base commit.",
+            "type": "string"
+          },
+          "benign_inputs": {
+            "description": "Files or directories of non-crashing inputs for the behaviour diff (the repo's test inputs or seed corpus, and inputs near the PoC that you expect to stay valid).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "binary": {
+            "description": "Path to the PATCHED, sanitizer-instrumented binary to test (the fuzz target or CLI). Build it with the project's OWN sanitizer build (e.g. its ASan/UBSan config, or the project's own fuzz/oss-fuzz build), not a hand-written compile line.",
+            "type": "string"
+          },
+          "diff": {
+            "description": "Path to the fix's patch (unified diff) for the patch-shape critic. Omit to use `git diff` in the workspace.",
+            "type": "string"
+          },
+          "input_mode": {
+            "description": "How the input reaches the program: \"arg\" (default; the file path is the last argument, as for a libFuzzer target or most CLIs) or \"stdin\" (the file is piped to stdin). Put {poc} in run_args to place the path yourself.",
+            "type": "string"
+          },
+          "poc": {
+            "description": "Path to the crashing input file (the PoC). It is replayed on the patched binary, which must no longer crash (and on baseline_binary, which must still crash).",
+            "type": "string"
+          },
+          "run_args": {
+            "description": "Arguments for the binary, shell-style (space-separated, quote to keep spaces; no shell runs). {poc} is replaced by the current input path; without it the path is appended (arg mode) or piped (stdin mode).",
+            "type": "string"
+          },
+          "sanitizer": {
+            "description": "Which sanitizer the binaries were built with: \"asan_ubsan\" (default), \"msan\" or \"tsan\". Sets only the runtime options for the replay; it does not rebuild.",
+            "type": "string"
+          },
+          "test_command": {
+            "description": "The project's functionality-test command as an argv list (no shell: [\"ctest\", \"--output-on-failure\"], [\"make\", \"check\"]). The tool runs it in the workspace and reports pass/fail. Run it on the base commit too and compare.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "timeout_sec": {
+            "description": "Per-run wall-clock cap for each replay and each test/diff run. Default 60s.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "binary"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "What this repository's history says about the files you are changing: files and functions that usually change together with them, how past commits touching them were structured (which tests, docs, changelog, generated copies they also touched), example commits, and which commits introduced the lines you changed. Reads only the commit the session started on and its ancestors. Use it to find the other places a change like yours usually needs, or to read how a regression came in.",
+      "name": "cpp_repo_history",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "max_commits": {
+            "description": "Most commits read per query (default 2000).",
+            "type": "number"
+          },
+          "mode": {
+            "description": "\"summary\" (default): co-changing files and functions, the usual shape of past commits (tests/docs/changelog/generated copies), example commits, and blame of the changed lines. \"blame\": only who introduced the changed lines, in more detail. \"show\": one past commit (sha) with up to 100 diff lines.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Files to ask about, relative to the repository root. Default: the files changed since the session started.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "query": {
+            "description": "Words to rank example commits by (e.g. the issue title). A commit id in it is checked against the local history.",
+            "type": "string"
+          },
+          "sha": {
+            "description": "For mode=show: a commit id (hex) from this history.",
+            "type": "string"
+          },
+          "symbols": {
+            "description": "Functions to find co-changing functions for. Default: the ones the diff changes.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 // Aggregates all former standalone integration tests as modules.
 mod add_dir;
+mod agent_checks;
 mod agents_md;
 mod apply_patch;
 mod approval_policy;

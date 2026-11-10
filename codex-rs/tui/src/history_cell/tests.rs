@@ -287,7 +287,7 @@ fn source_backed_cells_render_raw_source_without_prefix_or_style() {
 #[test]
 fn proposed_plan_cell_renders_markdown_table() {
     let plan = new_proposed_plan(
-        "## Plan\n\n| Step | Owner |\n| --- | --- |\n| Verify | Codex |\n".to_string(),
+        "## Plan\n\n| Step | Owner |\n| --- | --- |\n| Verify | ByteAsk |\n".to_string(),
         &test_cwd(),
     );
 
@@ -406,7 +406,7 @@ fn empty_mcp_output_preserves_docs_hyperlink() {
 #[test]
 fn proposed_plan_cell_unwraps_markdown_fenced_table() {
     let plan = new_proposed_plan(
-        "## Plan\n\n```markdown\n| Step | Owner |\n| --- | --- |\n| Verify | Codex |\n```\n"
+        "## Plan\n\n```markdown\n| Step | Owner |\n| --- | --- |\n| Verify | ByteAsk |\n```\n"
             .to_string(),
         &test_cwd(),
     );
@@ -1483,6 +1483,47 @@ fn completed_mcp_tool_call_success_snapshot() {
     let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
 
     insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn dynamic_tool_call_renders_without_server_prefix() {
+    // Dynamic (non-MCP) tools like `autosar_ref` carry no server, so the cell
+    // must render `autosar_ref(...)`, never `.autosar_ref(...)` (the leading-dot
+    // bug the empty-server guard in `format_mcp_invocation` fixes).
+    let invocation = McpInvocation {
+        server: String::new(),
+        tool: "autosar_ref".into(),
+        arguments: Some(json!({ "query": "A5-2-2 c-style cast" })),
+    };
+
+    let result = CallToolResult {
+        content: vec![text_block(
+            "Rule A5-2-2: Traditional C-style casts shall not be used.",
+        )],
+        is_error: None,
+        structured_content: None,
+        meta: None,
+    };
+
+    let mut cell = new_active_mcp_tool_call(
+        "call-ref".into(),
+        invocation,
+        /*animations_enabled*/ true,
+    );
+    assert!(
+        cell.complete(Duration::from_millis(12), Ok(result))
+            .is_none()
+    );
+
+    let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+    assert!(
+        rendered.contains("autosar_ref("),
+        "tool name should render: {rendered}"
+    );
+    assert!(
+        !rendered.contains(".autosar_ref"),
+        "no leading server dot: {rendered}"
+    );
 }
 
 #[test]

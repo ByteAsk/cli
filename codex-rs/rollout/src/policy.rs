@@ -108,6 +108,8 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
                 )
         }
         EventMsg::TokenCount(_)
+        // ByteAsk Context: one record per turn-0 pack attempt, for the session log.
+        | EventMsg::ContextPack(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnAborted(_)

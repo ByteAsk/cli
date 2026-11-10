@@ -226,9 +226,14 @@ async fn remote_tool_mode_selector_overrides_feature_flags() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_code_mode_only_selector_fails_closed_when_host_is_disabled() -> Result<()> {
+async fn remote_code_mode_only_selector_degrades_to_direct_when_host_is_disabled() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
+    // ByteAsk change: with no code-mode host (which ByteAsk never ships), a
+    // `code_mode_only` model must degrade to Direct tools, NOT fail closed —
+    // otherwise the model is simply unusable (e.g. gpt-5.6-* in a ChatGPT
+    // subscription session, whose catalog carries `tool_mode` unstripped).
+    // See core/src/tools/mod.rs::effective_tool_mode.
     let mut model = remote_model("test-tool-mode-code-mode-only-host-disabled");
     model.tool_mode = Some(ToolMode::CodeModeOnly);
     let response = response_for_remote_model(model, |config| {
@@ -243,24 +248,31 @@ async fn remote_code_mode_only_selector_fails_closed_when_host_is_disabled() -> 
     assert!(
         tools
             .iter()
-            .any(|name| name == codex_code_mode::PUBLIC_TOOL_NAME)
-            && tools
-                .iter()
-                .any(|name| name == codex_code_mode::WAIT_TOOL_NAME),
-        "code-mode-only must retain code-mode tools: {tools:?}"
+            .any(|name| matches!(name.as_str(), "shell" | "shell_command" | "exec_command")),
+        "code-mode-only must degrade to direct shell tools when the host is absent: {tools:?}"
     );
     assert!(
-        tools
-            .iter()
-            .all(|name| { !matches!(name.as_str(), "shell" | "shell_command" | "exec_command") }),
-        "code-mode-only must never expose direct shell tools: {tools:?}"
+        tools.iter().all(|name| {
+            name != codex_code_mode::PUBLIC_TOOL_NAME && name != codex_code_mode::WAIT_TOOL_NAME
+        }),
+        "degraded session must not advertise code-mode tools it cannot run: {tools:?}"
     );
+    assert!(
+        !response
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Code mode will fail closed")),
+        "a degraded-to-direct session must not warn about failing closed: {:?}",
+        response.warnings
+    );
+    // A silent, successful degrade: no "Code Mode is unavailable" nag, and in
+    // particular no user-facing `codex-code-mode-host` string.
     assert!(
         response
             .warnings
             .iter()
-            .any(|warning| warning.contains("Code mode will fail closed")),
-        "code-mode-only should explain that it fails closed: {:?}",
+            .all(|warning| !warning.contains("code-mode-host") && !warning.contains("code mode host")),
+        "degraded session must not leak the code-mode-host binary name: {:?}",
         response.warnings
     );
 

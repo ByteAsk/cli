@@ -51,7 +51,7 @@ pub(super) fn check(config: Option<&Config>) -> DoctorCheck {
 
     let mut status = CheckStatus::Ok;
     let mut summary = "network-related environment looks readable".to_string();
-    for name in ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"] {
+    for name in ["BYTEASK_CA_CERTIFICATE", "CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"] {
         if let Some(raw) = env::var_os(name) {
             let path = PathBuf::from(raw);
             match std::fs::metadata(&path) {

@@ -96,7 +96,7 @@ pub enum CodexErrorDetails {
     #[error("rate limit exceeded: {0}")]
     RateLimitExceeded(String),
     #[error(
-        "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
+        "ByteAsk ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
     )]
     ContextWindowExceeded,
     #[error("no thread with id: {0}")]
@@ -394,11 +394,20 @@ impl CodexErr {
             | CodexErrorDetails::ServerOverloaded
             | CodexErrorDetails::CyberPolicy { .. }
             | CodexErrorDetails::MisalignmentPolicyViolation { .. } => false,
+            // A 4xx will still be a 4xx on the fifth attempt: the request itself
+            // is wrong (bad key, bad model, bad payload). Retrying it only buys
+            // the user ~6.2s of "Reconnecting... N/5" before the same message —
+            // which is exactly what used to swallow the gateway's 401/402/403
+            // "sign in" / "upgrade" gates. A 5xx is genuinely worth another try,
+            // and so is 429: it is the one 4xx that means "try again later", and
+            // the gateway relies on that for transient rate limits.
+            CodexErrorDetails::UnexpectedStatus(err) => {
+                err.status.is_server_error() || err.status == StatusCode::TOO_MANY_REQUESTS
+            }
             CodexErrorDetails::Stream(..)
             | CodexErrorDetails::RateLimitExceeded(_)
             | CodexErrorDetails::Timeout
             | CodexErrorDetails::RequestTimeout
-            | CodexErrorDetails::UnexpectedStatus(_)
             | CodexErrorDetails::ResponseStreamFailed(_)
             | CodexErrorDetails::ConnectionFailed(_)
             | CodexErrorDetails::InternalServerError
@@ -577,7 +586,9 @@ impl std::fmt::Display for UnexpectedResponseError {
             let body = self.display_body();
             format!("unexpected status {status}: {body}")
         };
-        if let Some(url) = &self.url {
+        if let Some(url) = &self.url
+            && !is_loopback_url(url)
+        {
             message.push_str(&format!(", url: {url}"));
         }
         if let Some(cf_ray) = &self.cf_ray {
@@ -597,6 +608,35 @@ impl std::fmt::Display for UnexpectedResponseError {
 }
 
 impl std::error::Error for UnexpectedResponseError {}
+
+/// True for a url pointing at this machine. Surfacing one to the user is always
+/// noise and usually actively misleading: the BYOK sidecar listens on
+/// 127.0.0.1, so an error from it used to render as
+/// "..., url: http://127.0.0.1:8799/byteask/v1/responses" and readers blamed the
+/// service rather than their own machine.
+fn is_loopback_url(url: &str) -> bool {
+    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    // authority = everything before the path/query/fragment, minus any userinfo.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(authority);
+    // A bracketed IPv6 literal must be unwrapped BEFORE stripping the port, or
+    // the first ':' inside the address is mistaken for the port separator.
+    let host = if let Some(inner) = authority.strip_prefix('[') {
+        inner.split_once(']').map(|(h, _)| h).unwrap_or(inner)
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host == "::1"
+        || host == "0:0:0:0:0:0:0:1"
+        || host
+            .split_once('.')
+            .map(|(first, _)| first == "127")
+            .unwrap_or(false)
+}
 
 fn truncate_with_ellipsis(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {

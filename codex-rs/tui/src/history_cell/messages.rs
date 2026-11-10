@@ -170,7 +170,7 @@ impl HistoryCell for UserHistoryCell {
             .max(1);
 
         let style = user_message_style();
-        let element_style = style.fg(Color::Cyan);
+        let element_style = style.fg(crate::style::accent_color());
 
         let wrapped_remote_images = if self.remote_image_urls.is_empty() {
             None

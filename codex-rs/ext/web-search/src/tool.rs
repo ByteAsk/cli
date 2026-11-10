@@ -83,6 +83,12 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
         true
     }
 
+    // Emits its own ExtensionItem::WebSearch started/completed items — the
+    // core adapter must not add a generic tool-call item on top.
+    fn manages_turn_items(&self) -> bool {
+        true
+    }
+
     fn handle<'a>(&'a self, call: ToolCall<'call>) -> codex_extension_api::ToolExecutorFuture<'a>
     where
         'call: 'a,

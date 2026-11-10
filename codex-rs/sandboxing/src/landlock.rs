@@ -1,9 +1,13 @@
 use codex_protocol::models::PermissionProfile;
 use std::path::Path;
 
-/// Basename used when the Codex executable self-invokes as the Linux sandbox
-/// helper.
-pub const CODEX_LINUX_SANDBOX_ARG0: &str = "codex-linux-sandbox";
+/// Basename used when the ByteAsk executable self-invokes as the Linux sandbox
+/// helper (the alias created under `$BYTEASK_HOME/tmp/arg0/`).
+pub const CODEX_LINUX_SANDBOX_ARG0: &str = "byteask-linux-sandbox";
+
+/// The pre-rebrand helper name. Still accepted when dispatching on argv[0] so a
+/// helper alias created by an older engine that is still running keeps working.
+pub const LEGACY_LINUX_SANDBOX_ARG0: &str = "codex-linux-sandbox";
 
 pub fn allow_network_for_proxy(enforce_managed_network: bool) -> bool {
     // When managed network requirements are active, request proxy-only

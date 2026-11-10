@@ -75,7 +75,9 @@ impl StatusLineAccent {
 
     fn fallback_style(self) -> Style {
         match self {
-            Self::Model | Self::State | Self::Metadata | Self::Mode => Style::default().cyan(),
+            Self::Model | Self::State | Self::Metadata | Self::Mode => {
+                Style::default().fg(crate::style::accent_color())
+            }
             Self::Path | Self::Usage | Self::Progress => Style::default().green(),
             Self::Branch | Self::Limit | Self::Thread => Style::default().magenta(),
         }
@@ -207,7 +209,7 @@ mod tests {
         .expect("status line");
 
         assert_eq!(line_text(&line), "gpt-5 · /repo · main");
-        assert_eq!(line.spans[0].style.fg, Some(Color::Cyan));
+        assert_eq!(line.spans[0].style.fg, Some(crate::style::accent_color()));
         assert!(!line.spans[0].style.add_modifier.contains(Modifier::DIM));
         assert_eq!(line.spans[2].style.fg, Some(Color::Green));
         assert!(!line.spans[2].style.add_modifier.contains(Modifier::DIM));

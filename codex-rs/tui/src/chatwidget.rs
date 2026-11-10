@@ -77,7 +77,6 @@ use crate::terminal_title::set_terminal_title;
 use crate::text_formatting::proper_join;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
-use crate::version::CODEX_CLI_VERSION;
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
 use codex_app_server_protocol::AppSummary;
@@ -332,6 +331,8 @@ use crate::status_indicator_widget::STATUS_DETAILS_DEFAULT_MAX_LINES;
 use crate::status_indicator_widget::StatusDetailsCapitalization;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
+pub(crate) mod byteask_account;
+mod byteask_settings_menu;
 mod command_lifecycle;
 mod connector_mentions;
 mod connectors;
@@ -1132,7 +1133,7 @@ impl ChatWidget {
             subtitle: Some("Memories are currently disabled in your config.".to_string()),
             footer_note: Some(Line::from(vec![
                 "Learn more: ".dim(),
-                MEMORIES_DOC_URL.cyan().underlined(),
+                MEMORIES_DOC_URL.fg(crate::style::accent_color()).underlined(),
             ])),
             footer_hint: Some(standard_popup_hint_line()),
             items,
@@ -1485,8 +1486,9 @@ impl ChatWidget {
                 /*reasoning_effort*/ None,
                 /*show_fast_status*/ false,
                 config.cwd.to_path_buf(),
-                CODEX_CLI_VERSION,
+                crate::version::display_version(),
             )
+            .with_account(history_cell::byteask_account_email(config))
             .with_yolo_mode(history_cell::is_yolo_mode(config)),
         )
     }
@@ -1555,10 +1557,10 @@ impl ChatWidget {
         let mut line = vec![
             "• ".into(),
             "Session renamed to ".into(),
-            name.to_string().cyan(),
+            name.to_string().fg(crate::style::accent_color()),
         ];
         if let Some(hint) = resume_hint(Some(name), thread_id) {
-            line.extend([". To resume this session run ".into(), hint.cyan()]);
+            line.extend([". To resume this session run ".into(), hint.fg(crate::style::accent_color())]);
         }
         PlainHistoryCell::new(vec![line.into()])
     }
@@ -1993,7 +1995,7 @@ impl Drop for ChatWidget {
     }
 }
 
-const PLACEHOLDER: &str = "Ask Codex to do anything";
+const PLACEHOLDER: &str = "Ask ByteAsk to do anything";
 const SIDE_PLACEHOLDER: &str = "Ask a follow-up question";
 
 // Extract the first bold (Markdown) element in the form **...** from `s`.

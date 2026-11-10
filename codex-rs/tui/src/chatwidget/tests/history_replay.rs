@@ -1291,7 +1291,7 @@ async fn failed_repl_mcp_tool_call_preserves_status_and_result() {
                 " ".into(),
                 "Called".bold(),
                 " ".into(),
-                "Inspect workspace".cyan(),
+                "Inspect workspace".fg(crate::style::accent_color()),
             ])),
             "{server}",
         );

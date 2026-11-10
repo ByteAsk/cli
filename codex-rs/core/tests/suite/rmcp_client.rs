@@ -2732,6 +2732,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
         &server,
         ModelsResponse {
             models: vec![ModelInfo {
+                locked_reason: None,
                 slug: text_only_model_slug.to_string(),
                 display_name: "RMCP Text Only".to_string(),
                 description: Some("Test model without image input support".to_string()),
@@ -2744,6 +2745,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 visibility: ModelVisibility::List,
                 supported_in_api: true,
                 priority: 1,
+                picker_group: None,
                 additional_speed_tiers: Vec::new(),
                 service_tiers: Vec::new(),
                 default_service_tier: None,

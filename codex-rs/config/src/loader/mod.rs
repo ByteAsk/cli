@@ -175,7 +175,7 @@ pub async fn load_config_layers_state(
         let config = toml::from_str(raw_toml).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("invalid embedded packaged defaults; this is a Codex build error: {error}"),
+                format!("invalid embedded packaged defaults; this is a ByteAsk build error: {error}"),
             )
         })?;
         ConfigLayerEntry::new_with_raw_toml(
@@ -2029,7 +2029,7 @@ foo = "xyzzy"
         let expected = windows_program_data_dir_from_known_folder()
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_PROGRAM_DATA_DIR_WINDOWS))
             .join("OpenAI")
-            .join("Codex")
+            .join("ByteAsk")
             .join("requirements.toml");
         assert_eq!(
             windows_system_requirements_toml_file()
@@ -2051,7 +2051,7 @@ foo = "xyzzy"
         let expected = windows_program_data_dir_from_known_folder()
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_PROGRAM_DATA_DIR_WINDOWS))
             .join("OpenAI")
-            .join("Codex")
+            .join("ByteAsk")
             .join("config.toml");
         assert_eq!(
             windows_system_config_toml_file()

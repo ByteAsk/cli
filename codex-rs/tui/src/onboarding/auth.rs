@@ -437,12 +437,12 @@ impl AuthModeWidget {
 
     fn render_pick_mode(&self, area: Rect, buf: &mut Buffer) {
         let mut lines: Vec<Line> = if self.bedrock_setup_enabled {
-            vec!["  Choose how you want to use Codex.".into(), "".into()]
+            vec!["  Choose how you want to use ByteAsk.".into(), "".into()]
         } else {
             vec![
                 Line::from(vec![
                     "  ".into(),
-                    "Sign in with ChatGPT to use Codex as part of your paid plan".into(),
+                    "Sign in with ChatGPT to use ByteAsk as part of your paid plan".into(),
                 ]),
                 Line::from(vec![
                     "  ".into(),
@@ -462,8 +462,8 @@ impl AuthModeWidget {
 
             let line1 = if is_selected {
                 Line::from(vec![
-                    format!("{caret} {index}. ", index = idx + 1).cyan().dim(),
-                    text.to_string().cyan(),
+                    format!("{caret} {index}. ", index = idx + 1).fg(crate::style::accent_color()).dim(),
+                    text.to_string().fg(crate::style::accent_color()),
                 ])
             } else {
                 format!("  {index}. {text}", index = idx + 1).into()
@@ -471,7 +471,7 @@ impl AuthModeWidget {
 
             let line2 = if is_selected {
                 Line::from(format!("     {description}"))
-                    .fg(Color::Cyan)
+                    .fg(crate::style::accent_color())
                     .add_modifier(Modifier::DIM)
             } else {
                 Line::from(format!("     {description}"))
@@ -576,14 +576,14 @@ impl AuthModeWidget {
             lines.push("".into());
             lines.push(Line::from(vec![
                 "  ".into(),
-                state.auth_url.as_str().cyan().underlined(),
+                state.auth_url.as_str().fg(crate::style::accent_color()).underlined(),
             ]));
             lines.push("".into());
             lines.push(Line::from(vec![
                 "  On a remote or headless machine? Press ".into(),
                 self.cancel_binding().into(),
                 " and choose ".into(),
-                "Sign in with Device Code".cyan(),
+                "Sign in with Device Code".fg(crate::style::accent_color()),
                 ".".into(),
             ]));
             lines.push("".into());
@@ -611,7 +611,7 @@ impl AuthModeWidget {
     fn render_chatgpt_success_message(&self, area: Rect, buf: &mut Buffer) {
         let mut docs_line = HyperlinkLine::new(Line::from("  For more details see the ").dim());
         docs_line.push_span(
-            "Codex docs".underlined(),
+            "ByteAsk docs".underlined(),
             Some("https://developers.openai.com/codex/security"),
         );
         let mut preferences_line =
@@ -630,10 +630,10 @@ impl AuthModeWidget {
             "".into(),
             "  Before you start:".into(),
             "".into(),
-            "  Decide how much autonomy you want to grant Codex".into(),
+            "  Decide how much autonomy you want to grant ByteAsk".into(),
             docs_line,
             "".into(),
-            "  Codex can make mistakes".into(),
+            "  ByteAsk can make mistakes".into(),
             HyperlinkLine::new(
                 "  Review the code it writes and commands it runs"
                     .dim()
@@ -644,9 +644,9 @@ impl AuthModeWidget {
             preferences_line,
             "".into(),
             HyperlinkLine::new(Line::from(vec![
-                "  Press ".fg(Color::Cyan),
+                "  Press ".fg(crate::style::accent_color()),
                 self.confirm_binding().into(),
-                " to continue".fg(Color::Cyan),
+                " to continue".fg(crate::style::accent_color()),
             ])),
         ];
 
@@ -672,7 +672,7 @@ impl AuthModeWidget {
         let lines = vec![
             "✓ API key configured".fg(Color::Green).into(),
             "".into(),
-            "  Codex will use usage-based billing with your API key.".into(),
+            "  ByteAsk will use usage-based billing with your API key.".into(),
         ];
 
         Paragraph::new(lines)
@@ -722,7 +722,7 @@ impl AuthModeWidget {
                     .title("API key")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Cyan)),
+                    .border_style(Style::default().fg(crate::style::accent_color())),
             )
             .render(input_area, buf);
 
@@ -1233,8 +1233,8 @@ mod tests {
         while rows.last().is_some_and(String::is_empty) {
             rows.pop();
         }
-        insta::assert_snapshot!(rows.join("\n"), @r###"
-          Choose how you want to use Codex.
+        insta::assert_snapshot!(rows.join("\n"), @"
+          Choose how you want to use ByteAsk.
 
         > 1. Sign in with ChatGPT
              Usage included with Plus, Pro, Business, and Enterprise plans
@@ -1249,7 +1249,7 @@ mod tests {
              Connect using your AWS credentials
 
           Press enter to continue
-        "###);
+        ");
 
         widget.auth_config.forced_login_method = Some(ForcedLoginMethod::Chatgpt);
         assert_eq!(
@@ -1400,7 +1400,7 @@ mod tests {
 
         assert_eq!(
             collect_osc8_chars(&buf, area, "https://developers.openai.com/codex/security"),
-            "Codex docs"
+            "ByteAsk docs"
         );
         assert_eq!(
             collect_osc8_chars(&buf, area, "https://chatgpt.com/#settings"),
@@ -1434,22 +1434,22 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        insta::assert_snapshot!(visible, @r###"
+        insta::assert_snapshot!(visible, @"
         ✓ Signed in with your ChatGPT account
 
           Before you start:
 
-          Decide how much autonomy you want to grant Codex
-          For more details see the Codex docs
+          Decide how much autonomy you want to grant ByteAsk
+          For more details see the ByteAsk docs
 
-          Codex can make mistakes
+          ByteAsk can make mistakes
           Review the code it writes and commands it runs
 
           Powered by your ChatGPT account
           Uses your plan's rate limits and training data preferences
 
           Press enter to continue
-        "###);
+        ");
     }
 
     #[test]
@@ -1512,7 +1512,7 @@ mod tests {
         for (i, ch) in "example".chars().enumerate() {
             let cell = &mut buf[(i as u16, 0)];
             cell.set_symbol(&ch.to_string());
-            cell.fg = Color::Cyan;
+            cell.fg = crate::style::accent_color();
             cell.modifier = Modifier::UNDERLINED;
         }
         // Leave a plain cell that should NOT be marked.
@@ -1536,7 +1536,7 @@ mod tests {
         // One cyan+underlined cell to mark.
         let cell = &mut buf[(0, 0)];
         cell.set_symbol("a");
-        cell.fg = Color::Cyan;
+        cell.fg = crate::style::accent_color();
         cell.modifier = Modifier::UNDERLINED;
 
         // URL contains ESC and BEL that could break the OSC 8 sequence.

@@ -149,7 +149,7 @@ impl ChatWidget {
         let footer_note = show_elevate_sandbox_hint.then(|| {
             vec![
                 "The non-admin sandbox protects your files and prevents network access under most circumstances. However, it carries greater risk if prompt injected. To upgrade to the default sandbox, run ".dim(),
-                "/setup-default-sandbox".cyan(),
+                "/setup-default-sandbox".fg(crate::style::accent_color()),
                 ".".dim(),
             ]
             .into()
@@ -427,7 +427,7 @@ impl ChatWidget {
             vec![
                 Line::default(),
                 Line::from(
-                    "When Codex runs with full access, it can edit any file on your computer and run commands with network, without your approval.",
+                    "When ByteAsk runs with full access, it can edit any file on your computer and run commands with network, without your approval.",
                 ),
                 Line::default(),
                 Line::from(vec![
@@ -438,7 +438,7 @@ impl ChatWidget {
             ]
         } else {
             vec![Line::from(vec![
-                "When Codex runs with full access, it can edit any file on your computer and run commands with network, without your approval. "
+                "When ByteAsk runs with full access, it can edit any file on your computer and run commands with network, without your approval. "
                     .into(),
                 "Exercise caution when enabling full access. This significantly increases the risk of data loss, leaks, or unexpected behavior."
                     .red(),

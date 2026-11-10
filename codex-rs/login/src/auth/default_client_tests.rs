@@ -47,6 +47,63 @@ fn test_get_codex_user_agent() {
 }
 
 #[test]
+fn resolve_reported_version_auto_maps_to_stamped_upstream() {
+    // `auto`/`upstream` (what the wrapper sends for a subscription session) must
+    // resolve to a real upstream Codex version stamped at build time — NOT the
+    // baked 0.1.0 the ChatGPT backend rejects. This is the permanent fix: no
+    // literal to tune, it tracks the merged rust-v* tag on every rebuild.
+    let baked = "0.1.0";
+    assert_eq!(resolve_reported_version(Some("auto"), baked), UPSTREAM_CODEX_VERSION);
+    assert_eq!(resolve_reported_version(Some(" Upstream "), baked), UPSTREAM_CODEX_VERSION);
+    assert_ne!(UPSTREAM_CODEX_VERSION, baked);
+    assert!(
+        UPSTREAM_CODEX_VERSION.split('.').count() >= 2
+            && UPSTREAM_CODEX_VERSION
+                .split('.')
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
+        "stamped upstream version must be numeric x.y.z, got {UPSTREAM_CODEX_VERSION:?}"
+    );
+    // A concrete literal still wins (manual escape hatch); blank/none stay baked.
+    assert_eq!(resolve_reported_version(Some("0.200.1"), baked), "0.200.1");
+    assert_eq!(resolve_reported_version(Some("  "), baked), baked);
+    assert_eq!(resolve_reported_version(None, baked), baked);
+}
+
+/// The env var the wrapper sets was renamed off the upstream brand
+/// (`BYTEASK_CODEX_VERSION_OVERRIDE` -> `BYTEASK_REPORTED_VERSION`),
+/// with the old name still read so a hand-configured setup keeps working.
+///
+/// The trap this pins: the obvious neutral name, `BYTEASK_CLIENT_VERSION`, is ALREADY
+/// TAKEN by the wrapper for the SHIPPED version (`byteask --version`). Had the rename
+/// landed on it, the wrapper's `: "${...:=auto}"` default would never fire (the name is
+/// already non-empty), the backend would be told `0.1.13`, and every model would be
+/// refused for being below `minimal_client_version` - the exact failure this path exists
+/// to fix, reintroduced by a rename.
+#[test]
+fn reported_version_prefers_the_neutral_env_name_and_still_reads_the_legacy_one() {
+    assert_eq!(
+        version_override_from(Some("auto"), None).as_deref(),
+        Some("auto")
+    );
+    assert_eq!(
+        version_override_from(None, Some("auto")).as_deref(),
+        Some("auto"),
+        "the legacy name must still be honored"
+    );
+    assert_eq!(
+        version_override_from(Some("auto"), Some("0.99.0")).as_deref(),
+        Some("auto"),
+        "the neutral name wins when both are set"
+    );
+    // Blank is not a value: it must fall through, not win as an empty override.
+    assert_eq!(
+        version_override_from(Some("   "), Some("auto")).as_deref(),
+        Some("auto")
+    );
+    assert_eq!(version_override_from(None, None), None);
+}
+
+#[test]
 fn is_first_party_originator_matches_known_values() {
     assert_eq!(is_first_party_originator(DEFAULT_ORIGINATOR), true);
     assert_eq!(is_first_party_originator("codex-tui"), true);

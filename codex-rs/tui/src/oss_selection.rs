@@ -127,7 +127,7 @@ impl OssSelectionWidget<'_> {
 
         let mut contents: Vec<Line> = vec![
             Line::from(vec![
-                "? ".fg(Color::Blue),
+                "? ".fg(crate::style::accent_color()),
                 "Select an open-source provider".bold(),
             ]),
             Line::from(""),
@@ -266,7 +266,7 @@ impl WidgetRef for &OssSelectionWidget<'_> {
             .enumerate()
             .map(|(idx, opt)| {
                 let style = if idx == self.selected_option {
-                    Style::new().bg(Color::Cyan).fg(Color::Black)
+                    Style::new().bg(crate::style::accent_color()).fg(Color::Black)
                 } else {
                     Style::new().bg(Color::DarkGray)
                 };

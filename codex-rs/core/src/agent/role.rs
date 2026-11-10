@@ -136,7 +136,6 @@ async fn load_role_layer_toml(
 ) -> anyhow::Result<TomlValue> {
     let (role_config_toml, role_config_base) = if is_built_in {
         let role_config_contents = built_in::config_file_contents(config_file)
-            .map(str::to_owned)
             .ok_or(anyhow!("No corresponding config content"))?;
         let role_config_toml: TomlValue = toml::from_str(&role_config_contents)?;
         (role_config_toml, config.codex_home.as_path())
@@ -300,7 +299,6 @@ pub(crate) mod spawn_tool_spec {
                 .as_ref()
                 .and_then(|config_file| {
                     built_in::config_file_contents(config_file)
-                        .map(str::to_owned)
                         .or_else(|| std::fs::read_to_string(config_file).ok())
                 })
                 .and_then(|contents| toml::from_str::<TomlValue>(&contents).ok())
@@ -329,7 +327,17 @@ pub(crate) mod spawn_tool_spec {
                     }
                 })
                 .unwrap_or_default();
-            format!("{name}: {{\n{description}{locked_settings_note}\n}}")
+            // ByteAsk: a full-history fork cannot take a role (upstream rejects it) and
+            // would copy the parent's whole context into the child, which is exactly what
+            // an explorer exists to avoid. Say so where the model picks the role.
+            let byteask_fork_note = if name == "explorer"
+                && byteask_output_reducers::policy::active().explorer.is_some()
+            {
+                "\n- Spawn an explorer with `agent_type: \"explorer\"` and `fork_context: false`, and put everything it needs to know into `message`: it starts with a small context of its own, which is what makes it fast."
+            } else {
+                ""
+            };
+            format!("{name}: {{\n{description}{locked_settings_note}{byteask_fork_note}\n}}")
         } else {
             format!("{name}: no description")
         }
@@ -404,14 +412,40 @@ Rules:
     }
 
     /// Resolves a built-in role `config_file` path to embedded content.
-    pub(super) fn config_file_contents(path: &Path) -> Option<&'static str> {
+    pub(super) fn config_file_contents(path: &Path) -> Option<String> {
         const EXPLORER: &str = include_str!("../../assets/agent/builtins/explorer.toml");
         const AWAITER: &str = include_str!("../../assets/agent/builtins/awaiter.toml");
         match path.to_str()? {
-            "explorer.toml" => Some(EXPLORER),
-            "awaiter.toml" => Some(AWAITER),
+            // ByteAsk: upstream ships this role EMPTY, so an explorer runs on the
+            // parent's (expensive) model. The server-driven policy may name a cheap one.
+            "explorer.toml" => Some(
+                byteask_output_reducers::policy::active()
+                    .explorer
+                    .map(|(model, effort)| byteask_explorer_toml(&model, &effort))
+                    .unwrap_or_else(|| EXPLORER.to_string()),
+            ),
+            "awaiter.toml" => Some(AWAITER.to_string()),
             _ => None,
         }
+    }
+
+    /// A read-only explorer on a cheap model that answers with LOCATIONS, not file text:
+    /// its reading happens in a small context of its own instead of the parent's large one.
+    /// `model` and `effort` were validated by the policy loader (slug characters only).
+    pub(crate) fn byteask_explorer_toml(model: &str, effort: &str) -> String {
+        format!(
+            r#"model = "{model}"
+model_reasoning_effort = "{effort}"
+sandbox_mode = "read-only"
+developer_instructions = """
+You are a read-only code explorer working for another agent. Answer exactly the question you were given and nothing else. Never modify, create or delete files.
+Search first, then read only the line ranges you need.
+Reply with at most 8 lines, most relevant first, each in the form:
+path:START-END  why this range matters
+Add one short closing sentence only if the locations alone do not answer the question. Do not paste file contents: the agent you work for will read the ranges itself.
+"""
+"#
+        )
     }
 }
 

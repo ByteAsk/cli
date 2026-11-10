@@ -136,6 +136,7 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ModelVerification(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::ContextPack(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ModelSafetyBufferingUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }

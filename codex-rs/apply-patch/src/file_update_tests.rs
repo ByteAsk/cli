@@ -276,3 +276,116 @@ g
 "#
     );
 }
+
+// ---- ByteAsk: strict_patch refuses hunks whose position is a guess ----------------------
+
+async fn strict_check(dir: &std::path::Path, body: &str) -> Result<(), String> {
+    let args = parse_patch(&wrap_patch(body)).expect("patch parses");
+    let cwd = PathUri::from_host_native_path(dir).expect("absolute test dir");
+    for mode in [
+        ApplyPatchFileUpdateMode::NormalizeToLf,
+        ApplyPatchFileUpdateMode::PreserveLineEndings,
+    ] {
+        crate::check_unambiguous_hunks(&args, &cwd, mode, LOCAL_FS.as_ref(), /*sandbox*/ None)
+            .await
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn strict_refuses_lines_that_occur_twice() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("a.cpp"),
+        "void f() {\n  x = 0;\n}\nvoid g() {\n  x = 0;\n}\n",
+    )
+    .unwrap();
+    let err = strict_check(
+        dir.path(),
+        "*** Update File: a.cpp\n@@\n-  x = 0;\n+  x = 1;",
+    )
+    .await
+    .expect_err("two places match");
+    assert!(err.contains("at line 2 and line 5"), "{err}");
+    assert!(err.contains("Nothing was changed"), "{err}");
+    // the file is untouched
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.cpp")).unwrap(),
+        "void f() {\n  x = 0;\n}\nvoid g() {\n  x = 0;\n}\n"
+    );
+}
+
+#[tokio::test]
+async fn strict_accepts_a_unique_match_an_anchor_or_more_context() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("a.cpp"),
+        "void f() {\n  x = 0;\n}\nvoid g() {\n  x = 0;\n}\n",
+    )
+    .unwrap();
+    // an @@ line narrows the search: the first match after it is the one meant
+    strict_check(
+        dir.path(),
+        "*** Update File: a.cpp\n@@ void g() {\n-  x = 0;\n+  x = 1;",
+    )
+    .await
+    .expect("anchored");
+    // enough context to be unique
+    strict_check(
+        dir.path(),
+        "*** Update File: a.cpp\n@@\n void g() {\n-  x = 0;\n+  x = 1;",
+    )
+    .await
+    .expect("unique with context");
+    // later chunks search after the earlier ones: two chunks, one per occurrence, in order
+    strict_check(
+        dir.path(),
+        "*** Update File: a.cpp\n@@\n void f() {\n-  x = 0;\n+  x = 1;\n@@\n void g() {\n-  x = 0;\n+  x = 2;",
+    )
+    .await
+    .expect("one chunk per place");
+}
+
+#[tokio::test]
+async fn strict_refuses_an_insertion_without_context_but_allows_end_of_file() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.cpp"), "int a;\nint b;\n").unwrap();
+    let err = strict_check(dir.path(), "*** Update File: a.cpp\n@@ int a;\n+int c;")
+        .await
+        .expect_err("no line to match");
+    assert!(err.contains("appended at the end of the file"), "{err}");
+    strict_check(
+        dir.path(),
+        "*** Update File: a.cpp\n@@\n+int c;\n*** End of File",
+    )
+    .await
+    .expect("explicit end of file");
+    // an empty file has only one place to insert
+    fs::write(dir.path().join("empty.cpp"), "").unwrap();
+    strict_check(dir.path(), "*** Update File: empty.cpp\n@@\n+int c;")
+        .await
+        .expect("empty file");
+}
+
+/// Without strict mode the same patch applies to the first occurrence, as upstream does.
+#[tokio::test]
+async fn without_strict_the_first_occurrence_is_changed() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("a.cpp");
+    fs::write(&path, "  x = 0;\n}\n  x = 0;\n").unwrap();
+    let patch = parse_patch(&wrap_patch(&format!(
+        "*** Update File: {}\n@@\n-  x = 0;\n+  x = 1;",
+        path.display()
+    )))
+    .unwrap();
+    let chunks = match patch.hunks.as_slice() {
+        [Hunk::UpdateFile { chunks, .. }] => chunks,
+        _ => panic!("one update"),
+    };
+    let path_uri = PathUri::from_host_native_path(&path).unwrap();
+    let diff = unified_diff_from_chunks(&path_uri, chunks, LOCAL_FS.as_ref(), None)
+        .await
+        .unwrap();
+    assert_eq!(diff.content, "  x = 1;\n}\n  x = 0;\n");
+}

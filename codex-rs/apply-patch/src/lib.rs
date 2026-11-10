@@ -36,6 +36,7 @@ pub use file_update::unified_diff_from_chunks;
 pub use file_update::unified_diff_from_chunks_with_context;
 pub(crate) use file_update::unified_diff_from_chunks_with_mode;
 pub use invocation::MaybeApplyPatch;
+pub use invocation::check_unambiguous_hunks;
 pub use invocation::maybe_parse_apply_patch;
 pub use invocation::maybe_parse_apply_patch_verified;
 pub use invocation::maybe_parse_apply_patch_verified_with_mode;

@@ -12,7 +12,7 @@ pub struct Cli {
     #[arg(value_name = "PROMPT", value_hint = clap::ValueHint::Other)]
     pub prompt: Option<String>,
 
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of ByteAsk.
     #[arg(long = "strict-config", default_value_t = false)]
     pub strict_config: bool,
 
@@ -74,6 +74,14 @@ pub struct Cli {
     /// Runs the TUI in inline mode, preserving terminal scrollback history.
     #[arg(long = "no-alt-screen", default_value_t = false)]
     pub no_alt_screen: bool,
+
+    /// Render ByteAsk's own surfaces for a screen reader
+    ///
+    /// Plain linear text instead of panes, static spinners, and ASCII symbols. Also settable
+    /// with `BYTEASK_AX_SCREEN_READER=1` or `tui.screen_reader = true`; this flag wins over
+    /// both.
+    #[arg(long = "ax-screen-reader", default_value_t = false)]
+    pub ax_screen_reader: bool,
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,

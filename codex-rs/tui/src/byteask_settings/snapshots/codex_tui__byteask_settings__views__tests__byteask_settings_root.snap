@@ -1,0 +1,15 @@
+---
+source: tui/src/byteask_settings/views.rs
+assertion_line: 614
+expression: "render(root_params(&view), 76)"
+---
+
+  ByteAsk settings
+  dev@example.com · signed in
+
+› 1. API keys             Use your own provider keys                2 keys
+  2. Hosted models        Your own server or a cloud provider      1 added
+  3. Account              Sign in or switch email                signed in
+  4. Use ByteAsk managed  Switch back to ByteAsk's models and billing
+
+  Press enter to confirm or esc to go back

@@ -7,17 +7,35 @@ use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::SharedCliOptions;
 use std::path::PathBuf;
 
+/// Printed at the end of `byteask exec --help`.
+///
+/// `-s/--sandbox` was documented but its *default* never was, so a headless
+/// evaluator had no way to know that every shell command the agent runs is
+/// confined to a read-only filesystem, nor that the native analysis tools are
+/// not.
+const SANDBOX_HELP: &str = "\
+Sandboxing:
+  Shell commands the model runs are sandboxed READ-ONLY by default: the agent
+  can read your workspace but cannot write anywhere, including $TMPDIR.
+  Pass `--sandbox workspace-write` to let it build, compile and write files,
+  or `--sandbox danger-full-access` to disable the sandbox entirely.
+
+  Native analysis tools (cpp_sanitize, cpp_perf, cpp_check, debug, ...) run
+  outside this sandbox and compile and execute code even under the default.";
+
 #[derive(Parser, Debug)]
 #[command(
     version,
-    override_usage = "codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]"
+    override_usage = "byteask exec [OPTIONS] [PROMPT]\n       byteask exec [OPTIONS] <COMMAND> [ARGS]",
+    after_help = SANDBOX_HELP,
+    after_long_help = SANDBOX_HELP
 )]
 pub struct Cli {
     /// Action to perform. If omitted, runs a new non-interactive session.
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Error out when config.toml contains fields that are not recognized by this version of Codex.
+    /// Error out when config.toml contains fields that are not recognized by this version of ByteAsk.
     #[arg(long = "strict-config", global = true, default_value_t = false)]
     pub strict_config: bool,
 
@@ -28,7 +46,7 @@ pub struct Cli {
     #[arg(long = "thread-source", value_name = "SOURCE", global = true)]
     pub thread_source: Option<ThreadSource>,
 
-    /// Allow running Codex outside a Git repository.
+    /// Allow running ByteAsk outside a Git repository.
     #[arg(long = "skip-git-repo-check", global = true, default_value_t = false)]
     pub skip_git_repo_check: bool,
 
@@ -36,7 +54,7 @@ pub struct Cli {
     #[arg(long = "ephemeral", global = true, default_value_t = false)]
     pub ephemeral: bool,
 
-    /// Do not load `$CODEX_HOME/config.toml`; auth still uses `CODEX_HOME`.
+    /// Do not load `$BYTEASK_HOME/config.toml`; auth still uses `BYTEASK_HOME`.
     #[arg(long = "ignore-user-config", global = true, default_value_t = false)]
     pub ignore_user_config: bool,
 
@@ -47,6 +65,16 @@ pub struct Cli {
     /// Path to a JSON Schema file describing the model's final response shape.
     #[arg(long = "output-schema", value_name = "FILE", global = true)]
     pub output_schema: Option<PathBuf>,
+
+    /// Stop the run after the model has responded this many times.
+    ///
+    /// A "turn" is one model response: the agent's loop of think, call tools,
+    /// read results and respond again. Without this there is no budget control
+    /// in headless mode, so a stuck agent runs until it gives up on its own.
+    /// On reaching the limit the turn is interrupted cleanly and exec exits
+    /// non-zero.
+    #[arg(long = "max-turns", value_name = "N", global = true)]
+    pub max_turns: Option<u32>,
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
@@ -181,7 +209,7 @@ pub struct ForkArgs {
 #[derive(Args, Debug)]
 struct ResumeArgsRaw {
     // Note: This is the direct clap shape. We reinterpret the positional when --last is set
-    // so "codex resume --last <prompt>" treats the positional as a prompt, not a session id.
+    // so "byteask resume --last <prompt>" treats the positional as a prompt, not a session id.
     /// Conversation/session id (UUID) or thread name. UUIDs take precedence if it parses.
     /// If omitted, use --last to pick the most recent recorded session.
     #[arg(value_name = "SESSION_ID")]

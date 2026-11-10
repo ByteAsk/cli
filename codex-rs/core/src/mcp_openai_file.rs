@@ -146,10 +146,10 @@ async fn build_uploaded_argument_value(
         None => format!("failed to upload `{file_path}` for `{field_name}`: {error}"),
     };
     let Some(auth) = auth else {
-        return Err("ChatGPT auth is required to upload files for Codex Apps tools".to_string());
+        return Err("ChatGPT auth is required to upload files for ByteAsk Apps tools".to_string());
     };
     if !auth.uses_codex_backend() {
-        return Err("ChatGPT auth is required to upload files for Codex Apps tools".to_string());
+        return Err("ChatGPT auth is required to upload files for ByteAsk Apps tools".to_string());
     }
     let turn_context = &step_context.turn;
     let Some(turn_environment) = step_context.environments.primary() else {

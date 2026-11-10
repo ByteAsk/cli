@@ -266,7 +266,13 @@ impl ContextManager {
                     .and_then(|metadata| metadata.fallback_token_limit_override)
                     .map(TruncationPolicy::Tokens)
                     .unwrap_or(policy * 1.2);
-                truncate_function_output_payload(output, policy, estimate_audio_token_count);
+                // An output ByteAsk already reduced ends with its sentinel and already fits
+                // the budget it was given. Leave it alone: re-truncating it here (notably on
+                // resume, under a DIFFERENT model's policy) would change bytes that were
+                // already sent and could cut off the footer that names the saved original.
+                if !byteask_already_reduced(output) {
+                    truncate_function_output_payload(output, policy, estimate_audio_token_count);
+                }
             }
             if let Some(review_history) = &mut self.review_history
                 && !matches!(item, ResponseItem::Message { role, content, .. }
@@ -389,6 +395,32 @@ impl ContextManager {
         self.items = Arc::new(items);
         self.history_version = self.history_version.saturating_add(1);
         self.world_state_baseline = None;
+    }
+
+    /// ByteAsk: replace the BODY of some tool outputs in place. Like a compaction, the
+    /// reviewer's transcript is retained first, so an auto-review still sees what really
+    /// happened. Context items are untouched, so the world-state baseline stays valid.
+    pub(crate) fn byteask_mask_outputs(&mut self, replacements: Vec<(usize, ResponseItem)>) {
+        if replacements.is_empty() {
+            return;
+        }
+        if self.review_history.is_none() {
+            let mut retained = TranscriptHistory::new(self.history_version.saturating_add(1));
+            for item in self.raw_items().filter(|item| {
+                !matches!(item, ResponseItem::Message { role, content, .. }
+                    if role == "user" && is_contextual_user_message_content(content))
+            }) {
+                retained.record(item);
+            }
+            self.review_history = Some(retained);
+        }
+        let items = Arc::make_mut(&mut self.items);
+        for (index, item) in replacements {
+            if let Some(slot) = items.get_mut(index) {
+                slot.item = item;
+            }
+        }
+        self.history_version = self.history_version.saturating_add(1);
     }
 
     /// Compaction changes the model's history without changing the user's authorization.
@@ -1001,3 +1033,32 @@ fn user_message_positions(items: &[ResponseItemEnvelope]) -> Vec<usize> {
 #[cfg(test)]
 #[path = "history_tests.rs"]
 mod tests;
+
+/// Upper bound on what the sentinel may protect, so text that merely LOOKS reduced can
+/// never bypass truncation entirely: upstream's own ceiling (10,000 tokens x 1.2).
+const BYTEASK_REDUCED_MAX_BYTES: usize = 48_000;
+
+fn byteask_already_reduced(output: &codex_protocol::models::FunctionCallOutputPayload) -> bool {
+    use codex_protocol::models::FunctionCallOutputBody;
+    use codex_protocol::models::FunctionCallOutputContentItem;
+    match &output.body {
+        FunctionCallOutputBody::Text(text) => {
+            text.len() <= BYTEASK_REDUCED_MAX_BYTES && byteask_output_reducers::is_reduced(text)
+        }
+        FunctionCallOutputBody::ContentItems(items) => {
+            let total: usize = items
+                .iter()
+                .map(|item| match item {
+                    FunctionCallOutputContentItem::InputText { text } => text.len(),
+                    _ => 0,
+                })
+                .sum();
+            let last_text = items.iter().rev().find_map(|item| match item {
+                FunctionCallOutputContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            });
+            total <= BYTEASK_REDUCED_MAX_BYTES
+                && last_text.is_some_and(byteask_output_reducers::is_reduced)
+        }
+    }
+}

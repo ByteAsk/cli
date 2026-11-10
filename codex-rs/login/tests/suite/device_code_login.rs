@@ -119,6 +119,54 @@ fn server_opts(
     opts
 }
 
+/// A plan that serves no model must be refused BEFORE the credential is stored.
+///
+/// The ordering is the whole point. When this check lived in the wrapper it ran after
+/// `login` had already replaced auth.json, so refusing meant undoing damage - and a user
+/// trying a second account lost the working subscription they already had. This asserts
+/// the refusal happens with NOTHING written, which a test of the error message alone
+/// would not catch.
+#[tokio::test]
+async fn a_plan_that_serves_no_model_is_refused_without_storing_anything() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let codex_home = tempdir().unwrap();
+    let mock_server = MockServer::start().await;
+
+    mock_usercode_success(&mock_server).await;
+    mock_poll_token_two_step(
+        &mock_server,
+        Arc::new(AtomicUsize::new(0)),
+        /*first_response_status*/ 404,
+    )
+    .await;
+
+    let jwt = make_jwt(json!({
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": WORKSPACE_ID_ALLOWED,
+            "chatgpt_plan_type": "go"
+        }
+    }));
+    mock_oauth_token_single(&mock_server, jwt).await;
+
+    let issuer = mock_server.uri();
+    let opts = server_opts(&codex_home, issuer, AuthCredentialsStoreMode::File);
+
+    let err = run_device_code_login(opts)
+        .await
+        .expect_err("a go plan serves no model and must be refused");
+    assert!(
+        err.to_string().contains("Plus or higher"),
+        "the refusal must say what is required, got: {err}"
+    );
+
+    assert!(
+        !codex_home.path().join("auth.json").exists(),
+        "a refused plan must leave no credential behind"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn device_code_login_integration_succeeds() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));

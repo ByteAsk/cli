@@ -6,6 +6,8 @@ use std::sync::atomic::Ordering;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+use codex_app_server_protocol::DynamicToolCallStatus;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind;
@@ -20,6 +22,7 @@ use serde_json::json;
 
 pub use crate::event_processor::CodexStatus;
 use crate::event_processor::EventProcessor;
+use crate::event_processor::describe_image_url;
 use crate::event_processor::handle_last_message;
 use crate::exec_events::AgentMessageItem;
 use crate::exec_events::CollabAgentState;
@@ -29,6 +32,10 @@ use crate::exec_events::CollabToolCallItem;
 use crate::exec_events::CollabToolCallStatus;
 use crate::exec_events::CommandExecutionItem;
 use crate::exec_events::CommandExecutionStatus as ExecCommandExecutionStatus;
+use crate::exec_events::ContextPackItem;
+use crate::exec_events::DynamicToolCallContent;
+use crate::exec_events::DynamicToolCallItem;
+use crate::exec_events::DynamicToolCallStatus as ExecDynamicToolCallStatus;
 use crate::exec_events::ErrorItem;
 use crate::exec_events::FileChangeItem;
 use crate::exec_events::FileUpdateChange;
@@ -54,6 +61,39 @@ use crate::exec_events::TurnFailedEvent;
 use crate::exec_events::TurnStartedEvent;
 use crate::exec_events::Usage;
 use crate::exec_events::WebSearchItem;
+
+/// Convert a dynamic tool's output blocks into JSONL content.
+///
+/// Text is copied verbatim — no cap. Truncation ownership:
+/// the tool owns trimming its own payload; this renderer never does, because a
+/// consumer that receives a silently-truncated sanitizer trace would conclude
+/// the run was clean.
+fn dynamic_tool_content(
+    items: Option<Vec<DynamicToolCallOutputContentItem>>,
+) -> Vec<DynamicToolCallContent> {
+    items
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| match item {
+            DynamicToolCallOutputContentItem::InputText { text } => {
+                DynamicToolCallContent::Text { text }
+            }
+            DynamicToolCallOutputContentItem::InputImage { image_url } => {
+                let (mime_type, bytes) = describe_image_url(&image_url);
+                DynamicToolCallContent::Image { mime_type, bytes }
+            }
+            DynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                let (mime_type, bytes) = describe_image_url(&audio_url);
+                let mime_type = if mime_type == "image" {
+                    "audio".to_string()
+                } else {
+                    mime_type
+                };
+                DynamicToolCallContent::Audio { mime_type, bytes }
+            }
+        })
+        .collect()
+}
 
 pub struct EventProcessorWithJsonOutput {
     last_message_path: Option<PathBuf>,
@@ -299,6 +339,31 @@ impl EventProcessorWithJsonOutput {
                     },
                 }),
             }),
+            ThreadItem::DynamicToolCall {
+                namespace,
+                tool,
+                arguments,
+                status,
+                content_items,
+                success,
+                duration_ms,
+                ..
+            } => Some(ExecThreadItem {
+                id: make_id(),
+                details: ThreadItemDetails::DynamicToolCall(DynamicToolCallItem {
+                    namespace,
+                    tool,
+                    arguments,
+                    status: match status {
+                        DynamicToolCallStatus::InProgress => ExecDynamicToolCallStatus::InProgress,
+                        DynamicToolCallStatus::Completed => ExecDynamicToolCallStatus::Completed,
+                        DynamicToolCallStatus::Failed => ExecDynamicToolCallStatus::Failed,
+                    },
+                    content: dynamic_tool_content(content_items),
+                    success,
+                    duration_ms,
+                }),
+            }),
             ThreadItem::WebSearch(item) => Some(ExecThreadItem {
                 id: make_id(),
                 details: ThreadItemDetails::WebSearch(WebSearchItem {
@@ -313,8 +378,27 @@ impl EventProcessorWithJsonOutput {
                     },
                 }),
             }),
-            _ => None,
+            // Every remaining variant is enumerated on purpose:
+            // a `_ => None` arm silently drops a variant it does not name from
+            // `--json` (`DynamicToolCall` was dropped that way). A new upstream variant must be a
+            // compile error here, not a silent drop.
+            ThreadItem::UserMessage { .. }
+            | ThreadItem::HookPrompt { .. }
+            | ThreadItem::Plan { .. }
+            | ThreadItem::SubAgentActivity { .. }
+            | ThreadItem::ImageView { .. }
+            | ThreadItem::Sleep { .. }
+            | ThreadItem::ImageGeneration(_)
+            | ThreadItem::EnteredReviewMode { .. }
+            | ThreadItem::ExitedReviewMode { .. }
+            | ThreadItem::ContextCompaction { .. }
+            | ThreadItem::FunctionCallOutput { .. } => None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn map_item_for_test(item: ThreadItem) -> Option<ExecThreadItem> {
+        Self::map_item_with_id(item, || "item_0".to_string())
     }
 
     fn started_item_id(&mut self, raw_id: &str) -> String {
@@ -499,6 +583,26 @@ impl EventProcessorWithJsonOutput {
                 CodexStatus::Running
             }
             ServerNotification::ModelVerification(_) => CodexStatus::Running,
+            ServerNotification::ContextPack(notification) => {
+                events.push(ThreadEvent::ItemCompleted(ItemCompletedEvent {
+                    item: ExecThreadItem {
+                        id: self.next_item_id(),
+                        details: ThreadItemDetails::ContextPack(ContextPackItem {
+                            attempted: notification.attempted,
+                            injected: notification.injected,
+                            reason: notification.reason,
+                            latency_ms: notification.latency_ms,
+                            answer_bytes: notification.answer_bytes,
+                            approx_tokens: notification.approx_tokens,
+                            test_programs: notification.test_programs,
+                            warm_build_started: notification.warm_build_started,
+                            auto_index: notification.auto_index,
+                            message: notification.message,
+                        }),
+                    },
+                }));
+                CodexStatus::Running
+            }
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
                 self.last_total_token_usage = Some(notification.token_usage);
                 CodexStatus::Running

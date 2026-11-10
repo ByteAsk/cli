@@ -26,7 +26,7 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::WidgetRef;
 use tokio_stream::StreamExt;
 
-const RELEASE_NOTES_URL: &str = "https://github.com/openai/codex/releases/latest";
+const RELEASE_NOTES_URL: &str = "https://github.com/ByteAsk/cli/releases/latest";
 
 pub(crate) enum UpdatePromptOutcome {
     Continue,
@@ -40,9 +40,13 @@ pub(crate) async fn run_update_prompt_if_needed(
     let Some(latest_version) = updates::get_upgrade_version_for_popup(config) else {
         return Ok(UpdatePromptOutcome::Continue);
     };
-    let Some(update_action) = crate::update_action::get_update_action() else {
-        return Ok(UpdatePromptOutcome::Continue);
-    };
+    // ByteAsk has one update command (`byteask --update`) for every install method, so
+    // an undetected install context must not silently skip a required update.
+    let update_action = crate::update_action::get_update_action().unwrap_or(if cfg!(windows) {
+        UpdateAction::StandaloneWindows
+    } else {
+        UpdateAction::StandaloneUnix
+    });
 
     let mut screen =
         UpdatePromptScreen::new(tui.frame_requester(), latest_version.clone(), update_action);
@@ -71,18 +75,15 @@ pub(crate) async fn run_update_prompt_if_needed(
         }
     }
 
+    // ByteAsk: this prompt is only reached when the installed version is below the
+    // feed's `min_supported`, so there is no "skip until next version" — skipping
+    // lasts for this launch only.
     match screen.selection() {
         Some(UpdateSelection::UpdateNow) => {
             tui.terminal.clear()?;
             Ok(UpdatePromptOutcome::RunUpdate(update_action))
         }
         Some(UpdateSelection::NotNow) | None => Ok(UpdatePromptOutcome::Continue),
-        Some(UpdateSelection::DontRemind) => {
-            if let Err(err) = updates::dismiss_version(config, screen.latest_version()).await {
-                tracing::error!("Failed to persist update dismissal: {err}");
-            }
-            Ok(UpdatePromptOutcome::Continue)
-        }
     }
 }
 
@@ -90,7 +91,6 @@ pub(crate) async fn run_update_prompt_if_needed(
 enum UpdateSelection {
     UpdateNow,
     NotNow,
-    DontRemind,
 }
 
 struct UpdatePromptScreen {
@@ -111,7 +111,7 @@ impl UpdatePromptScreen {
         Self {
             request_frame,
             latest_version,
-            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            current_version: crate::version::display_version().to_string(),
             update_action,
             highlighted: UpdateSelection::UpdateNow,
             selection: None,
@@ -133,7 +133,6 @@ impl UpdatePromptScreen {
             KeyCode::Down | KeyCode::Char('j') => self.set_highlight(self.highlighted.next()),
             KeyCode::Char('1') => self.select(UpdateSelection::UpdateNow),
             KeyCode::Char('2') => self.select(UpdateSelection::NotNow),
-            KeyCode::Char('3') => self.select(UpdateSelection::DontRemind),
             KeyCode::Enter => self.select(self.highlighted),
             KeyCode::Esc => self.select(UpdateSelection::NotNow),
             _ => {}
@@ -160,27 +159,18 @@ impl UpdatePromptScreen {
     fn selection(&self) -> Option<UpdateSelection> {
         self.selection
     }
-
-    fn latest_version(&self) -> &str {
-        self.latest_version.as_str()
-    }
 }
 
 impl UpdateSelection {
     fn next(self) -> Self {
         match self {
             UpdateSelection::UpdateNow => UpdateSelection::NotNow,
-            UpdateSelection::NotNow => UpdateSelection::DontRemind,
-            UpdateSelection::DontRemind => UpdateSelection::UpdateNow,
+            UpdateSelection::NotNow => UpdateSelection::UpdateNow,
         }
     }
 
     fn prev(self) -> Self {
-        match self {
-            UpdateSelection::UpdateNow => UpdateSelection::DontRemind,
-            UpdateSelection::NotNow => UpdateSelection::UpdateNow,
-            UpdateSelection::DontRemind => UpdateSelection::NotNow,
-        }
+        self.next()
     }
 }
 
@@ -193,7 +183,7 @@ impl WidgetRef for &UpdatePromptScreen {
 
         column.push("");
         column.push(Line::from(vec![
-            "  ✨\u{200A}".bold().cyan(),
+            "  \u{2728}\u{200A}".bold().fg(crate::style::accent_color()),
             "Update available!".bold(),
             " ".into(),
             format!(
@@ -221,11 +211,6 @@ impl WidgetRef for &UpdatePromptScreen {
             1,
             "Skip".to_string(),
             self.highlighted == UpdateSelection::NotNow,
-        ));
-        column.push(selection_option_row(
-            2,
-            "Skip until next version".to_string(),
-            self.highlighted == UpdateSelection::DontRemind,
         ));
         column.push("");
         column.push(
@@ -288,16 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn update_prompt_dont_remind_selects_dismissal() {
-        let mut screen = new_prompt();
-        screen.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        screen.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        screen.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(screen.is_done());
-        assert_eq!(screen.selection(), Some(UpdateSelection::DontRemind));
-    }
-
-    #[test]
     fn update_prompt_ctrl_c_skips_update() {
         let mut screen = new_prompt();
         screen.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -309,7 +284,7 @@ mod tests {
     fn update_prompt_navigation_wraps_between_entries() {
         let mut screen = new_prompt();
         screen.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(screen.highlighted, UpdateSelection::DontRemind);
+        assert_eq!(screen.highlighted, UpdateSelection::NotNow);
         screen.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(screen.highlighted, UpdateSelection::UpdateNow);
     }

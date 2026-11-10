@@ -156,12 +156,18 @@ async fn spawn_process_with_stdin_mode(
     let parent_pid = unsafe { libc::getpid() };
     #[cfg(unix)]
     let inherited_fds = inherited_fds.to_vec();
+    #[cfg(target_os = "linux")]
+    let oom_score_adj = crate::process_group::child_oom_score_adj();
     #[cfg(unix)]
     unsafe {
         command.pre_exec(move || {
             crate::process_group::detach_from_tty()?;
             #[cfg(target_os = "linux")]
             crate::process_group::set_parent_death_signal(parent_pid)?;
+            #[cfg(target_os = "linux")]
+            if let Some(value) = oom_score_adj {
+                crate::process_group::set_own_oom_score_adj(value);
+            }
             crate::pty::close_inherited_fds_except(&inherited_fds);
             Ok(())
         });

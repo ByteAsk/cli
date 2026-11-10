@@ -86,18 +86,43 @@ impl HistoryCell for TooltipHistoryCell {
             .saturating_sub(indent_width)
             .max(1);
         let mut lines: Vec<Line<'static>> = Vec::new();
-        append_markdown(
-            &format!("**Tip:** {}", self.tip),
-            Some(wrap_width),
-            Some(self.cwd.as_path()),
-            &mut lines,
-        );
+        // `tip` may be several newline-separated tips (byteask multi-tip startup
+        // block). Render each as its own markdown block; only the first is prefixed
+        // with "Tip:" so they stack as a clean list.
+        let mut first = true;
+        for tip in self.tip.split('\n') {
+            let tip = tip.trim();
+            if tip.is_empty() {
+                continue;
+            }
+            let md = if first {
+                format!("**Tip:** {tip}")
+            } else {
+                tip.to_string()
+            };
+            first = false;
+            append_markdown(&md, Some(wrap_width), Some(self.cwd.as_path()), &mut lines);
+        }
 
         prefix_lines(lines, indent.into(), indent.into())
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        vec![Line::from(format!("Tip: {}", self.tip))]
+        let mut first = true;
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for tip in self.tip.split('\n') {
+            let tip = tip.trim();
+            if tip.is_empty() {
+                continue;
+            }
+            lines.push(Line::from(if first {
+                format!("Tip: {tip}")
+            } else {
+                tip.to_string()
+            }));
+            first = false;
+        }
+        lines
     }
 }
 
@@ -122,6 +147,28 @@ impl HistoryCell for SessionInfoCell {
     }
 }
 
+/// The signed-in account email for a mode-C gateway session: the `sub` claim of
+/// the per-user bearer JWT in `experimental_bearer_token`. The payload is decoded
+/// but NOT verified (display-only; it is the user's own token). Returns None for
+/// non-gateway sessions (BYOK / ChatGPT / signed-out) or an undecodable token, in
+/// which case the header simply omits the account row.
+pub(crate) fn byteask_account_email(config: &Config) -> Option<String> {
+    use base64::Engine as _;
+    let token = config
+        .model_provider
+        .experimental_bearer_token
+        .as_deref()
+        .map(|token| token.trim())
+        .filter(|s| !s.is_empty())?;
+    let payload_b64 = token.split('.').nth(1)?; // header.PAYLOAD.signature
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let sub = claims.get("sub")?.as_str()?.trim().to_string();
+    (!sub.is_empty()).then_some(sub)
+}
+
 pub(crate) fn new_session_info(
     config: &Config,
     requested_model: &str,
@@ -137,8 +184,9 @@ pub(crate) fn new_session_info(
         session.reasoning_effort.clone(),
         show_fast_status,
         config.cwd.to_path_buf(),
-        CODEX_CLI_VERSION,
+        crate::version::display_version(),
     )
+    .with_account(byteask_account_email(config))
     .with_yolo_mode(has_yolo_permissions(
         session.approval_policy,
         &session.permission_profile,
@@ -155,7 +203,7 @@ pub(crate) fn new_session_info(
             Line::from(vec![
                 "  ".into(),
                 "/init".into(),
-                " - create an AGENTS.md file with instructions for Codex".dim(),
+                " - create an AGENTS.md file with instructions for ByteAsk".dim(),
             ]),
             Line::from(vec![
                 "  ".into(),
@@ -165,7 +213,7 @@ pub(crate) fn new_session_info(
             Line::from(vec![
                 "  ".into(),
                 "/permissions".into(),
-                " - choose what Codex is allowed to do".dim(),
+                " - choose what ByteAsk is allowed to do".dim(),
             ]),
             Line::from(vec![
                 "  ".into(),
@@ -183,7 +231,9 @@ pub(crate) fn new_session_info(
     } else {
         if config.show_tooltips
             && let Some(tooltips) = tooltip_override
+                .filter(|s| !s.trim().is_empty()) // ignore empty model-NUX so the byteask tip shows
                 .or_else(|| tooltips::get_tooltip(auth_plan, show_fast_status))
+                .filter(|s| !s.trim().is_empty())
                 .map(|tip| TooltipHistoryCell::new(tip, &config.cwd))
         {
             parts.push(Box::new(tooltips));
@@ -230,6 +280,7 @@ pub(crate) struct SessionHeaderHistoryCell {
     reasoning_effort: Option<ReasoningEffortConfig>,
     show_fast_status: bool,
     directory: PathBuf,
+    account: Option<String>,
     yolo_mode: bool,
 }
 
@@ -266,12 +317,20 @@ impl SessionHeaderHistoryCell {
             reasoning_effort,
             show_fast_status,
             directory,
+            account: None,
             yolo_mode: false,
         }
     }
 
     pub(crate) fn with_yolo_mode(mut self, yolo_mode: bool) -> Self {
         self.yolo_mode = yolo_mode;
+        self
+    }
+
+    /// Attach the signed-in account email (mode-C gateway sessions). `None` for
+    /// BYOK / ChatGPT / signed-out sessions — the account row is then omitted.
+    pub(crate) fn with_account(mut self, account: Option<String>) -> Self {
+        self.account = account.filter(|s| !s.trim().is_empty());
         self
     }
 
@@ -320,13 +379,14 @@ impl HistoryCell for SessionHeaderHistoryCell {
         // Title line rendered inside the box: ">_ OpenAI Codex (vX)"
         let title_spans: Vec<Span<'static>> = vec![
             Span::from(">_ ").dim(),
-            Span::from("OpenAI Codex").bold(),
+            Span::from(std::env::var("BYTEASK_BRAND").or_else(|_| std::env::var("CODEX_BRAND")).unwrap_or_else(|_| "ByteAsk".to_string())).bold(),
             Span::from(" ").dim(),
             Span::from(format!("(v{})", self.version)).dim(),
         ];
 
         const CHANGE_MODEL_HINT_COMMAND: &str = "/model";
         const CHANGE_MODEL_HINT_EXPLANATION: &str = " to change";
+        const ACCOUNT_LABEL: &str = "account:";
         const DIR_LABEL: &str = "directory:";
         const PERMISSIONS_LABEL: &str = "permissions:";
         let label_width = if self.yolo_mode {
@@ -355,7 +415,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
                 spans.push(Span::styled("fast", self.model_style.magenta()));
             }
             spans.push("   ".dim());
-            spans.push(CHANGE_MODEL_HINT_COMMAND.cyan());
+            spans.push(CHANGE_MODEL_HINT_COMMAND.fg(crate::style::accent_color()));
             spans.push(CHANGE_MODEL_HINT_EXPLANATION.dim());
             spans
         };
@@ -367,12 +427,23 @@ impl HistoryCell for SessionHeaderHistoryCell {
         let dir = self.format_directory(Some(dir_max_width));
         let dir_spans = vec![Span::from(dir_prefix).dim(), Span::from(dir)];
 
-        let mut lines = vec![
-            make_row(title_spans),
-            make_row(Vec::new()),
-            make_row(model_spans),
-            make_row(dir_spans),
-        ];
+        let mut lines = vec![make_row(title_spans), make_row(Vec::new())];
+
+        // Signed-in account (mode-C gateway sessions) — the first data row, above
+        // model/directory. Omitted when not signed in to a gateway account.
+        if let Some(email) = &self.account {
+            let acct_label = format!("{ACCOUNT_LABEL:<label_width$}");
+            let acct_prefix = format!("{acct_label} ");
+            let acct_max_width = inner_width.saturating_sub(display_width(acct_prefix.as_str()));
+            let shown = crate::text_formatting::truncate_text(email, acct_max_width);
+            lines.push(make_row(vec![
+                Span::from(acct_prefix).dim(),
+                Span::from(shown),
+            ]));
+        }
+
+        lines.push(make_row(model_spans));
+        lines.push(make_row(dir_spans));
 
         if self.yolo_mode {
             let permissions_label = format!("{PERMISSIONS_LABEL:<label_width$}");
@@ -391,7 +462,12 @@ impl HistoryCell for SessionHeaderHistoryCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         let mut lines = vec![
-            Line::from(format!("OpenAI Codex (v{})", self.version)),
+            Line::from(format!("{} (v{})", std::env::var("BYTEASK_BRAND").or_else(|_| std::env::var("CODEX_BRAND")).unwrap_or_else(|_| "ByteAsk".to_string()), self.version)),
+        ];
+        if let Some(email) = &self.account {
+            lines.push(Line::from(format!("account: {email}")));
+        }
+        lines.extend([
             Line::from(format!(
                 "model: {}{}",
                 self.model,
@@ -403,7 +479,7 @@ impl HistoryCell for SessionHeaderHistoryCell {
                 "directory: {}",
                 self.format_directory(/*max_width*/ None)
             )),
-        ];
+        ]);
         if self.yolo_mode {
             lines.push(Line::from("permissions: YOLO mode"));
         }

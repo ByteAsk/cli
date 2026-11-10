@@ -48,7 +48,7 @@ impl ExternalAgentConfigMigrationScreen {
                     cursor.content = "› ".into();
                 }
                 line.spans.iter_mut().for_each(|span| {
-                    span.style = span.style.cyan().bold();
+                    span.style = span.style.fg(crate::style::accent_color()).bold();
                 });
             } else if entry.kind != RenderLineKind::Item && !line.spans.is_empty() {
                 line.spans.iter_mut().for_each(|span| {
@@ -79,12 +79,12 @@ impl WidgetRef for &ExternalAgentConfigMigrationScreen {
         let intro_lines = match self.view {
             MigrationView::Summary => vec![
                 Line::from("Bring over supported setup from another coding agent."),
-                Line::from("Codex may add files to your current project folder."),
+                Line::from("ByteAsk may add files to your current project folder."),
                 Line::from("Your existing setup will not be changed."),
             ],
             MigrationView::Customize => vec![
                 Line::from("Choose items to import."),
-                Line::from("Codex may add files to your current project folder."),
+                Line::from("ByteAsk may add files to your current project folder."),
                 Line::from("Your existing setup will not be changed."),
             ],
         };
@@ -174,7 +174,7 @@ impl WidgetRef for &ExternalAgentConfigMigrationScreen {
                 " to move, ".dim(),
                 key_hint::plain(KeyCode::Enter).into(),
                 " to select, ".dim(),
-                "c".cyan(),
+                "c".fg(crate::style::accent_color()),
                 " to customize".dim(),
             ]),
             MigrationView::Customize if self.focus == FocusArea::Actions => Line::from(vec![
@@ -185,7 +185,7 @@ impl WidgetRef for &ExternalAgentConfigMigrationScreen {
                 "/".dim(),
                 key_hint::plain(KeyCode::Down).into(),
                 " to move, ".dim(),
-                "b".cyan(),
+                "b".fg(crate::style::accent_color()),
                 " to go back".dim(),
             ]),
             MigrationView::Customize => Line::from(vec![
@@ -196,7 +196,7 @@ impl WidgetRef for &ExternalAgentConfigMigrationScreen {
                 " to move, ".dim(),
                 key_hint::plain(KeyCode::Char(' ')).into(),
                 " to toggle, ".dim(),
-                "b".cyan(),
+                "b".fg(crate::style::accent_color()),
                 " to go back".dim(),
             ]),
         };

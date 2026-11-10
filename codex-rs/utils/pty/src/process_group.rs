@@ -44,6 +44,73 @@ pub fn set_parent_death_signal(_parent_pid: i32) -> io::Result<()> {
     Ok(())
 }
 
+/// Switch (the CLI sets 500 at start unless it is already set): `BYTEASK_CHILD_OOM_SCORE_ADJ=<-1000..1000>` makes every command the
+/// engine starts (and every program that command starts, which inherits it) begin with that Linux
+/// `oom_score_adj`, so that when memory runs out the kernel kills the command before the engine. Unset, or not a
+/// whole number in range: nothing is written.
+pub const ENV_CHILD_OOM_SCORE_ADJ: &str = "BYTEASK_CHILD_OOM_SCORE_ADJ";
+
+/// An `oom_score_adj` value as the bytes `/proc/<pid>/oom_score_adj` takes, made before `fork` so that the
+/// child writes it without allocating.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OomScoreAdj {
+    text: [u8; 8],
+    len: u8,
+}
+
+impl OomScoreAdj {
+    /// A whole number in `-1000..=1000`, else `None`.
+    pub fn parse(value: &str) -> Option<Self> {
+        let number: i32 = value.trim().parse().ok()?;
+        if !(-1000..=1000).contains(&number) {
+            return None;
+        }
+        let digits = number.to_string();
+        let mut text = [0u8; 8];
+        text.get_mut(..digits.len())?
+            .copy_from_slice(digits.as_bytes());
+        Some(Self {
+            text,
+            len: u8::try_from(digits.len()).ok()?,
+        })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.text[..usize::from(self.len)]
+    }
+}
+
+/// The value [`ENV_CHILD_OOM_SCORE_ADJ`] asks for, read in the parent before a spawn.
+pub fn child_oom_score_adj() -> Option<OomScoreAdj> {
+    std::env::var(ENV_CHILD_OOM_SCORE_ADJ)
+        .ok()
+        .as_deref()
+        .and_then(OomScoreAdj::parse)
+}
+
+#[cfg(target_os = "linux")]
+/// Set the calling process's `oom_score_adj`, for `pre_exec`: only open(2), write(2) and close(2) on a fixed
+/// path, nothing allocated. Best effort: an unprivileged process may raise its value, not lower it.
+pub fn set_own_oom_score_adj(value: OomScoreAdj) {
+    let bytes = value.as_bytes();
+    unsafe {
+        let fd = libc::open(
+            b"/proc/self/oom_score_adj\0".as_ptr().cast::<libc::c_char>(),
+            libc::O_WRONLY | libc::O_CLOEXEC,
+        );
+        if fd >= 0 {
+            let _ = libc::write(fd, bytes.as_ptr().cast::<libc::c_void>(), bytes.len());
+            libc::close(fd);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+/// The same for a child that is already running (a spawn path with no `pre_exec` hook), written by the parent.
+pub fn set_oom_score_adj_of(pid: u32, value: OomScoreAdj) {
+    let _ = std::fs::write(format!("/proc/{pid}/oom_score_adj"), value.as_bytes());
+}
+
 #[cfg(unix)]
 /// Detach from the controlling TTY by starting a new session.
 pub fn detach_from_tty() -> io::Result<()> {

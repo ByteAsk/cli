@@ -617,6 +617,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
     let default_personality_message = "Default from remote template";
     let friendly_personality_message = "Friendly variant";
     let remote_model = ModelInfo {
+        locked_reason: None,
         slug: remote_slug.to_string(),
         display_name: "Remote default personality test".to_string(),
         description: Some("Remote model with default personality template".to_string()),
@@ -629,6 +630,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         visibility: ModelVisibility::List,
         supported_in_api: true,
         priority: 1,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,
@@ -747,6 +749,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
     let remote_friendly_message = "Friendly from remote template";
     let remote_pragmatic_message = "Pragmatic from remote template";
     let remote_model = ModelInfo {
+        locked_reason: None,
         slug: remote_slug.to_string(),
         display_name: "Remote personality test".to_string(),
         description: Some("Remote model with personality template".to_string()),
@@ -759,6 +762,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         visibility: ModelVisibility::List,
         supported_in_api: true,
         priority: 1,
+        picker_group: None,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
         default_service_tier: None,

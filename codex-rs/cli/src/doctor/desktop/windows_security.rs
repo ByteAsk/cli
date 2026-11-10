@@ -199,15 +199,15 @@ fn classify(channels: &[Option<Vec<Evidence>>]) -> DoctorCheck {
     }
     let summary = match (status, visible) {
         (CheckStatus::Ok, _) if channels.contains(&None) => "security event coverage is incomplete",
-        (CheckStatus::Ok, _) => "no locally visible recent Codex security enforcement was found",
+        (CheckStatus::Ok, _) => "no locally visible recent ByteAsk security enforcement was found",
         (CheckStatus::Warning, false) => "security event channels could not be inspected",
-        (CheckStatus::Warning, true) => "recent Codex security audit or detection requires review",
-        (CheckStatus::Fail, _) => "endpoint security blocked or quarantined a Codex executable",
+        (CheckStatus::Warning, true) => "recent ByteAsk security audit or detection requires review",
+        (CheckStatus::Fail, _) => "endpoint security blocked or quarantined a ByteAsk executable",
     };
     let mut check = desktop_check("desktop.security.enforcement", status, summary).details(details);
     if status != CheckStatus::Ok {
         check = check.remediation(
-            "ask your organization's security administrator to review endpoint security events and the approved Codex application policy",
+            "ask your organization's security administrator to review endpoint security events and the approved ByteAsk application policy",
         );
     }
     check

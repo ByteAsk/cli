@@ -887,7 +887,7 @@ impl App {
                         }
                         if let Some(command) = summary.resume_hint {
                             let spans =
-                                vec!["To continue this session, run ".into(), command.cyan()];
+                                vec!["To continue this session, run ".into(), command.fg(crate::style::accent_color())];
                             lines.push(spans.into());
                         }
                         self.chat_widget.add_plain_history_lines(lines);
@@ -1142,7 +1142,7 @@ impl App {
                             }
                             if let Some(command) = summary.resume_hint {
                                 let spans =
-                                    vec!["To continue this session, run ".into(), command.cyan()];
+                                    vec!["To continue this session, run ".into(), command.fg(crate::style::accent_color())];
                                 lines.push(spans.into());
                             }
                             self.chat_widget.add_plain_history_lines(lines);

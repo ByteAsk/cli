@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: level_one
+---
+  Select Model
+  Choose a provider, or pick Auto.
+
+  1. auto              auto description
+› 2. OpenAI (current)  gpt-5.4, gpt-6-astra
+  3. Anthropic         claude-haiku-4-5
+  4. Gemini            gemini-3.8-flash
+  5. Open Source       kimi-k3
+
+  Press enter to confirm or esc to go back

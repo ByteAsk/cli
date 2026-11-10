@@ -75,6 +75,9 @@ codex-utils-git-discovery = { workspace = true }
 codex-utils-image = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 codex-utils-output-truncation = { workspace = true }
+byteask-output-reducers = { workspace = true }
+codex-git-attribution = { workspace = true }
+codex-utils-redacted-string = { workspace = true }
 codex-utils-path = { workspace = true }
 codex-utils-path-uri = { workspace = true }
 codex-utils-plugins = { workspace = true }
@@ -132,6 +135,13 @@ openssl-sys = { workspace = true, features = ["vendored"] }
 [target.aarch64-unknown-linux-musl.dependencies]
 openssl-sys = { workspace = true, features = ["vendored"] }
 
+# Build OpenSSL from source for gnu builds too -> portable static binaries (CI release).
+[target.x86_64-unknown-linux-gnu.dependencies]
+openssl-sys = { workspace = true, features = ["vendored"] }
+
+[target.aarch64-unknown-linux-gnu.dependencies]
+openssl-sys = { workspace = true, features = ["vendored"] }
+
 [target.'cfg(unix)'.dependencies]
 codex-shell-escalation = { workspace = true }
 
@@ -144,7 +154,6 @@ codex-home = { workspace = true }
 codex-otel = { workspace = true }
 codex-test-binary-support = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
-codex-utils-redacted-string = { workspace = true }
 codex-web-search-extension = { workspace = true }
 core_test_support = { workspace = true }
 ctor = { workspace = true }

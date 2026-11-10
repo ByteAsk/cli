@@ -215,7 +215,7 @@ impl ChatWidget {
                     )
                 {
                     self.add_to_history(history_cell::PrefixedWrappedHistoryCell::new(
-                        format!("Sent by Codex from task {source_thread_id}\n{prompt}"),
+                        format!("Sent by ByteAsk from task {source_thread_id}\n{prompt}"),
                         "• ".dim(),
                         "  ",
                     ));
@@ -244,7 +244,13 @@ impl ChatWidget {
                 agents_states,
             }),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
-            ThreadItem::DynamicToolCall { .. } => {}
+            item @ ThreadItem::DynamicToolCall {
+                status: codex_app_server_protocol::DynamicToolCallStatus::InProgress,
+                ..
+            } => self.on_dynamic_tool_call_started(item),
+            item @ ThreadItem::DynamicToolCall { .. } => {
+                self.on_dynamic_tool_call_completed(item)
+            }
             ThreadItem::Sleep(_) => {}
         }
 

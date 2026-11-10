@@ -27,7 +27,7 @@ pub(super) async fn apply_codex_env_overlay(
         Err(err) => {
             warn!(
                 path = %overlay_path.display(),
-                "failed to parse Codex Agent Plugin MCP overlay: {err}"
+                "failed to parse ByteAsk Agent Plugin MCP overlay: {err}"
             );
             return;
         }

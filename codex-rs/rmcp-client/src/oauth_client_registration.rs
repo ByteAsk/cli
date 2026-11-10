@@ -111,7 +111,7 @@ pub(crate) async fn start_authorization(
     auth_manager.set_metadata(metadata);
     let mut request = AuthorizationRequest::new(redirect_uri.clone())
         .with_scopes(scopes.iter().copied())
-        .with_client_name("Codex");
+        .with_client_name("ByteAsk");
     if offer_cimd {
         // CIMD is an active IETF Internet-Draft: this HTTPS client identifier resolves
         // to its self-referential JSON metadata document.

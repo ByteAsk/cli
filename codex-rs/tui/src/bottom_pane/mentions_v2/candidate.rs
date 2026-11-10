@@ -33,8 +33,8 @@ impl MentionType {
         let style = match self {
             Self::Plugin => base_style.magenta(),
             Self::Skill => base_style.dim(),
-            Self::Task => base_style.cyan(),
-            Self::File => base_style.cyan(),
+            Self::Task => base_style.fg(crate::style::accent_color()),
+            Self::File => base_style.fg(crate::style::accent_color()),
             Self::Directory => base_style,
         };
         format!("{:<width$}", self.label(), width = TAG_WIDTH).set_style(style)

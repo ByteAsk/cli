@@ -33,6 +33,10 @@ pub(crate) enum PluginGitMode {
     Manual,
 }
 
+/// Temp repositories created under `.tmp` for automatic Git commands. Shared with the
+/// disabled-plugins cleanup so the pattern it removes cannot drift from what is created.
+pub(crate) const TRUSTED_GIT_REPOSITORY_PREFIX: &str = "git-";
+
 impl PluginGitMode {
     /// Creates a Git command with the repository-environment policy for this operation.
     /// Automatic remote lookups and initial clones must also select a trusted repository.
@@ -59,7 +63,7 @@ pub(crate) fn configure_trusted_git_repository(
 ) -> Result<TempDir, String> {
     let canonical_home = AbsolutePathBuf::from_absolute_path(codex_home)
         .and_then(|path| path.canonicalize())
-        .map_err(|err| format!("failed to resolve trusted Codex home: {err}"))?;
+        .map_err(|err| format!("failed to resolve trusted ByteAsk home: {err}"))?;
     let staging_root = canonical_home.join(".tmp");
     std::fs::create_dir_all(staging_root.as_path())
         .map_err(|err| format!("failed to create trusted Git repository root: {err}"))?;
@@ -67,11 +71,11 @@ pub(crate) fn configure_trusted_git_repository(
         .canonicalize()
         .map_err(|err| format!("failed to resolve trusted Git repository root: {err}"))?;
     if !staging_root.as_path().starts_with(canonical_home.as_path()) {
-        return Err("trusted Git repository root escapes Codex home".to_string());
+        return Err("trusted Git repository root escapes ByteAsk home".to_string());
     }
 
     let repository = tempfile::Builder::new()
-        .prefix("git-")
+        .prefix(TRUSTED_GIT_REPOSITORY_PREFIX)
         .tempdir_in(staging_root.as_path())
         .map_err(|err| format!("failed to create trusted Git repository: {err}"))?;
     for directory in ["objects", "refs"] {

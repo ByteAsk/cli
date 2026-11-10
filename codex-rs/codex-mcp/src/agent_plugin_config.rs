@@ -141,7 +141,7 @@ fn normalize_agent_plugin_mcp_server(
             normalize_agent_plugin_http_server(url, headers)?
         }
         AgentPluginMcpServer::Sse { .. } => {
-            return Err("Agent Plugins legacy SSE transport is not supported by Codex".to_string());
+            return Err("Agent Plugins legacy SSE transport is not supported by ByteAsk".to_string());
         }
     };
     serde_json::from_value(JsonValue::Object(object)).map_err(|err| err.to_string())

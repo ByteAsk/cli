@@ -89,3 +89,53 @@ fn empty_and_tiny_chunks_have_bounded_metadata() {
     assert_eq!(buf.retained_bytes(), 10);
     assert_eq!(buf.omitted_bytes(), 2);
 }
+
+// ---- ByteAsk spill tee --------------------------------
+
+#[test]
+fn byteask_the_tee_keeps_the_complete_output_once_the_middle_is_dropped() {
+    const CAP: usize = 128 * 1024;
+    // The spill directory is process-wide: use whichever was set first, and make sure it
+    // still exists (a test that owned a temp dir may have removed it).
+    // Kept on purpose: the directory is process-wide, so it must outlive this test.
+    let tmp = tempfile::tempdir().expect("tempdir").keep();
+    byteask_output_reducers::spill::init(&tmp);
+    let dir = byteask_output_reducers::spill::dir().expect("spill dir").to_path_buf();
+    std::fs::create_dir_all(&dir).expect("spill dir exists");
+
+    let mut full: Vec<u8> = Vec::new();
+    let mut buf = HeadTailBuffer::<CAP>::default();
+    for i in 0..400u32 {
+        let chunk = format!("line {i:06} {}\n", "x".repeat(1000)).into_bytes();
+        full.extend_from_slice(&chunk);
+        buf.push_chunk(&chunk);
+    }
+    assert!(buf.omitted_bytes() > 0, "the in-memory buffer did drop its middle");
+    assert!(buf.to_bytes().len() < full.len());
+
+    // A second buffer merged in, as the collector does between polls.
+    let mut later = HeadTailBuffer::<CAP>::default();
+    later.push_chunk(b"the very last line\n");
+    full.extend_from_slice(b"the very last line\n");
+    buf.push_buffer(later);
+
+    let tee = buf.take_tee().expect("a tee was started");
+    assert_eq!(tee.lost(), 0);
+    let path = tee.adopt("call_tee_core_c1").expect("adopt");
+    assert_eq!(std::fs::read(&path).expect("read"), full);
+    // The serializer's later write() of the TRUNCATED bytes must not replace it.
+    let again = byteask_output_reducers::spill::write("call_tee_core_c1", &buf.to_bytes());
+    assert_eq!(again, Some(path.clone()));
+    assert_eq!(std::fs::read(&path).expect("read").len(), full.len());
+}
+
+#[test]
+fn byteask_small_outputs_never_start_a_tee() {
+    let mut buf = HeadTailBuffer::<{ 128 * 1024 }>::default();
+    buf.push_chunk(b"short\n");
+    assert!(buf.take_tee().is_none());
+    // Tiny fixture buffers are never teed, whatever they drop.
+    let mut tiny = HeadTailBuffer::<10>::default();
+    tiny.push_chunk(b"0123456789abcdefghij");
+    assert!(tiny.take_tee().is_none());
+}

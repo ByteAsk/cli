@@ -128,7 +128,7 @@ async fn detect_and_import_claude_commands_without_frontmatter() {
                     .join("SKILL.md")
             )
             .expect("read migrated command"),
-            "---\nname: \"source-command-pr-review\"\ndescription: \"Migrated source command `pr-review`\"\n---\n\n# source-command-pr-review\n\nUse this skill when the user asks to run the migrated source command `pr-review`.\n\n## Command Template\n\nReview changes with Codex and AGENTS.md.\n"
+            "---\nname: \"source-command-pr-review\"\ndescription: \"Migrated source command `pr-review`\"\n---\n\n# source-command-pr-review\n\nUse this skill when the user asks to run the migrated source command `pr-review`.\n\n## Command Template\n\nReview changes with ByteAsk and AGENTS.md.\n"
         );
         assert!(!target_skills.join("source-command-deploy").exists());
         assert_eq!(

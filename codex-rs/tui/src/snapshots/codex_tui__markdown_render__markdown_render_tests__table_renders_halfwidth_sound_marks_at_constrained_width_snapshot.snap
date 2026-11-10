@@ -1,6 +1,6 @@
 ---
 source: tui/src/markdown_render_tests.rs
-expression: "format!(\"grid (23 cells):\\n{}\\n\\nrecords (17 cells):\\n{}\", plain_lines(&grid).join(\"\\n\"), plain_lines(&records).join(\"\\n\"))"
+expression: "format!(\"grid (23 cells):\\n{}\\n\\nrecords (17 cells):\\n{}\",\nplain_lines(&grid).join(\"\\n\"), plain_lines(&records).join(\"\\n\"))"
 ---
 grid (23 cells):
  Key         Notes

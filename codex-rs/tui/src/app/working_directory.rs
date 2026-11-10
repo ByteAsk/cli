@@ -53,7 +53,7 @@ impl App {
             Err(err) => return self.working_directory_error(format!("Cannot load {cwd:?}: {err}")),
         };
         if config.active_project.trust_level.is_none() {
-            return self.working_directory_error("This directory is not trusted; run Codex there.");
+            return self.working_directory_error("This directory is not trusted; run ByteAsk there.");
         }
         if let Some(profile) = self.runtime_permission_profile_override.as_ref()
             && profile.active_permission_profile.is_some()

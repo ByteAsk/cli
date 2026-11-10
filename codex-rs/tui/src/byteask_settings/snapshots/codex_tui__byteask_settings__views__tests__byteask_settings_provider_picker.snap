@@ -1,0 +1,15 @@
+---
+source: tui/src/byteask_settings/views.rs
+expression: rendered
+---
+
+  Add a hosted model
+  Cloud providers run on your key; a local server never bills you
+
+› 1. groq           https://api.groq.com/openai/v1           they bill you
+  2. openrouter     https://openrouter.ai/api/v1             they bill you
+  3. ollama         http://localhost:11434                    never billed
+  4. Custom server  Enter your own URL                        never billed
+  5. Back           Return to hosted models
+
+  Press enter to confirm or esc to go back

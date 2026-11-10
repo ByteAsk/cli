@@ -55,6 +55,27 @@ fn enable_deterministic_unified_exec_process_ids_for_tests() {
     codex_core::test_support::set_deterministic_process_ids(/*enabled*/ true);
 }
 
+/// ByteAsk raised the first wait of a command without a TTY to 10 s and its empty polls to
+/// 60 s. These integration tests assert upstream's timing, so they run with upstream's floors; the
+/// raised floors are covered by codex-core's unified_exec unit tests.
+#[ctor]
+fn use_upstream_unified_exec_wait_floors_for_tests() {
+    // Only the integration suite (`tests/all.rs`, binary `all-<hash>`) asserts upstream's timing.
+    // codex-core's own unit tests link this crate too, and they must keep the raised floors they
+    // test (unified_exec::tests).
+    let integration_suite = std::env::current_exe().ok().is_some_and(|exe| {
+        exe.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "all" || name.starts_with("all-"))
+    });
+    if !integration_suite {
+        return;
+    }
+    byteask_output_reducers::policy::install(byteask_output_reducers::Policy::from_catalog_json(
+        r#"{"byteask_efficiency":{"numbers":{"first_yield_min_ms":250,"empty_poll_min_ms":5000}}}"#,
+    ));
+}
+
 #[ctor]
 fn configure_arg0_dispatch_for_test_binaries() {
     let _ = TEST_ARG0_PATH_ENTRY.get_or_init(codex_arg0::arg0_dispatch);

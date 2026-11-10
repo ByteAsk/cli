@@ -390,7 +390,7 @@ impl ChatWidget {
             format!("Remove {marketplace_display_name} marketplace?").dim(),
         ));
         header.push(Line::from(
-            "This removes the configured marketplace from Codex.".dim(),
+            "This removes the configured marketplace from ByteAsk.".dim(),
         ));
 
         let cwd_for_remove = self.config.cwd.to_path_buf();
@@ -1018,7 +1018,7 @@ impl ChatWidget {
                     " and ".into(),
                     "privacy policy".bold(),
                     ". ".into(),
-                    "Learn more".cyan().underlined(),
+                    "Learn more".fg(crate::style::accent_color()).underlined(),
                     ".".into(),
                 ]),
             });

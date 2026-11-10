@@ -12,9 +12,44 @@ pub(crate) struct HeadTailBuffer<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MA
     head: Vec<u8>,
     tail: VecDeque<u8>,
     omitted_bytes: usize,
+    /// ByteAsk: a complete copy on disk, started the moment this buffer would begin to
+    /// drop its middle. Absent when nothing was dropped,
+    /// when there is no spill directory, or when the copy could not be made.
+    tee: TeeSlot,
 }
 
+/// Holds the tee without taking part in equality: two buffers with the same bytes are
+/// equal whatever happened on disk.
+#[derive(Debug, Default)]
+pub(crate) struct TeeSlot(Option<byteask_output_reducers::spill::Tee>);
+
+impl PartialEq for TeeSlot {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+impl Eq for TeeSlot {}
+
+/// Buffers smaller than this are test fixtures; never tee them.
+const BYTEASK_TEE_MIN_CAPACITY: usize = 64 * 1024;
+
 impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
+    /// Take the complete on-disk copy, if one was made.
+    pub(crate) fn take_tee(&mut self) -> Option<byteask_output_reducers::spill::Tee> {
+        self.tee.0.take()
+    }
+
+    /// Called BEFORE `incoming` bytes are added. Starts the tee at the last moment the
+    /// buffer still holds everything, then mirrors every later byte.
+    fn byteask_tee_before_push(&mut self, incoming: usize) {
+        if MAX_BYTES < BYTEASK_TEE_MIN_CAPACITY || self.tee.0.is_some() {
+            return;
+        }
+        if self.omitted_bytes == 0 && self.retained_bytes().saturating_add(incoming) > MAX_BYTES {
+            self.tee.0 = byteask_output_reducers::spill::Tee::start(&self.to_bytes());
+        }
+    }
+
     const HEAD_BUDGET: usize = MAX_BYTES / 2;
     const TAIL_BUDGET: usize = MAX_BYTES.saturating_sub(Self::HEAD_BUDGET);
 
@@ -43,6 +78,10 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
     /// remaining bytes are added to the tail, with older tail bytes being
     /// dropped to preserve the tail budget.
     pub(crate) fn push_chunk(&mut self, chunk: &[u8]) {
+        self.byteask_tee_before_push(chunk.len());
+        if let Some(tee) = self.tee.0.as_mut() {
+            tee.append(chunk);
+        }
         let chunk = self.fill_head(chunk);
         self.push_tail(chunk);
     }
@@ -53,6 +92,7 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
             head,
             tail: _,
             omitted_bytes: _,
+            tee: _,
         } = self;
 
         let remaining_head = Self::HEAD_BUDGET.saturating_sub(head.len());
@@ -70,6 +110,7 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
             head: _,
             tail,
             omitted_bytes,
+            tee: _,
         } = self;
 
         let remaining_tail = Self::TAIL_BUDGET.saturating_sub(tail.len());
@@ -125,11 +166,27 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
 
     /// Append a later buffer with the same budget. This preserves the summary
     /// of the original concatenated output, including its omission count.
-    pub(crate) fn push_buffer(&mut self, buffer: Self) {
+    pub(crate) fn push_buffer(&mut self, mut buffer: Self) {
+        // ByteAsk tee: keep the on-disk copy complete across merges.
+        let other_tee = buffer.tee.0.take();
+        self.byteask_tee_before_push(buffer.total_bytes());
+        if self.tee.0.is_none() && other_tee.is_some() && self.omitted_bytes == 0 {
+            self.tee.0 = byteask_output_reducers::spill::Tee::start(&self.to_bytes());
+        }
+        if let Some(tee) = self.tee.0.as_mut() {
+            match other_tee {
+                Some(other) => tee.append_tee(other),
+                None => {
+                    tee.append(&buffer.to_bytes());
+                    tee.note_gap(buffer.omitted_bytes as u64);
+                }
+            }
+        }
         let Self {
             head,
             tail,
             omitted_bytes,
+            tee: _,
         } = buffer;
 
         self.omitted_bytes = self.omitted_bytes.saturating_add(omitted_bytes);

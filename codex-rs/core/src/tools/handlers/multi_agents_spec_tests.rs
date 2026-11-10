@@ -10,6 +10,7 @@ use serde_json::json;
 
 fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
     ModelPreset {
+        locked_reason: None,
         id: id.to_string(),
         model: format!("{id}-model"),
         display_name: format!("{id} display"),
@@ -31,6 +32,7 @@ fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
         is_default: false,
         upgrade: None,
         show_in_picker,
+        picker_group: None,
         multi_agent_version: Some(MultiAgentVersion::V2),
         availability_nux: None,
         supported_in_api: true,

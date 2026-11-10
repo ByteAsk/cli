@@ -396,7 +396,9 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
     let forked = fork_thread(&manager, &config, resumed_path, /*nth_user_message*/ 3).await;
     user_turn(&forked, "AFTER_FORK").await;
 
-    compact_conversation(&forked).await;
+    // The fork carries the base thread's compaction count, so this is the second
+    // compaction in the chain: the long-thread warning is expected now.
+    compact_conversation_expecting_warning(&forked).await;
     user_turn(&forked, "AFTER_COMPACT_2").await;
     let forked_path = fetch_conversation_path(&forked);
     assert!(
@@ -876,6 +878,16 @@ async fn compact_conversation(conversation: &Arc<CodexThread>) {
         .submit(Op::Compact)
         .await
         .expect("compact conversation");
+    // Each conversation compacts once per window here, so the long-thread
+    // warning (repeated compaction only) must not fire.
+    super::compact::expect_turn_complete_without_compact_warning(conversation).await;
+}
+
+async fn compact_conversation_expecting_warning(conversation: &Arc<CodexThread>) {
+    conversation
+        .submit(Op::Compact)
+        .await
+        .expect("compact conversation");
     let warning_event = wait_for_event(conversation, |ev| {
         matches!(
             ev,
@@ -884,7 +896,7 @@ async fn compact_conversation(conversation: &Arc<CodexThread>) {
     })
     .await;
     let EventMsg::Warning(WarningEvent { message }) = warning_event else {
-        panic!("expected warning event after compact");
+        panic!("expected the long-thread warning on a repeated compaction");
     };
     assert_eq!(message, COMPACT_WARNING_MESSAGE);
     wait_for_event(conversation, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;

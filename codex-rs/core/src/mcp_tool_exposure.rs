@@ -34,6 +34,7 @@ struct CachedMcpHandlers {
 }
 
 impl McpHandlerCache {
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn append_mcp_tools(
         &self,
         binding: &Arc<McpBinding>,
@@ -41,8 +42,32 @@ impl McpHandlerCache {
         apps_enabled: bool,
         mcp_server_catalog: &codex_mcp::ResolvedMcpCatalog,
         search_tool_enabled: bool,
+        session_source: &codex_protocol::protocol::SessionSource,
         registry: &mut ToolRegistry,
     ) -> HashSet<ToolName> {
+        // ByteAsk Context: its tools without the identity arguments, and in exec without
+        // the ask-before-indexing instruction (the latter only under the gate).
+        let tools: std::borrow::Cow<'_, [McpToolInfo]> =
+            match crate::byteask_context::identity_server(config) {
+                Some(server) => {
+                    let headless = crate::byteask_context::gated(config)
+                        && crate::byteask_context::headless(session_source);
+                    std::borrow::Cow::Owned(
+                        binding
+                            .tools()
+                            .iter()
+                            .map(|tool| {
+                                if tool.server_name == server {
+                                    crate::byteask_context::model_tool_info(tool, headless)
+                                } else {
+                                    tool.clone()
+                                }
+                            })
+                            .collect(),
+                    )
+                }
+                None => std::borrow::Cow::Borrowed(binding.tools()),
+            };
         let mut cached = self
             .cached
             .lock()
@@ -60,7 +85,7 @@ impl McpHandlerCache {
             handlers: HashMap::new(),
         });
         append_mcp_tools(
-            binding.tools(),
+            &tools,
             config,
             apps_enabled,
             mcp_server_catalog,

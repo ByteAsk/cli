@@ -1,6 +1,5 @@
 ---
 source: tui/src/app/tests/permission_shortcuts_tests.rs
-assertion_line: 33
-expression: lines_to_single_string(&cell.display_lines(120))
+expression: "lines_to_single_string(&cell.display_lines(120)).replace(&thread_id.to_string(),\n\"<THREAD_ID>\")"
 ---
 ■ Failed to update permissions: this app server does not support confirmed permission changes; use /permissions

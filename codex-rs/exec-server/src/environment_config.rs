@@ -39,7 +39,7 @@ pub(crate) async fn read_environment_config(
         .to_abs_path()
         .map_err(|error| ReadEnvironmentConfigError::InvalidParams(error.to_string()))?;
     let codex_home = find_codex_home().map_err(|error| {
-        ReadEnvironmentConfigError::Internal(format!("failed to find Codex home: {error}"))
+        ReadEnvironmentConfigError::Internal(format!("failed to find ByteAsk home: {error}"))
     })?;
     let layers = load_local_config_layers(file_system, codex_home.as_path(), &cwd)
         .await

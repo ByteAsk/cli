@@ -65,7 +65,7 @@ pub async fn ensure_responses_supported(client: &OllamaClient) -> std::io::Resul
 
     let min = min_responses_version();
     Err(std::io::Error::other(format!(
-        "Ollama {version} is too old. Codex requires Ollama {min} or newer."
+        "Ollama {version} is too old. ByteAsk requires Ollama {min} or newer."
     )))
 }
 

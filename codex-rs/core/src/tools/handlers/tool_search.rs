@@ -18,6 +18,7 @@ use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchEntry;
 use codex_tools::ToolSearchInfo;
+use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
 use codex_tools::coalesce_loadable_tool_specs;
 use std::sync::Arc;
@@ -40,6 +41,7 @@ pub(crate) struct ToolSearchHandlerCache {
 struct CachedToolSearchHandler {
     handler: Arc<ToolSearchHandler>,
     sources: Vec<ToolSearchSource>,
+    listed: Vec<ToolSearchSourceInfo>,
 }
 
 enum ToolSearchSource {
@@ -48,11 +50,23 @@ enum ToolSearchSource {
 }
 
 impl ToolSearchHandlerCache {
-    #[instrument(level = "trace", skip_all)]
+    #[cfg(test)]
     pub(crate) fn get_or_build(
         &self,
         registry: &ToolRegistry,
         source_listing: ToolSearchSourceListing,
+    ) -> Arc<ToolSearchHandler> {
+        self.get_or_build_listing(registry, source_listing, Vec::new())
+    }
+
+    /// [`Self::get_or_build`] with extra entries for the description's source list
+    /// (ByteAsk: the names of the tools the harness deferred, so the model knows they exist).
+    #[instrument(level = "trace", skip_all)]
+    pub(crate) fn get_or_build_listing(
+        &self,
+        registry: &ToolRegistry,
+        source_listing: ToolSearchSourceListing,
+        listed: Vec<ToolSearchSourceInfo>,
     ) -> Arc<ToolSearchHandler> {
         let sources = registry
             .entries()
@@ -73,6 +87,7 @@ impl ToolSearchHandlerCache {
             let cached = self.cached();
             if let Some(cached) = cached.as_ref()
                 && cached.handler.source_listing == source_listing
+                && cached.listed == listed
                 && Self::sources_match(&cached.sources, &sources)
             {
                 return Arc::clone(&cached.handler);
@@ -89,10 +104,15 @@ impl ToolSearchHandlerCache {
             })
             .collect();
 
-        let handler = Arc::new(ToolSearchHandler::new(search_infos, source_listing));
+        let handler = Arc::new(ToolSearchHandler::new_with_listing(
+            search_infos,
+            source_listing,
+            listed.clone(),
+        ));
         let mut cached = self.cached();
         if let Some(cached) = cached.as_ref()
             && cached.handler.source_listing == source_listing
+            && cached.listed == listed
             && Self::sources_match(&cached.sources, &sources)
         {
             return Arc::clone(&cached.handler);
@@ -100,6 +120,7 @@ impl ToolSearchHandlerCache {
         *cached = Some(CachedToolSearchHandler {
             handler: Arc::clone(&handler),
             sources,
+            listed,
         });
         handler
     }
@@ -130,18 +151,28 @@ impl ToolSearchHandlerCache {
 }
 
 impl ToolSearchHandler {
+    #[cfg(test)]
+    pub(crate) fn new(
+        search_infos: Vec<ToolSearchInfo>,
+        source_listing: ToolSearchSourceListing,
+    ) -> Self {
+        Self::new_with_listing(search_infos, source_listing, Vec::new())
+    }
+
     #[instrument(
         level = "trace",
         skip_all,
         fields(search_info_count = search_infos.len())
     )]
-    pub(crate) fn new(
+    pub(crate) fn new_with_listing(
         search_infos: Vec<ToolSearchInfo>,
         source_listing: ToolSearchSourceListing,
+        listed: Vec<ToolSearchSourceInfo>,
     ) -> Self {
         let search_source_infos = search_infos
             .iter()
             .filter_map(|search_info| search_info.source_info.clone())
+            .chain(listed)
             .collect::<Vec<_>>();
         let spec = create_tool_search_tool(
             &search_source_infos,

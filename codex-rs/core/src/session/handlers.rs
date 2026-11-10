@@ -352,7 +352,7 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
             turn_context.as_ref(),
             EventMsg::Warning(WarningEvent {
                 message: format!(
-                    "Rolled the thread back, but failed to save the rollback marker. Codex will continue retrying. Error: {err}"
+                    "Rolled the thread back, but failed to save the rollback marker. ByteAsk will continue retrying. Error: {err}"
                 ),
             }),
         )
@@ -444,7 +444,7 @@ pub(super) async fn emit_thread_stop_lifecycle(sess: &Session) {
 
 pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
     shutdown_session_runtime(sess).await;
-    info!("Shutting down Codex instance");
+    info!("Shutting down ByteAsk instance");
     let history = sess.clone_history().await;
     let turn_count = history
         .raw_items()

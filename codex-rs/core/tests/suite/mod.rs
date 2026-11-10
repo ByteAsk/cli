@@ -45,6 +45,7 @@ mod apply_patch_serialization;
 mod approvals;
 mod audio_truncation;
 mod auto_review;
+mod byteask_context;
 mod catalog_permission_messages;
 mod cli_stream;
 mod client;

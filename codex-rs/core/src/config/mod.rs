@@ -246,7 +246,11 @@ pub const CONFIG_TOML_FILE: &str = "config.toml";
 const CONFIG_PROFILE_V2_SUFFIX: &str = ".config.toml";
 
 fn resolve_sqlite_home_env(resolved_cwd: &Path) -> Option<AbsolutePathBuf> {
-    let raw = std::env::var(codex_state::SQLITE_HOME_ENV).ok()?;
+    // ByteAsk: BYTEASK_SQLITE_HOME first; the upstream name stays a silent fallback.
+    let raw = std::env::var("BYTEASK_SQLITE_HOME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var(codex_state::SQLITE_HOME_ENV).ok())?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -722,7 +726,7 @@ pub struct Config {
     /// Example `~/.codex/config.toml` snippet:
     ///
     /// ```toml
-    /// notify = ["notify-send", "Codex"]
+    /// notify = ["notify-send", "ByteAsk"]
     /// ```
     ///
     /// which will be invoked as:
@@ -739,6 +743,10 @@ pub struct Config {
 
     /// Enable ASCII animations and shimmer effects in the TUI.
     pub animations: bool,
+
+    /// Render ByteAsk's own surfaces for a screen reader (`tui.screen_reader`).
+    /// See `tui/src/byteask_a11y.rs`; the flag and env var outrank this.
+    pub tui_screen_reader: bool,
 
     /// Show startup tooltips in the TUI welcome screen.
     pub show_tooltips: bool,
@@ -1499,7 +1507,113 @@ impl ConfigBuilder {
     }
 }
 
+/// Resolve the ByteAsk gateway base URL + bearer token from the active provider,
+/// falling back to a retained `byteask` block. Free function so it is unit
+/// testable without constructing a whole [`Config`]. See [`Config::byteask_identity`].
+fn resolve_byteask_identity(
+    active: &ModelProviderInfo,
+    providers: &HashMap<String, ModelProviderInfo>,
+) -> Option<(String, codex_utils_redacted_string::RedactedString)> {
+    fn from(p: &ModelProviderInfo) -> Option<(String, codex_utils_redacted_string::RedactedString)> {
+        let base = p.base_url.clone().filter(|s| !s.trim().is_empty())?;
+        let bearer = p
+            .experimental_bearer_token
+            .clone()
+            .filter(|t| !t.trim().is_empty())?;
+        Some((base, bearer))
+    }
+    from(active).or_else(|| providers.get("byteask").and_then(from))
+}
+
+#[cfg(test)]
+mod byteask_identity_tests {
+    use super::*;
+    use codex_model_provider_info::ModelProviderInfo;
+
+    fn provider(base: Option<&str>, token: Option<&str>) -> ModelProviderInfo {
+        ModelProviderInfo {
+            base_url: base.map(String::from),
+            experimental_bearer_token: token.map(|t| t.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn managed_session_reads_the_active_provider() {
+        let active = provider(Some("https://gw/byteask/v1"), Some("JWT"));
+        let (b, t) = resolve_byteask_identity(&active, &HashMap::new()).expect("identity present");
+        assert_eq!(b, "https://gw/byteask/v1");
+        assert_eq!(t.into_inner(), "JWT");
+    }
+
+    #[test]
+    fn subscription_session_falls_back_to_the_retained_byteask_block() {
+        // Active provider is the built-in `openai` (no gateway base/token). The
+        // regression this guards: identity used to vanish here, breaking /usage,
+        // the panes, cpp_intrinsic and metering the moment the user subscribed.
+        let active = provider(None, None);
+        let mut providers = HashMap::new();
+        providers.insert(
+            "byteask".to_string(),
+            provider(Some("https://gw/byteask/v1"), Some("JWT")),
+        );
+        let (b, t) = resolve_byteask_identity(&active, &providers)
+            .expect("identity survives via the retained byteask block");
+        assert_eq!(b, "https://gw/byteask/v1");
+        assert_eq!(t.into_inner(), "JWT");
+    }
+
+    #[test]
+    fn active_provider_wins_when_it_carries_identity() {
+        let active = provider(Some("https://active/v1"), Some("ACTIVE"));
+        let mut providers = HashMap::new();
+        providers.insert(
+            "byteask".to_string(),
+            provider(Some("https://retained/v1"), Some("RETAINED")),
+        );
+        let (b, t) = resolve_byteask_identity(&active, &providers).unwrap();
+        assert_eq!(b, "https://active/v1");
+        assert_eq!(t.into_inner(), "ACTIVE");
+    }
+
+    #[test]
+    fn no_identity_anywhere_is_none() {
+        assert!(resolve_byteask_identity(&provider(None, None), &HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn a_blank_token_is_not_an_identity() {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "byteask".to_string(),
+            provider(Some("https://gw/v1"), Some("   ")),
+        );
+        assert!(resolve_byteask_identity(&provider(None, None), &providers).is_none());
+    }
+}
+
 impl Config {
+    /// The ByteAsk gateway base URL + per-user bearer token, resolved
+    /// **independently of which provider is currently active**.
+    ///
+    /// In a managed session the active provider *is* `byteask`, so its own
+    /// `base_url` + `experimental_bearer_token` carry the identity. In a
+    /// ChatGPT-subscription (`openai`) or BYOK (`byok-local`) session the
+    /// active provider is something else, but the wrapper retains a
+    /// `[model_providers.byteask]` block precisely so the account survives.
+    /// Everything that speaks to the gateway on the user's behalf — `/usage`,
+    /// the account panes, `cpp_intrinsic`, tool-limit metering — must read the
+    /// identity through here, not off `model_provider`, or it silently breaks
+    /// the moment the user switches to a subscription.
+    ///
+    /// Prefer the active provider when it already carries the identity (the
+    /// managed case, unchanged), else fall back to the retained named block.
+    pub fn byteask_identity(
+        &self,
+    ) -> Option<(String, codex_utils_redacted_string::RedactedString)> {
+        resolve_byteask_identity(&self.model_provider, &self.model_providers)
+    }
+
     pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
         &self.sqlite
     }
@@ -2045,6 +2159,15 @@ pub fn validate_feature_requirements_for_config_toml(
 
 fn load_catalog_json(path: &AbsolutePathBuf) -> std::io::Result<ModelsResponse> {
     let file_contents = std::fs::read_to_string(path)?;
+    // ByteAsk token-efficiency policy rides the catalog as a top-level object the typed
+    // structs below ignore. It is parsed on its own, tolerantly, and can never fail this
+    // load: a bad policy falls back to the built-in defaults field by field.
+    byteask_output_reducers::policy::install(
+        byteask_output_reducers::Policy::from_catalog_json(&file_contents),
+    );
+    // ByteAsk commit-attribution switch: another top-level catalog object, read the same
+    // tolerant way. Off unless the catalog says `{"enabled": true}`.
+    codex_git_attribution::install_from_catalog_json(&file_contents);
     let catalog = serde_json::from_str::<ModelsResponse>(&file_contents).map_err(|err| {
         std::io::Error::new(
             ErrorKind::InvalidData,
@@ -3896,16 +4019,44 @@ impl Config {
         let base_instructions_provenance = base_instructions
             .as_ref()
             .map(|_| BaseInstructionsProvenance::Custom);
-        let developer_instructions = developer_instructions.or(cfg.developer_instructions);
-        let include_permissions_instructions = cfg.include_permissions_instructions.unwrap_or(true);
+        // [byteask_harness] fast = true: the leading developer block carries nothing that differs between
+        // sessions, so the provider's prompt cache is reused across them: no skills list (it names this
+        // home's paths) and no permissions block (the environment context states the same roots), unless set.
+        let byteask_fast = config_layer_stack
+            .effective_config()
+            .get(crate::byteask_harness::TABLE)
+            .and_then(|t| t.get("fast"))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(false);
+        let include_permissions_instructions =
+            cfg.include_permissions_instructions.unwrap_or(!byteask_fast);
         let include_apps_instructions = cfg.include_apps_instructions.unwrap_or(true);
         let include_collaboration_mode_instructions =
             cfg.include_collaboration_mode_instructions.unwrap_or(true);
+        // ByteAsk Context: the session has the Context server that turns the harness's Context mode on.
+        let byteask_harness_table = config_layer_stack
+            .effective_config()
+            .get(crate::byteask_harness::TABLE)
+            .cloned();
+        let byteask_context = crate::byteask_context::server_name_in(
+            &cfg.mcp_servers,
+            &crate::byteask_context::gate_url_from(byteask_harness_table.as_ref()),
+        )
+        .is_some();
+        // With ByteAsk Context, the working rules are the developer instructions unless they are set
+        // (ByteAsk 0.2.4).
+        let developer_instructions = developer_instructions
+            .or(cfg.developer_instructions)
+            .or_else(|| {
+                byteask_context.then(|| crate::byteask_context::WORKING_RULES.to_string())
+            });
+        // No skills list with ByteAsk Context (also with `context_keep_prefix`),
+        // unless `[skills] include_instructions` is set.
         let include_skill_instructions = cfg
             .skills
             .as_ref()
             .and_then(|skills| skills.include_instructions)
-            .unwrap_or(true);
+            .unwrap_or(!byteask_fast && !byteask_context);
         let skill_max_context_tokens = cfg
             .skills
             .as_ref()
@@ -3942,8 +4093,13 @@ impl Config {
 
         let review_model = override_review_model.or(cfg.review_model);
 
+        // ByteAsk: on by default again. The fork had turned it off because the check
+        // read GitHub's releases/latest; it now reads ByteAsk's own version.json and
+        // fails open, and a notice is one line unless the install is below min_supported.
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
         let model_catalog = load_model_catalog(cfg.model_catalog_json.clone())?;
+        // Where the full original of a reduced tool output is kept (0600, swept by age).
+        byteask_output_reducers::spill::init(&codex_home.join("spill").to_path_buf());
 
         let log_dir = cfg
             .log_dir
@@ -4007,7 +4163,7 @@ impl Config {
         {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "`approval_policy = \"never\"` cannot be used because requirements do not allow `sandbox_mode = \"danger-full-access\"`; Codex would fall back to read-only permissions with approvals disabled. Choose an `approval_policy` based on what you need, such as `on-request`, or choose an allowed sandbox mode.",
+                "`approval_policy = \"never\"` cannot be used because requirements do not allow `sandbox_mode = \"danger-full-access\"`; ByteAsk would fall back to read-only permissions with approvals disabled. Choose an `approval_policy` based on what you need, such as `on-request`, or choose an allowed sandbox mode.",
             ));
         }
         if permission_profile_was_constrained {
@@ -4330,6 +4486,7 @@ impl Config {
                 .map(|t| t.notification_settings.clone())
                 .unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
+            tui_screen_reader: cfg.tui.as_ref().map(|t| t.screen_reader).unwrap_or(false),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
             tui_auto_recap: cfg.tui.as_ref().map(|t| t.auto_recap).unwrap_or(/*default*/ true),
             model_availability_nux: cfg

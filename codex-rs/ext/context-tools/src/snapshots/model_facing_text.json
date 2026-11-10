@@ -1,0 +1,527 @@
+{
+  "guidance": "BUILD-AWARE INDEX: this project has a ByteAsk index built from its real compile commands, one per build setting. To find where a C/C++ symbol is defined or used, which template versions a build really compiles, whether an #if branch is live, or how a file is compiled, call the context_* tools before grepping or reading headers by hand: they answer per build setting and mark answers that are only approximate. For a bug report, issue or change request, call context_bundle first with the full task text (example code, errors and stack traces included): it says where the change most likely belongs and why, with the code, what it calls, what calls it and the tests that exercise it (context_pack is the older, smaller version). context_find, context_hierarchy and context_calls answer exact definition, inheritance and call questions, overloads and virtual calls included; context_example shows what a piece of example code really executes in this project; after a fix the tests confirm, record the lesson with context_remember. Every answer names its build setting and commit; when it says the index is behind your worktree, read the edited files themselves before relying on it.",
+  "tools": [
+    {
+      "description": "Find code by words: function-level chunks of the indexed C/C++ code base, ranked by an FTS5 lexical index, each with its file:lines, build setting, commit and layer (committed or your uncommitted overlay).",
+      "name": "context_search",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "k": {
+            "description": "How many chunks to return, 1-50 (default 10).",
+            "type": "integer"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Definitions and references of a C/C++ symbol, compiler-accurate (scip-clang on the pinned clang 21.1.8), per build setting, with the enclosing function of each reference. Files that could only be indexed approximately are marked with the reason.",
+      "name": "context_symbol",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most references to return, 1-200 (default 50).",
+            "type": "integer"
+          },
+          "name": {
+            "description": "Plain name (push) or a full SCIP symbol.",
+            "type": "string"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Which versions (instantiations) of a template each build setting really compiles, with separate evidence: semantic (the compiler instantiated it), time_trace (clang -ftime-trace), emitted (in an object file), linked (in the final binary).",
+      "name": "context_template_versions",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Template name or part of it, e.g. Ring or kat::Ring<int",
+            "type": "string"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "For one file and each build setting: every #if/#ifdef/#elif/#else branch and whether it is live or skipped (checked against the production compiler's own preprocessor), the macros defined in the file and the macros expanded in it.",
+      "name": "context_preprocessor",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Project-relative path.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Show the compile line: the production compiler command for a file (or, for a header, for the translation units that include it) and the exact command the indexer parsed it with, per build setting, with the reasons any result is approximate.",
+      "name": "context_compile_line",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "A context pack for a task: the definitions, matching functions with their helpers' signatures, template versions and build-setting-dependent #if branches most relevant to the task, under a token budget (at most 8000).",
+      "name": "context_pack",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "budget_tokens": {
+            "description": "Token budget for the pack, 500-8000 (default 8000).",
+            "type": "integer"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "START HERE for a bug report, issue or change request in this C/C++ code base. Paste the task text (with any example code, error messages and stack traces): returns, under a token budget, where the change most likely belongs (ranked, with the evidence for each: names in the task, what the task's example code really calls when compiled with this build's flags, quoted errors, stack frames, similar past commits), the code itself, what it calls and what calls it, the tests that exercise it, and how to verify a change.",
+      "name": "context_bundle",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "budget_tokens": {
+            "description": "Token budget for the bundle, 1000-8000 (default 8000).",
+            "type": "integer"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "task": {
+            "description": "The full task or issue text.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Rank the functions, methods and classes a task most likely needs changed, with the reasons for each (one list; no code bodies). Use it to decide where to read; context_bundle also includes the code.",
+      "name": "context_locate",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "k": {
+            "description": "How many places to return, 1-40 (default 15).",
+            "type": "integer"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Find the exact definition of a class or function by name, compiler-accurate: every overload with its signature, explicit and partial specializations, the base classes of a class, whether a method is virtual and what it overrides, and the template versions the build compiles. Unlike grep it never returns comments, call sites or forward declarations. kind: class or function.",
+      "name": "context_find",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "class",
+              "function"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "description": "Plain (Search) or qualified (fmt::context, ns::Book::update) name.",
+            "type": "string"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Inheritance of a class: all bases up the chain and all derived classes down it. For a method: what it overrides and every override of it, i.e. the possible targets of a virtual call.",
+      "name": "context_hierarchy",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Who calls a function and what it calls, as the compiler resolved each call (the overload actually chosen; calls into a template point at the template). For virtual methods it also lists every override as a possible target.",
+      "name": "context_calls",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "enum": [
+              "both",
+              "callers",
+              "callees"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Compile a piece of example code (from a bug report, or a test you are about to write) with this project's own build flags, without touching the tree, and report the project functions it really reaches (template specializations and overloads as the compiler picked them, how many calls deep) and the compiler's errors on it. Answers 'what does this snippet actually execute in our code?'.",
+      "name": "context_example",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "C/C++ code; includes and main() are added when missing.",
+            "type": "string"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "What the project's history says: past commits similar to a task (and the files they changed), commits a task points at by hash or issue number, or the recent commits to a file and the files usually changed with it. Only history up to the indexed commit.",
+      "name": "context_history",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "k": {
+            "description": "How many commits to return, 1-30 (default 10).",
+            "type": "integer"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Also list the recent commits to this file and the files usually changed with it.",
+            "type": "string"
+          },
+          "query": {
+            "description": "The task text, a commit hash, or words to search past commit messages for.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Lessons from past fixes in this code base, recorded by earlier sessions after a verified fix: the root cause, what fixed it, where, and what was tried and did not work. Returns the single best-matching lesson (k for more), or nothing when no past lesson is close.",
+      "name": "context_memory",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "k": {
+            "description": "How many lessons to return, 1-5 (default 1).",
+            "type": "integer"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "query": {
+            "description": "The task, or what you are about to change.",
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Record a lesson after a VERIFIED fix (tests or the reproducer pass), so later sessions on this code base can reuse it: the task in one or two sentences, the root cause, the fix, where (functions or files), and pitfalls (approaches that failed and why). Keep it short and general enough to help with similar tasks; never paste transcripts or whole diffs.",
+      "name": "context_remember",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "fix": {
+            "type": "string"
+          },
+          "partition": {
+            "description": "Team partition. Omit for every partition you can read.",
+            "type": "string"
+          },
+          "pitfalls": {
+            "type": "string"
+          },
+          "root_cause": {
+            "type": "string"
+          },
+          "setting": {
+            "description": "Build setting name (e.g. debug, release). Omit for every setting.",
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "verification": {
+            "description": "How the fix was verified.",
+            "type": "string"
+          },
+          "where": {
+            "description": "Functions or files, comma-separated.",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Absolute path of your worktree: adds your uncommitted changes (overlay) and says how many commits the index is behind.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

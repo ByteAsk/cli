@@ -643,14 +643,14 @@ mod tests {
     /// overlay and does not need to touch the configured shell or wrapper
     /// executable paths.
     ///
-    /// The `/bin/zsh` and `/tmp/codex-execve-wrapper` values here are
+    /// The `/bin/zsh` and `/tmp/byteask-execve-wrapper` values here are
     /// intentionally fake sentinels: this test asserts that the paths are
     /// copied into the exported environment and that the socket fd stays valid
     /// until `close_client_socket()` is called.
     #[tokio::test]
     async fn start_session_exposes_wrapper_env_overlay() -> anyhow::Result<()> {
         let _guard = ESCALATE_SERVER_TEST_LOCK.acquire().await?;
-        let execve_wrapper = PathBuf::from("/tmp/codex-execve-wrapper");
+        let execve_wrapper = PathBuf::from("/tmp/byteask-execve-wrapper");
         let execve_wrapper_str = execve_wrapper.to_string_lossy().to_string();
         let server = EscalateServer::new(
             PathBuf::from("/bin/zsh"),
@@ -695,7 +695,7 @@ mod tests {
         let after_spawn_invoked = Arc::new(AtomicBool::new(false));
         let server = EscalateServer::new(
             PathBuf::from("/bin/bash"),
-            PathBuf::from("/tmp/codex-execve-wrapper"),
+            PathBuf::from("/tmp/byteask-execve-wrapper"),
             DeterministicEscalationPolicy {
                 decision: EscalationDecision::run(),
             },
@@ -1037,7 +1037,7 @@ mod tests {
         );
         let server = EscalateServer::new(
             PathBuf::from("/bin/bash"),
-            PathBuf::from("/tmp/codex-execve-wrapper"),
+            PathBuf::from("/tmp/byteask-execve-wrapper"),
             DeterministicEscalationPolicy {
                 decision: EscalationDecision::escalate(EscalationExecution::Unsandboxed),
             },

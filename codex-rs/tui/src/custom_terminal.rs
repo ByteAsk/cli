@@ -1170,7 +1170,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 Paragraph::new(vec![
-                    Line::from(vec!["  ".into(), auth_url.as_str().cyan().underlined()]),
+                    Line::from(vec!["  ".into(), auth_url.as_str().fg(crate::style::accent_color()).underlined()]),
                     "".into(),
                     "  Press Esc to cancel".into(),
                 ])

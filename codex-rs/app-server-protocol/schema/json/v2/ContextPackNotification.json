@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "ByteAsk Context: one turn-0 pack attempt for a user message (sent only in sessions with ByteAsk Context configured).",
+  "properties": {
+    "answerBytes": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "approxTokens": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "attempted": {
+      "description": "The harness called `find_code_for_task` for this message.",
+      "type": "boolean"
+    },
+    "autoIndex": {
+      "description": "Pre-approved indexing of an unindexed repository: `started` or `failed`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "injected": {
+      "description": "The answer went into the user turn before the first model request.",
+      "type": "boolean"
+    },
+    "latencyMs": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "message": {
+      "description": "The one line for the user, if any.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "description": "Why nothing was injected (`not_a_task`, `not_cpp_repo`, `not_git_repo`, `not_indexed`, `indexing`, `timeout`, `error`); null when injected.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "testPrograms": {
+      "description": "The test programs the answer names as exercising its top places.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    },
+    "warmBuildStarted": {
+      "description": "A background build of those test programs was started.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "attempted",
+    "injected",
+    "testPrograms",
+    "threadId",
+    "turnId",
+    "warmBuildStarted"
+  ],
+  "title": "ContextPackNotification",
+  "type": "object"
+}
