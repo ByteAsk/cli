@@ -6,5 +6,5 @@ expression: rendered
   └ search.find_docs({"query":"ratatui
         styling","limit":3})
     Found styling guidance in styles.md and
-        additional notes in CONTRIBUTING.md.
+    additional notes in CONTRIBUTING.md.
     link: file:///docs/styles.md

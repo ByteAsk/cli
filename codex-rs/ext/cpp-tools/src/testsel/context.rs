@@ -85,7 +85,15 @@ pub(crate) async fn change(root: &Path, head: &str) -> Result<SelectInput, Strin
         // Exit 1 is git's "files differ", the normal case here.
         let (_, new_file) = git(
             root,
-            &["diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", file],
+            &[
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-index",
+                "--",
+                "/dev/null",
+                file,
+            ],
         )
         .await?;
         text.push_str(&new_file);
@@ -133,11 +141,19 @@ pub(crate) enum Combined {
 /// The tests to run from Context's choice and the local graph's tier 3 (indices into `model.tests`).
 /// Measured on 46 fresh commits of fmt, googletest and cJSON: the
 /// intersection missed none and was never slower than the local graph on 4 CPUs.
-pub(crate) fn combine(context: &[usize], graph: &[usize], graph_blind: bool) -> (Vec<usize>, Combined) {
+pub(crate) fn combine(
+    context: &[usize],
+    graph: &[usize],
+    graph_blind: bool,
+) -> (Vec<usize>, Combined) {
     if graph_blind || graph.is_empty() || context.is_empty() {
         return (context.to_vec(), Combined::ContextOnly);
     }
-    let both: Vec<usize> = context.iter().copied().filter(|i| graph.contains(i)).collect();
+    let both: Vec<usize> = context
+        .iter()
+        .copied()
+        .filter(|i| graph.contains(i))
+        .collect();
     if both.is_empty() {
         let mut union: Vec<usize> = context.iter().chain(graph.iter()).copied().collect();
         union.sort_unstable();
@@ -149,15 +165,29 @@ pub(crate) fn combine(context: &[usize], graph: &[usize], graph_blind: bool) -> 
 
 /// `select_tests`'s JSON answer mapped onto `model`, or why it is not used.
 pub(crate) fn from_answer(model: &Model, answer: &Value) -> Result<Pick, String> {
-    let confidence = answer.get("confidence").and_then(Value::as_str).unwrap_or("");
+    let confidence = answer
+        .get("confidence")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if confidence != "selected" {
-        let reason = answer.get("reason").and_then(Value::as_str).unwrap_or("no reason given");
+        let reason = answer
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("no reason given");
         return Err(format!("confidence {confidence:?} ({reason})"));
     }
-    if answer.get("stale").and_then(Value::as_bool).unwrap_or(false) {
+    if answer
+        .get("stale")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return Err("its index is older than this commit (stale)".to_string());
     }
-    if answer.get("truncated").and_then(Value::as_bool).unwrap_or(false) {
+    if answer
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return Err("the change reaches too many tests to list (truncated)".to_string());
     }
     let entries: Vec<&Value> = ["tests", "also"]
@@ -240,7 +270,11 @@ mod tests {
             version: None,
             ninja: true,
             targets: vec![target("core"), target("a_test"), target("b_test")],
-            tests: vec![test("a.one", "a_test"), test("a.two", "a_test"), test("b", "b_test")],
+            tests: vec![
+                test("a.one", "a_test"),
+                test("a.two", "a_test"),
+                test("b", "b_test"),
+            ],
             check_target: None,
             make_rebuilds: None,
             mapping_note: String::new(),
@@ -259,13 +293,23 @@ mod tests {
         });
         assert_eq!(
             from_answer(&model(), &answer),
-            Ok(Pick { tests: vec![1, 2], targets: vec![], programs: 2, unregistered: vec![] })
+            Ok(Pick {
+                tests: vec![1, 2],
+                targets: vec![],
+                programs: 2,
+                unregistered: vec![]
+            })
         );
         // A name this tree does not register is dropped (it cannot run here), the rest are used.
         let answer = json!({"confidence": "selected", "tests": [{"target": "b_test", "ctest": ["b", "py_only"]}]});
         assert_eq!(
             from_answer(&model(), &answer),
-            Ok(Pick { tests: vec![2], targets: vec![], programs: 1, unregistered: vec!["py_only".to_string()] })
+            Ok(Pick {
+                tests: vec![2],
+                targets: vec![],
+                programs: 1,
+                unregistered: vec!["py_only".to_string()]
+            })
         );
     }
 
@@ -274,18 +318,35 @@ mod tests {
         let answer = json!({"confidence": "selected", "build_targets": ["core", "gone"], "tests": [], "also": []});
         assert_eq!(
             from_answer(&model(), &answer),
-            Ok(Pick { tests: vec![], targets: vec!["core".to_string()], programs: 0, unregistered: vec![] })
+            Ok(Pick {
+                tests: vec![],
+                targets: vec!["core".to_string()],
+                programs: 0,
+                unregistered: vec![]
+            })
         );
     }
 
     #[test]
     fn context_and_graph_combine() {
-        assert_eq!(combine(&[1, 2, 5], &[2, 3, 5, 7], false), (vec![2, 5], Combined::Both));
+        assert_eq!(
+            combine(&[1, 2, 5], &[2, 3, 5, 7], false),
+            (vec![2, 5], Combined::Both)
+        );
         // Blind spots in the graph, or no test it reaches: Context alone.
-        assert_eq!(combine(&[1, 2], &[2, 3], true), (vec![1, 2], Combined::ContextOnly));
-        assert_eq!(combine(&[1, 2], &[], false), (vec![1, 2], Combined::ContextOnly));
+        assert_eq!(
+            combine(&[1, 2], &[2, 3], true),
+            (vec![1, 2], Combined::ContextOnly)
+        );
+        assert_eq!(
+            combine(&[1, 2], &[], false),
+            (vec![1, 2], Combined::ContextOnly)
+        );
         // Context names no test (compile only): unchanged.
-        assert_eq!(combine(&[], &[2, 3], false), (vec![], Combined::ContextOnly));
+        assert_eq!(
+            combine(&[], &[2, 3], false),
+            (vec![], Combined::ContextOnly)
+        );
         // Complete disagreement: both sets.
         assert_eq!(combine(&[1], &[3], false), (vec![1, 3], Combined::Union));
     }
@@ -294,7 +355,10 @@ mod tests {
     fn untrusted_answers_fall_back() {
         let m = model();
         let why = |answer: Value| from_answer(&m, &answer).unwrap_err();
-        assert!(why(json!({"confidence": "unknown", "reason": "no build model"})).contains("no build model"));
+        assert!(
+            why(json!({"confidence": "unknown", "reason": "no build model"}))
+                .contains("no build model")
+        );
         assert!(why(json!({"confidence": "selected", "stale": true})).contains("stale"));
         assert!(why(json!({"confidence": "selected", "truncated": true})).contains("truncated"));
         assert!(

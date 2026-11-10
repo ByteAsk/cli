@@ -210,7 +210,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for BenchTool {
 }
 
 impl BenchTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: BenchArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -322,22 +325,25 @@ impl BenchTool {
         let json_out = JsonOut::create().map_err(json_out_error)?;
 
         let pinning = self.pinning().await;
-        let (program, argv) =
-            build_local_argv(&bin_str, args.filter.as_deref(), reps, &json_out.0, &pinning);
+        let (program, argv) = build_local_argv(
+            &bin_str,
+            args.filter.as_deref(),
+            reps,
+            &json_out.0,
+            &pinning,
+        );
 
         match run_capped(&program, &argv, &self.cwd, timeout).await? {
-            RunOutcome::TimedOut { secs } => {
-                Ok(crate::report::report_plain(
+            RunOutcome::TimedOut { secs } => Ok(crate::report::report_plain(
+                TOOL_NAME,
+                local_timeout_message(secs),
+                crate::results::timed_out(
                     TOOL_NAME,
-                    local_timeout_message(secs),
-                    crate::results::timed_out(
-                        TOOL_NAME,
-                        "The benchmark",
-                        secs,
-                        "call cpp_bench again with a larger `timeout_sec`, a `filter`, or fewer `repetitions`.",
-                    ),
-                ))
-            }
+                    "The benchmark",
+                    secs,
+                    "call cpp_bench again with a larger `timeout_sec`, a `filter`, or fewer `repetitions`.",
+                ),
+            )),
             RunOutcome::Finished {
                 success,
                 code,
@@ -487,7 +493,11 @@ impl JsonOut {
             let n = NEXT.fetch_add(1, AtomicOrdering::Relaxed);
             let path = std::env::temp_dir()
                 .join(format!("byteask-gbench-{}-{n}.json", std::process::id()));
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
                 Ok(_) => return Ok(JsonOut(path)),
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(err) => return Err(err),
@@ -607,7 +617,12 @@ impl LocalRow {
     fn measurement(&self) -> Measurement {
         let failures = if self.error { self.reps.max(1) } else { 0 };
         let ns = ns_per(&self.unit).unwrap_or(1.0);
-        Measurement::from_summary(self.mean * ns, self.noise.map(|n| n * ns), self.reps, failures)
+        Measurement::from_summary(
+            self.mean * ns,
+            self.noise.map(|n| n * ns),
+            self.reps,
+            failures,
+        )
     }
 }
 
@@ -672,11 +687,19 @@ fn parse_gbench_rows(value: &Value, requested_reps: u32) -> Vec<LocalRow> {
         if let Some(u) = b.get("time_unit").and_then(Value::as_str) {
             entry.unit = u.to_string();
         }
-        let clock = if uses_real_time(&name) { "real_time" } else { "cpu_time" };
+        let clock = if uses_real_time(&name) {
+            "real_time"
+        } else {
+            "cpu_time"
+        };
         let time = b.get(clock).and_then(Value::as_f64);
         let run_type = b.get("run_type").and_then(Value::as_str).unwrap_or("");
         if run_type == "aggregate" {
-            match b.get("aggregate_name").and_then(Value::as_str).unwrap_or("") {
+            match b
+                .get("aggregate_name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+            {
                 "mean" => entry.mean = time,
                 "median" => entry.median = time,
                 "stddev" => entry.stddev = time,
@@ -752,7 +775,9 @@ fn render_local_report(ctx: &BenchContext, rows: &[LocalRow], pinning: &Pinning)
             std::env::consts::OS
         ),
     });
-    out.push_str("benchmark                              mean         stddev      median     reps\n");
+    out.push_str(
+        "benchmark                              mean         stddev      median     reps\n",
+    );
     for r in rows {
         if r.error {
             out.push_str(&format!(
@@ -783,7 +808,10 @@ fn render_local_report(ctx: &BenchContext, rows: &[LocalRow], pinning: &Pinning)
              request; the others on cpu_time.\n",
         );
     }
-    for r in rows.iter().filter(|r| !r.error && ns_per(&r.unit).is_none()) {
+    for r in rows
+        .iter()
+        .filter(|r| !r.error && ns_per(&r.unit).is_none())
+    {
         out.push_str(&format!(
             "note: {} reports an unknown time unit {:?}; it is left out of the comparison.\n",
             r.name, r.unit
@@ -829,7 +857,10 @@ fn bench_verdict(fastest: &LocalRow, other: &LocalRow) -> String {
     use crate::stats::Verdict;
     match crate::stats::compare(&fastest.measurement(), &other.measurement(), BENCH_FLOOR) {
         Verdict::Faster { ratio, .. } => {
-            format!("{} is {ratio:.2}x faster than {} (significant).", fastest.name, other.name)
+            format!(
+                "{} is {ratio:.2}x faster than {} (significant).",
+                fastest.name, other.name
+            )
         }
         Verdict::WithinNoise {
             delta_pct,
@@ -840,7 +871,11 @@ fn bench_verdict(fastest: &LocalRow, other: &LocalRow) -> String {
              difference; {}.",
             fastest.name,
             other.name,
-            if floor_bound { BENCH_FLOOR_HINT } else { BENCH_HINT },
+            if floor_bound {
+                BENCH_FLOOR_HINT
+            } else {
+                BENCH_HINT
+            },
         ),
         Verdict::NoNoiseEstimate => format!(
             "{} vs {}: no noise estimate — difference unverified; {BENCH_HINT}.",
@@ -1097,7 +1132,10 @@ mod tests {
     fn error_text_is_capped_on_a_character_boundary() {
         // The regression: a 3-byte character straddling the cap panicked.
         let body = format!("{}日本", "c".repeat(ERROR_BODY_CAP - 1));
-        assert_eq!(cap_text(body, ERROR_BODY_CAP), "c".repeat(ERROR_BODY_CAP - 1));
+        assert_eq!(
+            cap_text(body, ERROR_BODY_CAP),
+            "c".repeat(ERROR_BODY_CAP - 1)
+        );
         // Short text is untouched; a cut on a boundary is exact.
         assert_eq!(cap_text("héllo".to_string(), 100), "héllo");
         assert_eq!(cap_text("héllo".to_string(), 3), "hé");
@@ -1108,12 +1146,18 @@ mod tests {
         // The regression: `-DMSG="a b" -O2` reached quick-bench
         // as ["-DMSG=\"a", "b\"", "-O2"].
         assert_eq!(split_flags(r#"-DMSG="a b" -O2"#), vec!["-DMSG=a b", "-O2"]);
-        assert_eq!(split_flags("-DNAME='x y' -march=native"), vec!["-DNAME=x y", "-march=native"]);
+        assert_eq!(
+            split_flags("-DNAME='x y' -march=native"),
+            vec!["-DNAME=x y", "-march=native"]
+        );
     }
 
     #[test]
     fn split_flags_tokenizes_and_handles_empty() {
-        assert_eq!(split_flags("-march=native -mavx2"), vec!["-march=native", "-mavx2"]);
+        assert_eq!(
+            split_flags("-march=native -mavx2"),
+            vec!["-march=native", "-mavx2"]
+        );
         assert!(split_flags("").is_empty());
         assert!(split_flags("   ").is_empty());
     }
@@ -1272,8 +1316,14 @@ mod tests {
     fn relative_note_none_for_single_real_case() {
         // Only one real benchmark (plus the Noop baseline) -> no A/B note.
         let rows = vec![
-            BenchRow { name: "BM_Only".to_string(), cpu_time: 5.0 },
-            BenchRow { name: NOOP_NAME.to_string(), cpu_time: 1.0 },
+            BenchRow {
+                name: "BM_Only".to_string(),
+                cpu_time: 5.0,
+            },
+            BenchRow {
+                name: NOOP_NAME.to_string(),
+                cpu_time: 1.0,
+            },
         ];
         assert!(relative_note(&rows).is_none());
     }
@@ -1281,9 +1331,18 @@ mod tests {
     #[test]
     fn relative_note_picks_fastest_and_ignores_noop() {
         let rows = vec![
-            BenchRow { name: "Slow".to_string(), cpu_time: 40.0 },
-            BenchRow { name: "Fast".to_string(), cpu_time: 10.0 },
-            BenchRow { name: NOOP_NAME.to_string(), cpu_time: 1.0 },
+            BenchRow {
+                name: "Slow".to_string(),
+                cpu_time: 40.0,
+            },
+            BenchRow {
+                name: "Fast".to_string(),
+                cpu_time: 10.0,
+            },
+            BenchRow {
+                name: NOOP_NAME.to_string(),
+                cpu_time: 1.0,
+            },
         ];
         let note = relative_note(&rows).expect("note");
         assert_eq!(note, "fastest: Fast (10.0000); Slow is 4.00x slower");
@@ -1355,7 +1414,10 @@ mod tests {
         let ctx = parse_context(v.get("context"));
         let rows = parse_gbench_rows(&v, 9);
         let out = render_local_report(&ctx, &rows, &Pinning::Cpu(7));
-        assert!(out.contains("BM_Fast is 3.97x faster than BM_Slow (significant)."), "{out}");
+        assert!(
+            out.contains("BM_Fast is 3.97x faster than BM_Slow (significant)."),
+            "{out}"
+        );
         assert!(out.contains("pinned to CPU 7 via taskset"));
         assert!(!out.contains("[simulated]")); // real hardware, no simulated tag
         assert!(out.contains("cpu: 8 core(s)"));
@@ -1382,7 +1444,10 @@ mod tests {
         assert_eq!(rows[0].reps, 1);
         assert!(rows[0].noise.is_none());
         let out = render_local_report(&parse_context(v.get("context")), &rows, &Pinning::None);
-        assert!(out.contains("single repetition — no noise estimate"), "{out}");
+        assert!(
+            out.contains("single repetition — no noise estimate"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -1408,7 +1473,10 @@ mod tests {
         ]}"#;
         let v: Value = serde_json::from_str(json).expect("json");
         let rows = parse_gbench_rows(&v, 5);
-        let bad = rows.iter().find(|r| r.name == "BadBench").expect("bad row present");
+        let bad = rows
+            .iter()
+            .find(|r| r.name == "BadBench")
+            .expect("bad row present");
         assert!(bad.error);
         let out = render_local_report(&parse_context(v.get("context")), &rows, &Pinning::None);
         assert!(out.contains("error_occurred — excluded"), "{out}");
@@ -1428,7 +1496,10 @@ mod tests {
         let v: Value = serde_json::from_str(json).expect("json");
         let rows = parse_gbench_rows(&v, 5);
         let out = render_local_report(&parse_context(v.get("context")), &rows, &Pinning::None);
-        assert!(out.contains("BM_Small_ns is 1900.15x faster than BM_Big_ms (significant)."), "{out}");
+        assert!(
+            out.contains("BM_Small_ns is 1900.15x faster than BM_Big_ms (significant)."),
+            "{out}"
+        );
         // Each row is still shown in its own unit.
         assert!(out.contains("0.6 ms"), "{out}");
     }
@@ -1444,7 +1515,10 @@ mod tests {
         let v: Value = serde_json::from_str(json).expect("json");
         let rows = parse_gbench_rows(&v, 5);
         let out = render_local_report(&parse_context(v.get("context")), &rows, &Pinning::None);
-        assert!(out.contains("B reports an unknown time unit \"fortnights\""), "{out}");
+        assert!(
+            out.contains("B reports an unknown time unit \"fortnights\""),
+            "{out}"
+        );
         assert!(!out.contains("faster than"), "{out}");
     }
 
@@ -1464,8 +1538,14 @@ mod tests {
         let rows = parse_gbench_rows(&v, 5);
         assert_eq!(rows[0].mean, 276941.0);
         assert_eq!(rows[0].stddev_disp, Some(1330.8));
-        assert_eq!(rows[1].mean, 900.0, "UseManualTime reports in real_time too");
-        assert_eq!(rows[2].mean, 40.0, "an ordinary benchmark stays on cpu_time");
+        assert_eq!(
+            rows[1].mean, 900.0,
+            "UseManualTime reports in real_time too"
+        );
+        assert_eq!(
+            rows[2].mean, 40.0,
+            "an ordinary benchmark stays on cpu_time"
+        );
         let out = render_local_report(&parse_context(v.get("context")), &rows, &Pinning::None);
         assert!(out.contains("276941.0 ns"), "{out}");
         assert!(out.contains("timed on the wall clock"), "{out}");
@@ -1505,8 +1585,14 @@ mod tests {
     #[test]
     fn resolve_binary_relative_and_absolute() {
         let cwd = std::path::Path::new("/work");
-        assert_eq!(resolve_binary(cwd, "bench"), std::path::PathBuf::from("/work/bench"));
-        assert_eq!(resolve_binary(cwd, "/abs/bench"), std::path::PathBuf::from("/abs/bench"));
+        assert_eq!(
+            resolve_binary(cwd, "bench"),
+            std::path::PathBuf::from("/work/bench")
+        );
+        assert_eq!(
+            resolve_binary(cwd, "/abs/bench"),
+            std::path::PathBuf::from("/abs/bench")
+        );
     }
 
     #[test]
@@ -1568,7 +1654,10 @@ mod tests {
             Err(err) => err.to_string(),
         };
         assert!(err.contains("unknown field `benchmark_filter`"), "{err}");
-        assert!(err.contains("`filter`"), "the error should list the real names: {err}");
+        assert!(
+            err.contains("`filter`"),
+            "the error should list the real names: {err}"
+        );
     }
 
     fn local_args(binary: &str) -> BenchArgs {
@@ -1657,7 +1746,9 @@ mod tests {
             native_exec: true,
             cwd: dir.path().to_path_buf(),
         };
-        let out = run_local_text(&tool, &bin.to_string_lossy()).await.expect("reported");
+        let out = run_local_text(&tool, &bin.to_string_lossy())
+            .await
+            .expect("reported");
         assert!(out.contains("BM_A"), "{out}");
         assert!(out.contains("Google Benchmark, absolute times"), "{out}");
     }
@@ -1752,6 +1843,9 @@ mod tests {
         let text = serde_json::to_string(&item).expect("serialize");
         // Absolute-time table + a real, above-noise winner (BM_Fast ≫ BM_Slow).
         assert!(text.contains("Google Benchmark, absolute times"), "{text}");
-        assert!(text.contains("BM_Fast is") && text.contains("faster than BM_Slow"), "{text}");
+        assert!(
+            text.contains("BM_Fast is") && text.contains("faster than BM_Slow"),
+            "{text}"
+        );
     }
 }

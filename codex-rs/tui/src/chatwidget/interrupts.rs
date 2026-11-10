@@ -1,4 +1,6 @@
-//! Queue prompt overlays and deferred tool activity while another interrupt is visible.
+//! Defer prompt overlays and tool activity until assistant streams finish.
+//!
+//! Turn termination settles background activity without opening queued prompts.
 
 use std::collections::VecDeque;
 
@@ -7,7 +9,7 @@ use crate::approval_events::ApplyPatchApprovalRequestEvent;
 use crate::approval_events::ExecApprovalRequestEvent;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_app_server_protocol::RequestId as AppServerRequestId;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_protocol::request_permissions::RequestPermissionsEvent;
 
@@ -23,8 +25,8 @@ pub(crate) enum QueuedInterrupt {
     },
     RequestPermissions(RequestPermissionsEvent),
     RequestUserInput(ToolRequestUserInputParams),
-    ItemStarted(ThreadItem),
-    ItemCompleted(ThreadItem),
+    ItemStarted(ThreadItemPayload),
+    ItemCompleted(ThreadItemPayload),
 }
 
 #[derive(Default)]
@@ -85,12 +87,27 @@ impl InterruptManager {
         self.queue.push_back(QueuedInterrupt::RequestUserInput(ev));
     }
 
-    pub(crate) fn push_item_started(&mut self, item: ThreadItem) {
+    pub(crate) fn push_item_started(&mut self, item: ThreadItemPayload) {
         self.queue.push_back(QueuedInterrupt::ItemStarted(item));
     }
 
-    pub(crate) fn push_item_completed(&mut self, item: ThreadItem) {
+    pub(crate) fn push_item_completed(&mut self, item: ThreadItemPayload) {
         self.queue.push_back(QueuedInterrupt::ItemCompleted(item));
+    }
+
+    /// Settle background activity at turn end without opening queued prompts.
+    pub(crate) fn flush_activity(&mut self, chat: &mut ChatWidget) {
+        let mut pending_prompts = VecDeque::new();
+        while let Some(queued) = self.queue.pop_front() {
+            match queued {
+                QueuedInterrupt::ItemStarted(item) => chat.handle_queued_item_started_now(item),
+                QueuedInterrupt::ItemCompleted(item) => {
+                    chat.handle_queued_item_completed_now(item);
+                }
+                prompt => pending_prompts.push_back(prompt),
+            }
+        }
+        self.queue = pending_prompts;
     }
 
     pub(crate) fn remove_resolved_prompt(&mut self, request: &ResolvedAppServerRequest) -> bool {
@@ -157,7 +174,7 @@ mod tests {
     use crate::approval_events::ExecApprovalRequestEvent;
     use codex_app_server_protocol::CommandExecutionSource;
     use codex_app_server_protocol::CommandExecutionStatus;
-    use codex_app_server_protocol::ThreadItem;
+    use codex_app_server_protocol::ThreadItemPayload;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
 
@@ -192,8 +209,10 @@ mod tests {
         }
     }
 
-    fn command_execution(call_id: &str) -> ThreadItem {
-        ThreadItem::CommandExecution {
+    fn command_execution(call_id: &str) -> ThreadItemPayload {
+        ThreadItemPayload::CommandExecution {
+            model_context: None,
+            sandbox_type: None,
             id: call_id.to_string(),
             command: "true".to_string(),
             cwd: AbsolutePathBuf::current_dir().expect("current dir").into(),

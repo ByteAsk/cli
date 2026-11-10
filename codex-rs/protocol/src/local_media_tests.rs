@@ -31,8 +31,10 @@ fn snapshots_local_image_user_input_with_requested_detail() -> Result<()> {
 
         assert_eq!(
             UserInput::Image {
-                image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII="
-                    .to_string(),
+                image: crate::models::ImageReference::Inline {
+                    image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII="
+                        .to_string(),
+                },
                 detail,
             },
             input
@@ -61,7 +63,9 @@ fn snapshots_local_audio_user_input_with_supported_mime_types() -> Result<()> {
 
         assert_eq!(
             UserInput::Audio {
-                audio_url: format!("data:{mime};base64,YXVkaW8="),
+                audio: AudioReference::Inline {
+                    audio_url: format!("data:{mime};base64,YXVkaW8=")
+                },
             },
             input
         );

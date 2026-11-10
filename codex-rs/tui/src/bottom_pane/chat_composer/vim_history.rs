@@ -29,6 +29,7 @@ impl ComposerDraft {
         let mut bytes = self.text.len()
             + self.text_elements.len()
                 * std::mem::size_of::<codex_protocol::user_input::TextElement>();
+        bytes += self.mention_ranges.len() * std::mem::size_of::<std::ops::Range<usize>>();
         for path in &self.local_image_paths {
             bytes += path.as_os_str().len();
         }
@@ -64,21 +65,21 @@ impl VimHistory {
 }
 
 impl ChatComposer {
+    pub(super) fn wants_vim_history_key(&self, event: KeyEvent) -> bool {
+        self.draft.textarea.is_vim_normal_mode()
+            && !self.draft.textarea.is_vim_operator_pending()
+            && !self.popups.active()
+            && (self.vim_normal_keymap.redo.is_pressed(event)
+                || self.vim_normal_keymap.undo.is_pressed(event))
+    }
+
     /// Consume undo and redo before normal-mode commands, even when their history is empty.
     pub(super) fn handle_vim_history_key(&mut self, event: KeyEvent) -> bool {
-        if !self.draft.textarea.is_vim_normal_mode()
-            || self.draft.textarea.is_vim_operator_pending()
-            || self.popups.active()
-        {
+        if !self.wants_vim_history_key(event) {
             return false;
         }
 
         let redo = self.vim_normal_keymap.redo.is_pressed(event);
-        let undo = self.vim_normal_keymap.undo.is_pressed(event);
-        if !undo && !redo {
-            return false;
-        }
-
         let snapshot = if redo {
             self.vim_history.redo.pop_back()
         } else {
@@ -199,14 +200,12 @@ impl ChatComposer {
         let Some(snapshot) = self.vim_history.pending.take() else {
             return;
         };
-        if snapshot.text == self.current_text()
-            && snapshot.text_elements == self.current_text_elements()
-            && snapshot.pending_pastes == self.draft.pending_pastes
-            && snapshot.local_image_paths == self.attachments.local_image_paths()
-            && snapshot.remote_image_urls == self.attachments.remote_image_urls()
-            && snapshot.mention_bindings == self.snapshot_mention_bindings()
-        {
-            return;
+        if snapshot.text == self.current_text() {
+            let mut current = self.snapshot_draft();
+            current.cursor = snapshot.cursor;
+            if snapshot == current {
+                return;
+            }
         }
 
         self.vim_history.redo.clear();

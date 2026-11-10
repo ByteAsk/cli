@@ -150,7 +150,11 @@ const GATE_NOT_CHECKED_NOTES: &[&str] = &[
 
 /// Classify one gate record (`problems` as `Kind: text`, `notes` free text; `not_checked` the
 /// gate's own list of what it could not check, whether or not it was shown this round).
-pub fn classify_gate_record(problems: &[String], notes: &[String], not_checked: &[String]) -> GateVerdict {
+pub fn classify_gate_record(
+    problems: &[String],
+    notes: &[String],
+    not_checked: &[String],
+) -> GateVerdict {
     let kind = |p: &String| p.split(':').next().unwrap_or("").trim().to_string();
     let open: Vec<String> = problems
         .iter()
@@ -192,7 +196,11 @@ pub fn gate_verdict(log: &Path, turn_id: Option<&str>) -> GateVerdict {
     let strings = |v: &serde_json::Value, key: &str| -> Vec<String> {
         v.get(key)
             .and_then(|a| a.as_array())
-            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let last = text
@@ -206,7 +214,11 @@ pub fn gate_verdict(log: &Path, turn_id: Option<&str>) -> GateVerdict {
         Some(v) => {
             let mut problems = strings(&v, "problems");
             problems.extend(strings(&v, "still_open"));
-            classify_gate_record(&problems, &strings(&v, "notes"), &strings(&v, "not_checked"))
+            classify_gate_record(
+                &problems,
+                &strings(&v, "notes"),
+                &strings(&v, "not_checked"),
+            )
         }
         None => GateVerdict::Unknown("no finish-gate record for this turn".to_string()),
     }
@@ -217,7 +229,12 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    fn evidence(diff_empty: bool, gate: GateVerdict, uncertainty: &[&str], tests: TestEvidence) -> Evidence {
+    fn evidence(
+        diff_empty: bool,
+        gate: GateVerdict,
+        uncertainty: &[&str],
+        tests: TestEvidence,
+    ) -> Evidence {
         Evidence {
             diff_empty,
             gate,
@@ -228,23 +245,46 @@ mod tests {
 
     #[test]
     fn strong_evidence_fires_nothing() {
-        let e = evidence(false, GateVerdict::Passed, &[], TestEvidence::Passed(vec!["t".into()]));
+        let e = evidence(
+            false,
+            GateVerdict::Passed,
+            &[],
+            TestEvidence::Passed(vec!["t".into()]),
+        );
         assert_eq!(triggers(&e), Vec::<Trigger>::new());
         // An unknown gate is not evidence against the change.
-        let e = evidence(false, GateVerdict::Unknown("off".into()), &[], TestEvidence::Passed(vec!["t".into()]));
+        let e = evidence(
+            false,
+            GateVerdict::Unknown("off".into()),
+            &[],
+            TestEvidence::Passed(vec!["t".into()]),
+        );
         assert_eq!(triggers(&e), Vec::<Trigger>::new());
     }
 
     #[test]
     fn each_weak_signal_fires() {
         let pass = || TestEvidence::Passed(vec!["t".into()]);
-        assert_eq!(triggers(&evidence(true, GateVerdict::Passed, &[], pass())), vec![Trigger::EmptyDiff]);
         assert_eq!(
-            triggers(&evidence(false, GateVerdict::Problems(vec!["Build: x".into()]), &[], pass())),
+            triggers(&evidence(true, GateVerdict::Passed, &[], pass())),
+            vec![Trigger::EmptyDiff]
+        );
+        assert_eq!(
+            triggers(&evidence(
+                false,
+                GateVerdict::Problems(vec!["Build: x".into()]),
+                &[],
+                pass()
+            )),
             vec![Trigger::GateProblems]
         );
         assert_eq!(
-            triggers(&evidence(false, GateVerdict::NotChecked(vec!["x".into()]), &[], pass())),
+            triggers(&evidence(
+                false,
+                GateVerdict::NotChecked(vec!["x".into()]),
+                &[],
+                pass()
+            )),
             vec![Trigger::GateNotChecked]
         );
         assert_eq!(
@@ -252,11 +292,21 @@ mod tests {
             vec![Trigger::UncertaintyMarkers]
         );
         assert_eq!(
-            triggers(&evidence(false, GateVerdict::Passed, &[], TestEvidence::Failed(vec!["t".into()]))),
+            triggers(&evidence(
+                false,
+                GateVerdict::Passed,
+                &[],
+                TestEvidence::Failed(vec!["t".into()])
+            )),
             vec![Trigger::NoPassingTest]
         );
         assert_eq!(
-            triggers(&evidence(false, GateVerdict::Passed, &[], TestEvidence::NotRun("no build".into()))),
+            triggers(&evidence(
+                false,
+                GateVerdict::Passed,
+                &[],
+                TestEvidence::NotRun("no build".into())
+            )),
             vec![Trigger::TestsCouldNotRun]
         );
         let all = evidence(
@@ -267,7 +317,12 @@ mod tests {
         );
         assert_eq!(
             triggers(&all),
-            vec![Trigger::EmptyDiff, Trigger::GateProblems, Trigger::UncertaintyMarkers, Trigger::NoPassingTest]
+            vec![
+                Trigger::EmptyDiff,
+                Trigger::GateProblems,
+                Trigger::UncertaintyMarkers,
+                Trigger::NoPassingTest
+            ]
         );
     }
 
@@ -278,20 +333,48 @@ mod tests {
         let clean = evidence(false, GateVerdict::Passed, &[], TestEvidence::NoTests);
         assert_eq!(triggers(&clean), Vec::<Trigger>::new());
         assert_eq!(
-            triggers(&evidence(false, GateVerdict::Unknown("off".into()), &[], TestEvidence::NoTests)),
+            triggers(&evidence(
+                false,
+                GateVerdict::Unknown("off".into()),
+                &[],
+                TestEvidence::NoTests
+            )),
             Vec::<Trigger>::new()
         );
-        assert_eq!(triggers(&evidence(true, GateVerdict::Passed, &[], TestEvidence::NoTests)), vec![Trigger::EmptyDiff]);
         assert_eq!(
-            triggers(&evidence(false, GateVerdict::Problems(vec!["Tests: x".into()]), &[], TestEvidence::NoTests)),
+            triggers(&evidence(
+                true,
+                GateVerdict::Passed,
+                &[],
+                TestEvidence::NoTests
+            )),
+            vec![Trigger::EmptyDiff]
+        );
+        assert_eq!(
+            triggers(&evidence(
+                false,
+                GateVerdict::Problems(vec!["Tests: x".into()]),
+                &[],
+                TestEvidence::NoTests
+            )),
             vec![Trigger::GateProblems]
         );
         assert_eq!(
-            triggers(&evidence(false, GateVerdict::NotChecked(vec!["x".into()]), &[], TestEvidence::NoTests)),
+            triggers(&evidence(
+                false,
+                GateVerdict::NotChecked(vec!["x".into()]),
+                &[],
+                TestEvidence::NoTests
+            )),
             vec![Trigger::GateNotChecked]
         );
         assert_eq!(
-            triggers(&evidence(false, GateVerdict::Passed, &["could not verify"], TestEvidence::NoTests)),
+            triggers(&evidence(
+                false,
+                GateVerdict::Passed,
+                &["could not verify"],
+                TestEvidence::NoTests
+            )),
             vec![Trigger::UncertaintyMarkers]
         );
     }
@@ -299,7 +382,9 @@ mod tests {
     #[test]
     fn markers_are_found_case_insensitively() {
         assert_eq!(
-            uncertainty_markers("Done. I couldn\u{2019}t verify the fix because the build is BROKEN; NOT TESTED."),
+            uncertainty_markers(
+                "Done. I couldn\u{2019}t verify the fix because the build is BROKEN; NOT TESTED."
+            ),
             vec!["couldn't verify".to_string(), "not tested".to_string()]
         );
         assert!(uncertainty_markers("Fixed add(); all 12 tests pass.").is_empty());
@@ -308,24 +393,40 @@ mod tests {
     #[test]
     fn gate_records_are_classified() {
         let s = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
-        assert_eq!(classify_gate_record(&[], &s(&["build: ok", "tests: 12 passed"]), &[]), GateVerdict::Passed);
+        assert_eq!(
+            classify_gate_record(&[], &s(&["build: ok", "tests: 12 passed"]), &[]),
+            GateVerdict::Passed
+        );
         assert_eq!(
             classify_gate_record(&s(&["Tests: FAILING TESTS a", "Impact: items"]), &[], &[]),
             GateVerdict::Problems(s(&["Tests: FAILING TESTS a"]))
         );
         // Hygiene and advisories alone are not open problems.
-        assert_eq!(classify_gate_record(&s(&["Leftovers: x", "ShapeAdvisory: y"]), &[], &[]), GateVerdict::Passed);
+        assert_eq!(
+            classify_gate_record(&s(&["Leftovers: x", "ShapeAdvisory: y"]), &[], &[]),
+            GateVerdict::Passed
+        );
         assert_eq!(
             classify_gate_record(&s(&["SuiteNotChecked: COULD NOT CHECK"]), &[], &[]),
             GateVerdict::NotChecked(s(&["SuiteNotChecked: COULD NOT CHECK"]))
         );
         assert_eq!(
-            classify_gate_record(&[], &s(&["build/tests: skipped (no C/C++ or build file changed)"]), &[]),
-            GateVerdict::NotChecked(s(&["build/tests: skipped (no C/C++ or build file changed)"]))
+            classify_gate_record(
+                &[],
+                &s(&["build/tests: skipped (no C/C++ or build file changed)"]),
+                &[]
+            ),
+            GateVerdict::NotChecked(s(&[
+                "build/tests: skipped (no C/C++ or build file changed)"
+            ]))
         );
         // The gate's own not-checked list counts even after its note was shown once.
         assert_eq!(
-            classify_gate_record(&[], &s(&["build: ok"]), &s(&["2 test(s) hit the per-test time limit"])),
+            classify_gate_record(
+                &[],
+                &s(&["build: ok"]),
+                &s(&["2 test(s) hit the per-test time limit"])
+            ),
             GateVerdict::NotChecked(s(&["not checked: 2 test(s) hit the per-test time limit"]))
         );
     }
@@ -334,7 +435,10 @@ mod tests {
     fn the_last_record_of_the_turn_counts() {
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("gate-runs.jsonl");
-        assert!(matches!(gate_verdict(&log, Some("t1")), GateVerdict::Unknown(_)));
+        assert!(matches!(
+            gate_verdict(&log, Some("t1")),
+            GateVerdict::Unknown(_)
+        ));
         std::fs::write(
             &log,
             "{\"turn\":\"t0\",\"round\":0,\"problems\":[],\"notes\":[]}\n\
@@ -345,13 +449,19 @@ mod tests {
         .expect("write");
         assert_eq!(gate_verdict(&log, Some("t1")), GateVerdict::Passed);
         assert_eq!(gate_verdict(&log, Some("t0")), GateVerdict::Passed);
-        assert!(matches!(gate_verdict(&log, Some("t9")), GateVerdict::Unknown(_)));
+        assert!(matches!(
+            gate_verdict(&log, Some("t9")),
+            GateVerdict::Unknown(_)
+        ));
         std::fs::write(
             &log,
             "{\"turn\":\"t1\",\"round\":1,\"problems\":[\"Tests: FAILING TESTS x\"],\"notes\":[]}\n",
         )
         .expect("write");
-        assert!(matches!(gate_verdict(&log, Some("t1")), GateVerdict::Problems(_)));
+        assert!(matches!(
+            gate_verdict(&log, Some("t1")),
+            GateVerdict::Problems(_)
+        ));
         // A problem shown in an earlier round and not repeated for the unchanged change set is
         // still open at the end of the turn.
         std::fs::write(
@@ -359,6 +469,9 @@ mod tests {
             "{\"turn\":\"t1\",\"round\":1,\"problems\":[],\"notes\":[],\"still_open\":[\"Tests: TESTS THAT PASS ON THE UNMODIFIED TREE NOW FAIL x\"],\"not_checked\":[]}\n",
         )
         .expect("write");
-        assert!(matches!(gate_verdict(&log, Some("t1")), GateVerdict::Problems(_)));
+        assert!(matches!(
+            gate_verdict(&log, Some("t1")),
+            GateVerdict::Problems(_)
+        ));
     }
 }

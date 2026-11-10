@@ -47,7 +47,12 @@ impl ToolOutput for ToolReport {
 /// Build a `📚`-bannered, logged tool result. `target` is the query or ref id
 /// (may be truncated by the caller; empty is allowed). `result` becomes
 /// the last line; the body itself is unchanged.
-pub(crate) fn report(tool: &str, target: &str, body: String, result: CheckResult) -> Box<dyn ToolOutput> {
+pub(crate) fn report(
+    tool: &str,
+    target: &str,
+    body: String,
+    result: CheckResult,
+) -> Box<dyn ToolOutput> {
     log_call(tool, target, &body, &result);
     let banner = banner_line(tool, target);
     Box::new(ToolReport {
@@ -168,7 +173,10 @@ mod tests {
 
     #[test]
     fn short_target_collapses_and_caps() {
-        assert_eq!(short_target("  is  a\nC-style   cast allowed "), "is a C-style cast allowed");
+        assert_eq!(
+            short_target("  is  a\nC-style   cast allowed "),
+            "is a C-style cast allowed"
+        );
         let long = "x".repeat(80);
         let out = short_target(&long);
         assert!(out.ends_with('…'));

@@ -72,7 +72,11 @@ pub(crate) fn make_dir(root: &Path) -> Option<PathBuf> {
 /// `include`d files. Targets spelled with variables or patterns are left out.
 pub(crate) fn static_targets(dir: &Path) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    let Some(first) = MAKEFILE_NAMES.iter().map(|n| dir.join(n)).find(|p| p.is_file()) else {
+    let Some(first) = MAKEFILE_NAMES
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+    else {
         return out;
     };
     let mut queue = vec![first];
@@ -132,7 +136,16 @@ fn rule_targets(line: &str) -> Option<Vec<String>> {
     let first = before.split_whitespace().next()?;
     if matches!(
         first,
-        "ifeq" | "ifneq" | "ifdef" | "ifndef" | "else" | "endif" | "export" | "unexport" | "override" | "vpath"
+        "ifeq"
+            | "ifneq"
+            | "ifdef"
+            | "ifndef"
+            | "else"
+            | "endif"
+            | "export"
+            | "unexport"
+            | "override"
+            | "vpath"
     ) {
         return None;
     }
@@ -140,9 +153,20 @@ fn rule_targets(line: &str) -> Option<Vec<String>> {
     if before.trim() == ".PHONY" {
         let rest = after.trim_start_matches(':');
         let rest = rest.split(';').next().unwrap_or(rest);
-        return Some(rest.split_whitespace().filter(plain).map(str::to_string).collect());
+        return Some(
+            rest.split_whitespace()
+                .filter(plain)
+                .map(str::to_string)
+                .collect(),
+        );
     }
-    Some(before.split_whitespace().filter(plain).map(str::to_string).collect())
+    Some(
+        before
+            .split_whitespace()
+            .filter(plain)
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// Lines with backslash continuations joined.
@@ -212,7 +236,12 @@ impl ScratchCopy {
     pub(crate) async fn create(root: &Path, make_dir: &Path) -> Result<Self, String> {
         let rel = make_dir
             .strip_prefix(root)
-            .map_err(|_| format!("the build directory {} is outside the repository", make_dir.display()))?
+            .map_err(|_| {
+                format!(
+                    "the build directory {} is outside the repository",
+                    make_dir.display()
+                )
+            })?
             .to_path_buf();
         let (bytes, files) = tree_size(root);
         if bytes > MAX_COPY_BYTES || files > MAX_COPY_FILES {
@@ -225,8 +254,10 @@ impl ScratchCopy {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let copy = std::env::temp_dir().join(format!("byteask-make-copy-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&copy).map_err(|e| format!("cannot create {}: {e}", copy.display()))?;
+        let copy =
+            std::env::temp_dir().join(format!("byteask-make-copy-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&copy)
+            .map_err(|e| format!("cannot create {}: {e}", copy.display()))?;
         let stamp = SystemTime::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -257,7 +288,11 @@ impl ScratchCopy {
     }
 
     fn set_all_times(&self, stamp: SystemTime) {
-        for entry in walkdir::WalkDir::new(&self.copy).follow_links(false).into_iter().flatten() {
+        for entry in walkdir::WalkDir::new(&self.copy)
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+        {
             if !entry.file_type().is_symlink() {
                 set_time(entry.path(), stamp);
             }
@@ -266,7 +301,11 @@ impl ScratchCopy {
 
     /// Run `make -n <args>` in the copy (no inherited make flags, C locale).
     async fn dry_run(&self, args: &[String]) -> Option<String> {
-        let mut full = vec!["-C".to_string(), self.make_dir.display().to_string(), "-n".to_string()];
+        let mut full = vec![
+            "-C".to_string(),
+            self.make_dir.display().to_string(),
+            "-n".to_string(),
+        ];
         full.extend(args.iter().cloned());
         let env = vec![
             ("MAKEFLAGS".to_string(), String::new()),
@@ -290,7 +329,11 @@ impl ScratchCopy {
     }
 
     async fn dry_run_status(&self, args: &[String]) -> Option<bool> {
-        let mut full = vec!["-C".to_string(), self.make_dir.display().to_string(), "-n".to_string()];
+        let mut full = vec![
+            "-C".to_string(),
+            self.make_dir.display().to_string(),
+            "-n".to_string(),
+        ];
         full.extend(args.iter().cloned());
         let env = vec![
             ("MAKEFLAGS".to_string(), String::new()),
@@ -311,7 +354,13 @@ impl ScratchCopy {
             let rel = file.strip_prefix(&self.root).unwrap_or(file);
             let in_copy = self.copy.join(rel);
             args.push("-W".to_string());
-            args.push(in_copy.strip_prefix(&self.make_dir).unwrap_or(&in_copy).display().to_string());
+            args.push(
+                in_copy
+                    .strip_prefix(&self.make_dir)
+                    .unwrap_or(&in_copy)
+                    .display()
+                    .to_string(),
+            );
         }
         args.push(goal.to_string());
         self.dry_run(&args).await
@@ -321,7 +370,11 @@ impl ScratchCopy {
     /// else in the copy first.
     pub(crate) async fn all_commands(&self, goal: &str) -> Option<String> {
         let newer = self.stamp + Duration::from_secs(60);
-        for entry in walkdir::WalkDir::new(&self.copy).follow_links(false).into_iter().flatten() {
+        for entry in walkdir::WalkDir::new(&self.copy)
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+        {
             if entry.file_type().is_file() && super::is_source(entry.path()) {
                 set_time(entry.path(), newer);
             }
@@ -353,7 +406,11 @@ pub(crate) fn rewrite_absolute_paths(copy: &Path, root: &Path) {
         prefixes.push(canon);
     }
     let target = copy.display().to_string();
-    for entry in walkdir::WalkDir::new(copy).follow_links(false).into_iter().flatten() {
+    for entry in walkdir::WalkDir::new(copy)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+    {
         if !entry.file_type().is_file() || !is_generated_build_file(entry.path()) {
             continue;
         }
@@ -370,7 +427,8 @@ pub(crate) fn rewrite_absolute_paths(copy: &Path, root: &Path) {
         for prefix in &prefixes {
             changed = replace_path_prefix(&changed, prefix.as_bytes(), target.as_bytes());
         }
-        if changed != text && std::fs::write(entry.path(), changed).is_ok()
+        if changed != text
+            && std::fs::write(entry.path(), changed).is_ok()
             && let Ok(modified) = meta.modified()
         {
             set_time(entry.path(), modified);
@@ -401,7 +459,10 @@ fn tree_size(root: &Path) -> (u64, usize) {
 /// Generated build files that carry absolute paths: makefiles, `*.mk`, dependency files,
 /// `config.status`, libtool scripts.
 fn is_generated_build_file(path: &Path) -> bool {
-    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     MAKEFILE_NAMES.contains(&name.as_str())
         || name == "config.status"
         || name == "libtool"
@@ -438,7 +499,9 @@ pub(crate) fn replace_path_prefix(text: &[u8], from: &[u8], to: &[u8]) -> Vec<u8
 }
 
 fn set_time(path: &Path, stamp: SystemTime) {
-    let times = std::fs::FileTimes::new().set_accessed(stamp).set_modified(stamp);
+    let times = std::fs::FileTimes::new()
+        .set_accessed(stamp)
+        .set_modified(stamp);
     if let Ok(file) = std::fs::File::open(path) {
         let _ = file.set_times(times);
     }
@@ -455,7 +518,10 @@ fn remap_parsed(copy: &ScratchCopy, (programs, archives, invoked): MapResult) ->
         .iter()
         .map(|(k, (srcs, libs))| (map(k), (sources(srcs), libs.iter().map(map).collect())))
         .collect();
-    let archives = archives.iter().map(|(k, srcs)| (map(k), sources(srcs))).collect();
+    let archives = archives
+        .iter()
+        .map(|(k, srcs)| (map(k), sources(srcs)))
+        .collect();
     let invoked = invoked.iter().map(map).collect();
     (programs, archives, invoked)
 }
@@ -476,8 +542,12 @@ pub(crate) async fn model(root: &Path, dir: &Path, changed: &[PathBuf]) -> Resul
         Ok(copy) => {
             if !changed.is_empty() {
                 rebuilds = copy.rebuilds(changed, &goal).await.map(|text| {
-                    let (progs, archs, _) = remap_parsed(&copy, parse_commands(&text, &copy.make_dir));
-                    progs.into_keys().chain(archs.into_keys()).collect::<Vec<_>>()
+                    let (progs, archs, _) =
+                        remap_parsed(&copy, parse_commands(&text, &copy.make_dir));
+                    progs
+                        .into_keys()
+                        .chain(archs.into_keys())
+                        .collect::<Vec<_>>()
                 });
             }
             match copy.all_commands(&goal).await {
@@ -494,14 +564,28 @@ pub(crate) async fn model(root: &Path, dir: &Path, changed: &[PathBuf]) -> Resul
                     )
                 }
                 None => {
-                    notes.push(format!("`make -n {goal}` did not finish in the scratch copy; no program map"));
-                    (BTreeMap::new(), BTreeMap::new(), BTreeSet::new(), "no program map".to_string())
+                    notes.push(format!(
+                        "`make -n {goal}` did not finish in the scratch copy; no program map"
+                    ));
+                    (
+                        BTreeMap::new(),
+                        BTreeMap::new(),
+                        BTreeSet::new(),
+                        "no program map".to_string(),
+                    )
                 }
             }
         }
         Err(reason) => {
-            notes.push(format!("no program map: {reason}; every test counts as affected"));
-            (BTreeMap::new(), BTreeMap::new(), BTreeSet::new(), "no program map".to_string())
+            notes.push(format!(
+                "no program map: {reason}; every test counts as affected"
+            ));
+            (
+                BTreeMap::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                "no program map".to_string(),
+            )
         }
     };
 
@@ -553,7 +637,11 @@ pub(crate) async fn model(root: &Path, dir: &Path, changed: &[PathBuf]) -> Resul
         system: System::Make,
         root: root.to_path_buf(),
         build_dir: dir.to_path_buf(),
-        dir_kind: if canonical(dir) == canonical(root) { DirKind::InTree } else { DirKind::Existing },
+        dir_kind: if canonical(dir) == canonical(root) {
+            DirKind::InTree
+        } else {
+            DirKind::Existing
+        },
         version: None,
         ninja: false,
         targets,
@@ -562,7 +650,15 @@ pub(crate) async fn model(root: &Path, dir: &Path, changed: &[PathBuf]) -> Resul
         make_rebuilds: rebuilds,
         mapping_note,
         notes,
-        config: format!("make|{}|{}", if tracked_makefile { "plain" } else { "configured" }, std::env::var("CC").unwrap_or_default()),
+        config: format!(
+            "make|{}|{}",
+            if tracked_makefile {
+                "plain"
+            } else {
+                "configured"
+            },
+            std::env::var("CC").unwrap_or_default()
+        ),
     })
 }
 
@@ -594,7 +690,9 @@ pub(crate) fn parse_commands(text: &str, dir: &Path) -> (Programs, Archives, BTr
     for raw in text.lines() {
         let line = raw.trim();
         if let Some(rest) = line.split_once("Entering directory").map(|(_, r)| r) {
-            let path = rest.trim().trim_matches(|c| c == '\'' || c == '`' || c == '"');
+            let path = rest
+                .trim()
+                .trim_matches(|c| c == '\'' || c == '`' || c == '"');
             cwd_stack.push(PathBuf::from(path));
             continue;
         }
@@ -604,9 +702,13 @@ pub(crate) fn parse_commands(text: &str, dir: &Path) -> (Programs, Archives, BTr
             }
             continue;
         }
-        let cwd = cwd_stack.last().cloned().unwrap_or_else(|| dir.to_path_buf());
+        let cwd = cwd_stack
+            .last()
+            .cloned()
+            .unwrap_or_else(|| dir.to_path_buf());
         for part in line.split("&&").flat_map(|p| p.split(';')) {
-            let tokens = shlex::split(part.trim()).unwrap_or_else(|| part.split_whitespace().map(str::to_string).collect());
+            let tokens = shlex::split(part.trim())
+                .unwrap_or_else(|| part.split_whitespace().map(str::to_string).collect());
             if tokens.is_empty() {
                 continue;
             }
@@ -630,7 +732,10 @@ pub(crate) fn parse_commands(text: &str, dir: &Path) -> (Programs, Archives, BTr
         let compiles = tokens.iter().any(|t| t == "-c");
         if compiles {
             if let Some(obj) = output {
-                if let Some(src) = tokens.iter().find(|t| !t.starts_with('-') && super::is_source(Path::new(t.as_str()))) {
+                if let Some(src) = tokens
+                    .iter()
+                    .find(|t| !t.starts_with('-') && super::is_source(Path::new(t.as_str())))
+                {
                     objects.insert(obj, canonical(&normalize(&base, Path::new(src))));
                 }
             }
@@ -681,7 +786,9 @@ pub(crate) fn parse_commands(text: &str, dir: &Path) -> (Programs, Archives, BTr
     // Programs the transcript runs (tests): a command whose program is a built
     // one, directly or behind a wrapper (env, timeout, valgrind, a shell…).
     // Compile and link lines name programs as outputs, not as what runs.
-    const WRAPPERS: &[&str] = &["env", "timeout", "valgrind", "sh", "bash", "exec", "libtool", "stdbuf", "nice"];
+    const WRAPPERS: &[&str] = &[
+        "env", "timeout", "valgrind", "sh", "bash", "exec", "libtool", "stdbuf", "nice",
+    ];
     let mut invoked = BTreeSet::new();
     for (cwd, tokens) in &commands {
         if tokens.iter().any(|t| t == "-o" || t == "-c") {
@@ -695,8 +802,12 @@ pub(crate) fn parse_commands(text: &str, dir: &Path) -> (Programs, Archives, BTr
                 invoked.insert(path);
                 break;
             }
-            let name = Path::new(token).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            if !(WRAPPERS.contains(&name.as_str()) || token.starts_with('-') || token.contains('=')) {
+            let name = Path::new(token)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !(WRAPPERS.contains(&name.as_str()) || token.starts_with('-') || token.contains('='))
+            {
                 break;
             }
             position += 1;
@@ -710,7 +821,10 @@ fn is_object(token: &str) -> bool {
 }
 
 fn is_library(token: &str) -> bool {
-    token.ends_with(".a") || token.ends_with(".la") || token.ends_with(".so") || token.contains(".so.")
+    token.ends_with(".a")
+        || token.ends_with(".la")
+        || token.ends_with(".so")
+        || token.contains(".so.")
 }
 
 #[cfg(test)]
@@ -733,10 +847,19 @@ make[1]: Leaving directory '/r/sub'\n\
         let names: Vec<String> = programs.keys().map(|p| p.display().to_string()).collect();
         assert_eq!(names, vec!["/r/build/core_test", "/r/sub/util_check"]);
         let (sources, libs) = &programs[Path::new("/r/build/core_test")];
-        assert_eq!(sources.iter().cloned().collect::<Vec<_>>(), vec![PathBuf::from("/r/tests/core_test.cc")]);
-        assert_eq!(libs.iter().cloned().collect::<Vec<_>>(), vec![PathBuf::from("/r/build/libcore.a")]);
         assert_eq!(
-            archives[Path::new("/r/build/libcore.a")].iter().cloned().collect::<Vec<_>>(),
+            sources.iter().cloned().collect::<Vec<_>>(),
+            vec![PathBuf::from("/r/tests/core_test.cc")]
+        );
+        assert_eq!(
+            libs.iter().cloned().collect::<Vec<_>>(),
+            vec![PathBuf::from("/r/build/libcore.a")]
+        );
+        assert_eq!(
+            archives[Path::new("/r/build/libcore.a")]
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
             vec![PathBuf::from("/r/src/core.c")]
         );
         assert!(invoked.contains(Path::new("/r/build/core_test")));
@@ -754,7 +877,11 @@ all: prog\n\tcc -o prog $(objs)\n%.o: %.c\n\tcc -c $<\n$(OBJ): hdr.h\n.PHONY: al
 ifeq ($(X),y)\nendif\nexport PATH := $(PATH):/x\n",
         )
         .expect("write");
-        std::fs::write(dir.path().join("rules.mk"), "check:: all\n\t./prog\ninstall: all ; cp prog /x\n").expect("write");
+        std::fs::write(
+            dir.path().join("rules.mk"),
+            "check:: all\n\t./prog\ninstall: all ; cp prog /x\n",
+        )
+        .expect("write");
         let targets = static_targets(dir.path());
         let names: Vec<&str> = targets.iter().map(String::as_str).collect();
         assert_eq!(names, vec!["all", "check", "clean", "install"]);
@@ -829,13 +956,23 @@ core.o: core.c\n\t$(CC) -c core.c -o core.o\n",
         )
         .expect("write");
         std::fs::write(root.join("config.mk.in"), "CC = cc\n# template\n").expect("write");
-        std::fs::write(root.join("config.mk"), "CC = cc\n# configured by the user\n").expect("write");
-        std::fs::write(root.join("main.c"), "int core(void);\nint main(void){return core();}\n").expect("write");
+        std::fs::write(
+            root.join("config.mk"),
+            "CC = cc\n# configured by the user\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("main.c"),
+            "int core(void);\nint main(void){return core();}\n",
+        )
+        .expect("write");
         std::fs::write(root.join("core.c"), "int core(void){return 0;}\n").expect("write");
         // The template is newer than the configured file: any make run in the tree remakes it.
         let old = SystemTime::now() - Duration::from_secs(7200);
         set_time(&root.join("config.mk"), old);
-        let before = std::fs::metadata(root.join("config.mk")).and_then(|m| m.modified()).expect("mtime");
+        let before = std::fs::metadata(root.join("config.mk"))
+            .and_then(|m| m.modified())
+            .expect("mtime");
         let listing = |root: &Path| {
             let mut names: Vec<String> = std::fs::read_dir(root)
                 .expect("read_dir")
@@ -847,21 +984,33 @@ core.o: core.c\n\t$(CC) -c core.c -o core.o\n",
         };
         let files_before = listing(root);
 
-        let model = model(root, root, &[root.join("core.c")]).await.expect("model");
+        let model = model(root, root, &[root.join("core.c")])
+            .await
+            .expect("model");
 
         assert_eq!(
             std::fs::read_to_string(root.join("config.mk")).expect("read"),
             "CC = cc\n# configured by the user\n",
             "config.mk was rewritten"
         );
-        let after = std::fs::metadata(root.join("config.mk")).and_then(|m| m.modified()).expect("mtime");
+        let after = std::fs::metadata(root.join("config.mk"))
+            .and_then(|m| m.modified())
+            .expect("mtime");
         assert_eq!(before, after, "config.mk was touched");
         assert_eq!(listing(root), files_before, "files appeared in the tree");
         assert_eq!(model.check_target.as_deref(), Some("check"));
         let program = model.target("prog_test").expect("program mapped");
-        assert!(program.sources.iter().any(|s| s.ends_with("main.c")), "{:?}", program.sources);
+        assert!(
+            program.sources.iter().any(|s| s.ends_with("main.c")),
+            "{:?}",
+            program.sources
+        );
         assert_eq!(program.deps, vec!["libcore.a".to_string()]);
-        assert!(model.tests.iter().any(|t| t.name == "prog_test"), "{:?}", model.tests);
+        assert!(
+            model.tests.iter().any(|t| t.name == "prog_test"),
+            "{:?}",
+            model.tests
+        );
         assert!(
             model.tests[0].command[0].starts_with(&*root.to_string_lossy())
                 || model.tests[0].command[0].starts_with(&*canonical(root).to_string_lossy()),
@@ -869,8 +1018,18 @@ core.o: core.c\n\t$(CC) -c core.c -o core.o\n",
             model.tests[0].command
         );
         let rebuilds = model.make_rebuilds.clone().unwrap_or_default();
-        assert!(rebuilds.iter().any(|p| p.ends_with("libcore.a")), "{rebuilds:?}");
-        assert!(!rebuilds.iter().any(|p| p.ends_with("main.o")), "{rebuilds:?}");
-        assert!(model.mapping_note.contains("scratch copy"), "{}", model.mapping_note);
+        assert!(
+            rebuilds.iter().any(|p| p.ends_with("libcore.a")),
+            "{rebuilds:?}"
+        );
+        assert!(
+            !rebuilds.iter().any(|p| p.ends_with("main.o")),
+            "{rebuilds:?}"
+        );
+        assert!(
+            model.mapping_note.contains("scratch copy"),
+            "{}",
+            model.mapping_note
+        );
     }
 }

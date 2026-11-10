@@ -24,13 +24,19 @@ mod seekable_reader;
 pub(crate) mod session_index;
 mod sqlite_metrics;
 pub mod state_db;
+mod writer_lock;
 
 pub use codex_history::CompactedItem;
+pub use codex_history::CompactionResumeMetadata;
 pub use codex_history::InitialHistory;
 pub use codex_history::ResponseItemEnvelope;
 pub use codex_history::ResumedHistory;
+pub use codex_history::RetainedContextEntry;
+pub use codex_history::RetainedContextEvent;
+pub use codex_history::RetainedInputSource;
 pub use codex_history::RolloutItem;
 pub use codex_history::RolloutLine;
+pub use codex_history::resume_multi_agent_version;
 pub(crate) use codex_protocol::protocol;
 
 /// Decodes a persisted rollout record without Serde's flattened-envelope buffering.
@@ -45,7 +51,9 @@ pub(crate) use codex_protocol::protocol;
 /// Remove it once Serde supports format-specific buffering.
 pub fn decode_rollout_line(value: Value) -> serde_json::Result<RolloutLine> {
     let Value::Object(mut fields) = value else {
-        return serde_json::from_value(value);
+        return Err(serde_json::Error::custom(
+            "rollout line must be a JSON object",
+        ));
     };
     let timestamp = fields
         .remove("timestamp")
@@ -65,6 +73,16 @@ pub fn decode_rollout_line(value: Value) -> serde_json::Result<RolloutLine> {
     })
 }
 
+/// Parses a persisted JSONL rollout record through the canonical JSON decoder.
+pub fn parse_rollout_line(line: &str) -> serde_json::Result<RolloutLine> {
+    serde_json::from_str::<Value>(line).and_then(decode_rollout_line)
+}
+
+/// Parses persisted JSONL rollout record bytes through the canonical JSON decoder.
+pub fn parse_rollout_line_bytes(bytes: &[u8]) -> serde_json::Result<RolloutLine> {
+    serde_json::from_slice::<Value>(bytes).and_then(decode_rollout_line)
+}
+
 pub const SESSIONS_SUBDIR: &str = "sessions";
 pub const ARCHIVED_SESSIONS_SUBDIR: &str = "archived_sessions";
 pub static INTERACTIVE_SESSION_SOURCES: LazyLock<Vec<SessionSource>> = LazyLock::new(|| {
@@ -77,19 +95,21 @@ pub static INTERACTIVE_SESSION_SOURCES: LazyLock<Vec<SessionSource>> = LazyLock:
 });
 
 pub use codex_protocol::protocol::SessionMeta;
+pub use compression::RolloutCompressionTrigger;
 pub use compression::RolloutLineReader;
 pub use compression::existing_rollout_path;
 pub use compression::open_rollout_line_reader;
 pub use compression::plain_rollout_path;
 pub use compression::spawn_rollout_compression_worker;
 pub use seekable_reader::open_rollout_seekable_reader;
+pub use seekable_reader::read_rollout_prefix;
 pub use seekable_reader::rollout_contains_prefix;
 
 /// Materializes a compressed rollout as plain JSONL before another rollout references it.
 pub async fn materialize_rollout_for_reference(
     path: &std::path::Path,
 ) -> std::io::Result<std::path::PathBuf> {
-    compression::materialize_rollout_for_append(path).await
+    compression::materialize_rollout_for_append(path, /*writer_lock*/ None).await
 }
 pub use config::Config;
 pub use config::RolloutConfig;
@@ -109,6 +129,7 @@ pub use list::find_thread_path_by_id_str as find_conversation_path_by_id_str;
 pub use list::get_threads;
 pub use list::get_threads_in_root;
 pub use list::parse_cursor;
+pub use list::prefetch_sibling_rollout_paths;
 pub use list::read_head_for_summary;
 pub use list::read_session_meta_line;
 pub use list::read_thread_item_from_rollout;
@@ -118,13 +139,16 @@ pub use maintenance::try_acquire_rollout_maintenance_lock;
 pub use metadata::builder_from_items;
 pub use metadata::forked_from_ordinal_exclusive;
 pub use metadata::rollout_id_from_path;
+pub use metadata::thread_id_from_rollout_path;
 pub use model_context::ModelContextScan;
 pub use model_context::ModelContextScanProgress;
 pub use persistence_metrics::RolloutPersistenceBatchMeasurement;
 pub use persistence_metrics::RolloutPersistenceTelemetry;
 pub use persistence_metrics::measure_and_filter_rollout_items;
-pub use policy::is_persisted_rollout_item;
+pub use policy::into_persisted_rollout_items;
+pub use policy::persisted_rollout_item;
 pub use policy::persisted_rollout_items;
+pub use policy::should_persist_response_item;
 pub use policy::should_persist_response_item_for_memories;
 pub use recorder::RolloutRecorder;
 pub use recorder::RolloutRecorderParams;
@@ -143,6 +167,8 @@ pub use session_index::find_thread_names_by_ids;
 pub use session_index::remove_thread_name_entries;
 pub use state_db::StateDbHandle;
 pub use state_db::sqlite_telemetry_recorder;
+pub use writer_lock::WriterLockCoordinator;
+pub use writer_lock::WriterLockGuard;
 
 #[cfg(test)]
 mod tests;

@@ -15,6 +15,7 @@ fn oversized_destinations_remain_plain_text() {
 
     // Explicit Markdown links can reach the cell marker without bare-URL detection.
     let line = HyperlinkLine {
+        source: None,
         line: Line::from("visible"),
         hyperlinks: vec![TerminalHyperlink::web(/*columns*/ 0..7, oversized)],
     };
@@ -63,4 +64,18 @@ fn decorated_hyperlinks_preserve_joined_emoji_columns() {
             osc8_hyperlink(destination, destination)
         ))]
     );
+}
+
+#[test]
+fn source_wrapping_clips_a_cursor_sentinel_at_the_input_boundary() {
+    let destination = "https://example.test/pull/9410";
+    let text = format!("› [configuration editor]({destination})");
+    let source = annotate_web_urls_in_line(Line::from(text.clone()));
+    let mut wrapped = crate::wrapping::word_wrap_line_with_source(&source.line, text.len());
+    wrapped.last_mut().expect("wrapped line").range.end += 1;
+    let actual = remap_source_wrapped_line(&source, wrapped);
+    let mut expected = source;
+    expected.source = Some(LogicalLineSource::from_line(&expected.line));
+
+    assert!(lines_with_sources_eq(&actual, &[expected]));
 }

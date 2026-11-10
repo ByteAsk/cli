@@ -64,7 +64,8 @@ impl KeymapDebugView {
         let mut lines = vec![
             Line::from("Keypress Inspector".bold()),
             Line::from(
-                "Press any key to see what ByteAsk receives. Esc is inspected; Ctrl+C closes.".dim(),
+                "Press any key to see what ByteAsk receives. Esc is inspected; Ctrl+C closes."
+                    .dim(),
             ),
         ];
         let hint = if self.should_show_delayed_hint(now) {
@@ -76,14 +77,19 @@ impl KeymapDebugView {
 
         let Some(report) = &self.last_report else {
             lines.push(Line::from(""));
-            lines.push(Line::from("Waiting for a keypress...".fg(crate::style::accent_color())));
+            lines.push(Line::from(
+                "Waiting for a keypress...".fg(crate::style::accent_color()),
+            ));
             return lines;
         };
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             "Detected: ".dim(),
-            report.detected.display_label().fg(crate::style::accent_color()),
+            report
+                .detected
+                .display_label()
+                .fg(crate::style::accent_color()),
         ]));
         match &report.config_key {
             Ok(config_key) => {
@@ -150,6 +156,14 @@ impl Renderable for KeymapDebugView {
 }
 
 impl BottomPaneView for KeymapDebugView {
+    fn keymap_contexts(&self) -> crate::keymap::KeymapContextSet {
+        crate::keymap::KeymapContextSet::raw_key_capture()
+    }
+
+    fn accepts_input_when_disconnected(&self) -> bool {
+        true
+    }
+
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         if key_event.kind == KeyEventKind::Release {
             return;

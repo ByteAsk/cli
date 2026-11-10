@@ -1,5 +1,6 @@
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStatus;
 use codex_core::config::ConfigBuilder;
@@ -15,6 +16,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_absolute_path::test_support::test_path_buf;
+use codex_utils_path_uri::PathUri;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use owo_colors::Style;
 use pretty_assertions::assert_eq;
@@ -49,6 +51,7 @@ fn plain_processor() -> EventProcessorWithHumanOutput {
         last_total_token_usage: None,
         sandbox_is_read_only: false,
         sandbox_hint_shown: false,
+        last_turn_diff: String::new(),
     }
 }
 
@@ -56,8 +59,8 @@ fn dynamic_tool_call(
     status: codex_app_server_protocol::DynamicToolCallStatus,
     content_items: Option<Vec<codex_app_server_protocol::DynamicToolCallOutputContentItem>>,
     success: Option<bool>,
-) -> ThreadItem {
-    ThreadItem::DynamicToolCall {
+) -> ThreadItemPayload {
+    ThreadItemPayload::DynamicToolCall {
         id: "tool-1".to_string(),
         namespace: None,
         tool: "cpp_sanitize".to_string(),
@@ -109,7 +112,7 @@ fn dynamic_tool_call_started_uses_the_namespace_when_present() {
         None,
         None,
     );
-    if let ThreadItem::DynamicToolCall { namespace, .. } = &mut item {
+    if let ThreadItemPayload::DynamicToolCall { namespace, .. } = &mut item {
         *namespace = Some("cpp".to_string());
     }
 
@@ -175,7 +178,7 @@ fn dynamic_tool_call_success_false_renders_as_failed() {
 fn dynamic_tool_call_image_output_is_a_placeholder_not_base64() {
     let processor = plain_processor();
     let payload = "A".repeat(4000);
-    let item = ThreadItem::DynamicToolCall {
+    let item = ThreadItemPayload::DynamicToolCall {
         id: "tool-1".to_string(),
         namespace: None,
         tool: "image_generation".to_string(),
@@ -207,7 +210,8 @@ fn dynamic_tool_call_image_output_is_a_placeholder_not_base64() {
 #[test]
 fn tool_output_escape_sequences_never_reach_the_terminal() {
     let processor = plain_processor();
-    let payload = "ok \x1b]52;c;aGVsbG8=\x07 \x1b[2J\x1b]0;pwned\x07\n\tsecond line \x1b[31mred\x1b[0m";
+    let payload =
+        "ok \x1b]52;c;aGVsbG8=\x07 \x1b[2J\x1b]0;pwned\x07\n\tsecond line \x1b[31mred\x1b[0m";
 
     let lines = processor.item_completed_lines(&dynamic_tool_call(
         codex_app_server_protocol::DynamicToolCallStatus::Completed,
@@ -217,9 +221,15 @@ fn tool_output_escape_sequences_never_reach_the_terminal() {
 
     let printed = lines.join("\n");
     for sequence in ["\x1b", "\x07"] {
-        assert!(!printed.contains(sequence), "{sequence:?} reached the terminal: {printed:?}");
+        assert!(
+            !printed.contains(sequence),
+            "{sequence:?} reached the terminal: {printed:?}"
+        );
     }
-    assert!(printed.contains("ok ") && printed.contains("\n\tsecond line"), "{printed:?}");
+    assert!(
+        printed.contains("ok ") && printed.contains("\n\tsecond line"),
+        "{printed:?}"
+    );
 }
 
 /// A byte cap with an explicit elision marker, so a reader can tell
@@ -275,7 +285,7 @@ fn dynamic_tool_call_with_no_output_still_shows_the_call() {
 #[test]
 fn mcp_tool_call_completed_prints_the_output_body() {
     let processor = plain_processor();
-    let item = ThreadItem::McpToolCall {
+    let item = ThreadItemPayload::McpToolCall {
         id: "mcp-1".to_string(),
         server: "docs".to_string(),
         tool: "search".to_string(),
@@ -303,7 +313,7 @@ fn mcp_tool_call_completed_prints_the_output_body() {
 #[test]
 fn mcp_tool_call_image_content_is_a_placeholder() {
     let processor = plain_processor();
-    let item = ThreadItem::McpToolCall {
+    let item = ThreadItemPayload::McpToolCall {
         id: "mcp-1".to_string(),
         server: "docs".to_string(),
         tool: "render".to_string(),
@@ -405,7 +415,7 @@ fn sandbox_denial_hint_is_suppressed_for_ordinary_failures() {
 
 /// Built through serde because `cwd`'s `LegacyAppPathString` is deliberately
 /// not constructible from a raw string outside deserialization.
-fn failed_command(output: &str) -> ThreadItem {
+fn failed_command(output: &str) -> ThreadItemPayload {
     serde_json::from_value(serde_json::json!({
         "type": "commandExecution",
         "id": "cmd-1",
@@ -419,6 +429,111 @@ fn failed_command(output: &str) -> ThreadItem {
         "durationMs": 10,
     }))
     .expect("valid commandExecution item")
+}
+
+#[test]
+fn turn_diff_notifications_render_only_changes() -> anyhow::Result<()> {
+    const CHILD: &str = "CODEX_EXEC_TURN_DIFF_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Capture stderr in a child so other tests cannot interfere with rendering.
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "event_processor_with_human_output::tests::turn_diff_notifications_render_only_changes",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()?;
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        insta::assert_snapshot!(String::from_utf8(output.stderr)?, @r"
+        turn-1
+        @@ -1 +1 @@
+        -value=1
+        +value=2
+        @@ -1 +1 @@
+        -value=1
+        +value=3
+        @@ -1 +1 @@
+        -value=1
+        +value=2
+        @@ -1 +1 @@
+        -value=1
+        +value=2
+        @@ -1 +1 @@
+        -value=1
+        +value=2
+        turn-2
+        @@ -1 +1 @@
+        -value=1
+        +value=2
+        ");
+        return Ok(());
+    }
+
+    let mut processor = EventProcessorWithHumanOutput {
+        bold: Style::new(),
+        cyan: Style::new(),
+        dimmed: Style::new(),
+        green: Style::new(),
+        italic: Style::new(),
+        magenta: Style::new(),
+        red: Style::new(),
+        yellow: Style::new(),
+        show_agent_reasoning: true,
+        show_raw_agent_reasoning: false,
+        last_message_path: None,
+        final_message: None,
+        final_message_rendered: false,
+        emit_final_message_on_shutdown: false,
+        last_total_token_usage: None,
+        last_turn_diff: String::new(),
+        sandbox_is_read_only: false,
+        sandbox_hint_shown: false,
+    };
+    let first = "@@ -1 +1 @@\n-value=1\n+value=2";
+    let changed = "@@ -1 +1 @@\n-value=1\n+value=3";
+    for (turn_id, diffs) in [
+        // Repeated updates are quiet, but changed and restored diffs still print.
+        (
+            "turn-1",
+            vec![
+                "", " \n", first, first, changed, changed, first, "", first, " \n", first,
+            ],
+        ),
+        ("turn-2", vec![first, first]),
+    ] {
+        processor.process_server_notification(ServerNotification::TurnStarted(
+            codex_app_server_protocol::TurnStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn: Turn {
+                    id: turn_id.to_string(),
+                    root_turn_id: None,
+                    items_view: codex_app_server_protocol::TurnItemsView::Full,
+                    items: Vec::new(),
+                    status: TurnStatus::InProgress,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                },
+            },
+        ));
+        eprintln!("{turn_id}");
+        for diff in diffs {
+            assert_eq!(
+                processor.process_server_notification(ServerNotification::TurnDiffUpdated(
+                    codex_app_server_protocol::TurnDiffUpdatedNotification {
+                        thread_id: "thread-1".to_string(),
+                        turn_id: turn_id.to_string(),
+                        diff: diff.to_string(),
+                    },
+                )),
+                crate::event_processor::CodexStatus::Running
+            );
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -500,7 +615,7 @@ fn reasoning_text_uses_raw_content_when_enabled() {
 
 #[test]
 fn summarizes_disabled_permission_profile_as_danger_full_access() {
-    let cwd = test_path_buf("/tmp").abs();
+    let cwd = PathUri::from_abs_path(&test_path_buf("/tmp").abs());
 
     assert_eq!(
         summarize_permission_profile(
@@ -514,7 +629,7 @@ fn summarizes_disabled_permission_profile_as_danger_full_access() {
 
 #[test]
 fn summarizes_external_permission_profile() {
-    let cwd = test_path_buf("/tmp").abs();
+    let cwd = PathUri::from_abs_path(&test_path_buf("/tmp").abs());
 
     assert_eq!(
         summarize_permission_profile(
@@ -551,14 +666,18 @@ fn summarizes_managed_workspace_write_permission_profile() {
     );
 
     assert_eq!(
-        summarize_permission_profile(&profile, &cwd, &[cwd.clone(), cache_root.clone()]),
+        summarize_permission_profile(
+            &profile,
+            &PathUri::from_abs_path(&cwd),
+            &[cwd.clone().into(), cache_root.clone().into()],
+        ),
         format!("workspace-write [workdir, {}]", cache_root.display())
     );
 }
 
 #[test]
 fn summarizes_managed_read_only_permission_profile() {
-    let cwd = test_path_buf("/tmp/project").abs();
+    let cwd = PathUri::from_abs_path(&test_path_buf("/tmp/project").abs());
     let profile = PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(Vec::new()),
         NetworkSandboxPolicy::Restricted,
@@ -619,7 +738,6 @@ async fn config_summary_entries_include_runtime_workspace_roots() {
         active_permission_profile: None,
         cwd,
         reasoning_effort: None,
-        initial_messages: None,
         network_proxy: None,
         rollout_path: None,
     };
@@ -648,7 +766,7 @@ async fn config_summary_entries_include_runtime_workspace_roots() {
 #[test]
 fn final_message_from_turn_items_uses_latest_agent_message() {
     let message = final_message_from_turn_items(&[
-        ThreadItem::AgentMessage {
+        ThreadItemPayload::AgentMessage {
             id: "msg-1".to_string(),
             text: "first".to_string(),
             phase: None,
@@ -656,11 +774,11 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
             delivery: None,
             questions: None,
         },
-        ThreadItem::Plan {
+        ThreadItemPayload::Plan {
             id: "plan-1".to_string(),
             text: "plan".to_string(),
         },
-        ThreadItem::AgentMessage {
+        ThreadItemPayload::AgentMessage {
             id: "msg-2".to_string(),
             text: "second".to_string(),
             phase: None,
@@ -676,16 +794,16 @@ fn final_message_from_turn_items_uses_latest_agent_message() {
 #[test]
 fn final_message_from_turn_items_falls_back_to_latest_plan() {
     let message = final_message_from_turn_items(&[
-        ThreadItem::Reasoning {
+        ThreadItemPayload::Reasoning {
             id: "reasoning-1".to_string(),
             summary: vec!["inspect".to_string()],
             content: Vec::new(),
         },
-        ThreadItem::Plan {
+        ThreadItemPayload::Plan {
             id: "plan-1".to_string(),
             text: "first plan".to_string(),
         },
-        ThreadItem::Plan {
+        ThreadItemPayload::Plan {
             id: "plan-2".to_string(),
             text: "final plan".to_string(),
         },
@@ -714,6 +832,7 @@ fn turn_completed_recovers_final_message_from_turn_items() {
         last_total_token_usage: None,
         sandbox_is_read_only: false,
         sandbox_hint_shown: false,
+        last_turn_diff: String::new(),
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
@@ -721,15 +840,16 @@ fn turn_completed_recovers_final_message_from_turn_items() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![ThreadItem::AgentMessage {
+                items: vec![ThreadItem::untimed(ThreadItemPayload::AgentMessage {
                     id: "msg-1".to_string(),
                     text: "final answer".to_string(),
                     phase: None,
                     memory_citation: None,
                     delivery: None,
                     questions: None,
-                }],
+                })],
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -766,6 +886,7 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
         last_total_token_usage: None,
         sandbox_is_read_only: false,
         sandbox_hint_shown: false,
+        last_turn_diff: String::new(),
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
@@ -773,15 +894,16 @@ fn turn_completed_overwrites_stale_final_message_from_turn_items() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![ThreadItem::AgentMessage {
+                items: vec![ThreadItem::untimed(ThreadItemPayload::AgentMessage {
                     id: "msg-1".to_string(),
                     text: "final answer".to_string(),
                     phase: None,
                     memory_citation: None,
                     delivery: None,
                     questions: None,
-                }],
+                })],
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -819,6 +941,7 @@ fn turn_completed_preserves_streamed_final_message_when_turn_items_are_empty() {
         last_total_token_usage: None,
         sandbox_is_read_only: false,
         sandbox_hint_shown: false,
+        last_turn_diff: String::new(),
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
@@ -826,6 +949,7 @@ fn turn_completed_preserves_streamed_final_message_when_turn_items_are_empty() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Completed,
@@ -865,6 +989,7 @@ fn turn_failed_clears_stale_final_message() {
         last_total_token_usage: None,
         sandbox_is_read_only: false,
         sandbox_hint_shown: false,
+        last_turn_diff: String::new(),
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
@@ -872,6 +997,7 @@ fn turn_failed_clears_stale_final_message() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Failed,
@@ -912,6 +1038,7 @@ fn turn_interrupted_clears_stale_final_message() {
         last_total_token_usage: None,
         sandbox_is_read_only: false,
         sandbox_hint_shown: false,
+        last_turn_diff: String::new(),
     };
 
     let status = processor.process_server_notification(ServerNotification::TurnCompleted(
@@ -919,6 +1046,7 @@ fn turn_interrupted_clears_stale_final_message() {
             thread_id: "thread-1".to_string(),
             turn: Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
                 items: Vec::new(),
                 status: TurnStatus::Interrupted,

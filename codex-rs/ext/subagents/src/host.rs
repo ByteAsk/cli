@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
 
+use crate::spawner::AgentSpawner;
 use codex_core::CodexThread;
 use codex_core::NewThread;
 use codex_core::StartIfIdleSubmission;
@@ -25,7 +26,6 @@ use codex_core::config::Config;
 use codex_core::context::ContextualUserFragment;
 use codex_core::context::InternalContextSource;
 use codex_core::context::InternalModelContextFragment;
-use codex_extension_api::AgentSpawner;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseItem;
@@ -161,7 +161,8 @@ impl<S> ThreadHost<S> {
             config.workspace_roots = roots;
         }
         if spec.high_effort {
-            config.model_reasoning_effort = Some(raised_effort(config.model_reasoning_effort.as_ref()));
+            config.model_reasoning_effort =
+                Some(raised_effort(config.model_reasoning_effort.as_ref()));
         }
         for (k, v) in &spec.env {
             config
@@ -226,7 +227,9 @@ where
             let Ok(root) = tm.get_thread(self.root_id).await else {
                 return false;
             };
-            root.inject_if_running(vec![context_item(text)]).await.is_ok()
+            root.inject_if_running(vec![context_item(text)])
+                .await
+                .is_ok()
         })
     }
 }
@@ -272,7 +275,8 @@ impl ChildHandle for ThreadChild {
 
     fn shutdown(&self) -> BoxFut<'_, ()> {
         Box::pin(async move {
-            let _ = tokio::time::timeout(Duration::from_secs(30), self.thread.shutdown_and_wait()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(30), self.thread.shutdown_and_wait())
+                .await;
             if let Some(tm) = self.thread_manager.upgrade() {
                 let _ = tm.remove_thread(&self.id).await;
             }

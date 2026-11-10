@@ -57,10 +57,19 @@ fn lock_child_session() {
     });
 }
 
-fn spawn_session(dir: &Path, log: &Path, hold_ms: u64, ready: Option<&Path>) -> std::process::Child {
+fn spawn_session(
+    dir: &Path,
+    log: &Path,
+    hold_ms: u64,
+    ready: Option<&Path>,
+) -> std::process::Child {
     let mut command = std::process::Command::new(std::env::current_exe().expect("test binary"));
     command
-        .args(["--exact", "builds::tests::lock_child_session", "--test-threads=1"])
+        .args([
+            "--exact",
+            "builds::tests::lock_child_session",
+            "--test-threads=1",
+        ])
         .env(CHILD_DIR, dir)
         .env(CHILD_LOG, log)
         .env(CHILD_HOLD_MS, hold_ms.to_string())
@@ -75,7 +84,10 @@ fn spawn_session(dir: &Path, log: &Path, hold_ms: u64, ready: Option<&Path>) -> 
 fn wait_for(path: &Path) {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while !path.exists() {
-        assert!(std::time::Instant::now() < deadline, "the other session never took the lock");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the other session never took the lock"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -116,7 +128,12 @@ async fn a_session_waits_for_another_sessions_build_then_proceeds() {
     let project = tempfile::tempdir().unwrap();
     let scratch = tempfile::tempdir().unwrap();
     let ready = scratch.path().join("ready");
-    let mut other = spawn_session(project.path(), &scratch.path().join("log"), 1500, Some(&ready));
+    let mut other = spawn_session(
+        project.path(),
+        &scratch.path().join("log"),
+        1500,
+        Some(&ready),
+    );
     wait_for(&ready);
 
     let asked = std::time::Instant::now();
@@ -137,7 +154,12 @@ async fn a_project_busy_for_the_whole_wait_is_reported_not_built() {
     let project = tempfile::tempdir().unwrap();
     let scratch = tempfile::tempdir().unwrap();
     let ready = scratch.path().join("ready");
-    let mut other = spawn_session(project.path(), &scratch.path().join("log"), 3000, Some(&ready));
+    let mut other = spawn_session(
+        project.path(),
+        &scratch.path().join("log"),
+        3000,
+        Some(&ready),
+    );
     wait_for(&ready);
 
     let busy = project_lock(project.path(), Duration::from_millis(300))
@@ -145,7 +167,11 @@ async fn a_project_busy_for_the_whole_wait_is_reported_not_built() {
         .err()
         .expect("busy: the other session holds the project");
     assert!(busy.waited >= Duration::from_millis(200), "{busy:?}");
-    assert!(busy.summary().contains("Another ByteAsk session"), "{}", busy.summary());
+    assert!(
+        busy.summary().contains("Another ByteAsk session"),
+        "{}",
+        busy.summary()
+    );
     other.kill().ok();
     other.wait().ok();
 }
@@ -182,10 +208,23 @@ fn a_build_dir_is_per_project_and_setting_and_never_in_the_project() {
         Some(a_asan.clone()),
         "the same project and setting must reuse one tree; that is what makes it incremental"
     );
-    assert_ne!(stable_build_dir_in(state.path(), a.path(), tsan), Some(a_asan.clone()));
-    assert_ne!(stable_build_dir_in(state.path(), b.path(), asan), Some(a_asan.clone()));
-    assert!(a_asan.starts_with(state.path().join("builds")), "{}", a_asan.display());
-    assert!(!a_asan.starts_with(a.path()), "never inside the user's repository");
+    assert_ne!(
+        stable_build_dir_in(state.path(), a.path(), tsan),
+        Some(a_asan.clone())
+    );
+    assert_ne!(
+        stable_build_dir_in(state.path(), b.path(), asan),
+        Some(a_asan.clone())
+    );
+    assert!(
+        a_asan.starts_with(state.path().join("builds")),
+        "{}",
+        a_asan.display()
+    );
+    assert!(
+        !a_asan.starts_with(a.path()),
+        "never inside the user's repository"
+    );
     let name = a_asan.file_name().unwrap().to_string_lossy().into_owned();
     assert!(name.starts_with("asan_ubsan-"), "{name}");
 }
@@ -204,7 +243,9 @@ fn the_real_state_dir_is_private_and_build_dirs_are_recognised() {
     let project = tempfile::tempdir().unwrap();
     let dir = stable_build_dir(project.path(), "sanitize tsan x").expect("dir");
     assert!(is_stable_build_dir(&dir));
-    assert!(!is_stable_build_dir(&std::env::temp_dir().join("byteask-cpp-sanitize-build-1")));
+    assert!(!is_stable_build_dir(
+        &std::env::temp_dir().join("byteask-cpp-sanitize-build-1")
+    ));
 }
 
 #[cfg(unix)]
@@ -218,7 +259,10 @@ fn an_unsafe_state_dir_is_tightened_or_refused() {
     std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
     assert!(ensure_private_dir(&open));
     let mode = std::fs::metadata(&open).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o700, "a directory others could write must be closed first");
+    assert_eq!(
+        mode, 0o700,
+        "a directory others could write must be closed first"
+    );
 
     // A symlink (someone else's planted path in /tmp) is never followed.
     let target = scratch.path().join("target");
@@ -241,7 +285,10 @@ fn the_cache_dir_follows_the_xdg_rules() {
         }
     };
     assert_eq!(
-        cache_dir_from(env(&[("XDG_CACHE_HOME", "/big/cache"), ("HOME", "/home/u")])),
+        cache_dir_from(env(&[
+            ("XDG_CACHE_HOME", "/big/cache"),
+            ("HOME", "/home/u")
+        ])),
         Some(PathBuf::from("/big/cache"))
     );
     // A relative XDG_CACHE_HOME is invalid by the spec and ignored.
@@ -260,25 +307,38 @@ fn stale_build_trees_are_pruned_unless_in_use_or_ours() {
     let current = tempfile::tempdir().unwrap();
     let mut trees = Vec::new();
     for project in [&old, &busy, &current] {
-        let dir = stable_build_dir_in(state.path(), project.path(), "sanitize asan_ubsan x").unwrap();
+        let dir =
+            stable_build_dir_in(state.path(), project.path(), "sanitize asan_ubsan x").unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("obj.o"), b"x").unwrap();
         trees.push(dir);
     }
     // `busy` is being built by another session right now.
-    let lock = open_lock_file_in(state.path(), &project_key(&std::fs::canonicalize(busy.path()).unwrap()))
-        .unwrap();
+    let lock = open_lock_file_in(
+        state.path(),
+        &project_key(&std::fs::canonicalize(busy.path()).unwrap()),
+    )
+    .unwrap();
     lock.lock().unwrap();
 
     // Nothing is old yet.
-    assert_eq!(prune_stale_builds_in(state.path(), current.path(), SystemTime::now()), 0);
+    assert_eq!(
+        prune_stale_builds_in(state.path(), current.path(), SystemTime::now()),
+        0
+    );
     for tree in &trees {
         assert!(tree.exists());
     }
 
     let later = SystemTime::now() + BUILD_KEEP + Duration::from_secs(3600);
-    assert_eq!(prune_stale_builds_in(state.path(), current.path(), later), 1);
+    assert_eq!(
+        prune_stale_builds_in(state.path(), current.path(), later),
+        1
+    );
     assert!(!trees[0].exists(), "an unused tree past the keep time goes");
-    assert!(trees[1].exists(), "a tree whose project is locked is never deleted");
+    assert!(
+        trees[1].exists(),
+        "a tree whose project is locked is never deleted"
+    );
     assert!(trees[2].exists(), "the calling project's own tree stays");
 }

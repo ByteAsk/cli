@@ -278,7 +278,10 @@ pub fn tests_in(listed: &serde_json::Value, targets: &[Target]) -> Vec<String> {
         .iter()
         .filter(|target| target.is_executable())
         .filter(|target| {
-            target.artifacts.iter().any(|artifact| commands.contains(artifact))
+            target
+                .artifacts
+                .iter()
+                .any(|artifact| commands.contains(artifact))
                 || unresolved.contains(&target.name.as_str())
         })
         .map(|target| target.name.clone())

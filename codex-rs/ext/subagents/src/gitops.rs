@@ -153,11 +153,7 @@ pub fn exclusion_reason(dir: &Path, rel: &str, base_dirs: &BTreeSet<String>) -> 
 /// `base` decides which directories count as pre-existing. `tmp_dir` holds the scratch index.
 pub async fn capture_tree(dir: &Path, base: &str, tmp_dir: &Path) -> Result<String, String> {
     std::fs::create_dir_all(tmp_dir).map_err(|e| e.to_string())?;
-    let index = tmp_dir.join(format!(
-        "index-{}-{}",
-        std::process::id(),
-        next_seq()
-    ));
+    let index = tmp_dir.join(format!("index-{}-{}", std::process::id(), next_seq()));
     let real_index = text(git(dir, &["rev-parse", "--git-path", "index"]).await?);
     let real_index = {
         let p = PathBuf::from(&real_index);
@@ -186,7 +182,15 @@ pub async fn capture_tree(dir: &Path, base: &str, tmp_dir: &Path) -> Result<Stri
         // untracked ones, so build output never becomes part of a change.
         let staged_new = git_env(
             dir,
-            &["diff", "--cached", "--name-only", "--diff-filter=A", "-z", base, "--"],
+            &[
+                "diff",
+                "--cached",
+                "--name-only",
+                "--diff-filter=A",
+                "-z",
+                base,
+                "--",
+            ],
             &env,
             None,
         )
@@ -314,11 +318,19 @@ pub async fn worktree_list(repo: &Path) -> Vec<PathBuf> {
 }
 
 pub async fn diff_trees(dir: &Path, from: &str, to: &str) -> Result<Vec<u8>, String> {
-    git(dir, &["diff", "--binary", "--no-color", "--no-ext-diff", from, to]).await
+    git(
+        dir,
+        &["diff", "--binary", "--no-color", "--no-ext-diff", from, to],
+    )
+    .await
 }
 
 /// The change in the work tree at `dir` relative to the snapshot, as a binary patch.
-pub async fn candidate_diff(dir: &Path, snap: &Snapshot, tmp_dir: &Path) -> Result<Vec<u8>, String> {
+pub async fn candidate_diff(
+    dir: &Path,
+    snap: &Snapshot,
+    tmp_dir: &Path,
+) -> Result<Vec<u8>, String> {
     let tree = capture_tree(dir, &snap.commit, tmp_dir).await?;
     if tree == snap.tree {
         return Ok(Vec::new());
@@ -327,7 +339,12 @@ pub async fn candidate_diff(dir: &Path, snap: &Snapshot, tmp_dir: &Path) -> Resu
 }
 
 /// `git apply --binary` of `patch` in the work tree at `dir`.
-pub async fn apply(dir: &Path, patch: &[u8], reverse: bool, check_only: bool) -> Result<(), String> {
+pub async fn apply(
+    dir: &Path,
+    patch: &[u8],
+    reverse: bool,
+    check_only: bool,
+) -> Result<(), String> {
     if patch.is_empty() {
         return Ok(());
     }
@@ -339,7 +356,9 @@ pub async fn apply(dir: &Path, patch: &[u8], reverse: bool, check_only: bool) ->
         args.push("--check");
     }
     args.push("-");
-    git_env(dir, &args, &[], Some(patch.to_vec())).await.map(|_| ())
+    git_env(dir, &args, &[], Some(patch.to_vec()))
+        .await
+        .map(|_| ())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -429,7 +448,13 @@ diff --git a/old.h b/old.h\ndeleted file mode 100644\n";
 
     #[test]
     fn buildlike_names() {
-        for name in ["build", "Build-debug", "cmake-build-release", "out", "CMakeFiles"] {
+        for name in [
+            "build",
+            "Build-debug",
+            "cmake-build-release",
+            "out",
+            "CMakeFiles",
+        ] {
             assert!(BUILDLIKE.is_match(name), "{name}");
         }
         for name in ["src", "include", "builder_utils", "outline"] {

@@ -62,7 +62,10 @@ pub(crate) fn parse_version(text: &str) -> Option<Version> {
             let mut parts = token.split('.');
             let major = parts.next()?.parse::<u32>().ok()?;
             let minor_part = parts.next()?;
-            let digits: String = minor_part.chars().take_while(char::is_ascii_digit).collect();
+            let digits: String = minor_part
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
             let minor = digits.parse::<u32>().ok()?;
             Some((major, minor))
         })
@@ -88,7 +91,11 @@ pub(crate) fn did_not_run(reason: &str, next: &str, raw: &str) -> String {
         "status: DID NOT RUN — {reason}. This is NOT a clean result: nothing was analysed.\n\
          next: {next}"
     );
-    let lines: Vec<&str> = raw.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<&str> = raw
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     if !lines.is_empty() {
         out.push_str("\ntool output:");
         for line in lines.iter().take(DID_NOT_RUN_DETAIL_LINES) {
@@ -111,7 +118,14 @@ const CPP_HEADER_EXTS: &[&str] = &["hh", "hpp", "hxx", "h++", "HPP"];
 /// what it has seen, so a huge tree costs milliseconds, not seconds.
 const SCAN_BUDGET: usize = 4000;
 const SCAN_DEPTH: usize = 5;
-const SCAN_SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", ".cache", "third_party", "vendor"];
+const SCAN_SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".cache",
+    "third_party",
+    "vendor",
+];
 
 /// Is the project at `root` (or the directory holding the file being analysed)
 /// C++ rather than C? Evidence, in order: the compile database's entries; the
@@ -199,7 +213,10 @@ fn count_sources(dir: &Path, depth: usize) -> (usize, usize) {
             if kind.is_dir() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
-                if level < depth && !name.starts_with('.') && !SCAN_SKIP_DIRS.contains(&name.as_ref()) {
+                if level < depth
+                    && !name.starts_with('.')
+                    && !SCAN_SKIP_DIRS.contains(&name.as_ref())
+                {
                     stack.push((path, level + 1));
                 }
             } else {
@@ -226,7 +243,9 @@ mod tests {
         assert_eq!(parse_version("Cppcheck 1.90"), Some((1, 90)));
         assert_eq!(parse_version("Cppcheck 2.14 dev"), Some((2, 14)));
         assert_eq!(
-            parse_version("Debian LLVM version 14.0.6\n  Optimized build.\n  Default target: x86_64-pc-linux-gnu"),
+            parse_version(
+                "Debian LLVM version 14.0.6\n  Optimized build.\n  Default target: x86_64-pc-linux-gnu"
+            ),
             Some((14, 0))
         );
         assert_eq!(
@@ -255,12 +274,21 @@ mod tests {
 
     #[test]
     fn did_not_run_is_status_first_and_bounded() {
-        let raw = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let raw = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let text = did_not_run("cppcheck rejected an option", "retry without it", &raw);
-        assert!(text.starts_with("status: DID NOT RUN — cppcheck rejected an option."), "{text}");
+        assert!(
+            text.starts_with("status: DID NOT RUN — cppcheck rejected an option."),
+            "{text}"
+        );
         assert!(text.contains("NOT a clean result"), "{text}");
         assert!(text.contains("next: retry without it"), "{text}");
-        assert!(text.contains("line 6") && !text.contains("line 7\n"), "{text}");
+        assert!(
+            text.contains("line 6") && !text.contains("line 7\n"),
+            "{text}"
+        );
         assert!(text.contains("14 more line(s) omitted"), "{text}");
         assert!(!did_not_run("r", "n", "").contains("tool output"));
     }
@@ -277,21 +305,35 @@ mod tests {
         std::fs::write(root.join("src/a.cpp"), "").unwrap();
         std::fs::write(root.join("src/b.cc"), "").unwrap();
         std::fs::write(root.join("src/c.c"), "").unwrap();
-        assert_eq!(project_is_cpp(root, Some(&root.join("inc")), None), Some(true));
+        assert_eq!(
+            project_is_cpp(root, Some(&root.join("inc")), None),
+            Some(true)
+        );
         // Sources next to the header beat the project-wide count.
         std::fs::write(root.join("inc/impl.c"), "").unwrap();
-        assert_eq!(project_is_cpp(root, Some(&root.join("inc")), None), Some(false));
+        assert_eq!(
+            project_is_cpp(root, Some(&root.join("inc")), None),
+            Some(false)
+        );
         // The compile database beats both.
         let db = root.join("compile_commands.json");
-        std::fs::write(&db, r#"[{"directory":"/w","file":"x.cpp","command":"c++ -c x.cpp"}]"#)
-            .unwrap();
-        assert_eq!(project_is_cpp(root, Some(&root.join("inc")), Some(&db)), Some(true));
+        std::fs::write(
+            &db,
+            r#"[{"directory":"/w","file":"x.cpp","command":"c++ -c x.cpp"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            project_is_cpp(root, Some(&root.join("inc")), Some(&db)),
+            Some(true)
+        );
     }
 
     #[test]
     fn cpp_only_syntax_is_recognised() {
         assert!(looks_like_cpp("#pragma once\nnamespace util {\n}\n"));
         assert!(looks_like_cpp("template <typename T> T f(T);"));
-        assert!(!looks_like_cpp("#ifndef A_H\nint f(int class_);\nstruct s { int x; };\n#endif\n"));
+        assert!(!looks_like_cpp(
+            "#ifndef A_H\nint f(int class_);\nstruct s { int x; };\n#endif\n"
+        ));
     }
 }

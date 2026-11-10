@@ -23,6 +23,7 @@ use std::sync::Mutex as StdMutex;
 use futures::future::BoxFuture;
 use tokio::sync::OnceCell;
 use tokio::sync::watch;
+use tokio::time::Instant;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
@@ -33,6 +34,7 @@ use super::ExecServerError;
 use super::Inner;
 use super::LazyRemoteExecServerClient;
 use super::fail_all_in_flight_work;
+use crate::ConnectionAttemptOutcome;
 use crate::EnvironmentConnectionState;
 use crate::NoiseChannelPublicKey;
 use crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT;
@@ -48,6 +50,20 @@ pub(super) struct ConnectionAttempt {
     pub(super) result: OnceCell<ConnectionResult>,
     pub(super) cancelled: CancellationToken,
     pub(super) transport: Option<ExecServerTransportParams>,
+}
+
+struct ConnectionObservation<'a> {
+    started: Option<Instant>,
+    outcome: ConnectionAttemptOutcome,
+    observer: Option<&'a super::ConnectionObserver>,
+}
+
+impl Drop for ConnectionObservation<'_> {
+    fn drop(&mut self) {
+        if let (Some(started), Some(observer)) = (self.started, self.observer) {
+            observer(started.elapsed(), self.outcome);
+        }
+    }
 }
 
 // Use the compared bundle intact for the first connection: address, key and authorization
@@ -85,6 +101,9 @@ impl LazyRemoteExecServerClient {
         let _refresh = self.refresh_lock.lock().await;
         let (previous, attempt) = loop {
             let observed = self.cached_client();
+            let observed_registration = observed
+                .as_ref()
+                .and_then(ExecServerClient::executor_registration_id);
             let mut transport = self.transport_params.clone().ok_or_else(|| {
                 ExecServerError::Protocol(
                     "connection refresh requires a Noise registry".to_string(),
@@ -111,6 +130,7 @@ impl LazyRemoteExecServerClient {
                 )
             })??;
             let executor_public_key = bundle.executor_public_key.clone();
+            let executor_registration_id = bundle.executor_registration_id.clone();
             *provider = Arc::new(PrefetchedConnectProvider {
                 bundle: StdMutex::new(Some(bundle)),
                 provider: Arc::clone(provider),
@@ -124,8 +144,8 @@ impl LazyRemoteExecServerClient {
                 .current_client
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            // An ordinary connection may have finished during the lookup. Re-read the
-            // registry rather than retire a newer client using a superseded response.
+            // A new client makes the lookup stale. Recovery can also renew the
+            // registration on the same client, so compare it under the connection lock.
             if !match (&observed, &*current) {
                 (Some(observed), Some(current)) => Arc::ptr_eq(&observed.inner, &current.inner),
                 (None, None) => true,
@@ -133,18 +153,31 @@ impl LazyRemoteExecServerClient {
             } {
                 continue;
             }
-            // is_disconnected means terminally failed, not temporarily recovering.
-            // Preserve same-executor recovery; the final probe fails fast if still recovering.
-            if current.as_ref().is_some_and(|client| {
-                !client.is_disconnected()
+            if let Some(client) = current.as_ref() {
+                let connection = client
+                    .inner
+                    .connection
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if connection.executor_registration_id != observed_registration {
+                    continue;
+                }
+                // Preserve same-executor recovery; the final probe fails fast if still recovering.
+                if !matches!(connection.status, ConnectionStatus::Failed(_))
+                    && connection.executor_registration_id.as_ref()
+                        == Some(&executor_registration_id)
                     && matches!(
                         client.inner.reconnect_strategy.as_ref(),
                         Some(ExecServerReconnectStrategy::NoiseRendezvous {
                             executor_public_key: key, ..
                         }) if key == &executor_public_key
                     )
-            }) {
-                break (current.clone(), None);
+                {
+                    break (current.clone(), None);
+                }
+                // Claim retirement before recovery can install another registration.
+                // Transport shutdown and pending-work cleanup happen outside these locks.
+                client.inner.retired.cancel();
             }
             // Cancellation and connection installation use the same lock. A late
             // handshake cannot install a client after its attempt has been superseded.
@@ -208,11 +241,22 @@ impl LazyRemoteExecServerClient {
                         "missing transport params for lazy exec-server connection".to_string(),
                     ))
                 })?;
-            let client = tokio::select! {
+            let mut observation = ConnectionObservation {
+                started: None,
+                outcome: ConnectionAttemptOutcome::Cancelled,
+                observer: (self.cached_client().is_none() && attempt.transport.is_none())
+                    .then(|| self.connection_observer.get())
+                    .flatten(),
+            };
+            let result = tokio::select! {
                 biased;
                 _ = attempt.cancelled.cancelled() => return Err(Arc::new(ExecServerError::Disconnected("connection attempt was superseded".to_string()))),
-                result = ExecServerClient::connect_for_transport(transport.clone(), self.http_client_factory.clone()) => result.map_err(Arc::new)?,
+                result = ExecServerClient::connect_for_transport(transport.clone(), self.http_client_factory.clone(), &mut observation.started) => result,
             };
+            let client = result.map_err(|error| {
+                observation.outcome = ConnectionAttemptOutcome::Failure;
+                Arc::new(error)
+            })?;
             // Cancellation can race with a completed handshake. Recheck before attaching
             // state or installing the client, under the same lock used by refresh.
             {
@@ -225,6 +269,7 @@ impl LazyRemoteExecServerClient {
                         self.environment_connection_state_tx.clone(),
                     );
                     *current = Some(client.clone());
+                    observation.outcome = ConnectionAttemptOutcome::Success;
                     return Ok(client);
                 }
             }
@@ -252,7 +297,9 @@ impl Inner {
                 ConnectionStatus::Recovering | ConnectionStatus::Failed(_) => None,
             };
             self.retired.cancel();
-            connection.set_status(ConnectionStatus::Failed(message.clone()));
+            connection.set_status(ConnectionStatus::Failed(
+                super::ConnectionFailure::Disconnected(message.clone()),
+            ));
             rpc_client
         };
         self.connection_changed.send_replace(());

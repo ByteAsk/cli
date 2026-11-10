@@ -271,7 +271,9 @@ fn a_bundle_answer_is_readable_text_after_the_index_line() {
     );
     assert_eq!(lines[1], "Index: build setting dev, commit 7ce35799767d");
     assert!(
-        text.contains("\n## Where to look (most likely first)\n1. Catch::ConsoleReporter::testRunEnded"),
+        text.contains(
+            "\n## Where to look (most likely first)\n1. Catch::ConsoleReporter::testRunEnded"
+        ),
         "{text}"
     );
     // the JSON body after the text no longer carries it
@@ -294,6 +296,10 @@ fn a_find_answer_names_its_setting_and_commit() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines[0], "🔎 context_find · StreamingReporterBase");
     assert_eq!(lines[1], "Index: build setting dev, commit 7ce35799767d");
-    assert!(lines[2].starts_with("Show the compile line: context_compile_line"), "{}", lines[2]);
+    assert!(
+        lines[2].starts_with("Show the compile line: context_compile_line"),
+        "{}",
+        lines[2]
+    );
     assert!(result.is_pass());
 }

@@ -1,6 +1,9 @@
 use super::*;
+use crate::unified_exec::output::CapturedStream;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::SearchToolCallParams;
+use codex_utils_head_tail_buffer::format_output_omission_marker;
 use core_test_support::assert_regex_match;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -96,6 +99,7 @@ fn mcp_tool_output_response_item_includes_wall_time() {
             meta: None,
         },
         tool_input: json!({}),
+        result_metadata_capture_allowed: false,
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
@@ -142,6 +146,7 @@ fn mcp_tool_output_response_item_truncates_large_structured_content() {
             meta: None,
         },
         tool_input: json!({}),
+        result_metadata_capture_allowed: false,
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(128),
@@ -192,6 +197,7 @@ fn mcp_tool_output_response_item_preserves_content_items() {
             meta: None,
         },
         tool_input: json!({}),
+        result_metadata_capture_allowed: false,
         wall_time: std::time::Duration::from_millis(500),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
@@ -214,7 +220,9 @@ fn mcp_tool_output_response_item_preserves_content_items() {
                             text: "Wall time: 0.5000 seconds\nOutput:".to_string(),
                         },
                         FunctionCallOutputContentItem::InputImage {
-                            image_url: image_url.to_string(),
+                            image: ImageReference::Inline {
+                                image_url: image_url.to_string()
+                            },
                             detail: Some(DEFAULT_IMAGE_DETAIL),
                         },
                     ]
@@ -251,6 +259,7 @@ fn mcp_tool_output_code_mode_result_preserves_content_without_private_metadata(
             })),
         },
         tool_input: json!({}),
+        result_metadata_capture_allowed: false,
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy,
@@ -291,7 +300,9 @@ fn custom_tool_calls_can_derive_text_from_content_items() {
                 text: "line 1".to_string(),
             },
             FunctionCallOutputContentItem::InputImage {
-                image_url: "data:image/png;base64,AAA".to_string(),
+                image: ImageReference::Inline {
+                    image_url: "data:image/png;base64,AAA".to_string(),
+                },
                 detail: Some(DEFAULT_IMAGE_DETAIL),
             },
             FunctionCallOutputContentItem::InputText {
@@ -311,7 +322,9 @@ fn custom_tool_calls_can_derive_text_from_content_items() {
                     text: "line 1".to_string(),
                 },
                 FunctionCallOutputContentItem::InputImage {
-                    image_url: "data:image/png;base64,AAA".to_string(),
+                    image: ImageReference::Inline {
+                        image_url: "data:image/png;base64,AAA".to_string(),
+                    },
                     detail: Some(DEFAULT_IMAGE_DETAIL),
                 },
                 FunctionCallOutputContentItem::InputText {
@@ -405,14 +418,14 @@ fn exec_command_tool_output_formats_truncated_response() {
         event_call_id: "call-42".to_string(),
         chunk_id: "abc123".to_string(),
         wall_time: std::time::Duration::from_millis(1250),
-        raw_output: b"token one token two token three token four token five".to_vec(),
+        raw_output: "token one token two token three token four token five".into(),
         truncation_policy: TruncationPolicy::Tokens(10_000),
         max_output_tokens: Some(4),
         process_id: None,
         exit_code: Some(0),
         original_token_count: Some(10),
-        output_omitted_bytes: None,
         hook_command: None,
+        tool_cwd: None,
         wait_note: None,
     };
     assert_eq!(
@@ -452,8 +465,7 @@ fn exec_command_tool_output_reserves_metadata_budget_and_preserves_policy_units(
     };
     let raw_output = (1..=150)
         .map(|line| format!("{line}\n"))
-        .collect::<String>()
-        .into_bytes();
+        .collect::<String>();
 
     for (policy, marker) in [
         (TruncationPolicy::Bytes(200), "chars truncated"),
@@ -463,14 +475,14 @@ fn exec_command_tool_output_reserves_metadata_budget_and_preserves_policy_units(
             event_call_id: "call-42".to_string(),
             chunk_id: "abc123".to_string(),
             wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
-            raw_output: raw_output.clone(),
+            raw_output: raw_output.as_str().into(),
             truncation_policy: policy,
             max_output_tokens: None,
             process_id: None,
             exit_code: Some(0),
             original_token_count: Some(123),
-            output_omitted_bytes: None,
             hook_command: None,
+            tool_cwd: None,
             wait_note: None,
         }
         .to_response_item("call-42", &payload);
@@ -502,34 +514,33 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
         "HEAD-{}\n{marker}\nTAIL-{}",
         "a".repeat(/*n*/ 100),
         "z".repeat(/*n*/ 100)
-    )
-    .into_bytes();
+    );
     let mut output = ExecCommandToolOutput {
         event_call_id: "call-omitted".to_string(),
         chunk_id: "abc123".to_string(),
         wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
-        raw_output,
+        raw_output: CapturedStream {
+            text: raw_output.clone(),
+            omitted_bytes: 123_456,
+        },
         truncation_policy: TruncationPolicy::Tokens(10_000),
         max_output_tokens: Some(4),
         process_id: None,
         exit_code: Some(0),
         original_token_count: Some(42_000),
-        output_omitted_bytes: NonZeroUsize::new(/*n*/ 123_456),
         hook_command: None,
+        tool_cwd: None,
         wait_note: None,
     };
     let expected_header = "Chunk ID: abc123\nWall time: 1.2500 seconds\nProcess exited with code 0\nOriginal token count: 42000\nOutput:\n";
     assert_eq!(
         output.log_output(),
-        format!(
-            "{expected_header}{}",
-            String::from_utf8_lossy(&output.raw_output)
-        )
+        format!("{expected_header}{raw_output}")
     );
     let response = output.to_response_item("call-omitted", &payload);
 
     // Collection may report omitted bytes without including the marker in its text.
-    output.raw_output = b"remaining output".to_vec();
+    output.raw_output.text = "remaining output".to_string();
     assert_eq!(
         output.log_output(),
         format!("{expected_header}{marker}\nremaining output")
@@ -554,14 +565,14 @@ fn byteask_exec_output(raw: Vec<u8>) -> ExecCommandToolOutput {
         event_call_id: "call-eff".to_string(),
         chunk_id: "c1".to_string(),
         wall_time: std::time::Duration::from_millis(10),
-        raw_output: raw,
+        raw_output: String::from_utf8_lossy(&raw).as_ref().into(),
         truncation_policy: TruncationPolicy::Tokens(10_000),
         max_output_tokens: None,
         process_id: None,
         exit_code: Some(0),
         original_token_count: None,
-        output_omitted_bytes: None,
         hook_command: None,
+        tool_cwd: None,
         wait_note: None,
     }
 }
@@ -605,11 +616,15 @@ fn byteask_a_lower_budget_is_never_applied_without_a_spilled_original() {
     };
     // The spill directory is process-wide and another test may have set it, so BOTH
     // outcomes are asserted: this test must never pass by checking nothing.
-    let spill_available = byteask_output_reducers::spill::dir().is_some_and(std::path::Path::is_dir);
+    let spill_available =
+        byteask_output_reducers::spill::dir().is_some_and(std::path::Path::is_dir);
     let (_text, policy, footer) = out.byteask_reduce_with(upstream, &eff);
     if spill_available {
         assert_eq!(policy, TruncationPolicy::Tokens(4_000));
-        assert!(footer.contains("trimmed") && footer.contains("saved at"), "footer: {footer}");
+        assert!(
+            footer.contains("trimmed") && footer.contains("saved at"),
+            "footer: {footer}"
+        );
     } else {
         assert_eq!(policy, upstream);
         assert_eq!(footer, "");
@@ -650,16 +665,26 @@ fn byteask_a_lossy_reducer_is_undone_when_the_original_cannot_be_spilled() {
     let raw = byteask_cargo_test_log();
     let mut out = byteask_exec_output(raw.clone().into_bytes());
     out.hook_command = Some("cargo test".to_string());
-    let spill_available = byteask_output_reducers::spill::dir().is_some_and(std::path::Path::is_dir);
+    let spill_available =
+        byteask_output_reducers::spill::dir().is_some_and(std::path::Path::is_dir);
     let (text, policy, footer) =
         out.byteask_reduce_with(TruncationPolicy::Tokens(10_000), &byteask_all_reducers_on());
     assert_eq!(policy, TruncationPolicy::Tokens(10_000));
     if spill_available {
-        assert!(text.len() < raw.len() / 3, "the passing-test lines became a count");
+        assert!(
+            text.len() < raw.len() / 3,
+            "the passing-test lines became a count"
+        );
         assert!(text.contains("test result: ok. 80 passed"));
-        assert!(footer.contains("tests") && footer.contains("saved at"), "footer: {footer}");
+        assert!(
+            footer.contains("tests") && footer.contains("saved at"),
+            "footer: {footer}"
+        );
     } else {
-        assert_eq!(text, raw, "content was removed with no recoverable original");
+        assert_eq!(
+            text, raw,
+            "content was removed with no recoverable original"
+        );
         assert_eq!(footer, "");
     }
 }
@@ -667,7 +692,11 @@ fn byteask_a_lossy_reducer_is_undone_when_the_original_cannot_be_spilled() {
 #[test]
 fn byteask_family_reducers_need_a_positive_command_match() {
     let raw = byteask_cargo_test_log();
-    for command in [None, Some("bash -lc 'cat test.log'"), Some("cargo test && cat x")] {
+    for command in [
+        None,
+        Some("bash -lc 'cat test.log'"),
+        Some("cargo test && cat x"),
+    ] {
         let mut out = byteask_exec_output(raw.clone().into_bytes());
         out.hook_command = command.map(str::to_string);
         let (text, _policy, footer) =
@@ -681,7 +710,9 @@ fn byteask_family_reducers_need_a_positive_command_match() {
 fn byteask_search_output_is_regrouped_losslessly_by_default() {
     let mut raw = String::new();
     for i in 0..60 {
-        raw.push_str(&format!("crates/long/path/to/a/module/file_a.rs:{i}:    let value_{i} = compute();\n"));
+        raw.push_str(&format!(
+            "crates/long/path/to/a/module/file_a.rs:{i}:    let value_{i} = compute();\n"
+        ));
     }
     let mut out = byteask_exec_output(raw.clone().into_bytes());
     out.hook_command = Some("rg -n compute".to_string());
@@ -714,9 +745,15 @@ fn byteask_the_compact_header_keeps_what_the_model_acts_on() {
     );
     // The token count appears only when something was cut.
     out.original_token_count = Some(50);
-    assert!(!out.byteask_compact_header().contains("Original token count"));
+    assert!(
+        !out.byteask_compact_header()
+            .contains("Original token count")
+    );
     out.original_token_count = Some(500_000);
-    assert!(out.byteask_compact_header().contains("Original token count: 500000"));
+    assert!(
+        out.byteask_compact_header()
+            .contains("Original token count: 500000")
+    );
 }
 
 #[test]

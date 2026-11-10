@@ -281,7 +281,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for TestSelectTool {
 }
 
 impl TestSelectTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: Args = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -290,7 +293,11 @@ impl TestSelectTool {
         let text = match action.as_str() {
             "status" => {
                 let lines = self.jobs.summary();
-                if lines.is_empty() { "No runs yet.".to_string() } else { lines.join("\n") }
+                if lines.is_empty() {
+                    "No runs yet.".to_string()
+                } else {
+                    lines.join("\n")
+                }
             }
             "wait" => match self.jobs.wait(args.run_id, wait).await {
                 Some(Waited::Done(text)) => text,
@@ -298,7 +305,9 @@ impl TestSelectTool {
                 None => "No run to wait for.".to_string(),
             },
             "cancel" => match self.jobs.cancel(args.run_id) {
-                Some(id) => format!("Run {id} is being cancelled; its build/test processes are killed."),
+                Some(id) => {
+                    format!("Run {id} is being cancelled; its build/test processes are killed.")
+                }
                 None => "No run in progress.".to_string(),
             },
             "plan" | "run" => {
@@ -321,7 +330,8 @@ impl TestSelectTool {
                         ));
                     }
                 }
-                let mut request = Request::new(&self.cwd, self.head.get().await, &args, action == "plan");
+                let mut request =
+                    Request::new(&self.cwd, self.head.get().await, &args, action == "plan");
                 request.finish_gate_suite = self.finish_gate_suite;
                 if action == "plan" {
                     pipeline(request, None).await
@@ -337,7 +347,11 @@ impl TestSelectTool {
                         };
                         pipeline(request, Some(ctx)).await
                     });
-                    let wait = if args.background { Duration::ZERO } else { wait };
+                    let wait = if args.background {
+                        Duration::ZERO
+                    } else {
+                        wait
+                    };
                     match self.jobs.wait(None, wait).await {
                         Some(Waited::Done(text)) => text,
                         Some(running) => still_running(&running),
@@ -386,7 +400,10 @@ fn test_select_result(action: &str, text: &str) -> check_result::CheckResult {
             "carry on; its result is shown when it finishes, or call action=\"wait\".",
         );
     }
-    if text.lines().any(|line| line.starts_with(NOT_RUN_BUILD_FAILED)) {
+    if text
+        .lines()
+        .any(|line| line.starts_with(NOT_RUN_BUILD_FAILED))
+    {
         return CheckResult::fail(TOOL_NAME, "The build failed, so no test was run.");
     }
     if text.lines().any(|line| line.starts_with(NOT_RUN_TIME_CAP)) {
@@ -426,21 +443,42 @@ mod result_tests {
     #[test]
     fn a_run_is_judged_by_its_own_summary_line() {
         let run = |line: &str| test_select_result("run", &format!("header\n{line}\nnext: x"));
-        assert_eq!(run("RUN tier 1: 3 result(s) in 1.0s — 3 passed").verdict, Verdict::Pass);
-        assert_eq!(run("RUN tier 1: 3 result(s) in 1.0s — 2 passed, 1 FAILED").verdict, Verdict::Fail);
-        assert_eq!(run("RUN tier 1: 3 result(s) in 1.0s — 2 passed, 1 NOT BUILT").verdict, Verdict::Fail);
-        assert_eq!(run("RUN tier 1: 3 result(s) in 1.0s — 2 passed, 1 not run").verdict, Verdict::Approximate);
+        assert_eq!(
+            run("RUN tier 1: 3 result(s) in 1.0s — 3 passed").verdict,
+            Verdict::Pass
+        );
+        assert_eq!(
+            run("RUN tier 1: 3 result(s) in 1.0s — 2 passed, 1 FAILED").verdict,
+            Verdict::Fail
+        );
+        assert_eq!(
+            run("RUN tier 1: 3 result(s) in 1.0s — 2 passed, 1 NOT BUILT").verdict,
+            Verdict::Fail
+        );
+        assert_eq!(
+            run("RUN tier 1: 3 result(s) in 1.0s — 2 passed, 1 not run").verdict,
+            Verdict::Approximate
+        );
         // Zero tests is never a pass.
-        assert_eq!(run("RUN tier 1: 0 result(s) in 0.1s — 0 passed").verdict, Verdict::NotRun);
+        assert_eq!(
+            run("RUN tier 1: 0 result(s) in 0.1s — 0 passed").verdict,
+            Verdict::NotRun
+        );
         // A failed build never falls through to a PASS from old test programs.
         let failed_build = test_select_result(
             "run",
-            &format!("BUILD everything: FAILED in 3s\n{}\nlog: x", super::NOT_RUN_BUILD_FAILED),
+            &format!(
+                "BUILD everything: FAILED in 3s\n{}\nlog: x",
+                super::NOT_RUN_BUILD_FAILED
+            ),
         );
         assert_eq!(failed_build.verdict, Verdict::Fail);
         let timed_out = test_select_result("run", &format!("{}\nlog: x", super::NOT_RUN_TIME_CAP));
         assert_eq!(timed_out.verdict, Verdict::NotRun);
-        assert_eq!(timed_out.reason, Some(check_result::NotRunReason::TimeLimit));
+        assert_eq!(
+            timed_out.reason,
+            Some(check_result::NotRunReason::TimeLimit)
+        );
         let not_run = test_select_result(
             "run",
             &crate::toolver::did_not_run("x", "configure the project (cmake)", ""),
@@ -457,7 +495,12 @@ mod result_tests {
 
 fn still_running(waited: &Waited) -> String {
     match waited {
-        Waited::Running { id, label, secs, progress } => format!(
+        Waited::Running {
+            id,
+            label,
+            secs,
+            progress,
+        } => format!(
             "Run {id} ({label}) is still going after {secs}s ({progress}); it continues in the \
              background and its result will be shown to you automatically when it finishes. Do \
              not poll: carry on, or call action=\"wait\" if there is nothing else to do."
@@ -474,7 +517,10 @@ fn cap(text: String) -> String {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}\n… (output capped; the full log path is above)", &text[..end])
+    format!(
+        "{}\n… (output capped; the full log path is above)",
+        &text[..end]
+    )
 }
 
 /// Everything one plan/run needs, owned (runs outlive the call).
@@ -510,18 +556,33 @@ impl Request {
                 .jobs
                 .map(|j| (j.max(1) as usize).min(exec::default_jobs()))
                 .unwrap_or_else(exec::default_jobs),
-            test_timeout: Duration::from_secs(args.timeout_per_test.unwrap_or(DEFAULT_TEST_TIMEOUT_S).max(1)),
+            test_timeout: Duration::from_secs(
+                args.timeout_per_test
+                    .unwrap_or(DEFAULT_TEST_TIMEOUT_S)
+                    .max(1),
+            ),
             finish_gate_suite: false,
         }
     }
 
     fn root(&self) -> PathBuf {
-        self.head.as_ref().map(|h| h.root.clone()).unwrap_or_else(|| self.cwd.clone())
+        self.head
+            .as_ref()
+            .map(|h| h.root.clone())
+            .unwrap_or_else(|| self.cwd.clone())
     }
 
     fn label(&self) -> String {
-        let what = if self.full { "full suite".to_string() } else { format!("tier {}", self.tier) };
-        if self.compare_base { format!("{what} + base comparison") } else { what }
+        let what = if self.full {
+            "full suite".to_string()
+        } else {
+            format!("tier {}", self.tier)
+        };
+        if self.compare_base {
+            format!("{what} + base comparison")
+        } else {
+            what
+        }
     }
 
     fn scratch(&self) -> PathBuf {
@@ -544,7 +605,10 @@ async fn pipeline(req: Request, ctx: Option<Ctx>) -> String {
     let root = req.root();
     let scratch = req.scratch();
     let (base_rev, base_label) = match &req.head {
-        Some(head) => (head.sha.clone(), format!("session-start commit {}", head.short())),
+        Some(head) => (
+            head.sha.clone(),
+            format!("session-start commit {}", head.short()),
+        ),
         None => ("HEAD".to_string(), "HEAD".to_string()),
     };
     if let Some(ctx) = &ctx {
@@ -563,7 +627,15 @@ async fn pipeline(req: Request, ctx: Option<Ctx>) -> String {
             ..Changes::default()
         }
     } else {
-        match symbols::changes(&root, &base_rev, base_label, req.changed.as_deref(), req.symbols.as_deref()).await {
+        match symbols::changes(
+            &root,
+            &base_rev,
+            base_label,
+            req.changed.as_deref(),
+            req.symbols.as_deref(),
+        )
+        .await
+        {
             Ok(changes) => changes,
             Err(err) => {
                 return crate::toolver::did_not_run(
@@ -627,7 +699,13 @@ async fn pipeline(req: Request, ctx: Option<Ctx>) -> String {
             "try a higher tier."
         });
         out.push('\n');
-        out.push_str(&next_line(&model, &sel, Some(req.tier), req.full, req.finish_gate_suite));
+        out.push_str(&next_line(
+            &model,
+            &sel,
+            Some(req.tier),
+            req.full,
+            req.finish_gate_suite,
+        ));
         return out;
     }
     let (plan, items) = plan_run(&model, &sel, &chosen, req.tier, req.full);
@@ -642,7 +720,11 @@ async fn pipeline(req: Request, ctx: Option<Ctx>) -> String {
     let mut not_built: BTreeSet<String> = BTreeSet::new();
     let skip_build = items.iter().all(|i| matches!(i, RunItem::MakeCheck { .. }));
     if !skip_build {
-        let to_build: Vec<String> = if build_all { Vec::new() } else { targets.clone() };
+        let to_build: Vec<String> = if build_all {
+            Vec::new()
+        } else {
+            targets.clone()
+        };
         let built = exec::build(&ctx, &model, &build_dir, &to_build).await;
         if built.cancelled {
             out.push_str("Cancelled during the build.\n");
@@ -650,10 +732,18 @@ async fn pipeline(req: Request, ctx: Option<Ctx>) -> String {
         }
         out.push_str(&format!(
             "BUILD {}: {} in {:.0}s{}\n",
-            if build_all || targets.is_empty() { "everything".to_string() } else { short_list(&targets, TARGETS_SHOWN) },
+            if build_all || targets.is_empty() {
+                "everything".to_string()
+            } else {
+                short_list(&targets, TARGETS_SHOWN)
+            },
             if built.ok { "OK" } else { "FAILED" },
             built.secs,
-            if built.failed.is_empty() { String::new() } else { format!(" — not built: {}", short_list(&built.failed, 6)) }
+            if built.failed.is_empty() {
+                String::new()
+            } else {
+                format!(" — not built: {}", short_list(&built.failed, 6))
+            }
         ));
         for error in built.errors.iter().take(3) {
             out.push_str(&indent(error, "  "));
@@ -667,7 +757,13 @@ async fn pipeline(req: Request, ctx: Option<Ctx>) -> String {
         // running them would test old code, so nothing runs.
         if built.timed_out {
             out.push_str(&format!("{NOT_RUN_TIME_CAP}\n"));
-            out.push_str(&next_line(&model, &sel, Some(req.tier), req.full, req.finish_gate_suite));
+            out.push_str(&next_line(
+                &model,
+                &sel,
+                Some(req.tier),
+                req.full,
+                req.finish_gate_suite,
+            ));
             out.push_str(&format!("log: {}\n", ctx.log.display()));
             return out;
         }
@@ -721,8 +817,17 @@ async fn pipeline(req: Request, ctx: Option<Ctx>) -> String {
             }
         }
     }
-    out.push_str(&format!("DIFF: {}\n", tree::diff_check(&root, &base_rev).await));
-    out.push_str(&next_line(&model, &sel, Some(req.tier), req.full, req.finish_gate_suite));
+    out.push_str(&format!(
+        "DIFF: {}\n",
+        tree::diff_check(&root, &base_rev).await
+    ));
+    out.push_str(&next_line(
+        &model,
+        &sel,
+        Some(req.tier),
+        req.full,
+        req.finish_gate_suite,
+    ));
     out.push_str(&format!("log: {}\n", ctx.log.display()));
     out
 }
@@ -747,12 +852,18 @@ async fn hold_own_tree(
         return Ok(Some(guard));
     }
     let commit = req.head.as_ref().map(|h| h.sha.as_str());
-    if ctx.is_none() && own.join("CMakeCache.txt").is_file() && cmake::configured_at(&own).as_deref() == commit {
+    if ctx.is_none()
+        && own.join("CMakeCache.txt").is_file()
+        && cmake::configured_at(&own).as_deref() == commit
+    {
         return Ok(None);
     }
     let busy = |waited: u64| {
         crate::toolver::did_not_run(
-            &format!("another build of this tool's tree {} was still going after {waited}s", own.display()),
+            &format!(
+                "another build of this tool's tree {} was still going after {waited}s",
+                own.display()
+            ),
             "call again when it has finished (a background build started with the task fills it)",
             "",
         )
@@ -781,7 +892,9 @@ fn dump_selection(model: &Model, changes: &Changes, sel: &Selection) {
     let Some(path) = std::env::var_os("BYTEASK_TESTSEL_DUMP").filter(|p| !p.is_empty()) else {
         return;
     };
-    let names = |ids: &[usize]| -> Vec<String> { ids.iter().map(|&i| model.tests[i].name.clone()).collect() };
+    let names = |ids: &[usize]| -> Vec<String> {
+        ids.iter().map(|&i| model.tests[i].name.clone()).collect()
+    };
     let tier1: Vec<serde_json::Value> = sel
         .tier1
         .iter()
@@ -815,34 +928,68 @@ fn dump_selection(model: &Model, changes: &Changes, sel: &Selection) {
 }
 
 /// Find the build system and read its model.
-async fn discover(req: &Request, root: &Path, scratch: &Path, changes: &Changes) -> Result<Model, String> {
+async fn discover(
+    req: &Request,
+    root: &Path,
+    scratch: &Path,
+    changes: &Changes,
+) -> Result<Model, String> {
     let cmake_files: Vec<PathBuf> = changes
         .files
         .iter()
         .filter(|f| {
-            let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let name = f
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             name == "CMakeLists.txt" || name.ends_with(".cmake")
         })
         .cloned()
         .collect();
     let commit = req.head.as_ref().map(|h| h.sha.as_str());
     let has_cmake = crate::tools::binary_on_path("cmake");
-    let version = if has_cmake { crate::toolver::tool_version("cmake", root).await } else { None };
+    let version = if has_cmake {
+        crate::toolver::tool_version("cmake", root).await
+    } else {
+        None
+    };
     if let Some(dir) = &req.build_dir {
         let dir = crate::testsel::normalize(root, Path::new(dir));
         if dir.join("CMakeCache.txt").is_file() {
-            return cmake::model(&cmake::Request { root, build_dir: Some(&dir), scratch, version, cmake_files: &cmake_files, commit }).await;
+            return cmake::model(&cmake::Request {
+                root,
+                build_dir: Some(&dir),
+                scratch,
+                version,
+                cmake_files: &cmake_files,
+                commit,
+            })
+            .await;
         }
         if dir.join("meson-info/intro-targets.json").is_file() {
             return meson::model(root, &dir).await;
         }
-        if ["GNUmakefile", "makefile", "Makefile"].iter().any(|m| dir.join(m).is_file()) {
+        if ["GNUmakefile", "makefile", "Makefile"]
+            .iter()
+            .any(|m| dir.join(m).is_file())
+        {
             return make::model(root, &dir, &changes.files).await;
         }
-        return Err(format!("{} is not a configured CMake, Meson or Make build directory", dir.display()));
+        return Err(format!(
+            "{} is not a configured CMake, Meson or Make build directory",
+            dir.display()
+        ));
     }
     if has_cmake && !cmake::existing_build_dirs(root).is_empty() {
-        return cmake::model(&cmake::Request { root, build_dir: None, scratch, version, cmake_files: &cmake_files, commit }).await;
+        return cmake::model(&cmake::Request {
+            root,
+            build_dir: None,
+            scratch,
+            version,
+            cmake_files: &cmake_files,
+            commit,
+        })
+        .await;
     }
     if let Some(dir) = meson::existing_build_dirs(root).into_iter().next() {
         return meson::model(root, &dir).await;
@@ -851,7 +998,15 @@ async fn discover(req: &Request, root: &Path, scratch: &Path, changes: &Changes)
         if !has_cmake {
             return Err("CMake project, but cmake is not installed".to_string());
         }
-        return cmake::model(&cmake::Request { root, build_dir: None, scratch, version, cmake_files: &cmake_files, commit }).await;
+        return cmake::model(&cmake::Request {
+            root,
+            build_dir: None,
+            scratch,
+            version,
+            cmake_files: &cmake_files,
+            commit,
+        })
+        .await;
     }
     if let Some(dir) = make::make_dir(root) {
         return make::model(root, &dir, &changes.files).await;
@@ -867,7 +1022,13 @@ async fn discover(req: &Request, root: &Path, scratch: &Path, changes: &Changes)
 
 /// What to build (exact targets; everything only for the full suite or without a target map,
 /// and said so) and the items to run.
-fn plan_run(model: &Model, sel: &Selection, chosen: &[usize], tier: u32, full: bool) -> (tree::TargetPlan, Vec<RunItem>) {
+fn plan_run(
+    model: &Model,
+    sel: &Selection,
+    chosen: &[usize],
+    tier: u32,
+    full: bool,
+) -> (tree::TargetPlan, Vec<RunItem>) {
     let plan = if full && model.system != System::Make {
         tree::TargetPlan {
             build_all: true,
@@ -894,7 +1055,10 @@ fn plan_run(model: &Model, sel: &Selection, chosen: &[usize], tier: u32, full: b
     match model.system {
         System::Make if full || tier == 3 => {
             if let Some(check) = &model.check_target {
-                items.push(RunItem::MakeCheck { dir: model.build_dir.clone(), target: check.clone() });
+                items.push(RunItem::MakeCheck {
+                    dir: model.build_dir.clone(),
+                    target: check.clone(),
+                });
                 return (plan, items);
             }
             for &i in chosen {
@@ -905,19 +1069,30 @@ fn plan_run(model: &Model, sel: &Selection, chosen: &[usize], tier: u32, full: b
             let mut ctest_names: Vec<String> = Vec::new();
             if tier == 1 && !full {
                 for pick in &sel.tier1 {
-                    if !pick.cases.is_empty() && select::runs_its_own_program(model, &model.tests[pick.test]) {
+                    if !pick.cases.is_empty()
+                        && select::runs_its_own_program(model, &model.tests[pick.test])
+                    {
                         items.push(direct(model, pick.test, pick.framework, &pick.cases));
                     } else {
                         ctest_names.push(model.tests[pick.test].name.clone());
                     }
                 }
             } else if !full {
-                ctest_names = chosen.iter().map(|&i| model.tests[i].name.clone()).collect();
+                ctest_names = chosen
+                    .iter()
+                    .map(|&i| model.tests[i].name.clone())
+                    .collect();
             }
             if full {
-                items.push(RunItem::Ctest { dir: model.build_dir.clone(), names: Vec::new() });
+                items.push(RunItem::Ctest {
+                    dir: model.build_dir.clone(),
+                    names: Vec::new(),
+                });
             } else if !ctest_names.is_empty() {
-                items.push(RunItem::Ctest { dir: model.build_dir.clone(), names: ctest_names });
+                items.push(RunItem::Ctest {
+                    dir: model.build_dir.clone(),
+                    names: ctest_names,
+                });
             }
         }
         System::Meson | System::Make => {
@@ -935,7 +1110,12 @@ fn plan_run(model: &Model, sel: &Selection, chosen: &[usize], tier: u32, full: b
     (plan, items)
 }
 
-fn direct(model: &Model, test: usize, framework: Option<symbols::Framework>, cases: &[String]) -> RunItem {
+fn direct(
+    model: &Model,
+    test: usize,
+    framework: Option<symbols::Framework>,
+    cases: &[String],
+) -> RunItem {
     let t = &model.tests[test];
     RunItem::Direct {
         test: t.name.clone(),
@@ -954,7 +1134,13 @@ fn drop_not_built(
     not_built: &BTreeSet<String>,
     now: &mut BTreeMap<String, TestStatus>,
 ) -> Option<RunItem> {
-    let target_of = |name: &str| model.tests.iter().find(|t| t.name == name).and_then(|t| t.target.clone());
+    let target_of = |name: &str| {
+        model
+            .tests
+            .iter()
+            .find(|t| t.name == name)
+            .and_then(|t| t.target.clone())
+    };
     match item {
         RunItem::Ctest { dir, names } => {
             // An empty list means "every test" and is kept as it is.
@@ -967,7 +1153,9 @@ fn drop_not_built(
             }
             (every_test || !good.is_empty()).then_some(RunItem::Ctest { dir, names: good })
         }
-        RunItem::Direct { ref test, .. } if target_of(test).is_some_and(|t| not_built.contains(&t)) => {
+        RunItem::Direct { ref test, .. }
+            if target_of(test).is_some_and(|t| not_built.contains(&t)) =>
+        {
             now.insert(test.clone(), TestStatus::NotBuilt);
             None
         }
@@ -980,7 +1168,10 @@ fn drop_not_built(
 // ---------------------------------------------------------------------------
 
 fn header(model: &Model) -> String {
-    let version = model.version.map(|(a, b)| format!(" {a}.{b}")).unwrap_or_default();
+    let version = model
+        .version
+        .map(|(a, b)| format!(" {a}.{b}"))
+        .unwrap_or_default();
     let dir = model.rel(&model.build_dir).to_string();
     let kind = match model.dir_kind {
         DirKind::Existing => "existing: built incrementally, never reconfigured",
@@ -999,11 +1190,21 @@ fn header(model: &Model) -> String {
 }
 
 fn change_line(model: &Model, changes: &Changes) -> String {
-    let files: Vec<String> = changes.files.iter().map(|f| model.rel(f).to_string()).collect();
+    let files: Vec<String> = changes
+        .files
+        .iter()
+        .map(|f| model.rel(f).to_string())
+        .collect();
     let symbols = if changes.symbols.is_empty() {
         "none found".to_string()
     } else {
-        let mut s = changes.symbols.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
+        let mut s = changes
+            .symbols
+            .iter()
+            .take(8)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         let more = changes.symbols.len().saturating_sub(8) + changes.symbols_dropped;
         if more > 0 {
             s.push_str(&format!(" (+{more})"));
@@ -1034,29 +1235,56 @@ fn plan_lines(model: &Model, sel: &Selection) -> String {
         sel.tier2.len(),
         sel.tier3.len(),
         sel.enabled.len(),
-        if sel.unmapped_in_tier3 > 0 { format!(", {} of them unmapped script/data tests", sel.unmapped_in_tier3) } else { String::new() }
+        if sel.unmapped_in_tier3 > 0 {
+            format!(
+                ", {} of them unmapped script/data tests",
+                sel.unmapped_in_tier3
+            )
+        } else {
+            String::new()
+        }
     );
-    let names = |ids: &[usize]| -> Vec<String> { ids.iter().map(|&i| model.tests[i].name.clone()).collect() };
+    let names = |ids: &[usize]| -> Vec<String> {
+        ids.iter().map(|&i| model.tests[i].name.clone()).collect()
+    };
     if !sel.tier1.is_empty() && cases > 0 {
         let shown: Vec<String> = sel
             .tier1
             .iter()
             .flat_map(|p| {
                 let test = model.tests[p.test].name.clone();
-                if p.cases.is_empty() { vec![test] } else { p.cases.iter().map(|c| format!("{test}::{c}")).collect() }
+                if p.cases.is_empty() {
+                    vec![test]
+                } else {
+                    p.cases.iter().map(|c| format!("{test}::{c}")).collect()
+                }
             })
             .collect();
         out.push_str(&format!("  tier 1: {}\n", short_list(&shown, NAMES_SHOWN)));
     }
     if !sel.tier2.is_empty() {
-        out.push_str(&format!("  tier 2: {}\n", short_list(&names(&sel.tier2), NAMES_SHOWN)));
+        out.push_str(&format!(
+            "  tier 2: {}\n",
+            short_list(&names(&sel.tier2), NAMES_SHOWN)
+        ));
     }
     if !sel.tier3.is_empty() && sel.tier3.len() != sel.tier2.len() {
-        out.push_str(&format!("  tier 3: {}\n", short_list(&names(&sel.tier3), NAMES_SHOWN)));
+        out.push_str(&format!(
+            "  tier 3: {}\n",
+            short_list(&names(&sel.tier3), NAMES_SHOWN)
+        ));
     }
     if !sel.affected.unmapped.is_empty() {
-        let files: Vec<String> = sel.affected.unmapped.iter().map(|f| model.rel(f).to_string()).collect();
-        out.push_str(&format!("  not compiled by any known target: {}\n", short_list(&files, 4)));
+        let files: Vec<String> = sel
+            .affected
+            .unmapped
+            .iter()
+            .map(|f| model.rel(f).to_string())
+            .collect();
+        out.push_str(&format!(
+            "  not compiled by any known target: {}\n",
+            short_list(&files, 4)
+        ));
     }
     for warning in &sel.warnings {
         out.push_str(&format!("  ! {warning}\n"));
@@ -1064,7 +1292,12 @@ fn plan_lines(model: &Model, sel: &Selection) -> String {
     out
 }
 
-fn run_summary(req: &Request, sel: &Selection, now: &BTreeMap<String, TestStatus>, secs: f64) -> String {
+fn run_summary(
+    req: &Request,
+    sel: &Selection,
+    now: &BTreeMap<String, TestStatus>,
+    secs: f64,
+) -> String {
     let count = |f: fn(TestStatus) -> bool| now.values().filter(|s| f(**s)).count();
     let passed = count(|s| s == TestStatus::Pass);
     let failed = count(|s| s == TestStatus::Fail || s == TestStatus::Timeout);
@@ -1095,10 +1328,17 @@ fn run_summary(req: &Request, sel: &Selection, now: &BTreeMap<String, TestStatus
     if not_run > 0 {
         parts.push(format!("{not_run} not run"));
     }
-    format!("RUN {what}: {} result(s) in {secs:.1}s — {}\n", now.len(), parts.join(", "))
+    format!(
+        "RUN {what}: {} result(s) in {secs:.1}s — {}\n",
+        now.len(),
+        parts.join(", ")
+    )
 }
 
-fn failure_lines(now: &BTreeMap<String, TestStatus>, details: &BTreeMap<String, Vec<String>>) -> String {
+fn failure_lines(
+    now: &BTreeMap<String, TestStatus>,
+    details: &BTreeMap<String, Vec<String>>,
+) -> String {
     let mut out = String::new();
     let failing: Vec<(&String, &TestStatus)> = now.iter().filter(|(_, s)| s.failing()).collect();
     for (name, status) in failing.iter().take(FAILURES_SHOWN) {
@@ -1108,24 +1348,45 @@ fn failure_lines(now: &BTreeMap<String, TestStatus>, details: &BTreeMap<String, 
         }
     }
     if failing.len() > FAILURES_SHOWN {
-        out.push_str(&format!("  … {} more failure(s) in the log\n", failing.len() - FAILURES_SHOWN));
+        out.push_str(&format!(
+            "  … {} more failure(s) in the log\n",
+            failing.len() - FAILURES_SHOWN
+        ));
     }
     out
 }
 
 fn flip_lines(head: &Head, compared: &base::BaseOutcome) -> String {
     let mut out = String::new();
-    let regress: Vec<String> = compared.flips.iter().filter(|f| f.is_regression()).map(|f| f.name.clone()).collect();
-    let fixes: Vec<String> = compared.flips.iter().filter(|f| f.is_fix()).map(|f| format!("{} ({})", f.name, f.label())).collect();
+    let regress: Vec<String> = compared
+        .flips
+        .iter()
+        .filter(|f| f.is_regression())
+        .map(|f| f.name.clone())
+        .collect();
+    let fixes: Vec<String> = compared
+        .flips
+        .iter()
+        .filter(|f| f.is_fix())
+        .map(|f| format!("{} ({})", f.name, f.label()))
+        .collect();
     out.push_str(&format!(
         "FLIPS vs base {} ({} run on base now, {} from cache): pass->fail {}{}; fail->pass {}{}\n",
         head.short(),
         compared.ran,
         compared.cached,
         regress.len(),
-        if regress.is_empty() { String::new() } else { format!(" ({})", short_list(&regress, 6)) },
+        if regress.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", short_list(&regress, 6))
+        },
         fixes.len(),
-        if fixes.is_empty() { String::new() } else { format!(" ({})", short_list(&fixes, 6)) },
+        if fixes.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", short_list(&fixes, 6))
+        },
     ));
     for (name, near) in compared.neighbours.iter().take(3) {
         out.push_str(&format!(
@@ -1139,7 +1400,13 @@ fn flip_lines(head: &Head, compared: &base::BaseOutcome) -> String {
     out
 }
 
-fn next_line(model: &Model, sel: &Selection, ran: Option<u32>, full: bool, gate_suite: bool) -> String {
+fn next_line(
+    model: &Model,
+    sel: &Selection,
+    ran: Option<u32>,
+    full: bool,
+    gate_suite: bool,
+) -> String {
     if full {
         return String::new();
     }
@@ -1153,9 +1420,17 @@ fn next_line(model: &Model, sel: &Selection, ran: Option<u32>, full: bool, gate_
     }
     // One full-suite run per change: the finish gate's when it runs one, else the model's.
     let suite = match (gate_suite, model.system, &model.check_target) {
-        (true, _, _) => format!("the full suite ({} tests) runs in the finish gate when you finish", sel.enabled.len()),
-        (false, System::Make, Some(check)) => format!("full_suite=true once before finishing (`make {check}`)"),
-        _ => format!("full_suite=true once before finishing ({} tests)", sel.enabled.len()),
+        (true, _, _) => format!(
+            "the full suite ({} tests) runs in the finish gate when you finish",
+            sel.enabled.len()
+        ),
+        (false, System::Make, Some(check)) => {
+            format!("full_suite=true once before finishing (`make {check}`)")
+        }
+        _ => format!(
+            "full_suite=true once before finishing ({} tests)",
+            sel.enabled.len()
+        ),
     };
     options.push(suite);
     if ran.is_some() {

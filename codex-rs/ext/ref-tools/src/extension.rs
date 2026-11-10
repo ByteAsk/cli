@@ -322,7 +322,9 @@ mod tests {
                     tool_name: tool.tool_name(),
                     model: "m".to_string(),
                     codex_turn_metadata: None,
-                    truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(1 << 20),
+                    truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(
+                        1 << 20,
+                    ),
                     source: ToolCallSource::Direct,
                     conversation_history: ConversationHistory::default(),
                     turn_item_emitter: std::sync::Arc::new(NoopTurnItemEmitter),
@@ -333,8 +335,13 @@ mod tests {
             let Err(codex_extension_api::FunctionCallError::RespondToModel(text)) = outcome else {
                 panic!("{name}: expected an offline answer");
             };
-            let result = check_result::CheckResult::from_tool_text(&name, &text).expect("result line");
-            assert_eq!(result.reason, Some(check_result::NotRunReason::Offline), "{name}: {text}");
+            let result =
+                check_result::CheckResult::from_tool_text(&name, &text).expect("result line");
+            assert_eq!(
+                result.reason,
+                Some(check_result::NotRunReason::Offline),
+                "{name}: {text}"
+            );
         }
     }
 

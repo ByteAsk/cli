@@ -18,6 +18,7 @@ use tokio::sync::Semaphore;
 
 use http::HeaderValue;
 
+use crate::NetworkPolicy;
 use crate::chatgpt_cloudflare_cookies::ChatGptCookieStore;
 use crate::custom_ca::BuildCustomCaTransportError;
 use crate::custom_ca::build_reqwest_client_with_custom_ca;
@@ -165,12 +166,18 @@ impl fmt::Debug for OutboundProxyRoute {
 #[derive(Clone)]
 pub struct HttpClientFactory {
     outbound_proxy_policy: OutboundProxyPolicy,
+    system_proxy_fallback: bool,
+    protect_sensitive_headers: bool,
     chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
+    network_policy: NetworkPolicy,
 }
 
 impl PartialEq for HttpClientFactory {
     fn eq(&self, other: &Self) -> bool {
         self.outbound_proxy_policy == other.outbound_proxy_policy
+            && self.system_proxy_fallback == other.system_proxy_fallback
+            && self.protect_sensitive_headers == other.protect_sensitive_headers
+            && self.network_policy == other.network_policy
             && self
                 .chatgpt_cookie_store
                 .as_ref()
@@ -188,6 +195,9 @@ impl fmt::Debug for HttpClientFactory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpClientFactory")
             .field("outbound_proxy_policy", &self.outbound_proxy_policy)
+            .field("system_proxy_fallback", &self.system_proxy_fallback)
+            .field("protect_sensitive_headers", &self.protect_sensitive_headers)
+            .field("network_policy", &self.network_policy)
             .finish()
     }
 }
@@ -197,8 +207,51 @@ impl HttpClientFactory {
     pub const fn new(outbound_proxy_policy: OutboundProxyPolicy) -> Self {
         Self {
             outbound_proxy_policy,
+            system_proxy_fallback: false,
+            protect_sensitive_headers: false,
             chatgpt_cookie_store: None,
+            network_policy: NetworkPolicy::unmanaged(),
         }
+    }
+
+    /// Follows redirects while keeping headers marked sensitive on the original origin.
+    /// Reqwest's default redirect handling only recognizes standard credential headers.
+    pub fn with_sensitive_header_protection(mut self) -> Self {
+        self.protect_sensitive_headers = true;
+        self
+    }
+
+    /// Whether redirect handling removes sensitive headers when the origin changes.
+    pub fn protects_sensitive_headers(&self) -> bool {
+        self.protect_sensitive_headers
+    }
+
+    /// Carries the account/configuration owner's application policy into every transport.
+    pub fn with_network_policy(mut self, policy: NetworkPolicy) -> Self {
+        self.network_policy = policy;
+        self
+    }
+
+    pub fn network_policy(&self) -> &NetworkPolicy {
+        &self.network_policy
+    }
+
+    /// Changes the route policy while retaining the configured cookies and network policy.
+    pub fn with_outbound_proxy_policy(mut self, policy: OutboundProxyPolicy) -> Self {
+        self.outbound_proxy_policy = policy;
+        self
+    }
+
+    /// Allows bootstrap callers to retry through the system proxy when their request is safe
+    /// to replay. This does not change routing or enable retries for ordinary HTTP requests.
+    pub fn with_system_proxy_fallback(mut self) -> Self {
+        self.system_proxy_fallback = true;
+        self
+    }
+
+    pub fn allows_system_proxy_fallback(&self) -> bool {
+        self.system_proxy_fallback
+            && self.outbound_proxy_policy == OutboundProxyPolicy::ReqwestDefault
     }
 
     /// Adds process-scoped cookies to requests made by ChatGPT cookie-store clients.
@@ -228,7 +281,8 @@ impl HttpClientFactory {
     /// WebSocket schemes are resolved through their HTTP equivalents so platform PAC and system
     /// proxy APIs apply the same policy to `ws`/`wss` and `http`/`https` destinations. When system
     /// resolution is unavailable, explicit environment settings are resolved before falling back
-    /// to a direct route.
+    /// to a direct route. Ordered PAC candidates are collapsed to one route on Windows and macOS;
+    /// later proxy or `DIRECT` candidates are not retried after a connection failure.
     pub fn resolve_proxy_route(&self, request_url: &str) -> OutboundProxyRoute {
         resolve_proxy_route(
             &ProcessEnv,
@@ -283,31 +337,6 @@ impl HttpClientFactory {
         }
         cached_system_proxy_decision(&request_url)
             .map(|decision| route_from_system_decision(&ProcessEnv, env_proxy_kind, decision))
-    }
-
-    /// Builds a reqwest client for a concrete outbound route.
-    pub fn build_reqwest_client(
-        &self,
-        builder: reqwest::ClientBuilder,
-        request_url: &str,
-        route_class: ClientRouteClass,
-    ) -> Result<reqwest::Client, BuildRouteAwareHttpClientError> {
-        build_reqwest_client_for_route(
-            builder,
-            request_url,
-            route_class,
-            self.outbound_proxy_policy,
-        )
-    }
-
-    pub(crate) fn build_reqwest_client_for_resolved_route(
-        &self,
-        builder: reqwest::ClientBuilder,
-        route_class: ClientRouteClass,
-        route: &OutboundProxyRoute,
-    ) -> Result<reqwest::Client, BuildRouteAwareHttpClientError> {
-        let builder = configure_builder_for_resolved_route(builder, route_class, route)?;
-        build_reqwest_client_with_custom_ca(builder).map_err(Into::into)
     }
 }
 
@@ -413,6 +442,9 @@ pub enum BuildRouteAwareHttpClientError {
     #[error(transparent)]
     CustomCa(#[from] BuildCustomCaTransportError),
 
+    #[error("Failed to build HTTP client with explicit TLS configuration: {0}")]
+    ExplicitTls(reqwest::Error),
+
     #[error("Failed to configure outbound proxy selected for {route_class}")]
     InvalidProxyConfig { route_class: ClientRouteClass },
 }
@@ -421,34 +453,23 @@ impl From<BuildRouteAwareHttpClientError> for io::Error {
     fn from(error: BuildRouteAwareHttpClientError) -> Self {
         match error {
             BuildRouteAwareHttpClientError::CustomCa(error) => error.into(),
-            BuildRouteAwareHttpClientError::InvalidProxyConfig { .. } => io::Error::other(error),
+            BuildRouteAwareHttpClientError::InvalidProxyConfig { .. }
+            | BuildRouteAwareHttpClientError::ExplicitTls(_) => io::Error::other(error),
         }
     }
 }
 
-/// Builds a reqwest client with conservative route selection and shared CA handling.
-///
-/// Unavailable platform resolution falls back to environment proxies and then direct. Errors after
-/// a route is selected are returned without trying another route. Ordered PAC candidates are
-/// currently collapsed to one route on both Windows and macOS; later proxy or `DIRECT` candidates
-/// are not retried after a connection failure.
-fn build_reqwest_client_for_route(
+/// Builds a reqwest client with the resolved route and shared CA handling.
+pub(crate) fn build_reqwest_client_for_route(
     builder: reqwest::ClientBuilder,
-    request_url: &str,
     route_class: ClientRouteClass,
-    outbound_proxy_policy: OutboundProxyPolicy,
+    route: &OutboundProxyRoute,
 ) -> Result<reqwest::Client, BuildRouteAwareHttpClientError> {
-    let builder = configure_proxy_for_route(
-        &ProcessEnv,
-        builder,
-        request_url,
-        route_class,
-        outbound_proxy_policy,
-        resolve_system_proxy,
-    )?;
+    let builder = configure_builder_for_resolved_route(builder, route_class, route)?;
     build_reqwest_client_with_custom_ca(builder).map_err(Into::into)
 }
 
+#[cfg(test)]
 fn configure_proxy_for_route(
     env: &dyn EnvSource,
     builder: reqwest::ClientBuilder,
@@ -466,7 +487,7 @@ fn configure_proxy_for_route(
     configure_builder_for_resolved_route(builder, route_class, &route)
 }
 
-fn configure_builder_for_resolved_route(
+pub(crate) fn configure_builder_for_resolved_route(
     builder: reqwest::ClientBuilder,
     route_class: ClientRouteClass,
     route: &OutboundProxyRoute,
@@ -593,7 +614,9 @@ static SYSTEM_PROXY_CACHE: OnceLock<Mutex<HashMap<String, CachedSystemProxyDecis
 
 fn cached_system_proxy_decision(request_url: &str) -> Option<SystemProxyDecision> {
     let cache = SYSTEM_PROXY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache.lock().ok()?;
+    // Platform resolution holds this mutex. Let contended async callers wait in the resolver
+    // lane instead of blocking their executor while checking the cache.
+    let mut cache = cache.try_lock().ok()?;
     let key = system_proxy_cache_key(request_url);
     cached_system_proxy_decision_from_cache(&mut cache, &key, Instant::now())
 }

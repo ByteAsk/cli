@@ -436,9 +436,15 @@ fn tests_are_found_by_command_or_by_name() {
         target("tool", "EXECUTABLE", &[]),
     ];
     let unbuilt = serde_json::json!({"tests": [{"name": "xmltest", "command": null}]});
-    assert_eq!(super::build::tests_in(&unbuilt, &targets), vec!["xmltest".to_string()]);
+    assert_eq!(
+        super::build::tests_in(&unbuilt, &targets),
+        vec!["xmltest".to_string()]
+    );
     let built = serde_json::json!({"tests": [{"name": "runs-the-tool", "command": ["/b/tool", "--self-test"]}]});
-    assert_eq!(super::build::tests_in(&built, &targets), vec!["tool".to_string()]);
+    assert_eq!(
+        super::build::tests_in(&built, &targets),
+        vec!["tool".to_string()]
+    );
     let other = serde_json::json!({"tests": [{"name": "lint", "command": ["/usr/bin/python3", "lint.py"]}]});
     assert!(super::build::tests_in(&other, &targets).is_empty());
 }

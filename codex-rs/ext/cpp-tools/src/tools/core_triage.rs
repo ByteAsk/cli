@@ -128,20 +128,33 @@ pub(crate) fn read_core_notes(core: &Path) -> Result<CoreNotes, String> {
         return Err(format!("{} is not an ELF core file", core.display()));
     }
     if h[4] != 2 || h[5] != 1 {
-        return Err(format!("{} is not a 64-bit little-endian core, which is all this reads", core.display()));
+        return Err(format!(
+            "{} is not a 64-bit little-endian core, which is all this reads",
+            core.display()
+        ));
     }
     if u16_at(&h, 16) != ET_CORE {
-        return Err(format!("{} is an ELF file but not a core dump", core.display()));
+        return Err(format!(
+            "{} is an ELF file but not a core dump",
+            core.display()
+        ));
     }
     let machine = u16_at(&h, 18);
-    let (phoff, phentsize, phnum) = (u64_at(&h, 32), u16_at(&h, 54) as usize, u16_at(&h, 56) as usize);
+    let (phoff, phentsize, phnum) = (
+        u64_at(&h, 32),
+        u16_at(&h, 54) as usize,
+        u16_at(&h, 56) as usize,
+    );
     if phentsize < 56 {
         return Err("malformed ELF program header table".to_string());
     }
     let mut table = vec![0u8; phentsize * phnum];
     file.seek(SeekFrom::Start(phoff)).map_err(io)?;
     file.read_exact(&mut table).map_err(io)?;
-    let mut notes = CoreNotes { machine, ..CoreNotes::default() };
+    let mut notes = CoreNotes {
+        machine,
+        ..CoreNotes::default()
+    };
     let mut files: Vec<(u64, u64, String)> = Vec::new();
     for ph in table.chunks_exact(phentsize) {
         let p_type = u32_at(ph, 0);
@@ -170,7 +183,10 @@ pub(crate) fn read_core_notes(core: &Path) -> Result<CoreNotes, String> {
         }
     }
     for map in &mut notes.maps {
-        if let Some((_, _, path)) = files.iter().find(|(s, e, _)| *s <= map.start && map.start < *e) {
+        if let Some((_, _, path)) = files
+            .iter()
+            .find(|(s, e, _)| *s <= map.start && map.start < *e)
+        {
             map.file = Some(path.clone());
         }
     }
@@ -194,9 +210,13 @@ fn parse_notes(buf: &[u8], notes: &mut CoreNotes, files: &mut Vec<(u64, u64, Str
                     notes.cursig = Some(i32::from(u16_at(desc, 12)));
                     let (pc, sp) = match notes.machine {
                         // user_regs_struct: rip is word 16, rsp word 19.
-                        EM_X86_64 if desc.len() >= 112 + 27 * 8 => (u64_at(desc, 112 + 16 * 8), u64_at(desc, 112 + 19 * 8)),
+                        EM_X86_64 if desc.len() >= 112 + 27 * 8 => {
+                            (u64_at(desc, 112 + 16 * 8), u64_at(desc, 112 + 19 * 8))
+                        }
                         // user_pt_regs: x0..x30, sp, pc.
-                        EM_AARCH64 if desc.len() >= 112 + 34 * 8 => (u64_at(desc, 112 + 32 * 8), u64_at(desc, 112 + 31 * 8)),
+                        EM_AARCH64 if desc.len() >= 112 + 34 * 8 => {
+                            (u64_at(desc, 112 + 32 * 8), u64_at(desc, 112 + 31 * 8))
+                        }
                         _ => (0, 0),
                     };
                     if pc != 0 {
@@ -234,7 +254,11 @@ fn parse_nt_file(desc: &[u8]) -> Vec<(u64, u64, String)> {
         return Vec::new();
     }
     let count = u64_at(desc, 0) as usize;
-    let Some(names_at) = count.checked_mul(24).and_then(|n| n.checked_add(16)).filter(|&n| n <= desc.len()) else {
+    let Some(names_at) = count
+        .checked_mul(24)
+        .and_then(|n| n.checked_add(16))
+        .filter(|&n| n <= desc.len())
+    else {
         return Vec::new();
     };
     let names = desc[names_at..].split(|&b| b == 0);
@@ -242,7 +266,11 @@ fn parse_nt_file(desc: &[u8]) -> Vec<(u64, u64, String)> {
         .zip(names)
         .map(|(i, name)| {
             let e = 16 + i * 24;
-            (u64_at(desc, e), u64_at(desc, e + 8), String::from_utf8_lossy(name).into_owned())
+            (
+                u64_at(desc, e),
+                u64_at(desc, e + 8),
+                String::from_utf8_lossy(name).into_owned(),
+            )
         })
         .collect()
 }
@@ -378,7 +406,10 @@ fn read_answer(path: &Path) -> GdbAnswer {
             }
             Some("done") => answer.done = true,
             Some("error") => {
-                answer.error = value.get("message").and_then(|m| m.as_str()).map(str::to_string);
+                answer.error = value
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string);
             }
             _ => {}
         }
@@ -408,9 +439,11 @@ pub(crate) struct Cause {
 
 fn has_frame(frames: &[Frame], names: &[&str]) -> Option<usize> {
     frames.iter().position(|f| {
-        f.function
-            .as_deref()
-            .is_some_and(|n| names.iter().any(|want| n == *want || n.starts_with(&format!("{want}("))))
+        f.function.as_deref().is_some_and(|n| {
+            names
+                .iter()
+                .any(|want| n == *want || n.starts_with(&format!("{want}(")))
+        })
     })
 }
 
@@ -427,7 +460,10 @@ fn site(frame: Option<&Frame>, cwd: &Path) -> String {
 }
 
 fn frame_text(f: &Frame, cwd: &Path) -> String {
-    let name = f.function.clone().unwrap_or_else(|| f.pc.clone().unwrap_or_else(|| "??".into()));
+    let name = f
+        .function
+        .clone()
+        .unwrap_or_else(|| f.pc.clone().unwrap_or_else(|| "??".into()));
     match (&f.file, f.line) {
         (Some(file), Some(line)) => format!("{name}() at {}:{line}", display_path(file, cwd)),
         _ => match &f.library {
@@ -441,8 +477,15 @@ fn frame_text(f: &Frame, cwd: &Path) -> String {
 /// (`0x8(%rax)`, `(%rax,%rcx,8)`) or AArch64 (`[x1, #8]`) syntax.
 pub(crate) fn memory_base(insn: &str) -> Option<(String, i64)> {
     if let Some(open) = insn.find("(%") {
-        let reg: String = insn[open + 2..].chars().take_while(char::is_ascii_alphanumeric).collect();
-        let disp_text = insn[..open].rsplit([' ', ',', '\t']).next().unwrap_or("").trim();
+        let reg: String = insn[open + 2..]
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect();
+        let disp_text = insn[..open]
+            .rsplit([' ', ',', '\t'])
+            .next()
+            .unwrap_or("")
+            .trim();
         let disp = parse_int(disp_text).unwrap_or(0);
         return (!reg.is_empty()).then_some((reg, disp));
     }
@@ -450,7 +493,10 @@ pub(crate) fn memory_base(insn: &str) -> Option<(String, i64)> {
         let inner = &insn[open + 1..insn[open..].find(']').map(|c| open + c)?];
         let mut parts = inner.split(',').map(str::trim);
         let reg = parts.next()?.to_string();
-        let disp = parts.next().and_then(|d| parse_int(d.trim_start_matches('#'))).unwrap_or(0);
+        let disp = parts
+            .next()
+            .and_then(|d| parse_int(d.trim_start_matches('#')))
+            .unwrap_or(0);
         return Some((reg, disp));
     }
     None
@@ -481,7 +527,12 @@ fn reg_value(gdb: Option<&GdbCore>, reg: &str) -> Option<u64> {
 fn printable_ascii(value: u64) -> Option<String> {
     let bytes = value.to_le_bytes();
     let text: String = bytes.iter().map(|&b| b as char).collect();
-    (bytes.iter().filter(|b| b.is_ascii_graphic() || **b == b' ').count() >= 6).then_some(text)
+    (bytes
+        .iter()
+        .filter(|b| b.is_ascii_graphic() || **b == b' ')
+        .count()
+        >= 6)
+        .then_some(text)
 }
 
 const HEAP_INTERNALS: &[&str] = &[
@@ -524,12 +575,20 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
 
     match signo {
         6 => {
-            if let Some(exc) = gdb.and_then(|g| g.exception.as_ref()).filter(|e| e.ty.is_some()) {
+            if let Some(exc) = gdb
+                .and_then(|g| g.exception.as_ref())
+                .filter(|e| e.ty.is_some())
+            {
                 let ty = exc.ty.as_deref().unwrap_or("?");
                 let thrower = user_from(frames, exc.frame as usize);
-                because.push(format!("std::terminate ran from __cxa_throw (frame #{})", exc.frame));
+                because.push(format!(
+                    "std::terminate ran from __cxa_throw (frame #{})",
+                    exc.frame
+                ));
                 if let Some(what) = &exc.what {
-                    because.push(format!("what(): \"{what}\" (read from the exception object in the core)"));
+                    because.push(format!(
+                        "what(): \"{what}\" (read from the exception object in the core)"
+                    ));
                 }
                 let on_thread = if f.faulting.map(|t| t.tid) != f.notes.pid {
                     " on a std::thread — an exception escaping a thread's function terminates the whole process"
@@ -583,18 +642,33 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
                             site(user, cwd)
                         ),
                         because,
-                        next: format!("look for a copy into a fixed-size local buffer in that function; {asan}"),
+                        next: format!(
+                            "look for a copy into a fixed-size local buffer in that function; {asan}"
+                        ),
                     };
                 }
                 if msg.contains("buffer overflow detected") {
                     return Cause {
-                        title: format!("_FORTIFY_SOURCE caught a buffer overflow in {}", site(user, cwd)),
+                        title: format!(
+                            "_FORTIFY_SOURCE caught a buffer overflow in {}",
+                            site(user, cwd)
+                        ),
                         because,
-                        next: format!("a checked copy (memcpy/strcpy/sprintf…) was given a size larger than its \
-                                       destination; {asan}"),
+                        next: format!(
+                            "a checked copy (memcpy/strcpy/sprintf…) was given a size larger than its \
+                                       destination; {asan}"
+                        ),
                     };
                 }
-                let heap = ["double free", "free(): ", "malloc(): ", "corrupted", "realloc(): ", "munmap_chunk", "malloc_consolidate"];
+                let heap = [
+                    "double free",
+                    "free(): ",
+                    "malloc(): ",
+                    "corrupted",
+                    "realloc(): ",
+                    "munmap_chunk",
+                    "malloc_consolidate",
+                ];
                 if heap.iter().any(|h| msg.contains(h)) {
                     return Cause {
                         title: format!(
@@ -633,7 +707,8 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
             Cause {
                 title: format!("abort() was called from {}", site(user, cwd)),
                 because,
-                next: "read the code at the crash site: something decided to stop the program".to_string(),
+                next: "read the code at the crash site: something decided to stop the program"
+                    .to_string(),
             }
         }
         11 => {
@@ -646,12 +721,22 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
                     .unwrap_or_default();
                 because.push(format!("faulting instruction: {insn}{regs}"));
             }
-            let pc = f.notes.pc.or_else(|| reg_value(gdb, "rip")).or_else(|| reg_value(gdb, "pc"));
-            let sp = f.notes.sp.or_else(|| reg_value(gdb, "rsp")).or_else(|| reg_value(gdb, "sp"));
+            let pc = f
+                .notes
+                .pc
+                .or_else(|| reg_value(gdb, "rip"))
+                .or_else(|| reg_value(gdb, "pc"));
+            let sp = f
+                .notes
+                .sp
+                .or_else(|| reg_value(gdb, "rsp"))
+                .or_else(|| reg_value(gdb, "sp"));
             if code == 128 {
-                because.push("si_code SI_KERNEL: a general-protection fault, i.e. an address that is not \
+                because.push(
+                    "si_code SI_KERNEL: a general-protection fault, i.e. an address that is not \
                               canonical — no valid pointer looks like that"
-                    .to_string());
+                        .to_string(),
+                );
                 if let Some(v) = base_value {
                     if let Some(text) = printable_ascii(v) {
                         return Cause {
@@ -661,17 +746,25 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
                                 site(user, cwd)
                             ),
                             because,
-                            next: format!("find the copy that overran the buffer next to that pointer; {asan}"),
+                            next: format!(
+                                "find the copy that overran the buffer next to that pointer; {asan}"
+                            ),
                         };
                     }
                     return Cause {
-                        title: format!("a wild pointer {v:#x} (not a possible address) was dereferenced in {}", site(user, cwd)),
+                        title: format!(
+                            "a wild pointer {v:#x} (not a possible address) was dereferenced in {}",
+                            site(user, cwd)
+                        ),
                         because,
                         next: reverse("that pointer"),
                     };
                 }
                 return Cause {
-                    title: format!("a wild (non-canonical) pointer was dereferenced in {}", site(user, cwd)),
+                    title: format!(
+                        "a wild (non-canonical) pointer was dereferenced in {}",
+                        site(user, cwd)
+                    ),
                     because,
                     next: reverse("that pointer"),
                 };
@@ -687,33 +780,57 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
                     _ => "si_code unknown",
                 }
             ));
-            let executable = |a: u64| f.notes.maps.iter().any(|m| m.start <= a && a < m.end && m.exec);
+            let executable = |a: u64| {
+                f.notes
+                    .maps
+                    .iter()
+                    .any(|m| m.start <= a && a < m.end && m.exec)
+            };
             if pc == Some(addr) && !executable(addr) {
                 let caller = frames.iter().skip(1).find(|fr| fr.user);
                 return Cause {
                     title: format!(
                         "a call or jump to the bad address {addr:#x}: a corrupted function pointer, vtable \
                          pointer or return address{}",
-                        caller.map(|c| format!(" — the call was made from {}", frame_text(c, cwd))).unwrap_or_default()
+                        caller
+                            .map(|c| format!(" — the call was made from {}", frame_text(c, cwd)))
+                            .unwrap_or_default()
                     ),
                     because,
-                    next: reverse("the function pointer (or check the object holding the vtable is still alive)"),
+                    next: reverse(
+                        "the function pointer (or check the object holding the vtable is still alive)",
+                    ),
                 };
             }
-            let repeated = frames.first().and_then(|top| top.function.as_deref()).map(|name| {
-                frames.iter().filter(|fr| fr.function.as_deref() == Some(name)).count()
-            });
+            let repeated = frames
+                .first()
+                .and_then(|top| top.function.as_deref())
+                .map(|name| {
+                    frames
+                        .iter()
+                        .filter(|fr| fr.function.as_deref() == Some(name))
+                        .count()
+                });
             let near_stack = sp.is_some_and(|sp| addr.abs_diff(sp) <= 64 * 1024);
-            if near_stack || (repeated.unwrap_or(0) >= 64 && f.faulting.is_some_and(|t| t.truncated)) {
+            if near_stack
+                || (repeated.unwrap_or(0) >= 64 && f.faulting.is_some_and(|t| t.truncated))
+            {
                 if let Some(n) = repeated.filter(|&n| n >= 16) {
                     because.push(format!(
                         "{} appears {n}{} times in a row on the stack",
                         frames[0].function.as_deref().unwrap_or("?"),
-                        if f.faulting.is_some_and(|t| t.truncated) { "+" } else { "" }
+                        if f.faulting.is_some_and(|t| t.truncated) {
+                            "+"
+                        } else {
+                            ""
+                        }
                     ));
                 }
                 if let Some(sp) = sp {
-                    because.push(format!("the fault is {} bytes from the stack pointer {sp:#x}", addr.abs_diff(sp)));
+                    because.push(format!(
+                        "the fault is {} bytes from the stack pointer {sp:#x}",
+                        addr.abs_diff(sp)
+                    ));
                 }
                 return Cause {
                     title: match repeated.filter(|&n| n >= 16) {
@@ -741,10 +858,20 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
                 };
             }
             if code == 2
-                && let Some(map) = f.notes.maps.iter().find(|m| m.start <= addr && addr < m.end)
+                && let Some(map) = f
+                    .notes
+                    .maps
+                    .iter()
+                    .find(|m| m.start <= addr && addr < m.end)
             {
-                let what = map.file.clone().unwrap_or_else(|| "anonymous memory".to_string());
-                because.push(format!("{addr:#x} is in a {} mapping of {what}", map.perms()));
+                let what = map
+                    .file
+                    .clone()
+                    .unwrap_or_else(|| "anonymous memory".to_string());
+                because.push(format!(
+                    "{addr:#x} is in a {} mapping of {what}",
+                    map.perms()
+                ));
                 if !map.write && map.read {
                     return Cause {
                         title: format!(
@@ -783,10 +910,16 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
                     title: format!(
                         "a NULL pointer dereference in {}{}",
                         site(user, cwd),
-                        if offset > 0 { format!(", reading the member at offset {offset:#x} of a NULL object") } else { String::new() }
+                        if offset > 0 {
+                            format!(", reading the member at offset {offset:#x} of a NULL object")
+                        } else {
+                            String::new()
+                        }
                     ),
                     because,
-                    next: reverse("the pointer (it should never have been NULL there), or add the missing NULL check"),
+                    next: reverse(
+                        "the pointer (it should never have been NULL there), or add the missing NULL check",
+                    ),
                 };
             }
             if base_value.map_or(addr < 65536, |v| v < 65536) {
@@ -813,7 +946,12 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
         }
         8 => {
             because.push(format!("si_code {code}"));
-            let zero_arg = user.and_then(|u| u.args.iter().find(|(_, v)| v == "0").map(|(n, _)| n.clone()));
+            let zero_arg = user.and_then(|u| {
+                u.args
+                    .iter()
+                    .find(|(_, v)| v == "0")
+                    .map(|(n, _)| n.clone())
+            });
             if let Some(name) = &zero_arg {
                 because.push(format!("argument `{name}` is 0"));
             }
@@ -832,12 +970,16 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
             Cause {
                 title,
                 because,
-                next: "guard the divisor (a zero count, lot size or interval) before dividing".to_string(),
+                next: "guard the divisor (a zero count, lot size or interval) before dividing"
+                    .to_string(),
             }
         }
         4 => {
             let insn = insn.unwrap_or("");
-            because.push(format!("faulting instruction: {}", if insn.is_empty() { "unknown" } else { insn }));
+            because.push(format!(
+                "faulting instruction: {}",
+                if insn.is_empty() { "unknown" } else { insn }
+            ));
             let mnemonic = insn.split_whitespace().next().unwrap_or("");
             if matches!(mnemonic, "ud2" | "udf" | "brk") {
                 return Cause {
@@ -854,9 +996,12 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
                 };
             }
             let vector = ["zmm", "ymm", "%k", "{k"].iter().any(|r| insn.contains(r))
-                || ["vp", "kmov", "kortest", "andn", "pdep", "pext", "shlx", "sarx", "tzcnt", "lzcnt", "movbe", "adcx", "adox", "vfmadd"]
-                    .iter()
-                    .any(|p| mnemonic.starts_with(p));
+                || [
+                    "vp", "kmov", "kortest", "andn", "pdep", "pext", "shlx", "sarx", "tzcnt",
+                    "lzcnt", "movbe", "adcx", "adox", "vfmadd",
+                ]
+                .iter()
+                .any(|p| mnemonic.starts_with(p));
             if vector {
                 return Cause {
                     title: format!(
@@ -881,7 +1026,12 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
         7 => {
             let addr = addr.unwrap_or(0);
             because.push(format!("fault address {addr:#x}, si_code {code}"));
-            let file = f.notes.maps.iter().find(|m| m.start <= addr && addr < m.end).and_then(|m| m.file.clone());
+            let file = f
+                .notes
+                .maps
+                .iter()
+                .find(|m| m.start <= addr && addr < m.end)
+                .and_then(|m| m.file.clone());
             match (code, file) {
                 (2, Some(file)) => Cause {
                     title: format!(
@@ -920,7 +1070,8 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
         0 => Cause {
             title: "the core records no signal".to_string(),
             because,
-            next: "it may have been written by gcore from a live process, not by a crash".to_string(),
+            next: "it may have been written by gcore from a live process, not by a crash"
+                .to_string(),
         },
         other => {
             let name = signal_name(other).unwrap_or("an unknown signal");
@@ -938,14 +1089,24 @@ pub(crate) fn likely_cause(f: &Facts, cwd: &Path) -> Cause {
 
 /// Other threads that were in the same function of the user's code as the
 /// faulting thread: shared state there is a race candidate.
-fn same_function_threads<'a>(faulting: Option<&GdbThread>, others: &[&'a GdbThread]) -> Vec<&'a GdbThread> {
-    let Some(name) = faulting.and_then(|t| user_from(&t.frames, 0)).and_then(|f| f.function.as_deref()) else {
+fn same_function_threads<'a>(
+    faulting: Option<&GdbThread>,
+    others: &[&'a GdbThread],
+) -> Vec<&'a GdbThread> {
+    let Some(name) = faulting
+        .and_then(|t| user_from(&t.frames, 0))
+        .and_then(|f| f.function.as_deref())
+    else {
         return Vec::new();
     };
     others
         .iter()
         .copied()
-        .filter(|t| t.frames.iter().any(|f| f.user && f.function.as_deref() == Some(name)))
+        .filter(|t| {
+            t.frames
+                .iter()
+                .any(|f| f.user && f.function.as_deref() == Some(name))
+        })
         .collect()
 }
 
@@ -958,7 +1119,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for CoreTriageTool {
         let mut properties = BTreeMap::new();
         properties.insert(
             "core".to_string(),
-            JsonSchema::string(Some("Path to the core dump (relative to the workspace or absolute).".to_string())),
+            JsonSchema::string(Some(
+                "Path to the core dump (relative to the workspace or absolute).".to_string(),
+            )),
         );
         properties.insert(
             "program".to_string(),
@@ -1025,11 +1188,18 @@ impl<'call> ToolExecutor<ToolCall<'call>> for CoreTriageTool {
 
 fn resolve(cwd: &Path, path: &str) -> PathBuf {
     let p = Path::new(path);
-    if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) }
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    }
 }
 
 impl CoreTriageTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: CoreArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -1038,7 +1208,10 @@ impl CoreTriageTool {
         if let Some(root) = &sysroot
             && !root.is_dir()
         {
-            return Err(FunctionCallError::RespondToModel(format!("sysroot {} is not a directory", root.display())));
+            return Err(FunctionCallError::RespondToModel(format!(
+                "sysroot {} is not a directory",
+                root.display()
+            )));
         }
         let notes = read_core_notes(&core).map_err(FunctionCallError::RespondToModel)?;
         let program = match args.program.as_deref() {
@@ -1061,32 +1234,48 @@ impl CoreTriageTool {
         };
 
         let timeout = timeout_from(args.timeout_sec);
-        let scratch = ScratchDir::new("core-triage")
-            .map_err(|e| FunctionCallError::RespondToModel(format!("cannot create a scratch directory: {e}")))?;
+        let scratch = ScratchDir::new("core-triage").map_err(|e| {
+            FunctionCallError::RespondToModel(format!("cannot create a scratch directory: {e}"))
+        })?;
         let driver = scratch.path().join("byteask_core_driver.py");
         let out = scratch.path().join("answer.jsonl");
-        std::fs::write(&driver, DRIVER)
-            .map_err(|e| FunctionCallError::RespondToModel(format!("cannot write the gdb driver: {e}")))?;
+        std::fs::write(&driver, DRIVER).map_err(|e| {
+            FunctionCallError::RespondToModel(format!("cannot write the gdb driver: {e}"))
+        })?;
         let root = std::fs::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone());
         let query = serde_json::json!({ "user_roots": [root.to_string_lossy()] }).to_string();
         let argv = build_gdb_argv(&program, &core, sysroot.as_deref(), &driver);
         let envs = vec![
             ("BYTEASK_CORE_QUERY".to_string(), query),
-            ("BYTEASK_CORE_OUT".to_string(), out.to_string_lossy().into_owned()),
+            (
+                "BYTEASK_CORE_OUT".to_string(),
+                out.to_string_lossy().into_owned(),
+            ),
         ];
-        let (stderr, timed_out) = match run_capped_env("gdb", &argv, &self.cwd, timeout, &envs).await {
-            Ok(RunOutcome::Finished { stdout, stderr, .. }) => (format!("{stdout}\n{stderr}"), None),
-            Ok(RunOutcome::TimedOut { secs }) => (String::new(), Some(secs)),
-            // gdb missing: the notes alone still say a lot.
-            Err(err) => (format!("{err:?}"), None),
-        };
+        let (stderr, timed_out) =
+            match run_capped_env("gdb", &argv, &self.cwd, timeout, &envs).await {
+                Ok(RunOutcome::Finished { stdout, stderr, .. }) => {
+                    (format!("{stdout}\n{stderr}"), None)
+                }
+                Ok(RunOutcome::TimedOut { secs }) => (String::new(), Some(secs)),
+                // gdb missing: the notes alone still say a lot.
+                Err(err) => (format!("{err:?}"), None),
+            };
         let answer = read_answer(&out);
         let mut notes = notes;
         fill_from_gdb(&mut notes, &answer);
-        let body = render(&notes, &core, &program, &answer, &stderr, timed_out, &self.cwd);
+        let body = render(
+            &notes, &core, &program, &answer, &stderr, timed_out, &self.cwd,
+        );
         let cut = body.len() > OUTPUT_CAP;
-        let result = crate::tools::runtime_util::verdict(TOOL_NAME, &body, cut, "Triaged the core file.");
-        Ok(crate::report::report(TOOL_NAME, &args.core, cap(body, OUTPUT_CAP), result))
+        let result =
+            crate::tools::runtime_util::verdict(TOOL_NAME, &body, cut, "Triaged the core file.");
+        Ok(crate::report::report(
+            TOOL_NAME,
+            &args.core,
+            cap(body, OUTPUT_CAP),
+            result,
+        ))
     }
 }
 
@@ -1110,7 +1299,12 @@ fn fill_from_gdb(notes: &mut CoreNotes, answer: &GdbAnswer) {
     }
 }
 
-fn build_gdb_argv(program: &Path, core: &Path, sysroot: Option<&Path>, driver: &Path) -> Vec<String> {
+fn build_gdb_argv(
+    program: &Path,
+    core: &Path,
+    sysroot: Option<&Path>,
+    driver: &Path,
+) -> Vec<String> {
     let mut argv: Vec<String> = [
         "-q",
         "-nx",
@@ -1150,7 +1344,12 @@ fn render(
     cwd: &Path,
 ) -> String {
     let mut text = String::new();
-    let command = notes.args.clone().filter(|a| !a.is_empty()).or_else(|| notes.fname.clone()).unwrap_or_default();
+    let command = notes
+        .args
+        .clone()
+        .filter(|a| !a.is_empty())
+        .or_else(|| notes.fname.clone())
+        .unwrap_or_default();
     text.push_str(&format!(
         "core: {} — `{command}`{}, {} thread(s)\nprogram: {}\n",
         display_path(&core.to_string_lossy(), cwd),
@@ -1167,7 +1366,11 @@ fn render(
 
     let signo = notes.signo.or(notes.cursig);
     let signal = signo
-        .map(|s| signal_name(s).map(str::to_string).unwrap_or_else(|| format!("signal {s}")))
+        .map(|s| {
+            signal_name(s)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("signal {s}"))
+        })
         .unwrap_or_else(|| "no signal".to_string());
     let faulting = answer.threads.iter().find(|t| t.faulting);
     let tid = faulting.map(|t| t.tid).or(notes.threads.first().copied());
@@ -1176,30 +1379,61 @@ fn render(
 
     text.push_str(&format!(
         "\nCRASH: {signal}{}\n",
-        notes.addr.filter(|_| matches!(signo, Some(4 | 7 | 8 | 11))).map(|a| format!(" at address {a:#x}")).unwrap_or_default()
+        notes
+            .addr
+            .filter(|_| matches!(signo, Some(4 | 7 | 8 | 11)))
+            .map(|a| format!(" at address {a:#x}"))
+            .unwrap_or_default()
     ));
     if let (Some(tid), Some(first)) = (tid, notes.threads.first()) {
-        let index = notes.threads.iter().position(|t| *t == tid).map(|i| i + 1).unwrap_or(1);
+        let index = notes
+            .threads
+            .iter()
+            .position(|t| *t == tid)
+            .map(|i| i + 1)
+            .unwrap_or(1);
         text.push_str(&format!(
             "FAULTING THREAD: {tid} (thread {index} of {}{})\n",
             notes.threads.len(),
-            if *first == tid { "; the kernel dumped it first" } else { "" }
+            if *first == tid {
+                "; the kernel dumped it first"
+            } else {
+                ""
+            }
         ));
     }
     if let Some(user) = user {
-        text.push_str(&format!("CRASH SITE (first frame in your code): {}\n", frame_text(user, cwd)));
+        text.push_str(&format!(
+            "CRASH SITE (first frame in your code): {}\n",
+            frame_text(user, cwd)
+        ));
         if !user.args.is_empty() {
-            let args = user.args.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join(", ");
+            let args = user
+                .args
+                .iter()
+                .map(|(n, v)| format!("{n}={v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
             text.push_str(&format!("  args: {args}\n"));
         }
-        if let Some(src) = user.file.as_deref().zip(user.line).and_then(|(f, l)| source_line(f, l)) {
+        if let Some(src) = user
+            .file
+            .as_deref()
+            .zip(user.line)
+            .and_then(|(f, l)| source_line(f, l))
+        {
             text.push_str(&format!("  | {src}\n"));
         }
     }
 
     let gdb_ran = answer.core.is_some();
     let others: Vec<&GdbThread> = answer.threads.iter().filter(|t| !t.faulting).collect();
-    let facts = Facts { notes, gdb: answer.core.as_ref(), faulting, others: others.clone() };
+    let facts = Facts {
+        notes,
+        gdb: answer.core.as_ref(),
+        faulting,
+        others: others.clone(),
+    };
     let cause = likely_cause(&facts, cwd);
     text.push_str(&format!("\nLIKELY CAUSE: {}\n", cause.title));
     for b in &cause.because {
@@ -1230,7 +1464,12 @@ fn render(
         for f in frames {
             if f.user || f.level < 2 {
                 if shown < 24 {
-                    text.push_str(&format!("  {}#{} {}\n", if f.user { "*" } else { " " }, f.level, frame_text(f, cwd)));
+                    text.push_str(&format!(
+                        "  {}#{} {}\n",
+                        if f.user { "*" } else { " " },
+                        f.level,
+                        frame_text(f, cwd)
+                    ));
                 }
                 shown += 1;
             } else {
@@ -1261,19 +1500,30 @@ fn render(
         }
     } else {
         let reason = if let Some(secs) = timed_out {
-            not_run(&format!("gdb did not finish reading the core within {secs}s"), "raise `timeout_sec`")
+            not_run(
+                &format!("gdb did not finish reading the core within {secs}s"),
+                "raise `timeout_sec`",
+            )
         } else if stderr.contains("Python scripting is not supported") {
             not_run(
                 "this machine's gdb was built without Python, which debug_core uses to read the stacks",
                 "install the distribution's gdb package (it includes Python), e.g. `sudo apt install gdb`",
             )
-        } else if stderr.contains("not installed") || stderr.contains("No such file or directory (os error 2)") {
-            not_run("gdb is not installed here", "install gdb (e.g. `sudo apt install gdb`)")
+        } else if stderr.contains("not installed")
+            || stderr.contains("No such file or directory (os error 2)")
+        {
+            not_run(
+                "gdb is not installed here",
+                "install gdb (e.g. `sudo apt install gdb`)",
+            )
         } else {
             not_run(
                 &format!(
                     "gdb could not read the core: {}",
-                    answer.error.clone().unwrap_or_else(|| tail_lines(stderr, 3))
+                    answer
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| tail_lines(stderr, 3))
                 ),
                 "pass the exact `program` that crashed, and `sysroot` for a core from another machine",
             )

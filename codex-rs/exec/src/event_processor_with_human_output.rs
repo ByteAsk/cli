@@ -8,13 +8,14 @@ use codex_app_server_protocol::McpToolCallResult;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
 use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_utils_path_uri::PathUri;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
@@ -67,6 +68,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     sandbox_is_read_only: bool,
     /// The sandbox-denial hint is advice, not an error: print it once.
     sandbox_hint_shown: bool,
+    last_turn_diff: String,
 }
 
 impl EventProcessorWithHumanOutput {
@@ -94,10 +96,11 @@ impl EventProcessorWithHumanOutput {
             last_total_token_usage: None,
             sandbox_is_read_only: false,
             sandbox_hint_shown: false,
+            last_turn_diff: String::new(),
         }
     }
 
-    fn render_item_started(&self, item: &ThreadItem) {
+    fn render_item_started(&self, item: &ThreadItemPayload) {
         for line in self.item_started_lines(item) {
             eprintln!("{line}");
         }
@@ -105,19 +108,19 @@ impl EventProcessorWithHumanOutput {
 
     /// The lines `render_item_started` prints, so the render contract is
     /// testable without capturing stderr.
-    fn item_started_lines(&self, item: &ThreadItem) -> Vec<String> {
+    fn item_started_lines(&self, item: &ThreadItemPayload) -> Vec<String> {
         match item {
-            ThreadItem::CommandExecution { command, cwd, .. } => vec![
+            ThreadItemPayload::CommandExecution { command, cwd, .. } => vec![
                 format!("{}", "exec".style(self.italic).style(self.magenta)),
                 format!("{} in {cwd}", command.style(self.bold)),
             ],
-            ThreadItem::McpToolCall { server, tool, .. } => vec![format!(
+            ThreadItemPayload::McpToolCall { server, tool, .. } => vec![format!(
                 "{} {} {}",
                 "mcp:".style(self.bold),
                 format!("{server}/{tool}").style(self.cyan),
                 "started".style(self.dimmed)
             )],
-            ThreadItem::DynamicToolCall {
+            ThreadItemPayload::DynamicToolCall {
                 namespace,
                 tool,
                 arguments,
@@ -134,36 +137,36 @@ impl EventProcessorWithHumanOutput {
                 }
                 lines
             }
-            ThreadItem::WebSearch(item) => {
+            ThreadItemPayload::WebSearch(item) => {
                 vec![format!("{} {}", "web search:".style(self.bold), item.query)]
             }
-            ThreadItem::FileChange { .. } => {
+            ThreadItemPayload::FileChange { .. } => {
                 vec![format!("{}", "apply patch".style(self.bold))]
             }
-            ThreadItem::CollabAgentToolCall { tool, .. } => {
+            ThreadItemPayload::CollabAgentToolCall { tool, .. } => {
                 vec![format!("{} {tool:?}", "collab:".style(self.bold))]
             }
             // Enumerated on purpose: a `_ => {}` arm silently hides a variant
             // it does not name (`DynamicToolCall` was hidden that way). A new
             // upstream variant must be a compile error, not a silent drop.
-            ThreadItem::UserMessage { .. }
-            | ThreadItem::HookPrompt { .. }
-            | ThreadItem::AgentMessage { .. }
-            | ThreadItem::Plan { .. }
-            | ThreadItem::Reasoning { .. }
-            | ThreadItem::SubAgentActivity { .. }
-            | ThreadItem::ImageView { .. }
-            | ThreadItem::Sleep { .. }
-            | ThreadItem::ImageGeneration(_)
-            | ThreadItem::EnteredReviewMode { .. }
-            | ThreadItem::ExitedReviewMode { .. }
-            | ThreadItem::ContextCompaction { .. }
-            | ThreadItem::FunctionCallOutput { .. } => Vec::new(),
+            ThreadItemPayload::UserMessage { .. }
+            | ThreadItemPayload::HookPrompt { .. }
+            | ThreadItemPayload::AgentMessage { .. }
+            | ThreadItemPayload::Plan { .. }
+            | ThreadItemPayload::Reasoning { .. }
+            | ThreadItemPayload::SubAgentActivity { .. }
+            | ThreadItemPayload::ImageView { .. }
+            | ThreadItemPayload::Sleep { .. }
+            | ThreadItemPayload::ImageGeneration(_)
+            | ThreadItemPayload::EnteredReviewMode { .. }
+            | ThreadItemPayload::ExitedReviewMode { .. }
+            | ThreadItemPayload::ContextCompaction { .. }
+            | ThreadItemPayload::FunctionCallOutput { .. } => Vec::new(),
         }
     }
 
-    fn render_item_completed(&mut self, item: ThreadItem) {
-        if let ThreadItem::AgentMessage { text, .. } = &item {
+    fn render_item_completed(&mut self, item: ThreadItemPayload) {
+        if let ThreadItemPayload::AgentMessage { text, .. } = &item {
             self.final_message = Some(text.clone());
             self.final_message_rendered = true;
         }
@@ -182,11 +185,11 @@ impl EventProcessorWithHumanOutput {
     /// denied. Without it the run dead-ends: the agent retries
     /// with `TMPDIR=/tmp`, fails again, and reports that the product cannot
     /// compile.
-    fn sandbox_denial_hint(&self, item: &ThreadItem) -> Option<String> {
+    fn sandbox_denial_hint(&self, item: &ThreadItemPayload) -> Option<String> {
         if !self.sandbox_is_read_only {
             return None;
         }
-        let ThreadItem::CommandExecution {
+        let ThreadItemPayload::CommandExecution {
             aggregated_output,
             exit_code,
             status,
@@ -214,13 +217,13 @@ impl EventProcessorWithHumanOutput {
 
     /// The lines `render_item_completed` prints, so the render contract is
     /// testable without capturing stderr.
-    fn item_completed_lines(&self, item: &ThreadItem) -> Vec<String> {
+    fn item_completed_lines(&self, item: &ThreadItemPayload) -> Vec<String> {
         match item {
-            ThreadItem::AgentMessage { text, .. } => vec![
+            ThreadItemPayload::AgentMessage { text, .. } => vec![
                 format!("{}", "ByteAsk".style(self.italic).style(self.magenta)),
                 text.clone(),
             ],
-            ThreadItem::Reasoning {
+            ThreadItemPayload::Reasoning {
                 summary, content, ..
             } => match reasoning_text(summary, content, self.show_raw_agent_reasoning) {
                 Some(text) if self.show_agent_reasoning && !text.trim().is_empty() => {
@@ -228,7 +231,7 @@ impl EventProcessorWithHumanOutput {
                 }
                 _ => Vec::new(),
             },
-            ThreadItem::CommandExecution {
+            ThreadItemPayload::CommandExecution {
                 command: _,
                 aggregated_output,
                 exit_code,
@@ -273,7 +276,7 @@ impl EventProcessorWithHumanOutput {
                 }
                 lines
             }
-            ThreadItem::FileChange {
+            ThreadItemPayload::FileChange {
                 changes, status, ..
             } => {
                 let status_text = match status {
@@ -290,7 +293,7 @@ impl EventProcessorWithHumanOutput {
                 );
                 lines
             }
-            ThreadItem::McpToolCall {
+            ThreadItemPayload::McpToolCall {
                 server,
                 tool,
                 status,
@@ -324,7 +327,7 @@ impl EventProcessorWithHumanOutput {
                 }
                 lines
             }
-            ThreadItem::DynamicToolCall {
+            ThreadItemPayload::DynamicToolCall {
                 namespace,
                 tool,
                 status,
@@ -359,24 +362,24 @@ impl EventProcessorWithHumanOutput {
                 lines.extend(dynamic_tool_output_lines(content_items.as_deref()));
                 lines
             }
-            ThreadItem::WebSearch(item) => {
+            ThreadItemPayload::WebSearch(item) => {
                 vec![format!("{} {}", "web search:".style(self.bold), item.query)]
             }
-            ThreadItem::ContextCompaction { .. } => {
+            ThreadItemPayload::ContextCompaction { .. } => {
                 vec![format!("{}", "context compacted".style(self.dimmed))]
             }
             // Enumerated on purpose; see `item_started_lines`.
-            ThreadItem::UserMessage { .. }
-            | ThreadItem::HookPrompt { .. }
-            | ThreadItem::Plan { .. }
-            | ThreadItem::CollabAgentToolCall { .. }
-            | ThreadItem::SubAgentActivity { .. }
-            | ThreadItem::ImageView { .. }
-            | ThreadItem::Sleep { .. }
-            | ThreadItem::ImageGeneration(_)
-            | ThreadItem::EnteredReviewMode { .. }
-            | ThreadItem::ExitedReviewMode { .. }
-            | ThreadItem::FunctionCallOutput { .. } => Vec::new(),
+            ThreadItemPayload::UserMessage { .. }
+            | ThreadItemPayload::HookPrompt { .. }
+            | ThreadItemPayload::Plan { .. }
+            | ThreadItemPayload::CollabAgentToolCall { .. }
+            | ThreadItemPayload::SubAgentActivity { .. }
+            | ThreadItemPayload::ImageView { .. }
+            | ThreadItemPayload::Sleep { .. }
+            | ThreadItemPayload::ImageGeneration(_)
+            | ThreadItemPayload::EnteredReviewMode { .. }
+            | ThreadItemPayload::ExitedReviewMode { .. }
+            | ThreadItemPayload::FunctionCallOutput { .. } => Vec::new(),
         }
     }
 }
@@ -415,10 +418,8 @@ fn dynamic_tool_output_lines(items: Option<&[DynamicToolCallOutputContentItem]>)
         .unwrap_or_default()
         .iter()
         .filter_map(|item| match item {
-            DynamicToolCallOutputContentItem::InputText { text } => {
-                (!text.trim().is_empty())
-                    .then(|| truncate_to_bytes(&printable(text), TOOL_OUTPUT_TEXT_CAP))
-            }
+            DynamicToolCallOutputContentItem::InputText { text } => (!text.trim().is_empty())
+                .then(|| truncate_to_bytes(&printable(text), TOOL_OUTPUT_TEXT_CAP)),
             DynamicToolCallOutputContentItem::InputImage { image_url } => {
                 Some(image_placeholder(image_url))
             }
@@ -463,7 +464,11 @@ fn mcp_result_lines(result: &McpToolCallResult) -> Vec<String> {
 
 fn audio_placeholder(audio_url: &str) -> String {
     let (mime, bytes) = describe_image_url(audio_url);
-    let mime = if mime == "image" { "audio".to_string() } else { mime };
+    let mime = if mime == "image" {
+        "audio".to_string()
+    } else {
+        mime
+    };
     if bytes == 0 {
         format!(
             "<audio: {}>",
@@ -550,7 +555,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
         eprintln!(
             "{} v{version}\n--------",
-            std::env::var("BYTEASK_BRAND").or_else(|_| std::env::var("CODEX_BRAND")).unwrap_or_else(|_| "ByteAsk".to_string())
+            std::env::var("BYTEASK_BRAND")
+                .or_else(|_| std::env::var("CODEX_BRAND"))
+                .unwrap_or_else(|_| "ByteAsk".to_string())
         );
         self.sandbox_is_read_only = sandbox_is_read_only(config);
         for (key, value) in config_summary_entries(config, session_configured_event) {
@@ -621,11 +628,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 CodexStatus::Running
             }
             ServerNotification::ItemStarted(notification) => {
-                self.render_item_started(&notification.item);
+                self.render_item_started(&notification.item.payload);
                 CodexStatus::Running
             }
             ServerNotification::ItemCompleted(notification) => {
-                self.render_item_completed(notification.item);
+                self.render_item_completed(notification.item.payload);
                 CodexStatus::Running
             }
             ServerNotification::ModelRerouted(notification) => {
@@ -684,9 +691,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 TurnStatus::InProgress => CodexStatus::Running,
             },
             ServerNotification::TurnDiffUpdated(notification) => {
-                if !notification.diff.trim().is_empty() {
+                if notification.diff != self.last_turn_diff && !notification.diff.trim().is_empty()
+                {
                     eprintln!("{}", notification.diff);
                 }
+                // Remember empty updates too, so a restored diff is rendered again.
+                self.last_turn_diff = notification.diff;
                 CodexStatus::Running
             }
             ServerNotification::TurnPlanUpdated(notification) => {
@@ -712,7 +722,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
                 CodexStatus::Running
             }
-            ServerNotification::TurnStarted(_) => CodexStatus::Running,
+            ServerNotification::TurnStarted(_) => {
+                self.last_turn_diff.clear();
+                CodexStatus::Running
+            }
             _ => CodexStatus::Running,
         }
     }
@@ -773,7 +786,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
 fn sandbox_is_read_only(config: &Config) -> bool {
     summarize_permission_profile(
         &config.permissions.effective_permission_profile(),
-        &config.cwd,
+        &PathUri::from_abs_path(&config.cwd),
         config.effective_workspace_roots().as_slice(),
     ) == "read-only"
 }
@@ -798,8 +811,8 @@ fn config_summary_entries(
             "sandbox",
             summarize_permission_profile(
                 &permission_profile,
-                &config.cwd,
-                config.effective_workspace_roots().as_slice(),
+                &PathUri::from_abs_path(&config.cwd),
+                &config.effective_workspace_roots(),
             ),
         ),
     ];
@@ -851,17 +864,19 @@ fn reasoning_text(
     }
 }
 
-fn final_message_from_turn_items(items: &[ThreadItem]) -> Option<String> {
+fn final_message_from_turn_items(
+    items: &[impl std::borrow::Borrow<ThreadItemPayload>],
+) -> Option<String> {
     items
         .iter()
         .rev()
-        .find_map(|item| match item {
-            ThreadItem::AgentMessage { text, .. } => Some(text.clone()),
+        .find_map(|item| match item.borrow() {
+            ThreadItemPayload::AgentMessage { text, .. } => Some(text.clone()),
             _ => None,
         })
         .or_else(|| {
-            items.iter().rev().find_map(|item| match item {
-                ThreadItem::Plan { text, .. } => Some(text.clone()),
+            items.iter().rev().find_map(|item| match item.borrow() {
+                ThreadItemPayload::Plan { text, .. } => Some(text.clone()),
                 _ => None,
             })
         })

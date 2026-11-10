@@ -11,6 +11,7 @@ use anyhow::Result;
 use codex_config::AppToolApproval;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::PermissionProfile;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::PaginatedRequestParams;
@@ -19,10 +20,10 @@ use rmcp::model::ReadResourceResult;
 use rmcp::model::Resource;
 use rmcp::model::ResourceTemplate;
 use serde_json::Value as JsonValue;
-use tokio::sync::RwLock;
 
 use crate::McpConfig;
 use crate::binding_clients::McpBindingClients;
+use crate::client_tool_catalog::ToolCatalogSnapshot;
 use crate::connection_manager::McpConnectionSet;
 use crate::rmcp_client::ManagedClient;
 use crate::server::McpServerMetadata;
@@ -34,7 +35,7 @@ pub struct McpBinding {
     clients: Arc<McpBindingClients>,
     config: Arc<McpConfig>,
     plugins_available: bool,
-    tools: Vec<ToolInfo>,
+    tools: Arc<[ToolInfo]>,
     calls: HashMap<(String, String), PreparedMcpCall>,
 }
 
@@ -56,7 +57,7 @@ impl McpBinding {
         clients: Arc<McpBindingClients>,
         config: Arc<McpConfig>,
         plugins_available: bool,
-        tools: Vec<ToolInfo>,
+        tools: impl Into<Arc<[ToolInfo]>>,
         calls: HashMap<(String, String), PreparedMcpCall>,
     ) -> Self {
         Self {
@@ -64,7 +65,7 @@ impl McpBinding {
             clients,
             config,
             plugins_available,
-            tools,
+            tools: tools.into(),
             calls,
         }
     }
@@ -101,6 +102,11 @@ impl McpBinding {
         self.connections.has_servers()
     }
 
+    /// The environment owning this server in the step's connection set, even if it exposes no tools.
+    pub fn server_environment_id(&self, server: &str) -> Option<&str> {
+        self.connections.server_environment_id(server)
+    }
+
     pub async fn list_resources(
         &self,
         server: &str,
@@ -125,6 +131,9 @@ impl McpBinding {
         server: &str,
         params: Option<PaginatedRequestParams>,
     ) -> Result<ListResourceTemplatesResult> {
+        if self.connections.skips_resource_template_listing(server) {
+            return Ok(ListResourceTemplatesResult::with_all_items(Vec::new()));
+        }
         if self.clients.client(server).is_some() {
             self.clients.list_resource_templates(server, params).await
         } else {
@@ -139,7 +148,9 @@ impl McpBinding {
         include_server: impl Fn(&str) -> bool,
     ) -> HashMap<String, Vec<ResourceTemplate>> {
         self.clients
-            .list_all_resource_templates(include_server)
+            .list_all_resource_templates(|server| {
+                include_server(server) && !self.connections.skips_resource_template_listing(server)
+            })
             .await
     }
 
@@ -166,20 +177,47 @@ impl fmt::Debug for McpBinding {
     }
 }
 
-/// A call bound to the exact client, tool, timeout, and server metadata seen by
-/// one [`McpBinding`].
+/// A call bound to an exact client, catalog revision, timeout, and permission authority.
 #[derive(Clone)]
 pub struct PreparedMcpCall {
     connections: Arc<McpConnectionSet>,
     client: Arc<ManagedClient>,
     config: Arc<McpConfig>,
-    catalog_revision: u64,
-    catalog_revision_source: Arc<RwLock<u64>>,
-    tool_info: ToolInfo,
+    catalog_snapshot: Arc<ToolCatalogSnapshot>,
+    tool_info: PreparedToolInfo,
     server_name: String,
     server_metadata: McpServerMetadata,
     plugin_id: Option<String>,
     selected_plugin_server: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedToolInfo {
+    catalog: Arc<[ToolInfo]>,
+    index: usize,
+}
+
+impl PreparedToolInfo {
+    pub(crate) fn from_binding_catalog(catalog: Arc<[ToolInfo]>, index: usize) -> Self {
+        assert!(
+            index < catalog.len(),
+            "prepared tool index must refer to its binding catalog"
+        );
+        Self { catalog, index }
+    }
+
+    pub(crate) fn get(&self) -> &ToolInfo {
+        &self.catalog[self.index]
+    }
+}
+
+impl From<ToolInfo> for PreparedToolInfo {
+    fn from(tool_info: ToolInfo) -> Self {
+        Self {
+            catalog: Arc::new([tool_info]),
+            index: 0,
+        }
+    }
 }
 
 impl PreparedMcpCall {
@@ -191,21 +229,20 @@ impl PreparedMcpCall {
         connections: Arc<McpConnectionSet>,
         client: Arc<ManagedClient>,
         config: Arc<McpConfig>,
-        catalog_revision: u64,
-        catalog_revision_source: Arc<RwLock<u64>>,
-        tool_info: ToolInfo,
+        catalog_snapshot: Arc<ToolCatalogSnapshot>,
+        tool_info: impl Into<PreparedToolInfo>,
         server_metadata: McpServerMetadata,
         plugin_id: Option<String>,
         selected_plugin_server: bool,
     ) -> Option<Self> {
-        let server_name = tool_info.server_name.clone();
+        let tool_info = tool_info.into();
+        let server_name = tool_info.get().server_name.clone();
         config.permission_profile_for_server(&server_name)?;
         Some(Self {
             connections,
             client,
             config,
-            catalog_revision,
-            catalog_revision_source,
+            catalog_snapshot,
             tool_info,
             server_name,
             server_metadata,
@@ -215,7 +252,7 @@ impl PreparedMcpCall {
     }
 
     pub fn tool_info(&self) -> &ToolInfo {
-        &self.tool_info
+        self.tool_info.get()
     }
 
     /// Returns the configuration and approval authority captured with this client.
@@ -230,6 +267,51 @@ impl PreparedMcpCall {
             unreachable!("prepared MCP calls retain their immutable permission authority");
         };
         permission_profile
+    }
+
+    /// Attach policy aliases and the server-host launcher, replacing stale authority.
+    /// Callers negotiate the state capability before requesting this metadata.
+    pub async fn augment_sandbox_metadata(
+        &self,
+        meta: &mut Option<JsonValue>,
+        state: crate::SandboxState,
+    ) -> Result<()> {
+        crate::sandbox_metadata::augment_metadata(
+            meta,
+            state,
+            self.sandbox_codex_executable().await,
+        )
+    }
+
+    /// Full CLI path usable by a local stdio server. An HTTP endpoint (even on
+    /// loopback) or remote executor does not establish a shared filesystem.
+    /// Capability probes are cached process-wide by absolute executable path.
+    pub async fn sandbox_codex_executable(&self) -> Option<AbsolutePathBuf> {
+        let server = self
+            .config
+            .mcp_server_catalog
+            .server(&self.server_name)?
+            .config();
+        if self.server_environment_id() != codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID
+            || !server.is_local_environment()
+            || !matches!(
+                server.transport,
+                codex_config::McpServerTransportConfig::Stdio { .. }
+            )
+        {
+            return None;
+        }
+
+        // Require a literal absolute path before the constructor can expand `~`.
+        let executable = self
+            .config
+            .codex_self_exe
+            .as_deref()
+            .filter(|path| path.is_absolute() && path.to_str().is_some())?;
+        let executable = AbsolutePathBuf::from_absolute_path_checked(executable).ok()?;
+        crate::sandbox_executable::supports_sandbox_state(&executable)
+            .await
+            .then_some(executable)
     }
 
     pub fn server_name(&self) -> &str {
@@ -265,7 +347,7 @@ impl PreparedMcpCall {
 
     pub fn tool_approval_mode(&self) -> AppToolApproval {
         self.server_metadata
-            .tool_approval_mode(&self.tool_info.tool.name)
+            .tool_approval_mode(&self.tool_info().tool.name)
     }
 
     /// Returns the explicit output budget captured with this call's effective server config.
@@ -275,7 +357,7 @@ impl PreparedMcpCall {
             .server(&self.server_name)?
             .config()
             .tools
-            .get(self.tool_info.tool.name.as_ref())?
+            .get(self.tool_info().tool.name.as_ref())?
             .output_token_limit
             .map(std::num::NonZeroUsize::get)
     }
@@ -303,12 +385,8 @@ impl PreparedMcpCall {
     }
 
     /// Runs irreversible call preparation and execution under the authority of
-    /// this call's exact catalog revision and the extensions owned by the Codex session.
+    /// this call's captured catalog and the extensions owned by the Codex session.
     /// A caller-supplied timeout can further restrict the server's configured timeout.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "catalog replacement must remain serialized with call preparation and execution"
-    )]
     pub async fn call_with_preparation<F, Fut>(
         &self,
         requested_timeout: Option<Duration>,
@@ -324,53 +402,69 @@ impl PreparedMcpCall {
             }
             (server_timeout, requested_timeout) => server_timeout.or(requested_timeout),
         };
-        let tool_name = self.tool_info.tool.name.to_string();
-        let current_revision = self.catalog_revision_source.read().await;
-        if *current_revision != self.catalog_revision {
-            return Err(anyhow::anyhow!(
+        let tool_name = self.tool_info().tool.name.to_string();
+        let operation =
+            self.client
+                .tool_catalog
+                .run_with_snapshot(&self.catalog_snapshot, || async {
+                    let (arguments, meta) = prepare().await?;
+                    let timeout_deadline =
+                        effective_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+                    let add_trusted_access_context = self.connections.add_trusted_access_context(
+                        self.tool_info(),
+                        &self.server_metadata,
+                        arguments.as_ref(),
+                        meta,
+                    );
+                    let meta = match effective_timeout.zip(timeout_deadline) {
+                        Some((timeout, deadline)) => {
+                            tokio::time::timeout_at(deadline, add_trusted_access_context)
+                                .await
+                                .map_err(|_| {
+                                    codex_rmcp_client::request_timeout_error("tools/call", timeout)
+                                })?
+                        }
+                        None => add_trusted_access_context.await,
+                    };
+                    let remaining_timeout = match effective_timeout.zip(timeout_deadline) {
+                        Some((timeout, deadline)) => {
+                            let remaining =
+                                deadline.saturating_duration_since(tokio::time::Instant::now());
+                            if remaining.is_zero() {
+                                return Err(codex_rmcp_client::request_timeout_error(
+                                    "tools/call",
+                                    timeout,
+                                ));
+                            }
+                            Some(remaining)
+                        }
+                        None => None,
+                    };
+                    self.client
+                        .call_tool(
+                            tool_name.clone(),
+                            arguments,
+                            self.connections.network_policy_meta_for_call(
+                                &self.client,
+                                Some(self.permission_profile()),
+                                self.server_environment_id(),
+                                meta,
+                            ),
+                            remaining_timeout,
+                        )
+                        .await
+                        .with_context(|| {
+                            format!("tool call failed for `{}/{tool_name}`", self.server_name)
+                        })
+                });
+        self.client
+            .with_active_shared_lease(operation)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!(
                 "tool call rejected because the catalog changed after `{}/{tool_name}` was prepared",
                 self.server_name
-            ));
-        }
-        let (arguments, meta) = prepare().await?;
-        let timeout_deadline =
-            effective_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
-        let add_trusted_access_context = self.connections.add_trusted_access_context(
-            &self.tool_info,
-            &self.server_metadata,
-            arguments.as_ref(),
-            meta,
-        );
-        let meta = match effective_timeout.zip(timeout_deadline) {
-            Some((timeout, deadline)) => {
-                tokio::time::timeout_at(deadline, add_trusted_access_context)
-                    .await
-                    .map_err(|_| {
-                        anyhow::anyhow!("timed out awaiting tools/call after {timeout:.0?}")
-                    })?
-            }
-            None => add_trusted_access_context.await,
-        };
-        let remaining_timeout = match effective_timeout.zip(timeout_deadline) {
-            Some((timeout, deadline)) => {
-                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining.is_zero() {
-                    return Err(anyhow::anyhow!(
-                        "timed out awaiting tools/call after {timeout:.0?}"
-                    ));
-                }
-                Some(remaining)
-            }
-            None => None,
-        };
-        let result = self
-            .client
-            .client
-            .call_tool(tool_name.clone(), arguments, meta, remaining_timeout)
-            .await
-            .with_context(|| format!("tool call failed for `{}/{tool_name}`", self.server_name))?;
-        drop(current_revision);
-        Ok(call_tool_result_from_rmcp(result))
+            ))?
+            .map(call_tool_result_from_rmcp)
     }
 }
 

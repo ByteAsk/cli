@@ -37,10 +37,25 @@ fn harness_result(status: Status, sentence: &str, reason: Option<&str>) -> PortC
 #[test]
 fn every_harness_status_maps_onto_the_shared_result_and_only_pass_is_success() {
     let cases = [
-        (Status::Pass, "PASS: on all 600 records", None, Verdict::Pass),
+        (
+            Status::Pass,
+            "PASS: on all 600 records",
+            None,
+            Verdict::Pass,
+        ),
         (Status::Fail, "FAIL: step 41 differs", None, Verdict::Fail),
-        (Status::NoClaim, "NO CLAIM: nothing traded", None, Verdict::NoClaim),
-        (Status::NotRun, "NOT RUN: cpp timed out", Some("cpp timed out after 30 s"), Verdict::NotRun),
+        (
+            Status::NoClaim,
+            "NO CLAIM: nothing traded",
+            None,
+            Verdict::NoClaim,
+        ),
+        (
+            Status::NotRun,
+            "NOT RUN: cpp timed out",
+            Some("cpp timed out after 30 s"),
+            Verdict::NotRun,
+        ),
     ];
     for (status, sentence, reason, want) in cases {
         let result = verdict(&harness_result(status, sentence, reason));
@@ -49,11 +64,24 @@ fn every_harness_status_maps_onto_the_shared_result_and_only_pass_is_success() {
         result.validate().expect("the result keeps the contract");
     }
     // The verdict word is said once, by the result line.
-    let line = verdict(&harness_result(Status::Pass, "PASS: on all 400 records", None)).render_line();
+    let line = verdict(&harness_result(
+        Status::Pass,
+        "PASS: on all 400 records",
+        None,
+    ))
+    .render_line();
     assert_eq!(line, "Result: PASS: on all 400 records");
-    let timed = verdict(&harness_result(Status::NotRun, "NOT RUN: x", Some("cpp timed out")));
+    let timed = verdict(&harness_result(
+        Status::NotRun,
+        "NOT RUN: x",
+        Some("cpp timed out"),
+    ));
     assert_eq!(timed.reason, Some(NotRunReason::TimeLimit));
-    let bad = verdict(&harness_result(Status::NotRun, "NOT RUN: x", Some("the request is not valid: y")));
+    let bad = verdict(&harness_result(
+        Status::NotRun,
+        "NOT RUN: x",
+        Some("the request is not valid: y"),
+    ));
     assert_eq!(bad.reason, Some(NotRunReason::BadArguments));
 }
 
@@ -77,7 +105,10 @@ fn relative_paths_mean_the_thread_workspace() {
 
 #[test]
 fn port_check_runs_its_strategies_with_no_network_and_a_read_only_workspace() {
-    assert_eq!(crate::sandbox::profile_for(TOOL_NAME), Some(crate::sandbox::Profile::Analyze));
+    assert_eq!(
+        crate::sandbox::profile_for(TOOL_NAME),
+        Some(crate::sandbox::Profile::Analyze)
+    );
 }
 
 #[tokio::test]
@@ -102,17 +133,30 @@ fn the_spec_carries_the_pinned_description_and_schema_properties() {
         cwd: PathBuf::from("/workspace"),
         native_exec: false,
     };
-    let ToolSpec::Function(spec) = <PortCheckTool as ToolExecutor<ToolCall<'_>>>::spec(&tool) else {
+    let ToolSpec::Function(spec) = <PortCheckTool as ToolExecutor<ToolCall<'_>>>::spec(&tool)
+    else {
         panic!("a function tool");
     };
     assert_eq!(spec.description, TOOL_DESCRIPTION);
     let props = spec.parameters.properties.expect("properties");
-    for key in ["recording", "python", "cpp", "harness", "diag_tolerance", "limits", "workdir"] {
+    for key in [
+        "recording",
+        "python",
+        "cpp",
+        "harness",
+        "diag_tolerance",
+        "limits",
+        "workdir",
+    ] {
         assert!(props.contains_key(key), "{key} missing from the schema");
     }
     assert_eq!(
         spec.parameters.required,
-        Some(vec!["recording".to_string(), "python".to_string(), "cpp".to_string()])
+        Some(vec![
+            "recording".to_string(),
+            "python".to_string(),
+            "cpp".to_string()
+        ])
     );
 }
 
@@ -134,7 +178,11 @@ fn build_port(dir: &Path) -> PathBuf {
         .arg(&out)
         .output()
         .expect("run g++");
-    assert!(o.status.success(), "g++ failed: {}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        o.status.success(),
+        "g++ failed: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     out
 }
 
@@ -151,8 +199,11 @@ async fn live_an_honest_port_passes_inside_the_sandbox_and_cannot_write_the_work
     let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
     let ws = tempfile::tempdir_in(home).expect("workspace");
     let cpp = build_port(ws.path());
-    std::fs::copy(port_check_dir().join("tests/fixtures/imbalance.py"), ws.path().join("imbalance.py"))
-        .expect("copy");
+    std::fs::copy(
+        port_check_dir().join("tests/fixtures/imbalance.py"),
+        ws.path().join("imbalance.py"),
+    )
+    .expect("copy");
     let escaped = ws.path().join("escaped.txt");
     std::fs::write(
         ws.path().join("escape_then_run.py"),
@@ -167,11 +218,14 @@ async fn live_an_honest_port_passes_inside_the_sandbox_and_cannot_write_the_work
     harness.reject_every = 7;
     harness.max_position = Some(40);
     harness.tick = 100;
-    harness.params.insert("max_pos".to_string(), "900".to_string());
+    harness
+        .params
+        .insert("max_pos".to_string(), "900".to_string());
     let mut python = spec(&["python3", "escape_then_run.py"]);
-    python
-        .env
-        .insert("PYTHONPATH".to_string(), port_check_dir().join("adapters").display().to_string());
+    python.env.insert(
+        "PYTHONPATH".to_string(),
+        port_check_dir().join("adapters").display().to_string(),
+    );
     let req = PortCheckRequest {
         recording: port_check_dir().join("../hft-pack/fixtures/itch50/synthetic-20261018.itch"),
         recording_format: RecordingFormat::Itch50,
@@ -183,7 +237,9 @@ async fn live_an_honest_port_passes_inside_the_sandbox_and_cannot_write_the_work
         limits: Default::default(),
         python_runs: 2,
         cpp_runs: 2,
-        workdir: Some(std::env::temp_dir().join(format!("byteask-portcheck-live-{}", std::process::id()))),
+        workdir: Some(
+            std::env::temp_dir().join(format!("byteask-portcheck-live-{}", std::process::id())),
+        ),
     };
     let tool = PortCheckTool {
         cwd: ws.path().to_path_buf(),
@@ -206,5 +262,8 @@ async fn live_an_honest_port_passes_inside_the_sandbox_and_cannot_write_the_work
     assert!(text.contains("sandbox: on ("), "{text}");
     let result = CheckResult::from_tool_text(TOOL_NAME, &text).expect("a result line");
     assert_eq!(result.verdict, Verdict::Pass, "{text}");
-    assert!(!escaped.exists(), "a sandboxed strategy wrote into the workspace");
+    assert!(
+        !escaped.exists(),
+        "a sandboxed strategy wrote into the workspace"
+    );
 }

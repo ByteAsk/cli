@@ -42,7 +42,8 @@ impl ProjectBusy {
         )
     }
 
-    pub(crate) const FIX: &'static str = "wait for the other session's build to finish, then call again.";
+    pub(crate) const FIX: &'static str =
+        "wait for the other session's build to finish, then call again.";
 }
 
 /// How often a waiting call retries the cross-process lock.
@@ -251,7 +252,11 @@ fn setting_key(setting: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
         .take(16)
         .collect();
-    let word = if word.is_empty() { "build".to_string() } else { word };
+    let word = if word.is_empty() {
+        "build".to_string()
+    } else {
+        word
+    };
     format!("{word}-{:016x}", fnv1a64(setting.as_bytes()))
 }
 
@@ -305,9 +310,11 @@ fn cache_dir_from(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<Pa
             .and_then(absolute)
             .map(|home| home.join("Library").join("Caches"));
     }
-    env("XDG_CACHE_HOME")
-        .and_then(absolute)
-        .or_else(|| env("HOME").and_then(absolute).map(|home| home.join(".cache")))
+    env("XDG_CACHE_HOME").and_then(absolute).or_else(|| {
+        env("HOME")
+            .and_then(absolute)
+            .map(|home| home.join(".cache"))
+    })
 }
 
 #[cfg(unix)]

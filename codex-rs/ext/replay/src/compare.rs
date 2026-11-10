@@ -248,10 +248,20 @@ fn walk(path: &mut Vec<String>, a: &Value, b: &Value, rules: &Rules) -> Option<F
             if a == b {
                 None
             } else {
-                Some(field(DiffKind::ValueDiffers, Some(a), Some(b), "exact".to_string()))
+                Some(field(
+                    DiffKind::ValueDiffers,
+                    Some(a),
+                    Some(b),
+                    "exact".to_string(),
+                ))
             }
         }
-        _ => Some(field(DiffKind::TypeDiffers, Some(a), Some(b), "exact".to_string())),
+        _ => Some(field(
+            DiffKind::TypeDiffers,
+            Some(a),
+            Some(b),
+            "exact".to_string(),
+        )),
     }
 }
 
@@ -435,26 +445,30 @@ where
             let va = a
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| CompareError::BadRecord { side: Side::A, error })?;
+                .map_err(|error| CompareError::BadRecord {
+                    side: Side::A,
+                    error,
+                })?;
             let vb = b
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| CompareError::BadRecord { side: Side::B, error })?;
+                .map_err(|error| CompareError::BadRecord {
+                    side: Side::B,
+                    error,
+                })?;
             compare_unordered(&va, &vb, rules)
         }
-        Ordering::GroupedBy(key) => {
-            compare_grouped(a.into_iter(), b.into_iter(), key, rules)
-        }
+        Ordering::GroupedBy(key) => compare_grouped(a.into_iter(), b.into_iter(), key, rules),
     }
 }
 
 /// Compare two in-memory record lists under the rules.
-pub fn compare_records(a: &[Value], b: &[Value], rules: &Rules) -> Result<Comparison, CompareError> {
-    compare_streams(
-        a.iter().cloned().map(Ok),
-        b.iter().cloned().map(Ok),
-        rules,
-    )
+pub fn compare_records(
+    a: &[Value],
+    b: &[Value],
+    rules: &Rules,
+) -> Result<Comparison, CompareError> {
+    compare_streams(a.iter().cloned().map(Ok), b.iter().cloned().map(Ok), rules)
 }
 
 fn compare_exact<A, B>(mut a: A, mut b: B, rules: &Rules) -> Result<Comparison, CompareError>
@@ -667,10 +681,22 @@ fn unmatched_difference(
     };
     let (kind, index_a, index_b, record_a, record_b) = if report_a {
         let i = first_a?;
-        (DiffKind::RecordMissingInB, Some(base_a + i as u64), None, Some(a[i].clone()), None)
+        (
+            DiffKind::RecordMissingInB,
+            Some(base_a + i as u64),
+            None,
+            Some(a[i].clone()),
+            None,
+        )
     } else {
         let j = first_b?;
-        (DiffKind::RecordExtraInB, None, Some(base_b + j as u64), None, Some(b[j].clone()))
+        (
+            DiffKind::RecordExtraInB,
+            None,
+            Some(base_b + j as u64),
+            None,
+            Some(b[j].clone()),
+        )
     };
     Some(Difference {
         kind,
@@ -757,18 +783,19 @@ where
     let mut gb = Groups::new(b, Side::B, key);
     let (mut start_a, mut start_b) = (0u64, 0u64);
     let mut ctx = VecDeque::new();
-    let done = |records_a, records_b, read_to_end, unmatched: (u64, u64), first: Option<Difference>| {
-        Comparison {
-            same: first.is_none(),
-            records_a,
-            records_b,
-            read_to_end,
-            unmatched_a: unmatched.0,
-            unmatched_b: unmatched.1,
-            rules: rules.describe(),
-            first_difference: first,
-        }
-    };
+    let done =
+        |records_a, records_b, read_to_end, unmatched: (u64, u64), first: Option<Difference>| {
+            Comparison {
+                same: first.is_none(),
+                records_a,
+                records_b,
+                read_to_end,
+                unmatched_a: unmatched.0,
+                unmatched_b: unmatched.1,
+                rules: rules.describe(),
+                first_difference: first,
+            }
+        };
     loop {
         let x = ga.next_group()?;
         let y = gb.next_group()?;
@@ -829,7 +856,13 @@ where
                     context_a: ctx.into_iter().collect(),
                     closest: None,
                 };
-                return Ok(done(start_a + ra.len() as u64, start_b, false, (0, 0), Some(diff)));
+                return Ok(done(
+                    start_a + ra.len() as u64,
+                    start_b,
+                    false,
+                    (0, 0),
+                    Some(diff),
+                ));
             }
             (None, Some((_, rb))) => {
                 let first = rb.first().cloned();
@@ -847,7 +880,13 @@ where
                     context_a: ctx.into_iter().collect(),
                     closest: None,
                 };
-                return Ok(done(start_a, start_b + rb.len() as u64, false, (0, 0), Some(diff)));
+                return Ok(done(
+                    start_a,
+                    start_b + rb.len() as u64,
+                    false,
+                    (0, 0),
+                    Some(diff),
+                ));
             }
         }
     }

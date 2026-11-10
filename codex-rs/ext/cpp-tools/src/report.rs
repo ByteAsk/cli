@@ -66,7 +66,12 @@ impl ToolOutput for ToolReport {
 /// ends with `result` as its last line: the body itself is unchanged.
 /// Taking the result here means no success path can be written without
 /// deciding its verdict.
-pub(crate) fn report(tool: &str, target: &str, body: String, result: CheckResult) -> Box<dyn ToolOutput> {
+pub(crate) fn report(
+    tool: &str,
+    target: &str,
+    body: String,
+    result: CheckResult,
+) -> Box<dyn ToolOutput> {
     log_call(tool, target, &body, result.is_pass(), result.verdict.word());
     let banner = banner_line(tool, target);
     // Whether this call's programs ran sandboxed, and if not, why.
@@ -117,7 +122,11 @@ fn log_path() -> Option<PathBuf> {
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".byteask")))?;
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".byteask"))
+        })?;
     Some(home.join("logs").join("tool-calls.jsonl"))
 }
 
@@ -146,7 +155,11 @@ fn append_to(path: &std::path::Path, record: &serde_json::Value) {
     if let Ok(mut line) = serde_json::to_string(record) {
         use std::io::Write as _;
         line.push('\n');
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = f.write_all(line.as_bytes());
         }
     }
@@ -189,7 +202,13 @@ pub(crate) fn log_review(target: &str, sent: bool, ms: u128, command: &str) {
 /// With `BYTEASK_FINISH_REVIEW_LOG=1` (off unless set): one JSON line per automatic review in
 /// finish-review.jsonl beside the tool-call log: the path that ran, whether the message was sent, its duration, the
 /// full message the model got and its related-places section.
-pub(crate) fn log_review_message(path_kind: &str, sent: bool, ms: u128, message: &str, related: &str) {
+pub(crate) fn log_review_message(
+    path_kind: &str,
+    sent: bool,
+    ms: u128,
+    message: &str,
+    related: &str,
+) {
     if !std::env::var("BYTEASK_FINISH_REVIEW_LOG")
         .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "on" | "yes"))
     {
@@ -268,7 +287,10 @@ mod tests {
         // run in parallel.
         for (result, success) in [
             (CheckResult::pass("cpp_check", "No findings."), true),
-            (CheckResult::no_claim("cpp_perf", "Inside the noise."), false),
+            (
+                CheckResult::no_claim("cpp_perf", "Inside the noise."),
+                false,
+            ),
             (CheckResult::approximate("cpp_layout", "Partial."), false),
             (
                 CheckResult::not_run(
@@ -308,7 +330,12 @@ mod tests {
             "2 findings".to_string(),
             CheckResult::fail("cpp_check", "2 findings."),
         );
-        let item = out.to_response_item("call-1", &ToolPayload::Function { arguments: "{}".to_string() });
+        let item = out.to_response_item(
+            "call-1",
+            &ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        );
         // Serialize the response item and assert the banner + body landed in it,
         // unchanged, with the shared result as the last line.
         let serialized = serde_json::to_string(&item).expect("response item serializes");
@@ -316,7 +343,10 @@ mod tests {
             serialized.contains("🔧 cpp_check · a.cpp\\n2 findings\\n\\nResult: FAIL: 2 findings."),
             "banner+body+result missing from: {serialized}"
         );
-        assert!(!out.success_for_logging(), "a FAIL is never shown as success");
+        assert!(
+            !out.success_for_logging(),
+            "a FAIL is never shown as success"
+        );
         // A JSONL line was written.
         let logged = std::fs::read_to_string(&log).unwrap_or_default();
         assert!(logged.contains("\"tool\":\"cpp_check\""));

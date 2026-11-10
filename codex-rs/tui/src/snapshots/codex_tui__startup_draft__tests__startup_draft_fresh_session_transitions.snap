@@ -4,24 +4,18 @@ expression: "snapshots.join(\"\\n---\\n\")"
 ---
 resume lookup fallback:
 before:
-╭───────────────────────────────────────╮
-│ >_ ByteAsk (v<VERSION>)                   │
-│                                       │
-│ model:     loading   /model to change │
-│ directory: loading                    │
-╰───────────────────────────────────────╯
+
+  >_ OpenAI Codex (v<VERSION>)
+     loading
   Resuming session…
 
 › draft while loading
 
 
 after:
-╭───────────────────────────────────────╮
-│ >_ ByteAsk (v<VERSION>)                   │
-│                                       │
-│ model:     loading   /model to change │
-│ directory: loading                    │
-╰───────────────────────────────────────╯
+
+  >_ OpenAI Codex (v<VERSION>)
+     loading
 
 
 › draft while loading
@@ -30,24 +24,18 @@ after:
 ---
 fork lookup fallback:
 before:
-╭───────────────────────────────────────╮
-│ >_ ByteAsk (v<VERSION>)                   │
-│                                       │
-│ model:     loading   /model to change │
-│ directory: loading                    │
-╰───────────────────────────────────────╯
+
+  >_ OpenAI Codex (v<VERSION>)
+     loading
   Forking session…
 
 › draft while loading
 
 
 after:
-╭───────────────────────────────────────╮
-│ >_ ByteAsk (v<VERSION>)                   │
-│                                       │
-│ model:     loading   /model to change │
-│ directory: loading                    │
-╰───────────────────────────────────────╯
+
+  >_ OpenAI Codex (v<VERSION>)
+     loading
 
 
 › draft while loading
@@ -58,15 +46,12 @@ resume picker cancellation:
 before:
 hidden while picker owns input
 after:
-╭───────────────────────────────────────╮
-│ >_ ByteAsk (v<VERSION>)                   │
-│                                       │
-│ model:     loading   /model to change │
-│ directory: loading                    │
-╰───────────────────────────────────────╯
+
+  >_ OpenAI Codex (v<VERSION>)
+     loading
 
 
-› Ask ByteAsk to do anything
+› Ask Codex to do anything
 
   ? for shortcuts
 ---
@@ -74,14 +59,11 @@ fork picker cancellation:
 before:
 hidden while picker owns input
 after:
-╭───────────────────────────────────────╮
-│ >_ ByteAsk (v<VERSION>)                   │
-│                                       │
-│ model:     loading   /model to change │
-│ directory: loading                    │
-╰───────────────────────────────────────╯
+
+  >_ OpenAI Codex (v<VERSION>)
+     loading
 
 
-› Ask ByteAsk to do anything
+› Ask Codex to do anything
 
   ? for shortcuts

@@ -1,6 +1,7 @@
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
 use codex_tools::ToolOutput;
 use codex_tools::ToolPayload;
@@ -73,19 +74,27 @@ fn preserves_images_as_separate_output_items_without_logging_bytes() {
                     encrypted_content: "enc_payload".to_string()
                 },
                 FunctionCallOutputContentItem::InputImage {
-                    image_url: "data:image/png;base64,cG5n".to_string(),
+                    image: ImageReference::Inline {
+                        image_url: "data:image/png;base64,cG5n".to_string()
+                    },
                     detail: Some(ImageDetail::Original)
                 },
                 FunctionCallOutputContentItem::InputImage {
-                    image_url: "data:image/jpeg;base64,anBlZw==".to_string(),
+                    image: ImageReference::Inline {
+                        image_url: "data:image/jpeg;base64,anBlZw==".to_string()
+                    },
                     detail: Some(ImageDetail::Low)
                 },
                 FunctionCallOutputContentItem::InputImage {
-                    image_url: "data:image/gif;base64,Z2lm".to_string(),
+                    image: ImageReference::Inline {
+                        image_url: "data:image/gif;base64,Z2lm".to_string()
+                    },
                     detail: None
                 },
                 FunctionCallOutputContentItem::InputImage {
-                    image_url: "data:image/webp;base64,d2VicA==".to_string(),
+                    image: ImageReference::Inline {
+                        image_url: "data:image/webp;base64,d2VicA==".to_string()
+                    },
                     detail: None
                 },
             ])
@@ -143,4 +152,30 @@ fn rejects_malformed_attachments_instead_of_silently_dropping_them() {
         };
         assert_eq!(message, "History backend returned invalid image content.");
     }
+}
+
+#[test]
+fn sparse_catalog_messages_preserve_defaults_and_explicit_empty_descriptions() {
+    let action = super::HistoryNotesAction::NotesReadFile;
+    let mut expected = action.spec(/*history_messages*/ None, /*notes_messages*/ None);
+    let codex_tools::ToolSpec::Namespace(namespace) = &mut expected else {
+        panic!("expected namespace");
+    };
+    namespace.description.clear();
+    let codex_tools::ResponsesApiNamespaceTool::Function(tool) = &mut namespace.tools[0] else {
+        panic!("expected function");
+    };
+    tool.description.clear();
+    let messages = codex_protocol::openai_models::NotesToolMessages {
+        namespace_description: Some(String::new()),
+        read_file: Some(codex_protocol::openai_models::ToolMessage {
+            description: Some(String::new()),
+            parameters: Some(String::new()),
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        action.spec(/*history_messages*/ None, Some(&messages)),
+        expected
+    );
 }

@@ -44,7 +44,15 @@ const MAX_TARGETS: usize = 16;
 const DEFAULT_LIMIT: usize = 400;
 /// Directories a search never descends into.
 const PRUNED_DIRS: [&str; 9] = [
-    ".git", "node_modules", "target", "build", "dist", ".venv", "venv", "__pycache__", ".cache",
+    ".git",
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".cache",
 ];
 const SEARCH_MAX_FILE_BYTES: u64 = 1024 * 1024;
 const SEARCH_DEFAULT_RESULTS: usize = 100;
@@ -77,7 +85,8 @@ fn byte_budget(invocation_budget: TruncationPolicy, key: &str) -> usize {
 // replaces the text. "Still in context" is the hard part: a compaction removes the earlier
 // copy, so every compaction bumps an epoch and entries from an older epoch never match.
 
-static BYTEASK_COMPACTION_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static BYTEASK_COMPACTION_EPOCH: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Called whenever history is compacted: earlier reads are no longer in context.
 pub(crate) fn note_compaction() {
@@ -121,7 +130,12 @@ impl ReadMemory {
         if self.0.len() > 4_096 {
             self.0.clear();
         }
-        let key = ReadKey { thread: thread.to_string(), path: path.to_string(), offset, limit };
+        let key = ReadKey {
+            thread: thread.to_string(),
+            path: path.to_string(),
+            offset,
+            limit,
+        };
         let hit = self.0.get(&key).and_then(|prev| {
             let age = now.saturating_duration_since(prev.at);
             (prev.modified_at_ms == modified_at_ms
@@ -132,7 +146,15 @@ impl ReadMemory {
         });
         if hit.is_none() {
             // Only a FULL answer refreshes the entry: a stub must not keep itself alive.
-            self.0.insert(key, ReadSeen { modified_at_ms, size, epoch, at: now });
+            self.0.insert(
+                key,
+                ReadSeen {
+                    modified_at_ms,
+                    size,
+                    epoch,
+                    at: now,
+                },
+            );
         }
         hit
     }
@@ -184,9 +206,14 @@ pub(crate) fn render_range(
         return format!("== {shown_path} (empty file) ==\n");
     }
     if start > total {
-        return format!("== {shown_path} ==\n[byteask: offset {start} is past the end; the file has {total} lines]\n");
+        return format!(
+            "== {shown_path} ==\n[byteask: offset {start} is past the end; the file has {total} lines]\n"
+        );
     }
-    let want_end = start.saturating_add(limit.unwrap_or(DEFAULT_LIMIT)).saturating_sub(1).min(total);
+    let want_end = start
+        .saturating_add(limit.unwrap_or(DEFAULT_LIMIT))
+        .saturating_sub(1)
+        .min(total);
     let mut body = String::new();
     let mut end = start - 1;
     for line in &lines[start - 1..want_end] {
@@ -225,7 +252,9 @@ pub struct ReadFileHandler {
 
 impl ReadFileHandler {
     pub(crate) fn new(include_environment_id: bool) -> Self {
-        Self { include_environment_id }
+        Self {
+            include_environment_id,
+        }
     }
 }
 
@@ -301,7 +330,13 @@ impl ReadFileHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let ToolInvocation { session, turn, step_context, payload, .. } = invocation;
+        let ToolInvocation {
+            session,
+            turn,
+            step_context,
+            payload,
+            ..
+        } = invocation;
         let thread = format!("{:?}", session.thread_id);
         let reread_stub = byteask_output_reducers::policy::active().flag("reread_stub");
         let ToolPayload::Function { arguments } = payload else {
@@ -309,20 +344,18 @@ impl ReadFileHandler {
                 "read_file handler received unsupported payload".to_string(),
             ));
         };
-        let ReadFileArgs { targets, environment_id } = parse_arguments(&arguments)?;
+        let ReadFileArgs {
+            targets,
+            environment_id,
+        } = parse_arguments(&arguments)?;
         if targets.is_empty() || targets.len() > MAX_TARGETS {
             return Err(FunctionCallError::RespondToModel(format!(
                 "read_file needs between 1 and {MAX_TARGETS} targets, got {}",
                 targets.len()
             )));
         }
-        let Some(turn_environment) =
-            resolve_tool_environment(&step_context.environments, environment_id.as_deref())?
-        else {
-            return Err(FunctionCallError::RespondToModel(
-                "read_file is unavailable in this session".to_string(),
-            ));
-        };
+        let turn_environment =
+            resolve_tool_environment(&step_context.environments, environment_id.as_deref())?;
         let sandbox = turn_environment.sandbox_context(/*additional_permissions*/ None);
         let fs = turn_environment.environment.get_filesystem();
         let total_budget = byte_budget(turn.model_info().truncation_policy.into(), "read");
@@ -361,7 +394,8 @@ impl ReadFileHandler {
                                     meta.modified_at_ms,
                                     meta.size,
                                     std::time::Instant::now(),
-                                    BYTEASK_COMPACTION_EPOCH.load(std::sync::atomic::Ordering::Relaxed),
+                                    BYTEASK_COMPACTION_EPOCH
+                                        .load(std::sync::atomic::Ordering::Relaxed),
                                 );
                             }
                             if unchanged_for.is_some() {
@@ -394,12 +428,21 @@ impl ReadFileHandler {
                 Ok(bytes) => {
                     any_ok = true;
                     let text = String::from_utf8_lossy(&bytes);
-                    out.push_str(&render_range(&target.path, &text, target.offset, target.limit, share));
+                    out.push_str(&render_range(
+                        &target.path,
+                        &text,
+                        target.offset,
+                        target.limit,
+                        share,
+                    ));
                 }
             }
             out.push('\n');
         }
-        Ok(boxed_tool_output(FunctionToolOutput::from_text(out, Some(any_ok))))
+        Ok(boxed_tool_output(FunctionToolOutput::from_text(
+            out,
+            Some(any_ok),
+        )))
     }
 }
 
@@ -439,9 +482,9 @@ pub(crate) fn glob_match(pattern: &str, rel_path: &str) -> bool {
                 let rest = rest.strip_prefix(b"/").unwrap_or(rest);
                 (0..=s.len()).any(|i| inner(rest, &s[i..]))
             }
-            Some((b'*', rest)) => {
-                (0..=s.len()).take_while(|i| *i == 0 || s[i - 1] != b'/').any(|i| inner(rest, &s[i..]))
-            }
+            Some((b'*', rest)) => (0..=s.len())
+                .take_while(|i| *i == 0 || s[i - 1] != b'/')
+                .any(|i| inner(rest, &s[i..])),
             Some((b'?', rest)) => s.first().is_some_and(|c| *c != b'/') && inner(rest, &s[1..]),
             Some((c, rest)) => s.first() == Some(c) && inner(rest, &s[1..]),
         }
@@ -488,7 +531,11 @@ pub(crate) fn search_text(
             {
                 out.push_str("--\n");
             }
-            let sep = if hits.binary_search(&idx).is_ok() { ':' } else { '-' };
+            let sep = if hits.binary_search(&idx).is_ok() {
+                ':'
+            } else {
+                '-'
+            };
             let line = lines[idx];
             // A minified line would swamp the result.
             let mut cut = line.len().min(400);
@@ -512,7 +559,9 @@ pub struct SearchHandler {
 
 impl SearchHandler {
     pub(crate) fn new(include_environment_id: bool) -> Self {
-        Self { include_environment_id }
+        Self {
+            include_environment_id,
+        }
     }
 }
 
@@ -599,7 +648,12 @@ impl SearchHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let ToolInvocation { turn, step_context, payload, .. } = invocation;
+        let ToolInvocation {
+            turn,
+            step_context,
+            payload,
+            ..
+        } = invocation;
         let ToolPayload::Function { arguments } = payload else {
             return Err(FunctionCallError::RespondToModel(
                 "search handler received unsupported payload".to_string(),
@@ -615,7 +669,10 @@ impl SearchHandler {
             FunctionCallError::RespondToModel(format!("invalid regular expression: {err}"))
         })?;
         let context = args.context.unwrap_or(0).min(10);
-        let max_results = args.max_results.unwrap_or(SEARCH_DEFAULT_RESULTS).clamp(1, SEARCH_MAX_RESULTS);
+        let max_results = args
+            .max_results
+            .unwrap_or(SEARCH_DEFAULT_RESULTS)
+            .clamp(1, SEARCH_MAX_RESULTS);
         let budget = byte_budget(turn.model_info().truncation_policy.into(), "search");
 
         // A saved command output: search it directly.
@@ -625,34 +682,38 @@ impl SearchHandler {
                     "no saved output with that handle".to_string(),
                 ));
             };
-            let bytes = std::fs::read(&path).map_err(|e| FunctionCallError::RespondToModel(e.to_string()))?;
+            let bytes = std::fs::read(&path)
+                .map_err(|e| FunctionCallError::RespondToModel(e.to_string()))?;
             let text = String::from_utf8_lossy(&bytes);
             let (block, n) = search_text(&text, &re, context, max_results);
-            let body = if n == 0 { "no matches\n".to_string() } else { format!("{handle}\n{block}") };
+            let body = if n == 0 {
+                "no matches\n".to_string()
+            } else {
+                format!("{handle}\n{block}")
+            };
             return Ok(boxed_tool_output(FunctionToolOutput::from_text(
                 finish_search(body, n, max_results, budget),
                 Some(true),
             )));
         }
 
-        let Some(turn_environment) =
-            resolve_tool_environment(&step_context.environments, args.environment_id.as_deref())?
-        else {
-            return Err(FunctionCallError::RespondToModel(
-                "search is unavailable in this session".to_string(),
-            ));
-        };
+        let turn_environment =
+            resolve_tool_environment(&step_context.environments, args.environment_id.as_deref())?;
         let sandbox = turn_environment.sandbox_context(/*additional_permissions*/ None);
         let fs = turn_environment.environment.get_filesystem();
         let cwd = turn_environment.cwd();
-        let root = cwd.join(args.path.as_deref().unwrap_or(".")).map_err(|err| {
-            FunctionCallError::RespondToModel(format!("cannot resolve search path: {err}"))
-        })?;
+        let root = cwd
+            .join(args.path.as_deref().unwrap_or("."))
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("cannot resolve search path: {err}"))
+            })?;
         let root_native = root.inferred_native_path_string();
         let meta = fs
             .get_metadata(&root, GetMetadataOptions::default(), Some(&sandbox))
             .await
-            .map_err(|err| FunctionCallError::RespondToModel(format!("cannot search `{root_native}`: {err}")))?;
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("cannot search `{root_native}`: {err}"))
+            })?;
 
         let mut files = Vec::new();
         let mut walk_truncated = false;
@@ -662,7 +723,9 @@ impl SearchHandler {
             let outcome = fs
                 .walk(&root, SEARCH_WALK, Some(&sandbox))
                 .await
-                .map_err(|err| FunctionCallError::RespondToModel(format!("cannot walk `{root_native}`: {err}")))?;
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("cannot walk `{root_native}`: {err}"))
+                })?;
             walk_truncated = outcome.truncated;
             for entry in outcome.entries {
                 if entry.kind == WalkEntryKind::File {
@@ -694,13 +757,19 @@ impl SearchHandler {
             if args.glob.as_deref().is_some_and(|g| !glob_match(g, &shown)) {
                 continue;
             }
-            let Ok(m) = fs.get_metadata(&uri, GetMetadataOptions::default(), Some(&sandbox)).await else {
+            let Ok(m) = fs
+                .get_metadata(&uri, GetMetadataOptions::default(), Some(&sandbox))
+                .await
+            else {
                 continue;
             };
             if !m.is_file || m.size > SEARCH_MAX_FILE_BYTES {
                 continue;
             }
-            let Ok(bytes) = fs.read_file(&uri, ReadFileOptions::default(), Some(&sandbox)).await else {
+            let Ok(bytes) = fs
+                .read_file(&uri, ReadFileOptions::default(), Some(&sandbox))
+                .await
+            else {
                 continue;
             };
             if looks_binary(&bytes) {
@@ -735,7 +804,10 @@ impl SearchHandler {
         if walk_truncated {
             text.push_str("[byteask: the directory tree is very large and was only partly walked; pass a narrower `path`]\n");
         }
-        Ok(boxed_tool_output(FunctionToolOutput::from_text(text, Some(true))))
+        Ok(boxed_tool_output(FunctionToolOutput::from_text(
+            text,
+            Some(true),
+        )))
     }
 }
 
@@ -779,8 +851,11 @@ mod tests {
     async fn search_walk_is_accepted_by_the_real_filesystem_layer() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join("src/deep")).expect("mkdir");
-        std::fs::write(dir.path().join("src/deep/queue.hpp"), "remove_order_from_level\n")
-            .expect("write");
+        std::fs::write(
+            dir.path().join("src/deep/queue.hpp"),
+            "remove_order_from_level\n",
+        )
+        .expect("write");
         let root = codex_utils_path_uri::PathUri::from_host_native_path(dir.path())
             .expect("absolute temp path");
         let outcome = codex_exec_server::LOCAL_FS
@@ -804,18 +879,37 @@ mod tests {
         let mut m = ReadMemory::default();
         let t0 = std::time::Instant::now();
         let later = |s| t0 + std::time::Duration::from_secs(s);
-        assert_eq!(m.seen("t", "a.rs", 1, 400, 100, 50, t0, 0), None, "first read is real");
-        assert_eq!(m.seen("t", "a.rs", 1, 400, 100, 50, later(30), 0).map(|d| d.as_secs()), Some(30));
+        assert_eq!(
+            m.seen("t", "a.rs", 1, 400, 100, 50, t0, 0),
+            None,
+            "first read is real"
+        );
+        assert_eq!(
+            m.seen("t", "a.rs", 1, 400, 100, 50, later(30), 0)
+                .map(|d| d.as_secs()),
+            Some(30)
+        );
         // A different range, thread, or a changed file is always a real read.
         assert_eq!(m.seen("t", "a.rs", 50, 400, 100, 50, later(31), 0), None);
         assert_eq!(m.seen("other", "a.rs", 1, 400, 100, 50, later(31), 0), None);
-        assert_eq!(m.seen("t", "a.rs", 1, 400, 999, 50, later(32), 0), None, "mtime changed");
-        assert_eq!(m.seen("t", "a.rs", 1, 400, 999, 51, later(33), 0), None, "size changed");
+        assert_eq!(
+            m.seen("t", "a.rs", 1, 400, 999, 50, later(32), 0),
+            None,
+            "mtime changed"
+        );
+        assert_eq!(
+            m.seen("t", "a.rs", 1, 400, 999, 51, later(33), 0),
+            None,
+            "size changed"
+        );
         // A compaction removed the earlier copy from context.
         assert_eq!(m.seen("t", "a.rs", 1, 400, 999, 51, later(34), 1), None);
         assert!(m.seen("t", "a.rs", 1, 400, 999, 51, later(35), 1).is_some());
         // Too long ago to rely on.
-        assert_eq!(m.seen("t", "a.rs", 1, 400, 999, 51, later(34 + 601), 1), None);
+        assert_eq!(
+            m.seen("t", "a.rs", 1, 400, 999, 51, later(34 + 601), 1),
+            None
+        );
     }
 
     #[test]
@@ -845,7 +939,10 @@ mod tests {
     #[test]
     fn edges_of_a_range() {
         assert!(render_range("f", "", None, None, 100).contains("empty file"));
-        assert!(render_range("f", "a\nb\n", Some(9), None, 100).contains("past the end; the file has 2 lines"));
+        assert!(
+            render_range("f", "a\nb\n", Some(9), None, 100)
+                .contains("past the end; the file has 2 lines")
+        );
         // One line longer than the whole budget is cut, not dropped.
         let got = render_range("f", &"x".repeat(500), None, None, 100);
         assert!(got.contains("(lines 1-1 of 1)"));

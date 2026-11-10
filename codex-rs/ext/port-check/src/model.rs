@@ -91,20 +91,44 @@ pub const MAX_TOKEN: usize = 64;
 pub fn valid_token(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= MAX_TOKEN
-        && s
-            .bytes()
+        && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'+' | b'-'))
 }
 
 /// One normalized market data event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MdKind {
-    Add { sym: String, id: u64, side: Side, px: i64, qty: i64 },
-    Cancel { id: u64, qty: i64 },
-    Delete { id: u64 },
-    Exec { id: u64, qty: i64, px: Option<i64> },
-    Replace { id: u64, new_id: u64, px: i64, qty: i64 },
-    Trade { sym: String, side: Side, px: i64, qty: i64 },
+    Add {
+        sym: String,
+        id: u64,
+        side: Side,
+        px: i64,
+        qty: i64,
+    },
+    Cancel {
+        id: u64,
+        qty: i64,
+    },
+    Delete {
+        id: u64,
+    },
+    Exec {
+        id: u64,
+        qty: i64,
+        px: Option<i64>,
+    },
+    Replace {
+        id: u64,
+        new_id: u64,
+        px: i64,
+        qty: i64,
+    },
+    Trade {
+        sym: String,
+        side: Side,
+        px: i64,
+        qty: i64,
+    },
 }
 
 impl MdKind {
@@ -188,7 +212,11 @@ pub fn parse_md(v: &Value) -> Result<MdRecord, String> {
         Some("exec") => MdKind::Exec {
             id: id(v, "id")?,
             qty: qty(v, "qty")?,
-            px: if v.get("px").is_some() { Some(int(v, "px")?) } else { None },
+            px: if v.get("px").is_some() {
+                Some(int(v, "px")?)
+            } else {
+                None
+            },
         },
         Some("replace") => MdKind::Replace {
             id: id(v, "id")?,
@@ -220,22 +248,42 @@ mod tests {
 
     #[test]
     fn every_record_type_parses_and_extra_fields_are_ignored() {
-        let rec = parse_md(&json!({"ts":5,"type":"add","sym":"AAPL","id":1,"side":"B","px":100,"qty":3,"msg":"A"}))
-            .expect("add");
+        let rec = parse_md(
+            &json!({"ts":5,"type":"add","sym":"AAPL","id":1,"side":"B","px":100,"qty":3,"msg":"A"}),
+        )
+        .expect("add");
         assert_eq!(
             rec,
             MdRecord {
                 ts: 5,
-                kind: MdKind::Add { sym: "AAPL".into(), id: 1, side: Side::Buy, px: 100, qty: 3 }
+                kind: MdKind::Add {
+                    sym: "AAPL".into(),
+                    id: 1,
+                    side: Side::Buy,
+                    px: 100,
+                    qty: 3
+                }
             }
         );
         assert_eq!(
-            parse_md(&json!({"ts":6,"type":"exec","id":1,"qty":2})).expect("exec").kind,
-            MdKind::Exec { id: 1, qty: 2, px: None }
+            parse_md(&json!({"ts":6,"type":"exec","id":1,"qty":2}))
+                .expect("exec")
+                .kind,
+            MdKind::Exec {
+                id: 1,
+                qty: 2,
+                px: None
+            }
         );
         assert_eq!(
-            parse_md(&json!({"ts":6,"type":"exec","id":1,"qty":2,"px":-5})).expect("exec px").kind,
-            MdKind::Exec { id: 1, qty: 2, px: Some(-5) },
+            parse_md(&json!({"ts":6,"type":"exec","id":1,"qty":2,"px":-5}))
+                .expect("exec px")
+                .kind,
+            MdKind::Exec {
+                id: 1,
+                qty: 2,
+                px: Some(-5)
+            },
             "negative prices exist (spreads, some futures)"
         );
         for v in [
@@ -251,11 +299,26 @@ mod tests {
     #[test]
     fn float_prices_and_bad_fields_are_refused_with_the_field_named() {
         for (v, want) in [
-            (json!({"ts":1,"type":"add","sym":"X","id":1,"side":"B","px":100.5,"qty":1}), "\"px\" must be an integer"),
-            (json!({"ts":1,"type":"add","sym":"X","id":1,"side":"buy","px":100,"qty":1}), "\"side\""),
-            (json!({"ts":1,"type":"add","sym":"A B","id":1,"side":"B","px":100,"qty":1}), "\"sym\""),
-            (json!({"ts":1,"type":"cancel","id":1,"qty":0}), "must be > 0"),
-            (json!({"ts":1,"type":"cancel","id":-1,"qty":1}), "non-negative"),
+            (
+                json!({"ts":1,"type":"add","sym":"X","id":1,"side":"B","px":100.5,"qty":1}),
+                "\"px\" must be an integer",
+            ),
+            (
+                json!({"ts":1,"type":"add","sym":"X","id":1,"side":"buy","px":100,"qty":1}),
+                "\"side\"",
+            ),
+            (
+                json!({"ts":1,"type":"add","sym":"A B","id":1,"side":"B","px":100,"qty":1}),
+                "\"sym\"",
+            ),
+            (
+                json!({"ts":1,"type":"cancel","id":1,"qty":0}),
+                "must be > 0",
+            ),
+            (
+                json!({"ts":1,"type":"cancel","id":-1,"qty":1}),
+                "non-negative",
+            ),
             (json!({"type":"delete","id":1}), "missing \"ts\""),
             (json!({"ts":1,"type":"quote"}), "unknown \"type\""),
         ] {

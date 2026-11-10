@@ -68,7 +68,11 @@ pub struct GitHub {
 
 impl GitHub {
     fn url(&self, path: &str) -> String {
-        format!("{}/repos/{}{path}", self.api.trim_end_matches('/'), self.repo)
+        format!(
+            "{}/repos/{}{path}",
+            self.api.trim_end_matches('/'),
+            self.repo
+        )
     }
 
     fn request(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -100,7 +104,10 @@ impl GitHub {
         if response.status().is_success() {
             Ok(())
         } else {
-            Err(format!("GitHub refused the check run: HTTP {}", response.status()))
+            Err(format!(
+                "GitHub refused the check run: HTTP {}",
+                response.status()
+            ))
         }
     }
 
@@ -136,7 +143,8 @@ impl GitHub {
                 let login = review["user"]["login"].as_str()?.to_string();
                 let at_ms = parse_rfc3339_ms(review["submitted_at"].as_str()?)?;
                 Some(Approval {
-                    is_bot: review["user"]["type"].as_str() == Some("Bot") || login.ends_with("[bot]"),
+                    is_bot: review["user"]["type"].as_str() == Some("Bot")
+                        || login.ends_with("[bot]"),
                     is_author: login == author,
                     reviewer: login,
                     head_commit: review["commit_id"].as_str().unwrap_or_default().to_string(),
@@ -157,7 +165,11 @@ pub struct GitLab {
 
 impl GitLab {
     fn url(&self, path: &str) -> String {
-        format!("{}/projects/{}{path}", self.api.trim_end_matches('/'), self.project)
+        format!(
+            "{}/projects/{}{path}",
+            self.api.trim_end_matches('/'),
+            self.project
+        )
     }
 
     /// A commit status on the head, and the report (with the perf card) as a note on the
@@ -178,7 +190,10 @@ impl GitLab {
             .await
             .map_err(|err| format!("GitLab did not answer: {err}"))?;
         if !response.status().is_success() {
-            return Err(format!("GitLab refused the commit status: HTTP {}", response.status()));
+            return Err(format!(
+                "GitLab refused the commit status: HTTP {}",
+                response.status()
+            ));
         }
         if let Some(iid) = self.merge_request {
             let response = client
@@ -189,7 +204,10 @@ impl GitLab {
                 .await
                 .map_err(|err| format!("GitLab did not answer: {err}"))?;
             if !response.status().is_success() {
-                return Err(format!("GitLab refused the note: HTTP {}", response.status()));
+                return Err(format!(
+                    "GitLab refused the note: HTTP {}",
+                    response.status()
+                ));
             }
         }
         Ok(())
@@ -200,7 +218,11 @@ impl GitLab {
 /// failed, NOT RUN skipped, so a NOT RUN never reads as a pass); the step's exit status blocks.
 pub fn jenkins_files(decision: &Decision, markdown: &str) -> (String, String) {
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    let failures = decision.checks.iter().filter(|c| c.verdict == Verdict::Fail).count();
+    let failures = decision
+        .checks
+        .iter()
+        .filter(|c| c.verdict == Verdict::Fail)
+        .count();
     let skipped = decision
         .checks
         .iter()

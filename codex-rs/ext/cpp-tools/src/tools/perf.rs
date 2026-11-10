@@ -194,7 +194,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PerfTool {
 }
 
 impl PerfTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: PerfArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -347,14 +350,16 @@ impl PerfTool {
     /// One `bash -c <cmd>` run timed by our clock, capped at `cap`.
     async fn timed_run(&self, cmd: &str, cap: Duration) -> Result<Timed, FunctionCallError> {
         let start = Instant::now();
-        Ok(match run_capped("bash", &timed_argv(cmd), &self.cwd, cap).await? {
-            RunOutcome::TimedOut { .. } => Timed::TimedOut,
-            RunOutcome::Finished { success, code, .. } => Timed::Done {
-                secs: start.elapsed().as_secs_f64(),
-                ok: success,
-                code,
+        Ok(
+            match run_capped("bash", &timed_argv(cmd), &self.cwd, cap).await? {
+                RunOutcome::TimedOut { .. } => Timed::TimedOut,
+                RunOutcome::Finished { success, code, .. } => Timed::Done {
+                    secs: start.elapsed().as_secs_f64(),
+                    ok: success,
+                    code,
+                },
             },
-        })
+        )
     }
 
     /// The shell and process startup inside every timed sample: the fastest of
@@ -422,7 +427,9 @@ impl PerfTool {
 
         Ok((
             profile_unavailable_message(&perf_probe, &vg_probe),
-            unavailable_result("No profiler works on this machine (perf and valgrind are both unavailable)."),
+            unavailable_result(
+                "No profiler works on this machine (perf and valgrind are both unavailable).",
+            ),
         ))
     }
 
@@ -453,7 +460,10 @@ impl PerfTool {
             return Ok(ProfileOutcome::Empty);
         }
 
-        let report_inner = format!("perf report --stdio -i {} 2>/dev/null", shell_quote(&data_str));
+        let report_inner = format!(
+            "perf report --stdio -i {} 2>/dev/null",
+            shell_quote(&data_str)
+        );
         let rep = run_capped("bash", &shell_argv(report_inner), &self.cwd, timeout).await?;
         let _ = std::fs::remove_file(&data);
         match rep {
@@ -463,7 +473,10 @@ impl PerfTool {
                 if rows.is_empty() {
                     Ok(ProfileOutcome::Empty)
                 } else {
-                    Ok(ProfileOutcome::Report(note_if_failed(target_ok, render_perf_profile(&rows))))
+                    Ok(ProfileOutcome::Report(note_if_failed(
+                        target_ok,
+                        render_perf_profile(&rows),
+                    )))
                 }
             }
         }
@@ -594,7 +607,9 @@ impl PerfTool {
 
         Ok((
             topdown_unavailable_message(&perf_probe, &vg_probe),
-            unavailable_result("No counter backend works on this machine (perf and valgrind are both unavailable)."),
+            unavailable_result(
+                "No counter backend works on this machine (perf and valgrind are both unavailable).",
+            ),
         ))
     }
 
@@ -606,7 +621,9 @@ impl PerfTool {
         let inner = format!("perf stat --topdown -- bash -c {}", shell_quote(cmd));
         match run_capped("bash", &shell_argv(inner), &self.cwd, timeout).await? {
             RunOutcome::TimedOut { secs } => Ok(TopdownOutcome::TimedOut(secs)),
-            RunOutcome::Finished { stderr, success, .. } => match parse_perf_topdown(&stderr) {
+            RunOutcome::Finished {
+                stderr, success, ..
+            } => match parse_perf_topdown(&stderr) {
                 Some((bucket, table)) => Ok(TopdownOutcome::Report(note_if_failed(
                     success,
                     render_topdown_tma(bucket, &table),
@@ -628,7 +645,9 @@ impl PerfTool {
         let inner = format!("perf stat -e {events} -- bash -c {}", shell_quote(cmd));
         match run_capped("bash", &shell_argv(inner), &self.cwd, timeout).await? {
             RunOutcome::TimedOut { secs } => Ok(TopdownOutcome::TimedOut(secs)),
-            RunOutcome::Finished { stderr, success, .. } => {
+            RunOutcome::Finished {
+                stderr, success, ..
+            } => {
                 let counters = parse_perf_counters(&stderr);
                 // No usable counters means perf itself did not measure —
                 // an Ubuntu `perf not found for kernel …` wrapper, or events
@@ -664,7 +683,9 @@ impl PerfTool {
         );
         match run_capped("bash", &shell_argv(inner), &self.cwd, timeout).await? {
             RunOutcome::TimedOut { secs } => Ok(TopdownOutcome::TimedOut(secs)),
-            RunOutcome::Finished { stderr, success, .. } => match parse_cachegrind(&stderr) {
+            RunOutcome::Finished {
+                stderr, success, ..
+            } => match parse_cachegrind(&stderr) {
                 Some(rates) => Ok(TopdownOutcome::Report(note_if_failed(
                     success,
                     render_cachegrind_topdown(&rates),
@@ -949,7 +970,10 @@ fn time_result(a: &Measurement, b: Option<&Measurement>) -> CheckResult {
             return CheckResult::not_run(
                 TOOL_NAME,
                 NotRunReason::ToolError,
-                &format!("The command failed in {} of {} runs, so the timing is meaningless.", a.failures, a.runs),
+                &format!(
+                    "The command failed in {} of {} runs, so the timing is meaningless.",
+                    a.failures, a.runs
+                ),
                 "make the command exit 0 on every run, then call cpp_perf again.",
             );
         }
@@ -959,7 +983,10 @@ fn time_result(a: &Measurement, b: Option<&Measurement>) -> CheckResult {
                 "One run only, so the time has no noise estimate.",
             );
         }
-        return CheckResult::pass(TOOL_NAME, &format!("Measured over {} runs with a noise estimate.", a.runs));
+        return CheckResult::pass(
+            TOOL_NAME,
+            &format!("Measured over {} runs with a noise estimate.", a.runs),
+        );
     };
     match crate::stats::compare(a, b, TIME_FLOOR) {
         crate::stats::Verdict::Faster { winner, ratio, .. } => CheckResult::pass(
@@ -968,16 +995,24 @@ fn time_result(a: &Measurement, b: Option<&Measurement>) -> CheckResult {
         ),
         crate::stats::Verdict::WithinNoise { delta_pct, .. } => CheckResult::no_claim(
             TOOL_NAME,
-            &format!("The {delta_pct:.1}% difference is inside the measurement noise; neither is faster."),
+            &format!(
+                "The {delta_pct:.1}% difference is inside the measurement noise; neither is faster."
+            ),
         ),
         crate::stats::Verdict::NoNoiseEstimate => CheckResult::no_claim(
             TOOL_NAME,
             "No noise estimate, so no speed claim can be made.",
         ),
-        crate::stats::Verdict::InvalidComparison { side, failed, total } => CheckResult::not_run(
+        crate::stats::Verdict::InvalidComparison {
+            side,
+            failed,
+            total,
+        } => CheckResult::not_run(
             TOOL_NAME,
             NotRunReason::ToolError,
-            &format!("Command {side} failed in {failed} of {total} runs, so the comparison is invalid."),
+            &format!(
+                "Command {side} failed in {failed} of {total} runs, so the comparison is invalid."
+            ),
             &format!("make command {side} exit 0 on every run, then call cpp_perf again."),
         ),
     }
@@ -1071,7 +1106,10 @@ fn topdown_unavailable_message(perf: &Probe, vg: &Probe) -> String {
 /// for an A/B, then any notes (repeat cap, budget stop, shell startup).
 fn render_time(repeat: u32, a: &Measurement, b: Option<&Measurement>, notes: &[String]) -> String {
     let (method, warm) = match (b.is_some(), repeat >= 2) {
-        (true, true) => ("wall-clock timing, A and B interleaved", ", warmup=1 untimed each"),
+        (true, true) => (
+            "wall-clock timing, A and B interleaved",
+            ", warmup=1 untimed each",
+        ),
         (true, false) => ("wall-clock timing, A and B interleaved", ""),
         (false, true) => ("wall-clock timing", ", warmup=1 untimed"),
         (false, false) => ("wall-clock timing", ""),
@@ -1108,7 +1146,11 @@ fn render_time(repeat: u32, a: &Measurement, b: Option<&Measurement>, notes: &[S
 /// Say how much of each sample is shell and process startup once it is large
 /// enough to distort the numbers: it inflates every mean, and it shrinks an
 /// A/B ratio toward 1 (2 ms vs 4 ms of work read as 1.27x under `bash -lc`).
-fn shell_share_note(shell: Option<f64>, a: &Measurement, b: Option<&Measurement>) -> Option<String> {
+fn shell_share_note(
+    shell: Option<f64>,
+    a: &Measurement,
+    b: Option<&Measurement>,
+) -> Option<String> {
     let shell = shell?;
     let fastest = b.map_or(a.mean, |b| a.mean.min(b.mean));
     if fastest <= 0.0 {
@@ -1193,7 +1235,11 @@ fn parse_pct(token: &str) -> Option<f64> {
 
 fn render_perf_profile(rows: &[PerfRow]) -> String {
     let mut sorted: Vec<&PerfRow> = rows.iter().collect();
-    sorted.sort_by(|a, b| b.self_pct.partial_cmp(&a.self_pct).unwrap_or(Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.self_pct
+            .partial_cmp(&a.self_pct)
+            .unwrap_or(Ordering::Equal)
+    });
 
     let mut out = String::from("Method: perf profile (perf record -F 997 -g)\n");
     out.push_str(" self%  incl%  function                                  dso\n");
@@ -1214,7 +1260,11 @@ fn render_perf_profile(rows: &[PerfRow]) -> String {
 /// unresolved rows, labeled approximate.
 fn symbol_quality_line(rows: &[PerfRow]) -> String {
     let total: f64 = rows.iter().map(|r| r.self_pct).sum();
-    let unresolved: f64 = rows.iter().filter(|r| r.is_unresolved()).map(|r| r.self_pct).sum();
+    let unresolved: f64 = rows
+        .iter()
+        .filter(|r| r.is_unresolved())
+        .map(|r| r.self_pct)
+        .sum();
     symbol_quality(
         "self%",
         total,
@@ -1228,7 +1278,11 @@ fn symbol_quality_line(rows: &[PerfRow]) -> String {
 /// follows calls by instrumentation, so frame pointers do not matter here.
 fn callgrind_symbol_quality_line(rows: &[CallgrindRow]) -> String {
     let total: f64 = rows.iter().map(|r| r.pct).sum();
-    let unresolved: f64 = rows.iter().filter(|r| r.is_unresolved()).map(|r| r.pct).sum();
+    let unresolved: f64 = rows
+        .iter()
+        .filter(|r| r.is_unresolved())
+        .map(|r| r.pct)
+        .sum();
     symbol_quality(
         "Ir",
         total,
@@ -1248,7 +1302,9 @@ fn symbol_quality(mass: &str, total: f64, unresolved: f64, advice: &str) -> Stri
         )
     } else {
         let resolved = 100.0 - pct;
-        format!("symbol quality: OK (~{resolved:.0}% of top-table {mass} mass symbolized; approximate)")
+        format!(
+            "symbol quality: OK (~{resolved:.0}% of top-table {mass} mass symbolized; approximate)"
+        )
     }
 }
 
@@ -1529,7 +1585,8 @@ fn classify_counters(c: &Counters) -> Option<Bottleneck> {
 }
 
 fn render_counters_topdown(c: &Counters) -> String {
-    let mut out = String::from("Method: topdown (heuristic from generic perf counters) [heuristic]\n");
+    let mut out =
+        String::from("Method: topdown (heuristic from generic perf counters) [heuristic]\n");
     match classify_counters(c) {
         None => {
             out.push_str(
@@ -1757,7 +1814,10 @@ mod result_tests {
 
     #[test]
     fn one_run_without_noise_is_approximate() {
-        assert_eq!(time_result(&m(1.0, None, 0), None).verdict, Verdict::Approximate);
+        assert_eq!(
+            time_result(&m(1.0, None, 0), None).verdict,
+            Verdict::Approximate
+        );
         assert!(time_result(&m(1.0, Some(0.01), 0), None).is_pass());
     }
 

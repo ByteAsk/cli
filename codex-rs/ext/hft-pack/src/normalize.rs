@@ -26,8 +26,7 @@ use crate::itch50::stock_text;
 fn valid_symbol(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
-        && s
-            .bytes()
+        && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'+' | b'-'))
 }
 
@@ -35,7 +34,10 @@ fn side(b: u8) -> Result<&'static str, String> {
     match b {
         b'B' => Ok("B"),
         b'S' => Ok("S"),
-        other => Err(format!("buy/sell indicator {:?} is neither B nor S", other as char)),
+        other => Err(format!(
+            "buy/sell indicator {:?} is neither B nor S",
+            other as char
+        )),
     }
 }
 
@@ -83,28 +85,64 @@ impl Normalizer {
                 self.locate_sym.insert(h.locate, stock_text(stock));
                 None
             }
-            Message::AddOrder { h, order_ref, side: s, shares, stock, price, attribution } => Some(json!({
+            Message::AddOrder {
+                h,
+                order_ref,
+                side: s,
+                shares,
+                stock,
+                price,
+                attribution,
+            } => Some(json!({
                 "ts": h.ts, "type": "add", "sym": self.symbol(h.locate, *stock)?, "id": order_ref,
                 "side": side(*s)?, "px": price, "qty": shares,
                 "msg": if attribution.is_some() { "F" } else { "A" },
             })),
-            Message::OrderExecuted { h, order_ref, shares, .. } => Some(json!({
+            Message::OrderExecuted {
+                h,
+                order_ref,
+                shares,
+                ..
+            } => Some(json!({
                 "ts": h.ts, "type": "exec", "id": order_ref, "qty": shares, "msg": "E",
             })),
-            Message::OrderExecutedWithPrice { h, order_ref, shares, price, .. } => Some(json!({
+            Message::OrderExecutedWithPrice {
+                h,
+                order_ref,
+                shares,
+                price,
+                ..
+            } => Some(json!({
                 "ts": h.ts, "type": "exec", "id": order_ref, "qty": shares, "px": price, "msg": "C",
             })),
-            Message::OrderCancel { h, order_ref, shares } => Some(json!({
+            Message::OrderCancel {
+                h,
+                order_ref,
+                shares,
+            } => Some(json!({
                 "ts": h.ts, "type": "cancel", "id": order_ref, "qty": shares, "msg": "X",
             })),
             Message::OrderDelete { h, order_ref } => Some(json!({
                 "ts": h.ts, "type": "delete", "id": order_ref, "msg": "D",
             })),
-            Message::OrderReplace { h, original_ref, new_ref, shares, price } => Some(json!({
+            Message::OrderReplace {
+                h,
+                original_ref,
+                new_ref,
+                shares,
+                price,
+            } => Some(json!({
                 "ts": h.ts, "type": "replace", "id": original_ref, "new_id": new_ref, "px": price,
                 "qty": shares, "msg": "U",
             })),
-            Message::Trade { h, side: s, shares, stock, price, .. } => Some(json!({
+            Message::Trade {
+                h,
+                side: s,
+                shares,
+                stock,
+                price,
+                ..
+            } => Some(json!({
                 "ts": h.ts, "type": "trade", "sym": self.symbol(h.locate, *stock)?, "side": side(*s)?,
                 "px": price, "qty": shares, "msg": "P",
             })),

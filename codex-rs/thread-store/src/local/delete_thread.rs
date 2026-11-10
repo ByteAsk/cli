@@ -1,8 +1,10 @@
 //! Local hard-delete support for persisted threads.
 //!
 //! Existing rollout files are deleted before this operation reports success. A rollout file that
-//! vanishes after discovery counts as already deleted. The app-server deletes main state DB rows
-//! after every associated rollout is removed; this module deletes local history projection rows.
+//! vanishes after discovery counts as already deleted. Main state DB rows are deleted after every
+//! associated rollout is removed, under the same lifecycle lock, so queued artifact mutations cannot
+//! use deleted thread metadata. Host-owned data is cleaned after reference and writer checks,
+//! before removing rollouts, so cleanup failures remain retryable even without a state DB.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -10,6 +12,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
+use codex_protocol::ThreadId;
 use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use codex_rollout::RolloutReferenceIndex;
 use codex_rollout::SESSIONS_SUBDIR;
@@ -29,6 +32,32 @@ struct ThreadRollouts {
     thread_id: codex_protocol::ThreadId,
     rollout_ids: HashSet<codex_protocol::ThreadId>,
     paths: Vec<PathBuf>,
+}
+
+impl LocalThreadStore {
+    /// Reject deletion while any candidate has attached threads. Call before stopping live work;
+    /// deletion repeats this check under existing writer ownership to cover concurrent creation.
+    pub async fn ensure_no_attached_threads(
+        &self,
+        thread_ids: &[ThreadId],
+    ) -> ThreadStoreResult<()> {
+        let reference_index = scan_reference_index(self).await?;
+        check_attached_children(&reference_index, thread_ids)
+    }
+}
+
+fn check_attached_children(
+    reference_index: &RolloutReferenceIndex,
+    thread_ids: &[ThreadId],
+) -> ThreadStoreResult<()> {
+    let Some(child) = reference_index.attached_child(thread_ids) else {
+        return Ok(());
+    };
+    Err(ThreadStoreError::InvalidRequest {
+        message: format!(
+            "cannot delete thread while attached thread {child} exists; delete the attached thread first"
+        ),
+    })
 }
 
 impl ThreadRollouts {
@@ -68,11 +97,27 @@ pub(super) async fn delete_thread(
     let thread_id = params.thread_id;
     let _lifecycle_guard = store.live_writer_locks.lock_lifecycle(thread_id).await;
     let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
+    let mut writer_guards = store.acquire_writer_locks(&[thread_id]).await?;
     let reference_index = scan_reference_index(store).await?;
     let thread_rollouts = ThreadRollouts::from_index(&reference_index, thread_id);
+    check_attached_children(&reference_index, &[thread_id])?;
     ensure_no_external_references(&reference_index, std::slice::from_ref(&thread_rollouts))?;
-    let mut writer_guards = store.acquire_writer_locks(&[thread_id]).await?;
-    delete_thread_after_reference_check(store, thread_rollouts, &mut writer_guards).await
+    if let Some(cleanup) = &store.thread_data_cleanup {
+        cleanup(vec![thread_id]).await?;
+    }
+    let found_rollout =
+        match delete_thread_after_reference_check(store, thread_rollouts, &mut writer_guards).await
+        {
+            Ok(()) => true,
+            Err(ThreadStoreError::ThreadNotFound { .. }) => false,
+            Err(err) => return Err(err),
+        };
+    let deleted_state_rows = delete_state_rows(store, &[thread_id]).await?;
+    if found_rollout || deleted_state_rows > 0 {
+        Ok(())
+    } else {
+        Err(ThreadStoreError::ThreadNotFound { thread_id })
+    }
 }
 
 pub(super) async fn delete_threads(
@@ -96,14 +141,17 @@ pub(super) async fn delete_threads(
         _live_writer_guards.push(store.live_writer_locks.lock(thread_id).await);
     }
 
+    let mut writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
     let reference_index = scan_reference_index(store).await?;
     let thread_rollouts = thread_ids
         .iter()
         .map(|thread_id| ThreadRollouts::from_index(&reference_index, *thread_id))
         .collect::<Vec<_>>();
+    check_attached_children(&reference_index, &lock_thread_ids)?;
     ensure_no_external_references(&reference_index, thread_rollouts.as_slice())?;
-
-    let mut writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
+    if let Some(cleanup) = &store.thread_data_cleanup {
+        cleanup(thread_ids.clone()).await?;
+    }
     for thread_rollouts in thread_rollouts {
         match delete_thread_after_reference_check(store, thread_rollouts, &mut writer_guards).await
         {
@@ -111,7 +159,24 @@ pub(super) async fn delete_threads(
             Err(err) => return Err(err),
         }
     }
+    // Retain the complete retry graph until every rollout has been removed.
+    delete_state_rows(store, &thread_ids).await?;
     Ok(())
+}
+
+pub(super) async fn delete_state_rows(
+    store: &LocalThreadStore,
+    thread_ids: &[codex_protocol::ThreadId],
+) -> ThreadStoreResult<u64> {
+    let Some(state_db) = store.state_db.as_ref() else {
+        return Ok(0);
+    };
+    state_db
+        .delete_threads_strict(thread_ids)
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to delete thread state: {err}"),
+        })
 }
 
 fn ensure_no_external_references(
@@ -166,7 +231,7 @@ fn referenced_thread_error(thread_id: codex_protocol::ThreadId) -> ThreadStoreEr
 async fn delete_thread_after_reference_check(
     store: &LocalThreadStore,
     mut thread_rollouts: ThreadRollouts,
-    writer_guards: &mut Vec<super::writer_lock::WriterLockGuard>,
+    writer_guards: &mut Vec<super::WriterLockGuard>,
 ) -> ThreadStoreResult<()> {
     let thread_id = thread_rollouts.thread_id;
     let thread_id_str = thread_id.to_string();
@@ -206,9 +271,17 @@ async fn delete_thread_after_reference_check(
         super::thread_history::delete_thread(store, rollout_id).await?;
     }
 
-    // Drop the recorder before removing files, but retain its writer lock until cleanup finishes.
-    if let Some(entry) = store.live_recorders.lock().await.remove(&thread_id) {
+    // Stop queued file work before removing files, retaining ownership until cleanup finishes.
+    let live_entry = store.live_recorders.lock().await.remove(&thread_id);
+    if let Some(entry) = live_entry {
         writer_guards.push(entry.writer_lock);
+        entry
+            .recorder
+            .discard()
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to stop thread writer before deletion: {err}"),
+            })?;
     }
     let found_rollout_path = !thread_rollouts.paths.is_empty();
     for rollout_path in thread_rollouts.paths {
@@ -227,7 +300,10 @@ async fn delete_thread_after_reference_check(
     Ok(())
 }
 
-fn delete_rollout_file(store: &LocalThreadStore, rollout_path: &Path) -> ThreadStoreResult<bool> {
+pub(super) fn delete_rollout_file(
+    store: &LocalThreadStore,
+    rollout_path: &Path,
+) -> ThreadStoreResult<bool> {
     let plain_path = codex_rollout::plain_rollout_path(rollout_path);
     let compressed_path = plain_path.with_extension("jsonl.zst");
     let deleted_plain = delete_rollout_path(store, plain_path.as_path())?;
@@ -546,8 +622,7 @@ mod tests {
             )
             .expect("child session file");
             let _owner_guard = owner
-                .writer_lock_coordinator
-                .acquire(child_thread_id)
+                .acquire_writer_lock(child_thread_id)
                 .expect("acquire child writer lock");
 
             let error = store
@@ -570,8 +645,7 @@ mod tests {
         let owner = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
         let thread_id = ThreadId::default();
         let _owner_guard = owner
-            .writer_lock_coordinator
-            .acquire(thread_id)
+            .acquire_writer_lock(thread_id)
             .expect("acquire writer lock before rollout exists");
 
         let error = store
@@ -751,6 +825,7 @@ SELECT
 
         store
             .resume_thread(ResumeThreadParams {
+                history_revision: None,
                 thread_id,
                 rollout_path: Some(rollout_path),
                 history: None,

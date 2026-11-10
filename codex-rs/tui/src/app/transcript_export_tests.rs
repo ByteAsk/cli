@@ -1,3 +1,4 @@
+use codex_app_server_protocol::ThreadItem;
 use std::sync::Arc;
 
 use pretty_assertions::assert_eq;
@@ -10,7 +11,7 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_proposed_plan;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStatus;
@@ -21,6 +22,7 @@ fn markdown_transcript_preserves_messages_and_formats_activity() {
     assert!(render_markdown_transcript(&[]).is_err());
     let user = |message: &str, local_image_paths| {
         Arc::new(UserHistoryCell {
+            presentation: Default::default(),
             message: message.to_string(),
             text_elements: Vec::new(),
             local_image_paths,
@@ -47,6 +49,9 @@ fn markdown_transcript_preserves_messages_and_formats_activity() {
         Arc::new(PlainHistoryCell::new(vec![
             "■ Export failed: missing parent".into(),
         ])),
+        Arc::new(PlainHistoryCell::new(vec![
+            "• Copy unconfirmed; /export saves chat".into(),
+        ])),
         user("", vec!["image.png".into()]),
         user("[Image #1] describe this", vec!["image.png".into()]),
     ];
@@ -59,7 +64,7 @@ fn markdown_transcript_preserves_messages_and_formats_activity() {
 
 #[test]
 fn transcript_export_excludes_hidden_review_prompts_and_nested_duplicates() {
-    let user = |id: &str, text: &str| ThreadItem::UserMessage {
+    let user = |id: &str, text: &str| ThreadItemPayload::UserMessage {
         id: id.to_string(),
         client_id: None,
         content: vec![UserInput::Text {
@@ -67,19 +72,20 @@ fn transcript_export_excludes_hidden_review_prompts_and_nested_duplicates() {
             text_elements: Vec::new(),
         }],
     };
-    let entered_review = ThreadItem::EnteredReviewMode {
+    let entered_review = ThreadItemPayload::EnteredReviewMode {
         id: "review-enter".to_string(),
         review: "review".to_string(),
     };
-    let exited_review = ThreadItem::ExitedReviewMode {
+    let exited_review = ThreadItemPayload::ExitedReviewMode {
         id: "review-exit".to_string(),
         review: "review".to_string(),
     };
     let duplicate_one = user("duplicate-one", "duplicate review prompt");
     let duplicate_two = user("duplicate-two", "duplicate review prompt");
-    let turn = |id: &str, items: Vec<ThreadItem>, status| Turn {
+    let turn = |id: &str, items: Vec<ThreadItemPayload>, status| Turn {
         id: id.to_string(),
-        items,
+        root_turn_id: None,
+        items: items.into_iter().map(ThreadItem::untimed).collect(),
         items_view: TurnItemsView::Full,
         status,
         error: None,
@@ -144,7 +150,7 @@ fn persisted_transcript_includes_file_and_mcp_details() {
         }),
     ]
     .into_iter()
-    .map(|item| serde_json::from_value::<ThreadItem>(item).expect("valid thread item"))
+    .map(|item| serde_json::from_value::<ThreadItemPayload>(item).expect("valid thread item"))
     .filter_map(|item| {
         super::export_activity_cell(&item).map(|cell| Arc::new(cell) as Arc<dyn HistoryCell>)
     })
@@ -157,7 +163,7 @@ fn persisted_transcript_includes_file_and_mcp_details() {
         r#"{"query":"export"}"#,
         "matching docs",
         "next line",
-        "<image content>",
+        "Returned image",
         "<audio content>",
         "embedded resource: file:///report.md",
         "link: file:///linked.md",
@@ -195,4 +201,33 @@ fn transcript_file_resolves_relative_paths_and_refuses_to_overwrite() {
     let error = write_transcript(directory.path(), &requested, "# Export\n")
         .expect_err("missing home-relative parent directory");
     assert!(error.contains(&dirs::home_dir().expect("home").display().to_string()));
+}
+
+#[test]
+fn persisted_web_and_image_activity_preserves_full_details() {
+    let items = [
+        serde_json::json!({
+            "type": "reasoning", "id": "reasoning",
+            "summary": ["Inspect **the saved result**."], "content": ["Raw details stay hidden."]
+        }),
+        serde_json::json!({
+            "type": "webSearch", "id": "open", "query": "",
+            "action": {"type": "openPage", "url": "https://example.com/long/path?query=full#details"}
+        }),
+        serde_json::json!({
+            "type": "webSearch", "id": "find", "query": "",
+            "action": {"type": "findInPage", "url": "https://example.com/long/path", "pattern": "needle"}
+        }),
+        serde_json::json!({
+            "type": "imageView", "id": "image", "path": "C:\\workspace\\assets\\screenshot.png"
+        }),
+    ].into_iter().map(|item| serde_json::from_value::<ThreadItemPayload>(item).expect("valid thread item"));
+    let cells = crate::thread_transcript::thread_items_to_transcript_cells(
+        /*thread_id*/ None,
+        &codex_utils_absolute_path::AbsolutePathBuf::current_dir().expect("cwd"),
+        items,
+        crate::thread_transcript::RawReasoningVisibility::Hidden,
+        /*config*/ None,
+    );
+    insta::assert_snapshot!(render_markdown_transcript(&cells).expect("exported transcript"));
 }

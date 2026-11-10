@@ -102,7 +102,9 @@ impl Bench {
         let tmp = scratch.join("tmp");
         let mut chosen: Option<(PathBuf, bool)> = None;
         if let Some(dir) = reuse.filter(|d| d.is_dir()) {
-            let current = gitops::candidate_diff(&dir, snapshot, &tmp).await.unwrap_or_default();
+            let current = gitops::candidate_diff(&dir, snapshot, &tmp)
+                .await
+                .unwrap_or_default();
             if current.is_empty() || gitops::apply(&dir, &current, true, false).await.is_ok() {
                 chosen = Some((dir, true));
             }
@@ -172,7 +174,14 @@ impl Bench {
             let commit = self.snapshot.commit.clone();
             let _ = spawn_capture(
                 "git",
-                &["-c", "core.hooksPath=/dev/null", "checkout", &commit, "--", &path],
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "checkout",
+                    &commit,
+                    "--",
+                    &path,
+                ],
                 &self.dir,
                 &[("GIT_OPTIONAL_LOCKS", "0")],
                 None,
@@ -231,7 +240,10 @@ impl Bench {
         for i in 0..2 {
             let started = Instant::now();
             let timeout = self.ctx.test_timeout.min(self.ctx.remaining() / 3);
-            let Some(out) = self.run(&format!("base tests run {}", i + 1), &suite, timeout).await else {
+            let Some(out) = self
+                .run(&format!("base tests run {}", i + 1), &suite, timeout)
+                .await
+            else {
                 break;
             };
             self.base.sanitizer_reports = self
@@ -241,7 +253,11 @@ impl Bench {
             if out.timed_out {
                 break;
             }
-            runs.push(testparse::parse_test_output(&out.output, out.ok(), out.timed_out));
+            runs.push(testparse::parse_test_output(
+                &out.output,
+                out.ok(),
+                out.timed_out,
+            ));
             if started.elapsed() * 4 > self.ctx.remaining() {
                 break;
             }
@@ -251,7 +267,9 @@ impl Bench {
             let passing: BTreeSet<String> = first
                 .outcomes
                 .iter()
-                .filter(|(name, ok)| **ok && runs.iter().all(|r| r.outcomes.get(*name) == Some(&true)))
+                .filter(|(name, ok)| {
+                    **ok && runs.iter().all(|r| r.outcomes.get(*name) == Some(&true))
+                })
                 .map(|(name, _)| name.clone())
                 .collect();
             self.base.passing = Some(passing);
@@ -278,11 +296,21 @@ impl Bench {
         let mut sanitizer = 0;
         let build_timeout = self.ctx.build_timeout;
         let test_timeout = self.ctx.test_timeout;
-        let cell = match self.run(&format!("{label}: build with {}", t.id), &t.build, build_timeout).await {
+        let cell = match self
+            .run(
+                &format!("{label}: build with {}", t.id),
+                &t.build,
+                build_timeout,
+            )
+            .await
+        {
             None => Cell::NotRun,
             Some(out) if out.timed_out => Cell::NotRun,
             Some(out) if !out.ok() => Cell::Fail,
-            Some(_) => match self.run(&format!("{label}: run {}", t.id), &t.run, test_timeout).await {
+            Some(_) => match self
+                .run(&format!("{label}: run {}", t.id), &t.run, test_timeout)
+                .await
+            {
                 None => Cell::NotRun,
                 Some(out) if out.timed_out => Cell::NotRun,
                 Some(out) => {
@@ -308,7 +336,12 @@ impl Bench {
     }
 
     /// Run `tests` on the change `diff` (put on the bench and taken off again).
-    pub async fn cells_on(&mut self, attempt: usize, diff: &[u8], tests: &[TestPatch]) -> BTreeMap<String, (Cell, usize)> {
+    pub async fn cells_on(
+        &mut self,
+        attempt: usize,
+        diff: &[u8],
+        tests: &[TestPatch],
+    ) -> BTreeMap<String, (Cell, usize)> {
         let mut out = BTreeMap::new();
         if diff.is_empty() || self.put_change(diff).await.is_err() {
             for t in tests {
@@ -364,7 +397,10 @@ impl Bench {
         let mut cand_warnings = BTreeMap::new();
         if let Some(recipe) = self.recipe.clone() {
             let build_timeout = self.ctx.build_timeout;
-            match self.run(&format!("{label}: build"), &recipe.build, build_timeout).await {
+            match self
+                .run(&format!("{label}: build"), &recipe.build, build_timeout)
+                .await
+            {
                 Some(out) if !out.timed_out => {
                     eval.build_ok = Some(out.ok());
                     cand_warnings = testparse::warnings_in(
@@ -375,12 +411,16 @@ impl Bench {
                 _ => {}
             }
             if eval.build_ok == Some(true)
-                && let (Some(suite), Some(passing)) = (recipe.test.clone(), self.base.passing.clone())
+                && let (Some(suite), Some(passing)) =
+                    (recipe.test.clone(), self.base.passing.clone())
             {
                 let mut failing: Option<BTreeSet<String>> = None;
                 for i in 0..2 {
                     let timeout = self.ctx.test_timeout.min(self.ctx.remaining() / 2);
-                    let Some(out) = self.run(&format!("{label}: tests run {}", i + 1), &suite, timeout).await else {
+                    let Some(out) = self
+                        .run(&format!("{label}: tests run {}", i + 1), &suite, timeout)
+                        .await
+                    else {
                         break;
                     };
                     if i == 0 {
@@ -421,7 +461,14 @@ impl Bench {
             && let Some(recipe) = self.recipe.clone()
         {
             let build_timeout = self.ctx.build_timeout;
-            if let Some(out) = self.run(&format!("{label}: base rebuild"), &recipe.build, build_timeout).await {
+            if let Some(out) = self
+                .run(
+                    &format!("{label}: base rebuild"),
+                    &recipe.build,
+                    build_timeout,
+                )
+                .await
+            {
                 let base_w = testparse::warnings_in(
                     &testparse::warnings_per_file(&out.output, &self.dir.to_string_lossy()),
                     &changed,
@@ -447,7 +494,9 @@ impl Bench {
                     Author::Attempt(k) => evals.iter().find(|e| e.attempt == k),
                     Author::Independent => None,
                 };
-                let valid = own.is_none_or(|e| !matches!(e.cells.get(&t.id), Some(Cell::Fail | Cell::Conflict)));
+                let valid = own.is_none_or(|e| {
+                    !matches!(e.cells.get(&t.id), Some(Cell::Fail | Cell::Conflict))
+                });
                 PooledTest {
                     id: t.id.clone(),
                     author: t.author.clone(),
@@ -466,7 +515,8 @@ mod tests {
 
     #[test]
     fn test_edits_only_count_existing_test_files() {
-        let diff = b"diff --git a/tests/a.cpp b/tests/a.cpp\n--- a/tests/a.cpp\n+++ b/tests/a.cpp\n\
+        let diff =
+            b"diff --git a/tests/a.cpp b/tests/a.cpp\n--- a/tests/a.cpp\n+++ b/tests/a.cpp\n\
 diff --git a/tests/new_case.cpp b/tests/new_case.cpp\nnew file mode 100644\n\
 diff --git a/src/lib.cpp b/src/lib.cpp\n--- a/src/lib.cpp\n+++ b/src/lib.cpp\n";
         assert_eq!(test_file_edits(diff), vec!["tests/a.cpp".to_string()]);

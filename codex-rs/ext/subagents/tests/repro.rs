@@ -34,7 +34,11 @@ fn report_json(home: &Path, id: &str) -> serde_json::Value {
 }
 
 fn assert_clean(repo: &Path, scratch_root: &Path, id: &str) {
-    assert_eq!(extra_worktrees(repo), Vec::<String>::new(), "worktrees left behind");
+    assert_eq!(
+        extra_worktrees(repo),
+        Vec::<String>::new(),
+        "worktrees left behind"
+    );
     assert_eq!(byteask_refs(repo), "", "snapshot ref left behind");
     assert!(
         !scratch_root.join("byteask-subagents").join(id).exists(),
@@ -76,7 +80,10 @@ async fn tests_are_qualified_frozen_delivered_and_kept_out_of_the_diff() {
 
     // The main agent keeps working; the tests arrive as a message while it runs.
     let msg = wait_for_delivery(&host).await;
-    assert!(msg.contains("independent reproduction tests are ready"), "{msg}");
+    assert!(
+        msg.contains("independent reproduction tests are ready"),
+        "{msg}"
+    );
     assert!(msg.contains("they fail when run"), "{msg}");
     assert!(msg.contains("Tests: add"), "{msg}");
     let script = between(&msg, "`sh ", "`").to_string();
@@ -85,7 +92,10 @@ async fn tests_are_qualified_frozen_delivered_and_kept_out_of_the_diff() {
     // Against the buggy tree the frozen tests fail; after the fix they pass. The real tree
     // is never touched by the script.
     let run = |label: &str| {
-        let out = std::process::Command::new("sh").arg(&script).output().expect("run script");
+        let out = std::process::Command::new("sh")
+            .arg(&script)
+            .output()
+            .expect("run script");
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         assert!(text.contains(label), "expected {label}: {text}");
     };
@@ -100,8 +110,15 @@ async fn tests_are_qualified_frozen_delivered_and_kept_out_of_the_diff() {
     assert!(repo.join("tests/repro_add.sh").exists());
     orch.finalize().await;
 
-    assert!(!repo.join("tests/repro_add.sh").exists(), "frozen tests removed from the real tree");
-    assert_eq!(read(&repo, "calc.sh"), CALC.replace(BUG_LINE, FIX_GOOD), "root's fix kept");
+    assert!(
+        !repo.join("tests/repro_add.sh").exists(),
+        "frozen tests removed from the real tree"
+    );
+    assert_eq!(
+        read(&repo, "calc.sh"),
+        CALC.replace(BUG_LINE, FIX_GOOD),
+        "root's fix kept"
+    );
     assert_eq!(git(&repo, &["status", "--porcelain"]).trim(), "M calc.sh");
     let r = report_json(&home, "r1");
     assert_eq!(r["leaked_tests_removed"], true);
@@ -121,7 +138,10 @@ async fn tests_that_pass_on_the_starting_code_are_dropped() {
         // Checks existing behaviour (mul), so it already passes: not discriminating. No patch
         // file either: the tests are taken from the writer's worktree.
         write(&spec.cwd, "tests/repro_mul.sh", SUITE);
-        Some("BYTEASK_REPORT {\"build\": \"sh build.sh\", \"run\": \"sh tests/repro_mul.sh\"}".to_string())
+        Some(
+            "BYTEASK_REPORT {\"build\": \"sh build.sh\", \"run\": \"sh tests/repro_mul.sh\"}"
+                .to_string(),
+        )
     })));
     let orch = Orchestration::start(
         params(&repo, &home, settings(&scratch), "r2"),
@@ -135,11 +155,17 @@ async fn tests_that_pass_on_the_starting_code_are_dropped() {
     orch.finalize().await;
     let r = report_json(&home, "r2");
     assert!(
-        r["repro"]["note"].as_str().unwrap_or("").contains("not discriminating"),
+        r["repro"]["note"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not discriminating"),
         "{}",
         r["repro"]["note"]
     );
-    assert!(host.root_messages.lock().unwrap().is_empty(), "nothing delivered");
+    assert!(
+        host.root_messages.lock().unwrap().is_empty(),
+        "nothing delivered"
+    );
     assert_clean(&repo, &scratch, "r2");
 }
 
@@ -183,9 +209,13 @@ async fn the_step_cap_interrupts_the_writer() {
     let counters = Arc::new(StepCounters::default());
     let mut s = settings(&scratch);
     s.repro_max_steps = 5;
-    let orch = Orchestration::start(params(&repo, &home, s, "r4"), host.clone(), counters.clone())
-        .await
-        .expect("start");
+    let orch = Orchestration::start(
+        params(&repo, &home, s, "r4"),
+        host.clone(),
+        counters.clone(),
+    )
+    .await
+    .expect("start");
     // Simulate model requests reported by the token-usage hook.
     for _ in 0..50 {
         counters.bump("child-1");

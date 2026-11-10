@@ -69,7 +69,8 @@ fn near_only() -> bool {
 }
 
 /// The words of the near-only note; the verdict (gate `result`) reads them to say what ran.
-pub(crate) const NEAR_ONLY_NOTE: &str = "this check builds and runs only the nearest tests' programs";
+pub(crate) const NEAR_ONLY_NOTE: &str =
+    "this check builds and runs only the nearest tests' programs";
 
 /// `BYTEASK_FINISH_CHECK_UNCOVERED`: a change no target compiles is reported as not covered (never PASS).
 fn uncovered() -> bool {
@@ -141,7 +142,15 @@ pub(crate) async fn finish_check(
 
     // 2. The change.
     let short = &snapshot.head[..snapshot.head.len().min(10)];
-    let changes = match symbols::changes(root, &snapshot.head, format!("session-start commit {short}"), None, None).await {
+    let changes = match symbols::changes(
+        root,
+        &snapshot.head,
+        format!("session-start commit {short}"),
+        None,
+        None,
+    )
+    .await
+    {
         Ok(changes) => changes,
         Err(err) => return SuiteRun::NotChecked(format!("could not read the change ({err})")),
     };
@@ -153,7 +162,10 @@ pub(crate) async fn finish_check(
         .files
         .iter()
         .filter(|f| {
-            let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let name = f
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             name == "CMakeLists.txt" || name.ends_with(".cmake")
         })
         .cloned()
@@ -189,27 +201,37 @@ pub(crate) async fn finish_check(
     // The local build graph's selection always runs: it is the fallback, and its count is the
     // comparison when ByteAsk Context's select_tests chooses instead.
     let sel = select::select(&model, &changes).await;
-    let picked = match tokio::time::timeout(left(), context::pick(root, &snapshot.head, &model)).await {
-        Ok(Some(Ok(pick))) => Some(pick),
-        Ok(Some(Err(why))) => {
-            out.notes.push(format!("ByteAsk Context select_tests not used: {why}"));
-            None
-        }
-        Ok(None) => None,
-        Err(_) => {
-            out.notes.push("ByteAsk Context select_tests not used: no answer within the time limit".to_string());
-            None
-        }
-    };
+    let picked =
+        match tokio::time::timeout(left(), context::pick(root, &snapshot.head, &model)).await {
+            Ok(Some(Ok(pick))) => Some(pick),
+            Ok(Some(Err(why))) => {
+                out.notes
+                    .push(format!("ByteAsk Context select_tests not used: {why}"));
+                None
+            }
+            Ok(None) => None,
+            Err(_) => {
+                out.notes.push(
+                    "ByteAsk Context select_tests not used: no answer within the time limit"
+                        .to_string(),
+                );
+                None
+            }
+        };
     // The graph is blind for this change when a changed header has no includer it can see (a macro
     // or generated include it may miss) or its include scan was cut short. A changed source file no
     // target compiles is not blindness: no registered test can contain it.
-    let graph_blind = sel.affected.unmapped.iter().any(|f| super::is_header(f)) || sel.affected.scan_truncated;
+    let graph_blind =
+        sel.affected.unmapped.iter().any(|f| super::is_header(f)) || sel.affected.scan_truncated;
     let combined = picked
         .as_ref()
         .map(|pick| context::combine(&pick.tests, &sel.tier3, graph_blind));
     let (mut tests, mut plan, compile_only) = match (&picked, &combined) {
-        (Some(pick), Some((tests, _))) => (tests.clone(), tree::plan_targets(&model, tests), pick.targets.clone()),
+        (Some(pick), Some((tests, _))) => (
+            tests.clone(),
+            tree::plan_targets(&model, tests),
+            pick.targets.clone(),
+        ),
         _ => (
             sel.tier3.clone(),
             tree::plan_targets(&model, &sel.tier3),
@@ -258,8 +280,16 @@ pub(crate) async fn finish_check(
         out.notes.push(warning.clone());
     }
     if !sel.affected.unmapped.is_empty() {
-        let files: Vec<String> = sel.affected.unmapped.iter().map(|f| model.rel(f).to_string()).collect();
-        out.notes.push(format!("not compiled by any target, so not checked: {}", tree::list(&files, 4)));
+        let files: Vec<String> = sel
+            .affected
+            .unmapped
+            .iter()
+            .map(|f| model.rel(f).to_string())
+            .collect();
+        out.notes.push(format!(
+            "not compiled by any target, so not checked: {}",
+            tree::list(&files, 4)
+        ));
         // No changed file reaches any target at all (no target lists it, and no file a target compiles
         // includes it, sources included: unity builds), so the tests that run here may not exercise the change.
         if uncovered()
@@ -277,7 +307,9 @@ pub(crate) async fn finish_check(
 
     // 5. Build exactly those, incrementally.
     let ctx = Ctx {
-        log: scratch.join("logs").join(format!("finish-{}.log", millis())),
+        log: scratch
+            .join("logs")
+            .join(format!("finish-{}.log", millis())),
         jobs: exec::default_jobs(),
         test_timeout: TEST_TIMEOUT,
         cancel,
@@ -376,7 +408,11 @@ pub(crate) async fn finish_check(
             }
         }
     } else if plan.build_all || !plan.targets.is_empty() {
-        let to_build = if plan.build_all { Vec::new() } else { plan.targets.clone() };
+        let to_build = if plan.build_all {
+            Vec::new()
+        } else {
+            plan.targets.clone()
+        };
         let built = exec::build(&ctx, &model, &model.build_dir, &to_build).await;
         out.notes.extend(built.waited.clone());
         if built.cancelled || built.timed_out {
@@ -411,7 +447,9 @@ pub(crate) async fn finish_check(
         return SuiteRun::Ran;
     }
     if left() < MIN_TEST_TIME {
-        return SuiteRun::NotChecked(format!("the build used the check's time limit ({limit}s) before the tests could run"));
+        return SuiteRun::NotChecked(format!(
+            "the build used the check's time limit ({limit}s) before the tests could run"
+        ));
     }
     let names: Vec<String> = tests.iter().map(|&i| model.tests[i].name.clone()).collect();
     let items = vec![RunItem::Ctest {
@@ -443,8 +481,16 @@ pub(crate) async fn finish_check(
         .collect();
     out.notes.push(format!(
         "tests: {passed} passed{}{} of {} ({command}, {:.1}s)",
-        if failing.is_empty() { String::new() } else { format!(", {} FAILED", failing.len()) },
-        if flaky > 0 { format!(", {flaky} flaky (passed on the re-run)") } else { String::new() },
+        if failing.is_empty() {
+            String::new()
+        } else {
+            format!(", {} FAILED", failing.len())
+        },
+        if flaky > 0 {
+            format!(", {flaky} flaky (passed on the re-run)")
+        } else {
+            String::new()
+        },
         ran.results.len(),
         ran.secs
     ));
@@ -540,7 +586,13 @@ fn build_failed(
     let shown = if built.errors.is_empty() {
         "no recognised compiler error".to_string()
     } else {
-        built.errors.iter().take(6).cloned().collect::<Vec<_>>().join(" | ")
+        built
+            .errors
+            .iter()
+            .take(6)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" | ")
     };
     out.problems.push(Problem {
         kind: ProblemKind::Build,
@@ -550,7 +602,8 @@ fn build_failed(
             log.display()
         ),
     });
-    out.notes.push("tests: not run — the build fails".to_string());
+    out.notes
+        .push("tests: not run — the build fails".to_string());
     SuiteRun::Ran
 }
 

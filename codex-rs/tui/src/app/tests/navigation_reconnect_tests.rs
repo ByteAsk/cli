@@ -3,10 +3,11 @@
 use super::active_reconnect::drain_history;
 use super::disconnect::serve_reconnect_requests;
 use super::*;
-use crate::app::reconnect::ReconnectPresentation;
 use crate::app::reconnect::reconnect;
 use crate::app_event::AgentsOverviewThreadRefresh;
+use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_server_session::ThreadParamsMode;
+use crate::bottom_pane::BottomPaneView;
 use codex_app_server_client::AppServerEvent;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -59,7 +60,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                     vec![test_turn(
                         "cached",
                         TurnStatus::Completed,
-                        vec![ThreadItem::Plan {
+                        vec![ThreadItemPayload::Plan {
                             id: "cached-plan".into(),
                             text: "Cached previous conversation".into(),
                         }],
@@ -128,8 +129,13 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             .map(|thread| Ok((ThreadId::from_string(&thread.id)?, Some(thread.clone()))))
             .collect::<Result<HashMap<_, _>>>()?;
         app.agents_overview.threads = stale_threads.clone();
+        app.agents_overview
+            .last_messages
+            .insert(selected, "Pre-disconnect answer".into());
         app.agents_overview.initialized = overview_initialized;
-        let view = app.agents_overview_view(
+        // This task was unarchived elsewhere while disconnected.
+        app.agents_overview.removed_threads.insert(added);
+        let mut view = app.agents_overview_view(
             stale.clone(),
             Some(if previous_thread.is_some() {
                 vanished
@@ -137,10 +143,20 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                 selected
             }),
         );
+        view.handle_key_event(KeyCode::Char('r').into());
+        view.handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        view.handle_paste("Keep this task draft!".into());
         app.agents_overview.visible_thread_ids = view.thread_ids();
         app.chat_widget.show_bottom_pane_view(Box::new(view));
-        app.agents_overview.view_state.lock().unwrap().input = "Keep this task draft".into();
-        app.agents_overview.view_state.lock().unwrap().renaming = previous_thread.is_some();
+        let draft = |app: &App| {
+            app.agents_overview
+                .view_state
+                .lock()
+                .unwrap()
+                .input
+                .text()
+                .to_string()
+        };
         let stale_request = Uuid::new_v4();
         app.agents_overview.request_id = Some(stale_request);
         app.agents_overview.refresh_pending = true;
@@ -153,8 +169,21 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             socket_path: codex_utils_absolute_path::AbsolutePathBuf::try_from(socket_path.clone())?,
         };
         app.app_server_target = AppServerTarget::LocalDaemon {
+            allow_embedded_fallback: true,
             endpoint: endpoint.clone(),
         };
+        let interrupted_setup = previous_thread.is_none() && !overview_initialized;
+        if interrupted_setup {
+            let preset = codex_utils_approval_presets::builtin_approval_presets()
+                .into_iter()
+                .find(|preset| preset.id == "auto")
+                .expect("auto preset");
+            app.windows_sandbox.pending_setup =
+                Some((WindowsSandboxEnableMode::Elevated, preset, None));
+            app.windows_sandbox.setup_started_at = Some(Instant::now());
+        } else if previous_thread.is_none() {
+            app.chat_widget.windows_sandbox_elevated_setup_complete = true;
+        }
         let available = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let server_available = Arc::clone(&available);
         let restored_previous = previous_thread
@@ -169,6 +198,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                 let socket = tokio_tungstenite::accept_async(stream).await?;
                 methods.extend(serve_reconnect_requests(socket, |request| std::future::ready({
                     match request.method.as_str() {
+                        "config/read" => Some(json!({"error": {"code": -32601, "message": "unsupported"}})),
                         "thread/loaded/list" if connection == 0 => None,
                         "thread/resume" if connection == 1 && previous_thread.is_some() => None,
                         "thread/resume" if request.params.as_ref().unwrap()["threadId"] != child.to_string() && !server_available.load(std::sync::atomic::Ordering::SeqCst) => Some(json!({"error": {"code": -32600, "message": "thread no longer exists"}})),
@@ -221,6 +251,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             Ok::<_, color_eyre::Report>(methods)
         });
         let mut session = AppServerSession::new(
+            crate::backend_id::BackendId::new(),
             crate::connect_remote_app_server(endpoint).await?,
             ThreadParamsMode::Embedded,
         );
@@ -234,8 +265,16 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
                 .is_err()
         );
         let disconnected = session.next_event().await.unwrap();
-        app.handle_app_server_event(&session, disconnected).await;
+        // A shutdown error can cover the initial command center when its first New fails.
+        if previous_thread.is_none() && overview_initialized {
+            app.show_agents_overview_error(
+                Some("Codex's background server is shutting down"),
+                "Waiting for active turns.".into(),
+            );
+        }
+        app.handle_backend_event(&session, disconnected).await;
         assert!(app.reconnect.offline);
+        assert!(app.agents_overview.last_messages.is_empty());
         assert!(refresh.await.unwrap_err().is_cancelled());
         assert_eq!(
             (
@@ -248,25 +287,18 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             &session,
             stale_request,
             Ok(AgentsOverviewThreadRefresh {
+                cleared_unread: Vec::new(),
+                last_messages: HashMap::new(),
                 threads: HashMap::new(),
                 recent_seed_complete: false,
+                discovery: None,
+                pinned_thread_ids: None,
             }),
         );
         assert_eq!(app.agents_overview.visible_thread_ids.len(), 2);
         let mut tui = crate::tui::test_support::make_test_tui()?;
-        app.handle_tui_event(
-            &mut tui,
-            &mut session,
-            TuiEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        )
-        .await?;
-        app.handle_tui_event(&mut tui, &mut session, TuiEvent::Paste("!".into()))
-            .await?;
-        assert_eq!(
-            app.agents_overview.view_state.lock().unwrap().input,
-            "Keep this task draft!"
-        );
-        if previous_thread.is_none() {
+        assert_eq!(draft(&app), "Keep this task draft!");
+        if previous_thread.is_none() && !overview_initialized {
             assert_snapshot!(
                 "daemon_command_center_reconnecting",
                 render_bottom_popup(&app.chat_widget, /*width*/ 100)
@@ -283,16 +315,47 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             );
         }
         let connected = reconnect(
+            session.backend_id(),
             app.app_server_target.clone(),
             app.config.clone(),
+            app.local_settings.clone(),
             previous_thread,
             /*remote_cwd*/ None,
             session.thread_tool_transport(),
-            ReconnectPresentation::Overview,
+            app.reconnect.presentation,
         )
         .await?;
-        app.finish_reconnect(&mut tui, &mut session, &mut events, connected)
-            .await?;
+        app.finish_reconnect(
+            &mut tui,
+            &mut session,
+            &mut events,
+            connected,
+            CODEX_CLI_VERSION,
+        )
+        .await?;
+        if interrupted_setup {
+            assert!(app.windows_sandbox.pending_setup.is_none());
+            assert!(app.windows_sandbox.setup_started_at.is_none());
+            let mut retained = Vec::new();
+            let mut saw_warning = false;
+            while let Ok(event) = events.try_recv() {
+                if let AppEvent::InsertHistoryCell(cell) = &event {
+                    let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 100));
+                    if rendered.contains("Windows sandbox setup was interrupted") {
+                        insta::assert_snapshot!(rendered, @"■ Windows sandbox setup was interrupted. Restart Codex before using Agent mode.");
+                        saw_warning = true;
+                        continue;
+                    }
+                }
+                retained.push(event);
+            }
+            assert!(saw_warning);
+            for event in retained {
+                app.app_event_tx.send(event);
+            }
+        } else if previous_thread.is_none() {
+            assert!(app.chat_widget.windows_sandbox_elevated_setup_complete);
+        }
         assert!(!app.reconnect.offline);
         assert_eq!(app.current_displayed_thread_id(), previous_thread);
 
@@ -334,7 +397,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
         assert!(!app.agents_overview.visible_thread_ids.contains(&vanished));
         assert!(app.agents_overview.visible_thread_ids.contains(&added));
         assert_eq!(
-            app.agents_overview.view_state.lock().unwrap().input,
+            draft(&app),
             if previous_thread.is_some() {
                 ""
             } else {
@@ -356,7 +419,7 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             .await?;
             assert!(
                 !std::iter::from_fn(|| events.try_recv().ok())
-                    .any(|event| matches!(event, AppEvent::DispatchAgentsOverviewTask { .. }))
+                    .any(|event| matches!(event, AppEvent::NewAgentsOverviewSession { .. }))
             );
         }
         assert!(
@@ -371,8 +434,15 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             &session,
             stale_request,
             Ok(AgentsOverviewThreadRefresh {
-                threads: stale_threads,
+                cleared_unread: Vec::new(),
+                last_messages: HashMap::new(),
+                threads: stale_threads
+                    .into_iter()
+                    .map(|(id, thread)| (id, thread.map(|thread| (thread, false))))
+                    .collect(),
                 recent_seed_complete: true,
+                discovery: None,
+                pinned_thread_ids: None,
             }),
         );
         assert!(!app.agents_overview.visible_thread_ids.contains(&vanished));
@@ -390,7 +460,19 @@ async fn reconnect_daemon_command_center_after_socket_replacement_without_a_conv
             let history = drain_history(&mut app, &mut tui, &mut session, &mut events).await?;
             assert!(history.contains("Cached previous conversation"));
 
-            let content = &history[history.find("Cached previous conversation").unwrap()..];
+            app.handle_tui_event(
+                &mut tui,
+                &mut session,
+                TuiEvent::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            )
+            .await?;
+            let preserved_history =
+                drain_history(&mut app, &mut tui, &mut session, &mut events).await?;
+            assert_eq!(preserved_history, history);
+
+            let content = &preserved_history[preserved_history
+                .find("Cached previous conversation")
+                .unwrap()..];
             assert_snapshot!(
                 "reconnected_unavailable_conversation",
                 format!(

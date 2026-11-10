@@ -1,3 +1,4 @@
+use crate::ModelCatalogOriginator;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::openai_models::ModelInfo;
@@ -9,6 +10,7 @@ use std::io;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tracing::info;
@@ -17,12 +19,18 @@ use tracing::info;
 ///
 /// Implementations own cache freshness and lookup partitioning. [`ModelsCache::load`] must not
 /// return stale entries or entries for a different client version. A shared backend must also keep
-/// catalogs for different providers and tenants separate, typically through configuration captured
-/// by the implementation.
+/// catalogs for different providers and tenants separate. The manager also validates the entry
+/// identity against the current endpoint before using it.
 ///
 /// Cache failures are non-fatal. The models manager logs them and falls back to the configured
 /// models endpoint.
 pub trait ModelsCache: fmt::Debug + Send + Sync {
+    /// Return a separate cache partition, or `None` to disable storage for this originator.
+    /// Implementations must isolate loads, writes, and TTL renewal from the default catalog.
+    fn for_originator(&self, _originator: ModelCatalogOriginator) -> Option<Arc<dyn ModelsCache>> {
+        None
+    }
+
     /// Loads a fresh entry for `client_version`.
     ///
     /// Returns `Ok(None)` for a normal miss, including an absent, stale, or version-mismatched
@@ -42,16 +50,18 @@ pub trait ModelsCache: fmt::Debug + Send + Sync {
         entry: &'a ModelsCacheEntry,
     ) -> ModelsCacheFuture<'a, Result<(), ModelsCacheError>>;
 
-    /// Extends the freshness of the entry for `client_version` without changing its catalog.
+    /// Extends freshness only if the stored version, identity, and ETag match.
     ///
     /// The models manager calls this after the endpoint confirms that the cached ETag is still
-    /// current. Implementations must preserve the models, ETag, and client version. This operation
+    /// current. Implementations must preserve the models, identity, ETag, and client version. This operation
     /// cannot be expressed in terms of [`ModelsCache::load`], because `load` intentionally omits
     /// expired entries. File-backed implementations can read and revalidate the stored entry
     /// directly, while backends with native TTL support can extend the entry in place.
     fn refresh_ttl<'a>(
         &'a self,
         client_version: &'a str,
+        identity: &'a str,
+        etag: &'a str,
     ) -> ModelsCacheFuture<'a, Result<(), ModelsCacheError>>;
 }
 
@@ -62,6 +72,9 @@ pub type ModelsCacheFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelsCacheEntry {
     /// Time when the catalog was fetched or last revalidated with the models endpoint.
+    ///
+    /// `DateTime::<Utc>::MIN_UTC` marks an invalidated catalog, both in memory and in storage.
+    /// The manager rejects it even if the backend uses native TTL.
     pub fetched_at: DateTime<Utc>,
     /// Endpoint ETag used to revalidate the catalog without downloading an unchanged payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -71,6 +84,9 @@ pub struct ModelsCacheEntry {
     /// The models manager rejects entries whose value is absent or differs from its current version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
+    /// Opaque provider and auth identity. Unscoped legacy entries are cache misses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
     /// Models returned by the catalog endpoint.
     #[serde(
         deserialize_with = "codex_protocol::openai_models::deserialize_model_infos_with_legacy_base"
@@ -133,6 +149,14 @@ impl FileModelsCache {
 }
 
 impl ModelsCache for FileModelsCache {
+    fn for_originator(&self, originator: ModelCatalogOriginator) -> Option<Arc<dyn ModelsCache>> {
+        Some(Arc::new(Self::new(
+            self.cache_path
+                .with_extension(format!("{}.json", originator.as_str())),
+            self.cache_ttl,
+        )))
+    }
+
     fn load<'a>(
         &'a self,
         client_version: &'a str,
@@ -151,14 +175,20 @@ impl ModelsCache for FileModelsCache {
 
     fn refresh_ttl<'a>(
         &'a self,
-        _client_version: &'a str,
+        client_version: &'a str,
+        identity: &'a str,
+        etag: &'a str,
     ) -> ModelsCacheFuture<'a, Result<(), ModelsCacheError>> {
         Box::pin(async move {
             let mut entry = load_file(&self.cache_path)
                 .await
                 .map_err(cache_error)?
                 .ok_or_else(|| ModelsCacheError::new("cache not found"))?;
-            if entry.is_fresh(self.cache_ttl / 2) {
+            if entry.client_version.as_deref() != Some(client_version)
+                || entry.identity.as_deref() != Some(identity)
+                || entry.etag.as_deref() != Some(etag)
+                || entry.is_fresh(self.cache_ttl / 2)
+            {
                 return Ok(());
             }
             entry.fetched_at = Utc::now();

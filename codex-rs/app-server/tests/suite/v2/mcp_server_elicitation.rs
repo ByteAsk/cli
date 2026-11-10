@@ -64,7 +64,7 @@ use rmcp::model::MetaObject;
 use rmcp::model::PrimitiveSchemaDefinition;
 use rmcp::model::RequestMetaObject;
 use rmcp::model::ServerCapabilities;
-use rmcp::model::ServerInfo;
+use rmcp::model::ServerConfig;
 use rmcp::model::ServerRequest as McpServerRequest;
 use rmcp::model::Tool;
 use rmcp::model::ToolAnnotations;
@@ -521,6 +521,7 @@ async fn initialize_websocket_client(
                 version: "0.1.0".to_string(),
             },
             capabilities: Some(InitializeCapabilities {
+                required_human_approval: false,
                 experimental_api: true,
                 extensions: supports_openai_form_elicitation
                     .then(|| HashMap::from([("openai/form".to_string(), serde_json::json!({}))])),
@@ -608,6 +609,7 @@ async fn start_elicitation_services(
 
 struct ElicitationRoundTripFixture {
     mcp: TestAppServer,
+    _codex_home: TempDir,
     response_mock: ResponseMock,
     _responses_server: wiremock::MockServer,
     scenario: ElicitationScenario,
@@ -792,6 +794,7 @@ impl ElicitationRoundTripFixture {
 
         Ok(Self {
             mcp,
+            _codex_home: codex_home,
             response_mock,
             _responses_server: responses_server,
             scenario,
@@ -916,13 +919,22 @@ impl ElicitationRoundTripFixture {
                     "connector_id": CONNECTOR_ID,
                     "connector_name": CONNECTOR_NAME,
                     "connected_account_email": CONNECTED_ACCOUNT_EMAIL,
-                    "tool_description": "Confirm a calendar action.",
                     "annotations": {
                         "destructive_hint": false,
                         "open_world_hint": false,
                         "read_only_hint": true,
                     },
                 }),
+            );
+            assert!(
+                guardian_request
+                    .message_input_texts("user")
+                    .iter()
+                    .any(|text| {
+                        text.starts_with("<guardian_tool_descriptions>")
+                            && text.contains("Confirm a calendar action.")
+                            && text.ends_with("</guardian_tool_descriptions>")
+                    })
             );
         }
 
@@ -1037,8 +1049,8 @@ impl ServerHandler for ElicitationAppsMcpServer {
         Ok(self.get_info())
     }
 
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(rmcp::model::ProtocolVersion::V_2025_06_18)
     }
 

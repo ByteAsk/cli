@@ -60,7 +60,8 @@ fn budget(root: &std::path::Path) -> Duration {
 
 /// Tests: a time limit for one project root (the environment is shared by parallel tests).
 #[cfg(test)]
-pub(crate) static TEST_BUDGETS: std::sync::Mutex<Vec<(PathBuf, Duration)>> = std::sync::Mutex::new(Vec::new());
+pub(crate) static TEST_BUDGETS: std::sync::Mutex<Vec<(PathBuf, Duration)>> =
+    std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
 fn test_budget(root: &std::path::Path) -> Option<Duration> {
@@ -150,7 +151,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for FinishCheckTool {
 }
 
 impl FinishCheckTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let _: Args = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -165,7 +169,10 @@ impl FinishCheckTool {
     }
 
     /// [`Self::check`] with another time limit (the automatic review's own, [`ENV_REVIEW_BUDGET`]).
-    pub(crate) async fn check_within(&self, limit: Option<Duration>) -> (String, check_result::CheckResult) {
+    pub(crate) async fn check_within(
+        &self,
+        limit: Option<Duration>,
+    ) -> (String, check_result::CheckResult) {
         let snapshot = match &self.workflow {
             Some(workflow) => workflow.snapshot().await,
             None => head_snapshot(&self.cwd).await.map(Arc::new),
@@ -184,15 +191,17 @@ impl FinishCheckTool {
         let changes = gate::agent_changes(&snapshot).await;
         let budget = limit.unwrap_or_else(|| budget(&self.cwd));
         // Context's related places (switch `finish_related`), beside the build and tests.
-        let related = codex_core::byteask_context::related_changes_for(&snapshot.root).map(|related| {
-            let root = snapshot.root.clone();
-            let head = snapshot.head.clone();
-            tokio::spawn(async move {
-                let input = crate::testsel::context::change(&root, &head).await?;
-                related(input).await
-            })
-        });
-        let related_until = tokio::time::Instant::now() + codex_core::byteask_context::related_timeout();
+        let related =
+            codex_core::byteask_context::related_changes_for(&snapshot.root).map(|related| {
+                let root = snapshot.root.clone();
+                let head = snapshot.head.clone();
+                tokio::spawn(async move {
+                    let input = crate::testsel::context::change(&root, &head).await?;
+                    related(input).await
+                })
+            });
+        let related_until =
+            tokio::time::Instant::now() + codex_core::byteask_context::related_timeout();
         let settings = gate::GateSettings {
             gate: false,
             impact: false,
@@ -307,9 +316,16 @@ fn related_section(answer: &str) -> String {
             return RELATED_NONE.to_string();
         }
     }
-    let mut shown: String = answer.lines().take(RELATED_LINES).collect::<Vec<_>>().join("\n");
+    let mut shown: String = answer
+        .lines()
+        .take(RELATED_LINES)
+        .collect::<Vec<_>>()
+        .join("\n");
     if shown.len() > RELATED_CHARS {
-        let cut = (0..=RELATED_CHARS).rev().find(|i| shown.is_char_boundary(*i)).unwrap_or(0);
+        let cut = (0..=RELATED_CHARS)
+            .rev()
+            .find(|i| shown.is_char_boundary(*i))
+            .unwrap_or(0);
         shown.truncate(cut);
     }
     if shown.len() < answer.len() {
@@ -322,7 +338,8 @@ fn related_section(answer: &str) -> String {
 }
 
 /// An empty answer, said as such.
-const RELATED_NONE: &str = "\nRelated places: ByteAsk Context's find_related_changes named none for this change.\n";
+const RELATED_NONE: &str =
+    "\nRelated places: ByteAsk Context's find_related_changes named none for this change.\n";
 
 /// Context gave no answer (an error or no answer in time), said in one line.
 fn related_missing(why: &str) -> String {
@@ -367,7 +384,8 @@ fn review_budget() -> Option<Duration> {
 /// `BYTEASK_FINISH_REVIEW_OWN_TESTS`: the message when the agent's own tests passed on its final change.
 const REVIEW_OWN_HEAD: &str = "Automatic finish check: you ended your turn without running cpp_finish_check on \
     your final change. Your own test run on that change (";
-const REVIEW_OWN_MID: &str = ") passed after a build of it, so the build and tests were not run again.";
+const REVIEW_OWN_MID: &str =
+    ") passed after a build of it, so the build and tests were not run again.";
 const REVIEW_OWN_TAIL: &str = "Before you finish: for each related place it lists, either make the same change \
     there or say in your final message why it needs none. If nothing in it needs action, finish.";
 
@@ -431,10 +449,15 @@ pub(crate) async fn finish_review(
             *state.reviews.entry(turn_id.to_string()).or_insert(0) += 1;
             state.checked = Some(changes.content_key.clone());
         }
-        crate::report::log_review("automatic-own-tests", related.is_some(), started.elapsed().as_millis(), &command);
-        let message = related
-            .as_ref()
-            .map(|section| format!("{REVIEW_OWN_HEAD}`{command}`{REVIEW_OWN_MID}\n{section}\n{REVIEW_OWN_TAIL}"));
+        crate::report::log_review(
+            "automatic-own-tests",
+            related.is_some(),
+            started.elapsed().as_millis(),
+            &command,
+        );
+        let message = related.as_ref().map(|section| {
+            format!("{REVIEW_OWN_HEAD}`{command}`{REVIEW_OWN_MID}\n{section}\n{REVIEW_OWN_TAIL}")
+        });
         // `BYTEASK_FINISH_REVIEW_LOG`: the full message and its related places, per review.
         crate::report::log_review_message(
             "own-tests",
@@ -478,7 +501,13 @@ pub(crate) async fn finish_review(
                 .to_string()
         })
         .unwrap_or_default();
-    crate::report::log_review_message("check", true, started.elapsed().as_millis(), &message, &related);
+    crate::report::log_review_message(
+        "check",
+        true,
+        started.elapsed().as_millis(),
+        &message,
+        &related,
+    );
     crate::workflow::fragment("finish_review", message)
 }
 
@@ -516,7 +545,10 @@ fn place_related(text: &mut String, section: &str, first: bool) {
         text.push_str(section);
         return;
     }
-    match ["\nChecks: ", "\nNot checked: "].iter().find_map(|mark| text.find(mark)) {
+    match ["\nChecks: ", "\nNot checked: "]
+        .iter()
+        .find_map(|mark| text.find(mark))
+    {
         Some(at) => text.insert_str(at + 1, section.trim_start_matches('\n')),
         None => text.push_str(section),
     }
@@ -525,7 +557,11 @@ fn place_related(text: &mut String, section: &str, first: bool) {
 /// The "Checks:" notes, at most [`NOTES_CAP`] when `cap` (the rest counted, not listed).
 fn capped_notes(notes: &[String], cap: bool) -> String {
     if cap && notes.len() > NOTES_CAP {
-        format!("{}; and {} more not listed", notes[..NOTES_CAP].join("; "), notes.len() - NOTES_CAP)
+        format!(
+            "{}; and {} more not listed",
+            notes[..NOTES_CAP].join("; "),
+            notes.len() - NOTES_CAP
+        )
     } else {
         notes.join("; ")
     }
@@ -555,10 +591,16 @@ fn render(outcome: &gate::GateOutcome, budget: Duration) -> String {
         }
     }
     if !outcome.notes.is_empty() {
-        out.push_str(&format!("Checks: {}\n", capped_notes(&outcome.notes, related_first())));
+        out.push_str(&format!(
+            "Checks: {}\n",
+            capped_notes(&outcome.notes, related_first())
+        ));
     }
     if !outcome.not_checked.is_empty() {
-        out.push_str(&format!("Not checked: {}\n", outcome.not_checked.join("; ")));
+        out.push_str(&format!(
+            "Not checked: {}\n",
+            outcome.not_checked.join("; ")
+        ));
     }
     crate::impact::truncate_chars(out.trim_end(), 6_500)
 }

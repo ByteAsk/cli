@@ -1,6 +1,5 @@
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::EXTERNAL_AGENT_CONFIG_IMPORT_IN_PROGRESS_MESSAGE;
-use crate::legacy_core::config::Config;
 use crate::tui;
 use codex_app_server_protocol::ExternalAgentConfigDetectParams;
 use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
@@ -8,6 +7,7 @@ use codex_app_server_protocol::ExternalAgentConfigMigrationItem;
 use codex_app_server_protocol::ExternalAgentConfigMigrationItemType;
 use ratatui::prelude::Stylize as _;
 use ratatui::text::Line;
+use std::path::Path;
 
 use super::ExternalAgentConfigMigrationOutcome;
 use super::model::external_agent_config_migration_item_count;
@@ -18,8 +18,6 @@ use super::source::run_external_agent_config_source_prompt;
 
 pub(crate) const EXTERNAL_AGENT_CONFIG_MIGRATION_NO_ITEMS_MESSAGE: &str =
     "No compatible setup was found to import.";
-pub(crate) const EXTERNAL_AGENT_CONFIG_MIGRATION_REMOTE_UNAVAILABLE_MESSAGE: &str = "Import from other apps is unavailable in remote sessions. Start ByteAsk locally and run /import.";
-pub(crate) const EXTERNAL_AGENT_CONFIG_MIGRATION_DAEMON_UNAVAILABLE_MESSAGE: &str = "Import from other apps is unavailable while ByteAsk is connected to the local app-server daemon. Stop the daemon, restart ByteAsk, and run /import.";
 
 pub(crate) enum ExternalAgentConfigMigrationFlowOutcome {
     Started(Vec<Line<'static>>),
@@ -152,7 +150,11 @@ fn external_agent_config_migration_started_lines(
         ]
         .into(),
         vec!["  ".into(), "Imported setup will apply to new chats.".dim()].into(),
-        vec!["  ".into(), "Importing:".fg(crate::style::accent_color()).bold()].into(),
+        vec![
+            "  ".into(),
+            "Importing:".fg(crate::style::accent_color()).bold(),
+        ]
+        .into(),
     ];
     lines.extend(
         import_summaries
@@ -160,7 +162,8 @@ fn external_agent_config_migration_started_lines(
             .map(|(item_type, count, names)| {
                 let mut line = vec![
                     "    ".into(),
-                    external_agent_config_migration_type_label(item_type).fg(crate::style::accent_color()),
+                    external_agent_config_migration_type_label(item_type)
+                        .fg(crate::style::accent_color()),
                     ": ".into(),
                     count.to_string().green(),
                 ];
@@ -212,7 +215,13 @@ pub(crate) fn external_agent_config_migration_finished_lines(
         .into(),
     ];
     if !notification.item_type_results.is_empty() {
-        lines.push(vec!["  ".into(), "Results by type:".fg(crate::style::accent_color()).bold()].into());
+        lines.push(
+            vec![
+                "  ".into(),
+                "Results by type:".fg(crate::style::accent_color()).bold(),
+            ]
+            .into(),
+        );
         lines.extend(notification.item_type_results.iter().map(|type_result| {
             let failed_count = format!("{} failed", type_result.failures.len());
             let failed_count = if type_result.failures.is_empty() {
@@ -222,7 +231,8 @@ pub(crate) fn external_agent_config_migration_finished_lines(
             };
             vec![
                 "    ".into(),
-                external_agent_config_migration_type_label(type_result.item_type).fg(crate::style::accent_color()),
+                external_agent_config_migration_type_label(type_result.item_type)
+                    .fg(crate::style::accent_color()),
                 ": ".into(),
                 format!("{} imported", type_result.successes.len()).green(),
                 ", ".into(),
@@ -257,25 +267,18 @@ fn remaining_items_handoff(remaining_item_count: usize) -> Option<String> {
 pub(crate) async fn handle_external_agent_config_migration_prompt(
     tui: &mut tui::Tui,
     app_server: &mut AppServerSession,
-    config: &Config,
+    cwd: Option<&Path>,
 ) -> Result<ExternalAgentConfigMigrationFlowOutcome, String> {
-    if app_server.uses_remote_workspace() {
-        return Err(EXTERNAL_AGENT_CONFIG_MIGRATION_REMOTE_UNAVAILABLE_MESSAGE.to_string());
-    }
-    if !app_server.uses_embedded_app_server() {
-        return Err(EXTERNAL_AGENT_CONFIG_MIGRATION_DAEMON_UNAVAILABLE_MESSAGE.to_string());
-    }
     if app_server.external_agent_config_import_in_progress() {
         return Err(EXTERNAL_AGENT_CONFIG_IMPORT_IN_PROGRESS_MESSAGE.to_string());
     }
 
-    let cwd = config.cwd.to_path_buf();
     let mut detection = ExternalAgentConfigDetection::default();
     for source in ExternalAgentConfigMigrationSource::ALL {
         let response = match app_server
             .external_agent_config_detect(ExternalAgentConfigDetectParams {
                 include_home: true,
-                cwds: Some(vec![cwd.clone()]),
+                cwds: cwd.map(|cwd| vec![cwd.to_path_buf()]),
                 max_session_age_days: None,
                 max_sessions: None,
                 source: None,
@@ -287,7 +290,7 @@ pub(crate) async fn handle_external_agent_config_migration_prompt(
             Err(err) => {
                 tracing::warn!(
                     error = %err,
-                    cwd = %cwd.display(),
+                    cwd = ?cwd,
                     source = source.label(),
                     "failed to detect external agent config migrations"
                 );
@@ -362,7 +365,7 @@ pub(crate) async fn handle_external_agent_config_migration_prompt(
                     Err(err) => {
                         tracing::warn!(
                             error = %err,
-                            cwd = %cwd.display(),
+                            cwd = ?cwd,
                             "failed to import external agent config migration items"
                         );
                         error = Some(format!("Import failed: {err}"));

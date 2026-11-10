@@ -113,12 +113,13 @@ pub(super) fn render_device_code_login(
         lines.push("".into());
         lines.push(Line::from(vec![
             "  ".into(),
-            verification_url.as_str().fg(crate::style::accent_color()).underlined(),
+            verification_url
+                .as_str()
+                .fg(crate::style::accent_color())
+                .underlined(),
         ]));
         lines.push("".into());
-        lines.push(
-            "  2. Enter this one-time code (expires in 15 minutes)".into(),
-        );
+        lines.push("  2. Enter this one-time code (expires in 15 minutes)".into());
         lines.push("".into());
         lines.push(Line::from(vec![
             "  ".into(),

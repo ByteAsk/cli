@@ -14,8 +14,8 @@ pub mod itch50;
 pub mod normalize;
 pub mod synthetic;
 
-use byteask_replay::record::Framing;
 use byteask_replay::record::Frames;
+use byteask_replay::record::Framing;
 use serde_json::Value;
 use std::io::Read;
 
@@ -23,8 +23,12 @@ use std::io::Read;
 pub fn read_messages<R: Read>(reader: R) -> impl Iterator<Item = Result<itch50::Message, String>> {
     Frames::new(reader, Framing::U16Be).map(|f| match f {
         Err(e) => Err(e.to_string()),
-        Ok(frame) => itch50::decode(&frame.bytes)
-            .map_err(|e| format!("message {} (byte offset {}): {e}", frame.index, frame.offset)),
+        Ok(frame) => itch50::decode(&frame.bytes).map_err(|e| {
+            format!(
+                "message {} (byte offset {}): {e}",
+                frame.index, frame.offset
+            )
+        }),
     })
 }
 

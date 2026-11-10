@@ -531,7 +531,13 @@ impl PerfLabTool {
         })?;
         let saved = save_report(&json);
         Ok((
-            render(action, &self.lab.describe(), &json, &notes, saved.as_deref()),
+            render(
+                action,
+                &self.lab.describe(),
+                &json,
+                &notes,
+                saved.as_deref(),
+            ),
             lab_result(action, &json),
         ))
     }
@@ -622,7 +628,10 @@ pub(crate) fn lab_result(action: &str, j: &Value) -> CheckResult {
     match j["verdict"].as_str().unwrap_or("NOT_RUN") {
         "FASTER" => CheckResult::pass(TOOL_NAME, &summary("Measured, the candidate is faster")),
         "SLOWER" => CheckResult::pass(TOOL_NAME, &summary("Measured, the candidate is slower")),
-        "MIXED" => CheckResult::pass(TOOL_NAME, &summary("Measured, better on one metric and worse on another")),
+        "MIXED" => CheckResult::pass(
+            TOOL_NAME,
+            &summary("Measured, better on one metric and worse on another"),
+        ),
         "NO_CLAIM" => CheckResult::no_claim(TOOL_NAME, &summary("Inside the noise")),
         "REJECTED" => CheckResult::fail(TOOL_NAME, &summary("Rejected")),
         "INVALID" => CheckResult::not_run(

@@ -174,7 +174,13 @@ fn read_tail(path: &Path) -> String {
     let _ = f.read_to_end(&mut buf);
     String::from_utf8_lossy(&buf)
         .chars()
-        .map(|c| if c.is_control() && c != '\n' && c != '\t' { '?' } else { c })
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '?'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -222,7 +228,10 @@ fn finish_child(child: &mut Child, grace: Duration) -> String {
             _ => {
                 stop_group(child);
                 let _ = child.wait();
-                return format!("did not exit within {} ms after its input closed", grace.as_millis());
+                return format!(
+                    "did not exit within {} ms after its input closed",
+                    grace.as_millis()
+                );
             }
         }
     }
@@ -244,7 +253,9 @@ fn reader_thread(stdout: std::process::ChildStdout, max_line: usize, tx: mpsc::S
                             buf.pop();
                         }
                     } else if buf.len() > max_line {
-                        let _ = tx.send(Msg::Bad(format!("printed a line longer than {max_line} bytes")));
+                        let _ = tx.send(Msg::Bad(format!(
+                            "printed a line longer than {max_line} bytes"
+                        )));
                         return;
                     }
                     match String::from_utf8(buf.clone()) {
@@ -262,7 +273,10 @@ fn reader_thread(stdout: std::process::ChildStdout, max_line: usize, tx: mpsc::S
     });
 }
 
-fn writer_thread(mut stdin: std::process::ChildStdin, rx: mpsc::Receiver<String>) -> std::thread::JoinHandle<()> {
+fn writer_thread(
+    mut stdin: std::process::ChildStdin,
+    rx: mpsc::Receiver<String>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         for line in rx {
             if stdin
@@ -277,7 +291,11 @@ fn writer_thread(mut stdin: std::process::ChildStdin, rx: mpsc::Receiver<String>
     })
 }
 
-fn spawn(spec: &ProcessSpec, varied: &BTreeMap<String, String>, stderr: File) -> Result<Child, String> {
+fn spawn(
+    spec: &ProcessSpec,
+    varied: &BTreeMap<String, String>,
+    stderr: File,
+) -> Result<Child, String> {
     let argv = spec.launch.as_ref().unwrap_or(&spec.argv);
     let Some((program, args)) = argv.split_first() else {
         return Err("argv is empty".to_string());
@@ -297,7 +315,9 @@ fn spawn(spec: &ProcessSpec, varied: &BTreeMap<String, String>, stderr: File) ->
     if let Some(cwd) = &spec.cwd {
         cmd.current_dir(cwd);
     }
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(stderr);
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(stderr);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -441,7 +461,10 @@ fn drive(
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     let what = if Instant::now() >= deadline {
-                        format!("the whole run passed its {} ms limit", setup.limits.run.as_millis())
+                        format!(
+                            "the whole run passed its {} ms limit",
+                            setup.limits.run.as_millis()
+                        )
                     } else {
                         format!("no answer within {} ms", wait.as_millis())
                     };
@@ -485,7 +508,8 @@ fn drive(
         None => {
             let exit = finish_child(&mut child, Duration::from_secs(5));
             let summary = sim.summary();
-            let row = json!({"step": result.steps, "ev": "summary", "summary": summary, "exit": exit});
+            let row =
+                json!({"step": result.steps, "ev": "summary", "summary": summary, "exit": exit});
             match write_row(&row) {
                 Ok(()) => {
                     result.summary = Some(summary);

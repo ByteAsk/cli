@@ -42,7 +42,10 @@ fn file_read_by_command(cmd: &str) -> Option<(String, Option<String>)> {
     }
     let words: Vec<&str> = cmd.split_whitespace().collect();
     let prog = words.first()?.rsplit('/').next()?;
-    if !matches!(prog, "sed" | "cat" | "head" | "tail" | "nl" | "bat" | "less") {
+    if !matches!(
+        prog,
+        "sed" | "cat" | "head" | "tail" | "nl" | "bat" | "less"
+    ) {
         return None;
     }
     let path = words.last().copied().filter(|w| is_plain_path(w))?;
@@ -64,9 +67,14 @@ fn patch_paths(input: &str) -> Vec<String> {
     input
         .lines()
         .filter_map(|l| {
-            ["*** Update File: ", "*** Add File: ", "*** Delete File: ", "*** Move to: "]
-                .iter()
-                .find_map(|p| l.strip_prefix(p))
+            [
+                "*** Update File: ",
+                "*** Add File: ",
+                "*** Delete File: ",
+                "*** Move to: ",
+            ]
+            .iter()
+            .find_map(|p| l.strip_prefix(p))
         })
         .map(|p| p.trim().to_string())
         .filter(|p| is_plain_path(p))
@@ -85,7 +93,11 @@ pub(crate) fn working_set_note(items: &[ResponseItem]) -> Option<String> {
         let v = as_value(item);
         let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
         let name = v.get("name").and_then(Value::as_str).unwrap_or("");
-        let call_id = v.get("call_id").and_then(Value::as_str).unwrap_or("").to_string();
+        let call_id = v
+            .get("call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         match kind {
             "custom_tool_call" if name == "apply_patch" => {
                 let input = v.get("input").and_then(Value::as_str).unwrap_or("");
@@ -100,12 +112,22 @@ pub(crate) fn working_set_note(items: &[ResponseItem]) -> Option<String> {
                     .and_then(|a| serde_json::from_str(a).ok())
                     .unwrap_or(Value::Null);
                 if name == "read_file" {
-                    for t in args.get("targets").and_then(Value::as_array).into_iter().flatten() {
-                        let Some(path) = t.get("path").and_then(Value::as_str) else { continue };
+                    for t in args
+                        .get("targets")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let Some(path) = t.get("path").and_then(Value::as_str) else {
+                            continue;
+                        };
                         if !is_plain_path(path) || path.starts_with("spill:") {
                             continue;
                         }
-                        let range = match (t.get("offset").and_then(Value::as_u64), t.get("limit").and_then(Value::as_u64)) {
+                        let range = match (
+                            t.get("offset").and_then(Value::as_u64),
+                            t.get("limit").and_then(Value::as_u64),
+                        ) {
                             (Some(o), Some(l)) => Some(format!("{o}-{}", o + l.saturating_sub(1))),
                             _ => None,
                         };
@@ -124,7 +146,10 @@ pub(crate) fn working_set_note(items: &[ResponseItem]) -> Option<String> {
                     Some(other) => other.to_string(),
                     None => String::new(),
                 };
-                let Some(footer) = text.rsplit('\n').find(|l| l.trim_start().starts_with("[byteask:")) else {
+                let Some(footer) = text
+                    .rsplit('\n')
+                    .find(|l| l.trim_start().starts_with("[byteask:"))
+                else {
                     continue;
                 };
                 let target = footer
@@ -133,7 +158,11 @@ pub(crate) fn working_set_note(items: &[ResponseItem]) -> Option<String> {
                     .map(|w| w.trim_end_matches([';', ']', ',']).to_string())
                     .or_else(|| {
                         footer.split("saved at ").nth(1).map(|rest| {
-                            rest.split([';', ']']).next().unwrap_or("").trim().to_string()
+                            rest.split([';', ']'])
+                                .next()
+                                .unwrap_or("")
+                                .trim()
+                                .to_string()
                         })
                     });
                 if let (Some(target), Some(cmd)) = (target, commands.get(&call_id)) {
@@ -165,9 +194,15 @@ pub(crate) fn working_set_note(items: &[ResponseItem]) -> Option<String> {
     read.sort_by_key(|(_, (o, _))| std::cmp::Reverse(*o));
     saved.reverse();
 
-    let mut out = String::from("\n\n[byteask: working set before this summary, most recent first. These are pointers, not content: re-read a file before relying on its text.]");
+    let mut out = String::from(
+        "\n\n[byteask: working set before this summary, most recent first. These are pointers, not content: re-read a file before relying on its text.]",
+    );
     if !edited.is_empty() {
-        let list: Vec<String> = edited.into_iter().take(MAX_NOTE_ENTRIES).map(|(p, _)| p).collect();
+        let list: Vec<String> = edited
+            .into_iter()
+            .take(MAX_NOTE_ENTRIES)
+            .map(|(p, _)| p)
+            .collect();
         out.push_str(&format!("\nEdited: {}", list.join(", ")));
     }
     if !read.is_empty() {
@@ -195,7 +230,11 @@ pub(crate) fn working_set_note(items: &[ResponseItem]) -> Option<String> {
 
 /// The last `max_pairs` COMPLETE, text-only tool call/output pairs, in their original order,
 /// inside `max_bytes`. A pair is taken whole or not at all.
-pub(crate) fn last_tool_pairs(items: &[ResponseItem], max_pairs: usize, max_bytes: usize) -> Vec<ResponseItem> {
+pub(crate) fn last_tool_pairs(
+    items: &[ResponseItem],
+    max_pairs: usize,
+    max_bytes: usize,
+) -> Vec<ResponseItem> {
     if max_pairs == 0 {
         return Vec::new();
     }
@@ -203,7 +242,10 @@ pub(crate) fn last_tool_pairs(items: &[ResponseItem], max_pairs: usize, max_byte
     let field = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
     let mut call_index: BTreeMap<String, usize> = BTreeMap::new();
     for (i, v) in values.iter().enumerate() {
-        if matches!(field(v, "type").as_str(), "function_call" | "custom_tool_call") {
+        if matches!(
+            field(v, "type").as_str(),
+            "function_call" | "custom_tool_call"
+        ) {
             call_index.insert(field(v, "call_id"), i);
         }
     }
@@ -214,15 +256,22 @@ pub(crate) fn last_tool_pairs(items: &[ResponseItem], max_pairs: usize, max_byte
         if pairs == max_pairs {
             break;
         }
-        if !matches!(field(v, "type").as_str(), "function_call_output" | "custom_tool_call_output") {
+        if !matches!(
+            field(v, "type").as_str(),
+            "function_call_output" | "custom_tool_call_output"
+        ) {
             continue;
         }
-        let Some(&call_i) = call_index.get(&field(v, "call_id")) else { continue };
+        let Some(&call_i) = call_index.get(&field(v, "call_id")) else {
+            continue;
+        };
         if call_i >= i {
             continue;
         }
         // Text only: an image output is large and already handled by its own pipeline.
-        let Some(Value::String(text)) = v.get("output") else { continue };
+        let Some(Value::String(text)) = v.get("output") else {
+            continue;
+        };
         let size = text.len() + values[call_i].to_string().len();
         if bytes + size > max_bytes {
             // The newest pair that does not fit ends the walk: older ones are not "the last".
@@ -251,16 +300,20 @@ pub(crate) fn last_tool_pairs(items: &[ResponseItem], max_pairs: usize, max_byte
 
 /// When each thread last sent a model request, in this process. A thread with no entry
 /// (just resumed, or a new process) is cold by definition: nothing of it is cached.
-fn last_request_at() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
-    static AT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
-        std::sync::OnceLock::new();
+fn last_request_at()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+    static AT: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    > = std::sync::OnceLock::new();
     AT.get_or_init(Default::default)
 }
 
 /// Record a model request for `thread` and return how long it had been idle before it
 /// (`None` = never seen in this process).
 pub(crate) fn touch(thread: &str, now: std::time::Instant) -> Option<std::time::Duration> {
-    let Ok(mut map) = last_request_at().lock() else { return None };
+    let Ok(mut map) = last_request_at().lock() else {
+        return None;
+    };
     if map.len() > 1_024 && !map.contains_key(thread) {
         map.clear();
     }
@@ -298,7 +351,9 @@ pub(crate) fn cold_slim_plan(
         if !matches!(kind, "function_call_output" | "custom_tool_call_output") {
             continue;
         }
-        let Some(Value::String(text)) = v.get("output") else { continue };
+        let Some(Value::String(text)) = v.get("output") else {
+            continue;
+        };
         if text.len() < min_output_bytes || text.starts_with(SLIM_MARKER_PREFIX) {
             continue;
         }
@@ -313,7 +368,11 @@ pub(crate) fn cold_slim_plan(
                     .map(|w| w.trim_end_matches([';', ']', ',']).to_string())
                     .or_else(|| {
                         footer.split("saved at ").nth(1).map(|rest| {
-                            rest.split([';', ']']).next().unwrap_or("").trim().to_string()
+                            rest.split([';', ']'])
+                                .next()
+                                .unwrap_or("")
+                                .trim()
+                                .to_string()
                         })
                     })
             })
@@ -363,16 +422,22 @@ mod tests {
     }
 
     fn exec(call_id: &str, cmd: &str) -> ResponseItem {
-        item(serde_json::json!({"type": "function_call", "name": "exec_command", "call_id": call_id,
-            "arguments": serde_json::json!({"cmd": cmd}).to_string()}))
+        item(
+            serde_json::json!({"type": "function_call", "name": "exec_command", "call_id": call_id,
+            "arguments": serde_json::json!({"cmd": cmd}).to_string()}),
+        )
     }
 
     fn output(call_id: &str, text: &str) -> ResponseItem {
-        item(serde_json::json!({"type": "function_call_output", "call_id": call_id, "output": text}))
+        item(
+            serde_json::json!({"type": "function_call_output", "call_id": call_id, "output": text}),
+        )
     }
 
     fn patch(call_id: &str, body: &str) -> ResponseItem {
-        item(serde_json::json!({"type": "custom_tool_call", "name": "apply_patch", "call_id": call_id, "input": body}))
+        item(
+            serde_json::json!({"type": "custom_tool_call", "name": "apply_patch", "call_id": call_id, "input": body}),
+        )
     }
 
     #[test]
@@ -382,18 +447,32 @@ mod tests {
             output("c1", "fn a() {}"),
             exec("c2", "cat README.md"),
             output("c2", "hello"),
-            item(serde_json::json!({"type": "function_call", "name": "read_file", "call_id": "c3",
-                "arguments": "{\"targets\":[{\"path\":\"src/main.rs\",\"offset\":40,\"limit\":20}]}"})),
+            item(
+                serde_json::json!({"type": "function_call", "name": "read_file", "call_id": "c3",
+                "arguments": "{\"targets\":[{\"path\":\"src/main.rs\",\"offset\":40,\"limit\":20}]}"}),
+            ),
             output("c3", "== src/main.rs =="),
-            patch("c4", "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-a\n+b\n*** End Patch"),
+            patch(
+                "c4",
+                "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-a\n+b\n*** End Patch",
+            ),
             exec("c5", "cargo test"),
-            output("c5", "lots\n[byteask: tests trimmed; full output (900 lines, 60000 bytes) is spill:c5_ab12; read a range with read_file]"),
+            output(
+                "c5",
+                "lots\n[byteask: tests trimmed; full output (900 lines, 60000 bytes) is spill:c5_ab12; read a range with read_file]",
+            ),
         ];
         let note = working_set_note(&items).expect("note");
         assert!(note.contains("Edited: src/lib.rs"), "{note}");
         // An edited file is not listed again under Read.
-        assert!(note.contains("Read: src/main.rs (40-59), README.md"), "{note}");
-        assert!(note.contains("Saved output of `cargo test`: spill:c5_ab12"), "{note}");
+        assert!(
+            note.contains("Read: src/main.rs (40-59), README.md"),
+            "{note}"
+        );
+        assert!(
+            note.contains("Saved output of `cargo test`: spill:c5_ab12"),
+            "{note}"
+        );
         assert!(note.starts_with("\n\n[byteask: working set"));
     }
 
@@ -411,12 +490,18 @@ mod tests {
     fn the_note_is_deterministic_and_bounded() {
         let mut items = Vec::new();
         for i in 0..200 {
-            items.push(exec(&format!("c{i}"), &format!("cat src/generated/module_with_a_long_name_{i}.rs")));
+            items.push(exec(
+                &format!("c{i}"),
+                &format!("cat src/generated/module_with_a_long_name_{i}.rs"),
+            ));
         }
         let a = working_set_note(&items).expect("note");
         assert_eq!(a, working_set_note(&items).expect("note"));
         assert!(a.len() <= MAX_NOTE_BYTES + 40, "{}", a.len());
-        assert!(a.contains("module_with_a_long_name_199.rs"), "most recent first");
+        assert!(
+            a.contains("module_with_a_long_name_199.rs"),
+            "most recent first"
+        );
         assert!(!a.contains("module_with_a_long_name_0.rs"));
     }
 
@@ -434,9 +519,19 @@ mod tests {
         let kept = last_tool_pairs(&items, 2, 10_000);
         let ids: Vec<String> = kept
             .iter()
-            .map(|i| as_value(i).get("call_id").and_then(Value::as_str).unwrap_or("").to_string())
+            .map(|i| {
+                as_value(i)
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            })
             .collect();
-        assert_eq!(ids, vec!["c2", "c2", "c3", "c3"], "whole pairs, original order, no orphan");
+        assert_eq!(
+            ids,
+            vec!["c2", "c2", "c3", "c3"],
+            "whole pairs, original order, no orphan"
+        );
         assert!(last_tool_pairs(&items, 0, 10_000).is_empty());
     }
 
@@ -449,7 +544,10 @@ mod tests {
             exec("c2", "huge"),
             output("c2", &big),
         ];
-        assert!(last_tool_pairs(&items, 3, 1_000).is_empty(), "the newest does not fit: keep nothing");
+        assert!(
+            last_tool_pairs(&items, 3, 1_000).is_empty(),
+            "the newest does not fit: keep nothing"
+        );
         assert_eq!(last_tool_pairs(&items, 3, 100_000).len(), 4);
     }
 
@@ -457,7 +555,10 @@ mod tests {
         let mut items = Vec::new();
         for i in 0..20 {
             items.push(exec(&format!("c{i}"), &format!("cat file_{i}.rs")));
-            items.push(output(&format!("c{i}"), &format!("{}\n", format!("line of file {i} ").repeat(400))));
+            items.push(output(
+                &format!("c{i}"),
+                &format!("{}\n", format!("line of file {i} ").repeat(400)),
+            ));
         }
         items
     }
@@ -469,9 +570,15 @@ mod tests {
         assert!(!plan.is_empty());
         // Only outputs, never calls; ascending order; the newest are untouched.
         let last_masked = plan.last().map(|(i, _)| *i).unwrap_or(0);
-        assert!(plan.iter().all(|(i, _)| i % 2 == 1), "indexes of outputs only");
+        assert!(
+            plan.iter().all(|(i, _)| i % 2 == 1),
+            "indexes of outputs only"
+        );
         assert!(plan.windows(2).all(|w| w[0].0 < w[1].0));
-        assert!(last_masked < items.len() - 6, "the recent window is protected: {last_masked}");
+        assert!(
+            last_masked < items.len() - 6,
+            "the recent window is protected: {last_masked}"
+        );
         let (_, marker) = &plan[0];
         assert!(marker.starts_with(SLIM_MARKER_PREFIX));
         assert!(marker.contains("Re-run the command or re-read the file"));
@@ -499,14 +606,27 @@ mod tests {
     #[test]
     fn cold_slimming_is_idempotent_and_names_a_saved_original() {
         let mut items = long_history();
-        items[1] = output("c0", &format!("{}\n[byteask: ansi trimmed; full output (9 lines, 99 bytes) is spill:c0_ab; read a range with read_file]", "x".repeat(5000)));
+        items[1] = output(
+            "c0",
+            &format!(
+                "{}\n[byteask: ansi trimmed; full output (9 lines, 99 bytes) is spill:c0_ab; read a range with read_file]",
+                "x".repeat(5000)
+            ),
+        );
         let plan = cold_slim_plan(&items, 30_000, 2_000, 10_000);
-        assert!(plan[0].1.contains("Its full text is saved at spill:c0_ab."), "{}", plan[0].1);
+        assert!(
+            plan[0].1.contains("Its full text is saved at spill:c0_ab."),
+            "{}",
+            plan[0].1
+        );
         let mut slimmed = items.clone();
         for (i, text) in &plan {
             slimmed[*i] = with_output_text(&items[*i], text);
         }
-        assert!(cold_slim_plan(&slimmed, 30_000, 2_000, 10_000).is_empty(), "nothing left to do");
+        assert!(
+            cold_slim_plan(&slimmed, 30_000, 2_000, 10_000).is_empty(),
+            "nothing left to do"
+        );
     }
 
     #[test]
@@ -517,7 +637,10 @@ mod tests {
         let idle = touch("cold-test-thread", t0 + std::time::Duration::from_secs(120));
         assert_eq!(idle.map(|d| d.as_secs()), Some(120));
         assert!(!is_cold(idle, 3_600));
-        let idle = touch("cold-test-thread", t0 + std::time::Duration::from_secs(120 + 7_200));
+        let idle = touch(
+            "cold-test-thread",
+            t0 + std::time::Duration::from_secs(120 + 7_200),
+        );
         assert!(is_cold(idle, 3_600));
     }
 

@@ -188,8 +188,6 @@ fn external_agent_config_migration_messages_snapshot() {
         ))
         .chain([
             Line::from(EXTERNAL_AGENT_CONFIG_MIGRATION_NO_ITEMS_MESSAGE),
-            Line::from(EXTERNAL_AGENT_CONFIG_MIGRATION_REMOTE_UNAVAILABLE_MESSAGE),
-            Line::from(EXTERNAL_AGENT_CONFIG_MIGRATION_DAEMON_UNAVAILABLE_MESSAGE),
             Line::from(EXTERNAL_AGENT_CONFIG_IMPORT_IN_PROGRESS_MESSAGE),
         ])
         .map(|line| {
@@ -233,7 +231,10 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
                 "  ".into(),
                 "Imported setup will apply to new chats.".dim(),
             ]),
-            Line::from(vec!["  ".into(), "Importing:".fg(crate::style::accent_color()).bold()]),
+            Line::from(vec![
+                "  ".into(),
+                "Importing:".fg(crate::style::accent_color()).bold()
+            ]),
             Line::from(vec![
                 "    ".into(),
                 "Settings".fg(crate::style::accent_color()),
@@ -294,7 +295,10 @@ fn external_agent_config_migration_status_lines_use_semantic_colors() {
                 "1 failed".red(),
                 ".".into(),
             ]),
-            Line::from(vec!["  ".into(), "Results by type:".fg(crate::style::accent_color()).bold()]),
+            Line::from(vec![
+                "  ".into(),
+                "Results by type:".fg(crate::style::accent_color()).bold()
+            ]),
             Line::from(vec![
                 "    ".into(),
                 "Settings".fg(crate::style::accent_color()),

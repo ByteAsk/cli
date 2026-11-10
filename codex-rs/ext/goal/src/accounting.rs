@@ -1,6 +1,9 @@
 use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolName;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::TurnItem;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::TokenUsage;
 use codex_state::ThreadGoalStatus;
 use std::collections::HashMap;
@@ -17,17 +20,23 @@ use tokio::sync::SemaphorePermit;
 pub(crate) struct GoalAccountingState {
     inner: Mutex<GoalAccountingInner>,
     progress_accounting_lock: Semaphore,
+    // Serialize turn-start accounting with stopping a deferred interrupted turn.
+    // Never hold this lock while submitting a turn or awaiting the goal-state permit.
+    turn_start_lock: Semaphore,
     descendant_token_usage: AtomicI64,
 }
 
 #[derive(Debug)]
 struct GoalAccountingInner {
     current_turn_id: Option<String>,
+    interrupted_turn_id: Option<String>,
     turns: HashMap<String, GoalTurnAccounting>,
     wall_clock: GoalWallClockAccounting,
     budget_limit_reported_goal_id: Option<String>,
     execution_failure_goal_id: Option<String>,
     consecutive_execution_failure_turns: u8,
+    automatic_goal_turn_id: Option<String>,
+    consecutive_empty_turns: u8,
     last_accounted_descendant_token_usage: i64,
 }
 
@@ -39,6 +48,8 @@ struct GoalTurnAccounting {
     account_tokens: bool,
     failed_execution: bool,
     successful_tool: bool,
+    empty_final: bool,
+    has_activity: bool,
 }
 
 #[derive(Debug)]
@@ -85,6 +96,10 @@ impl GoalAccountingState {
     ) {
         let turn_id = turn_id.into();
         let mut inner = self.inner();
+        if let Some(interrupted) = inner.interrupted_turn_id.take() {
+            inner.turns.remove(&interrupted);
+            inner.consecutive_empty_turns = 0;
+        }
         inner.current_turn_id = Some(turn_id.clone());
         inner.turns.insert(
             turn_id,
@@ -99,6 +114,10 @@ impl GoalAccountingState {
         self.inner().current_turn_id.clone()
     }
 
+    pub(crate) fn interrupted_turn_id(&self) -> Option<String> {
+        self.inner().interrupted_turn_id.clone()
+    }
+
     pub(crate) fn record_tool_outcome(
         &self,
         turn_id: &str,
@@ -106,9 +125,11 @@ impl GoalAccountingState {
         outcome: ToolCallOutcome,
     ) {
         let mut inner = self.inner();
+        inner.consecutive_empty_turns = 0;
         let Some(turn) = inner.turns.get_mut(turn_id) else {
             return;
         };
+        turn.has_activity = true;
         if turn.active_goal_id.is_none() {
             return;
         }
@@ -151,6 +172,79 @@ impl GoalAccountingState {
         (inner.consecutive_execution_failure_turns >= 3).then_some(goal_id)
     }
 
+    pub(crate) fn record_item(&self, turn_id: &str, item: &TurnItem) {
+        let mut inner = self.inner();
+        let Some(turn) = inner.turns.get_mut(turn_id) else {
+            return;
+        };
+        match item {
+            TurnItem::AgentMessage(message) => {
+                let has_text = message.content.iter().any(|content| match content {
+                    AgentMessageContent::Text { text } => !text.trim().is_empty(),
+                });
+                turn.has_activity |= has_text || message.questions.is_some();
+                turn.empty_final |=
+                    !has_text && matches!(message.phase, Some(MessagePhase::FinalAnswer) | None);
+            }
+            TurnItem::Reasoning(reasoning) => {
+                turn.has_activity |= reasoning
+                    .summary_text
+                    .iter()
+                    .any(|text| !text.trim().is_empty());
+            }
+            TurnItem::UserMessage(_)
+            | TurnItem::FunctionCallOutput(_)
+            | TurnItem::HookPrompt(_)
+            | TurnItem::Plan(_)
+            | TurnItem::CommandExecution(_)
+            | TurnItem::DynamicToolCall(_)
+            | TurnItem::CollabAgentToolCall(_)
+            | TurnItem::SubAgentActivity(_)
+            | TurnItem::WebSearch(_)
+            | TurnItem::ImageView(_)
+            | TurnItem::Extension(_)
+            | TurnItem::ImageGeneration(_)
+            | TurnItem::EnteredReviewMode(_)
+            | TurnItem::ExitedReviewMode(_)
+            | TurnItem::FileChange(_)
+            | TurnItem::McpToolCall(_)
+            | TurnItem::ContextCompaction(_) => turn.has_activity = true,
+        }
+        if turn.has_activity {
+            inner.consecutive_empty_turns = 0;
+        }
+    }
+
+    pub(crate) fn mark_goal_continuation(&self, turn_id: String) {
+        self.inner().automatic_goal_turn_id = Some(turn_id);
+    }
+
+    pub(crate) fn reset_empty_responses(&self) {
+        let mut inner = self.inner();
+        inner.automatic_goal_turn_id = None;
+        inner.consecutive_empty_turns = 0;
+    }
+
+    /// Evaluated under the goal-state permit after automatic admission records its turn ID.
+    pub(crate) fn empty_response_goal(&self, turn_id: &str) -> Option<String> {
+        let mut inner = self.inner();
+        let interrupted = inner.interrupted_turn_id.as_deref() == Some(turn_id);
+        if interrupted {
+            inner.interrupted_turn_id = None;
+        }
+        let automatic = inner.automatic_goal_turn_id.as_deref() == Some(turn_id);
+        let turn = inner.turns.get_mut(turn_id)?;
+        let goal_id = turn.active_goal_id.clone()?;
+        let empty = automatic && !turn.has_activity && (turn.empty_final || interrupted);
+        turn.empty_final = false;
+        if !empty {
+            inner.consecutive_empty_turns = 0;
+            return None;
+        }
+        inner.consecutive_empty_turns = inner.consecutive_empty_turns.saturating_add(1);
+        (inner.consecutive_empty_turns >= 3).then_some(goal_id)
+    }
+
     /// Acquires the per-thread progress-accounting permit.
     ///
     /// Hold the returned permit from before taking a progress snapshot until after the persistent
@@ -162,9 +256,20 @@ impl GoalAccountingState {
         self.progress_accounting_lock.acquire().await
     }
 
+    pub(crate) async fn turn_start_permit(
+        &self,
+    ) -> Result<SemaphorePermit<'_>, tokio::sync::AcquireError> {
+        self.turn_start_lock.acquire().await
+    }
+
     pub(crate) fn current_active_goal_id_for_turn(&self, turn_id: &str) -> Option<String> {
         let inner = self.inner();
-        if inner.current_turn_id.as_deref() != Some(turn_id) {
+        if inner
+            .current_turn_id
+            .as_deref()
+            .or(inner.interrupted_turn_id.as_deref())
+            != Some(turn_id)
+        {
             return None;
         }
         let turn = inner.turns.get(turn_id)?;
@@ -215,6 +320,7 @@ impl GoalAccountingState {
             turn.active_goal_id = Some(goal_id.clone());
             if inner.current_turn_id.as_deref() == Some(turn_id) {
                 if inner.wall_clock.active_goal_id.as_deref() != Some(goal_id.as_str()) {
+                    inner.consecutive_empty_turns = 0;
                     inner.last_accounted_descendant_token_usage =
                         self.descendant_token_usage.load(Ordering::Relaxed);
                 }
@@ -242,6 +348,8 @@ impl GoalAccountingState {
         turn.active_goal_id = Some(goal_id.clone());
         if goal_changed {
             turn.reset_baseline_to_current();
+            inner.automatic_goal_turn_id = None;
+            inner.consecutive_empty_turns = 0;
             inner.last_accounted_descendant_token_usage =
                 self.descendant_token_usage.load(Ordering::Relaxed);
         }
@@ -256,6 +364,7 @@ impl GoalAccountingState {
             inner.budget_limit_reported_goal_id = None;
         }
         if inner.wall_clock.active_goal_id.as_deref() != Some(goal_id.as_str()) {
+            inner.consecutive_empty_turns = 0;
             inner.last_accounted_descendant_token_usage =
                 self.descendant_token_usage.load(Ordering::Relaxed);
         }
@@ -272,6 +381,8 @@ impl GoalAccountingState {
         inner.budget_limit_reported_goal_id = None;
         inner.execution_failure_goal_id = None;
         inner.consecutive_execution_failure_turns = 0;
+        inner.automatic_goal_turn_id = None;
+        inner.consecutive_empty_turns = 0;
         Some(turn_id)
     }
 
@@ -286,6 +397,8 @@ impl GoalAccountingState {
         inner.budget_limit_reported_goal_id = None;
         inner.execution_failure_goal_id = None;
         inner.consecutive_execution_failure_turns = 0;
+        inner.automatic_goal_turn_id = None;
+        inner.consecutive_empty_turns = 0;
     }
 
     pub(crate) fn progress_snapshot(&self, turn_id: &str) -> Option<GoalProgressSnapshot> {
@@ -362,11 +475,26 @@ impl GoalAccountingState {
         }
     }
 
+    pub(crate) fn interrupt_turn(&self, turn_id: &str) {
+        let mut inner = self.inner();
+        if inner.current_turn_id.as_deref() == Some(turn_id) {
+            // Abort can run on the submission loop: defer evaluation until idle so
+            // it never waits for the goal-state permit held by automatic admission.
+            inner.current_turn_id = None;
+            inner.interrupted_turn_id = Some(turn_id.to_string());
+        } else {
+            inner.turns.remove(turn_id);
+        }
+    }
+
     pub(crate) fn finish_turn(&self, turn_id: &str) {
         let mut inner = self.inner();
         inner.turns.remove(turn_id);
         if inner.current_turn_id.as_deref() == Some(turn_id) {
             inner.current_turn_id = None;
+        }
+        if inner.interrupted_turn_id.as_deref() == Some(turn_id) {
+            inner.interrupted_turn_id = None;
         }
     }
 
@@ -414,6 +542,7 @@ impl Default for GoalAccountingState {
         Self {
             inner: Mutex::new(GoalAccountingInner::default()),
             progress_accounting_lock: Semaphore::new(/*permits*/ 1),
+            turn_start_lock: Semaphore::new(/*permits*/ 1),
             descendant_token_usage: AtomicI64::new(0),
         }
     }
@@ -449,11 +578,14 @@ impl Default for GoalAccountingInner {
     fn default() -> Self {
         Self {
             current_turn_id: None,
+            interrupted_turn_id: None,
             turns: HashMap::new(),
             wall_clock: GoalWallClockAccounting::new(),
             budget_limit_reported_goal_id: None,
             execution_failure_goal_id: None,
             consecutive_execution_failure_turns: 0,
+            automatic_goal_turn_id: None,
+            consecutive_empty_turns: 0,
             last_accounted_descendant_token_usage: 0,
         }
     }
@@ -479,6 +611,8 @@ impl GoalTurnAccounting {
             account_tokens,
             failed_execution: false,
             successful_tool: false,
+            empty_final: false,
+            has_activity: false,
         }
     }
 

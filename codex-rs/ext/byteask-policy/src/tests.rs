@@ -267,19 +267,31 @@ fn relax_and_unrelax_a_project() {
     set_relaxed(home.path(), project.path(), true).expect("relax again");
     set_relaxed(home.path(), &inner, true).expect("relax a subdirectory");
     let loaded = load(home.path(), &[]);
-    assert_eq!(loaded.policy.relaxed_projects.len(), 2, "{:?}", loaded.policy);
+    assert_eq!(
+        loaded.policy.relaxed_projects.len(),
+        2,
+        "{:?}",
+        loaded.policy
+    );
     assert!(loaded.policy.is_relaxed(&stored));
     assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
 
     // Turning the project back on also removes what was relaxed inside it.
     set_relaxed(home.path(), project.path(), false).expect("unrelax");
     let loaded = load(home.path(), &[]);
-    assert!(loaded.policy.relaxed_projects.is_empty(), "{:?}", loaded.policy);
+    assert!(
+        loaded.policy.relaxed_projects.is_empty(),
+        "{:?}",
+        loaded.policy
+    );
 }
 
 #[test]
 fn relax_needs_an_existing_directory() {
     let home = tempfile::tempdir().unwrap();
     assert!(set_relaxed(home.path(), Path::new("/no/such/project/t4"), true).is_err());
-    assert!(!path(home.path()).exists(), "nothing is written for a refused path");
+    assert!(
+        !path(home.path()).exists(),
+        "nothing is written for a refused path"
+    );
 }

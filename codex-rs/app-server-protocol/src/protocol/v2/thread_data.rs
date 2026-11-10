@@ -1,5 +1,7 @@
 use super::CodexErrorInfo;
+use super::ThreadEnvironment;
 use super::ThreadItem;
+use super::ThreadItemPayload;
 use super::ThreadStatus;
 use super::TurnStatus;
 use crate::JsonSchema;
@@ -203,6 +205,12 @@ pub struct ThreadSectionAppearance {
 pub struct Thread {
     /// Identifier for this thread. Codex-generated thread IDs are UUIDv7.
     pub id: String,
+    /// Current environments for a loaded thread, in priority order, primary first.
+    /// `null` means the thread is not loaded or the server does not expose its selection.
+    /// An empty list means no environments are selected. This does not report connection status.
+    #[experimental("thread.environments")]
+    #[serde(default)]
+    pub environments: Option<Vec<ThreadEnvironment>>,
     /// Optional implementation-specific thread data.
     #[experimental("thread.extra")]
     pub extra: Option<ThreadExtra>,
@@ -257,6 +265,9 @@ pub struct Thread {
     pub cwd: AbsolutePathBuf,
     /// Version of the CLI that created the thread.
     pub cli_version: String,
+    /// Originator recorded when the thread was created, independent of its current client or executor.
+    /// Null when the recorded originator is unavailable.
+    pub originator: Option<String>,
     /// Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
     pub source: SessionSource,
     /// Whether the app server accepts direct turn input for this loaded thread.
@@ -273,7 +284,10 @@ pub struct Thread {
     pub git_info: Option<GitInfo>,
     /// Optional user-facing thread title.
     pub name: Option<String>,
-    /// Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
+    /// Saved Daybreak choice, independent of turn execution. Null if unset.
+    #[experimental("thread.daybreakEnabled")]
+    pub daybreak_enabled: Option<bool>,
+    /// Only populated on `thread/resume`, `thread/fork`, and `thread/read`
     /// (when `includeTurns` is true) responses.
     /// For all other responses and notifications returning a Thread,
     /// the turns field will be an empty list.
@@ -286,6 +300,8 @@ pub struct Thread {
 #[serde(rename_all = "camelCase")]
 struct ThreadCompatibility {
     id: String,
+    #[serde(default)]
+    environments: Option<Vec<ThreadEnvironment>>,
     extra: Option<ThreadExtra>,
     session_id: String,
     forked_from_id: Option<String>,
@@ -310,6 +326,7 @@ struct ThreadCompatibility {
     path: Option<PathBuf>,
     cwd: AbsolutePathBuf,
     cli_version: String,
+    originator: Option<String>,
     source: SessionSource,
     can_accept_direct_input: Option<bool>,
     thread_source: Option<ThreadSource>,
@@ -317,6 +334,7 @@ struct ThreadCompatibility {
     agent_role: Option<String>,
     git_info: Option<GitInfo>,
     name: Option<String>,
+    daybreak_enabled: Option<bool>,
     turns: Vec<Turn>,
 }
 
@@ -328,6 +346,7 @@ impl<'de> Deserialize<'de> for Thread {
         let thread = ThreadCompatibility::deserialize(deserializer)?;
         Ok(Self {
             id: thread.id,
+            environments: thread.environments,
             extra: thread.extra,
             session_id: thread.session_id,
             forked_from_id: thread.forked_from_id,
@@ -348,6 +367,7 @@ impl<'de> Deserialize<'de> for Thread {
             path: thread.path,
             cwd: thread.cwd,
             cli_version: thread.cli_version,
+            originator: thread.originator,
             source: thread.source,
             can_accept_direct_input: thread.can_accept_direct_input,
             thread_source: thread.thread_source,
@@ -355,6 +375,7 @@ impl<'de> Deserialize<'de> for Thread {
             agent_role: thread.agent_role,
             git_info: thread.git_info,
             name: thread.name,
+            daybreak_enabled: thread.daybreak_enabled,
             turns: thread.turns,
         })
     }
@@ -366,13 +387,17 @@ impl<'de> Deserialize<'de> for Thread {
 pub struct Turn {
     /// Identifier for this turn. Codex-generated turn IDs are UUIDv7.
     pub id: String,
+    /// ID of the first turn in the chain of work that led to this turn.
+    /// Pass this as `rootTurnId` when starting work on behalf of this turn.
+    /// May be null in older history or a `review/start` response.
+    pub root_turn_id: Option<String>,
     /// Thread items currently included in this turn payload.
     pub items: Vec<ThreadItem>,
     /// Describes how much of `items` has been loaded for this turn.
     #[serde(default)]
     pub items_view: TurnItemsView,
     pub status: TurnStatus,
-    /// Only populated when the Turn's status is failed.
+    /// Error associated with a failed or interrupted turn.
     pub error: Option<TurnError>,
     /// Unix timestamp (in seconds) when the turn started.
     #[ts(type = "number | null")]
@@ -383,6 +408,15 @@ pub struct Turn {
     /// Duration between turn start and completion in milliseconds, if known.
     #[ts(type = "number | null")]
     pub duration_ms: Option<i64>,
+}
+
+impl Turn {
+    /// Iterates over the item payloads in this turn.
+    pub fn item_payloads(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = &ThreadItemPayload> + ExactSizeIterator {
+        self.items.iter().map(|item| &item.payload)
+    }
 }
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -422,6 +456,9 @@ pub struct MisalignmentErrorDetails {
     pub detailed_explanation: Option<String>,
     /// Instruction to submit as the next turn's user input if continuation is confirmed.
     pub steer: Option<MisalignmentSteer>,
+    /// Opaque server-issued block target. Presence alone does not enable target-based continuation.
+    #[ts(optional = nullable)]
+    pub review_target: Option<String>,
 }
 
 impl fmt::Debug for MisalignmentErrorDetails {
@@ -434,6 +471,7 @@ impl fmt::Debug for MisalignmentErrorDetails {
                 &self.detailed_explanation.is_some(),
             )
             .field("has_steer", &self.steer.is_some())
+            .field("has_review_target", &self.review_target.is_some())
             .finish()
     }
 }
@@ -444,6 +482,7 @@ impl From<CoreMisalignmentErrorDetails> for MisalignmentErrorDetails {
             error_type: value.error_type,
             detailed_explanation: value.detailed_explanation,
             steer: value.steer.map(Into::into),
+            review_target: value.review_target,
         }
     }
 }

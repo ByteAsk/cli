@@ -27,9 +27,9 @@ use crate::binding::Binding;
 use crate::binding::Candidate;
 use crate::perf;
 use crate::perf::PerfEvidence;
-use crate::run::RunReport;
 use crate::run::CHECK_BUILD;
 use crate::run::CHECK_TESTS;
+use crate::run::RunReport;
 use crate::sign::Envelope;
 use crate::sign::RunnerKind;
 use crate::verify::Verifier;
@@ -92,7 +92,10 @@ pub struct Decision {
 
 /// Read every `*.json` envelope in the given files and directories (a directory named after
 /// the candidate key inside a cache directory is read too).
-pub fn collect_envelopes(paths: &[PathBuf], candidate_key: &str) -> Vec<(String, Result<Envelope, String>)> {
+pub fn collect_envelopes(
+    paths: &[PathBuf],
+    candidate_key: &str,
+) -> Vec<(String, Result<Envelope, String>)> {
     let mut files = Vec::new();
     for path in paths {
         if path.is_dir() {
@@ -141,7 +144,9 @@ pub async fn sort_evidence(
         let payload: serde_json::Value = match serde_json::from_str(&envelope.payload) {
             Ok(value) => value,
             Err(_) => {
-                evidence.ignored.push(format!("{name}: its payload is not JSON"));
+                evidence
+                    .ignored
+                    .push(format!("{name}: its payload is not JSON"));
                 continue;
             }
         };
@@ -157,13 +162,21 @@ pub async fn sort_evidence(
         };
         // Bound to exactly this candidate, and its key is the one its binding gives.
         let bound: Option<Binding> = serde_json::from_value(payload["binding"].clone()).ok();
-        let content_key = payload["content_key"].as_str().unwrap_or_default().to_string();
+        let content_key = payload["content_key"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         match &bound {
-            Some(binding) if binding.same_candidate(candidate) && binding.content_key() == content_key => {}
+            Some(binding)
+                if binding.same_candidate(candidate) && binding.content_key() == content_key => {}
             _ => {
                 evidence.ignored.push(format!(
                     "{name}: it is for another version (content key {}), not this merge candidate",
-                    if content_key.is_empty() { "none" } else { &content_key[..content_key.len().min(12)] }
+                    if content_key.is_empty() {
+                        "none"
+                    } else {
+                        &content_key[..content_key.len().min(12)]
+                    }
                 ));
                 continue;
             }
@@ -184,7 +197,12 @@ pub async fn sort_evidence(
         }
         match want {
             RunnerKind::Ci => match serde_json::from_value::<RunReport>(payload) {
-                Ok(report) if report.results.iter().all(|r| r.content_key.as_deref() == Some(content_key)) => {
+                Ok(report)
+                    if report
+                        .results
+                        .iter()
+                        .all(|r| r.content_key.as_deref() == Some(content_key)) =>
+                {
                     evidence.ci.push(Accepted {
                         value: report,
                         key_id: envelope.key_id.clone(),
@@ -194,7 +212,9 @@ pub async fn sort_evidence(
                 Ok(_) => evidence
                     .ignored
                     .push(format!("{name}: a result inside it is for another version")),
-                Err(err) => evidence.ignored.push(format!("{name}: not a run report: {err}")),
+                Err(err) => evidence
+                    .ignored
+                    .push(format!("{name}: not a run report: {err}")),
             },
             RunnerKind::Bench => match serde_json::from_value::<PerfEvidence>(payload) {
                 Ok(perf) => evidence.perf.push(Accepted {
@@ -202,7 +222,9 @@ pub async fn sort_evidence(
                     key_id: envelope.key_id.clone(),
                     signed_ms: envelope.signed_ms,
                 }),
-                Err(err) => evidence.ignored.push(format!("{name}: not perf evidence: {err}")),
+                Err(err) => evidence
+                    .ignored
+                    .push(format!("{name}: not perf evidence: {err}")),
             },
         }
     }
@@ -238,7 +260,10 @@ pub fn decide(candidate: &Candidate, evidence: &Evidence, approvals: &[Approval]
             .touches_marked(candidate.changed.iter().map(String::as_str))
     });
     let perf_policy = profile.map_or(PerfPolicy::Off, |profile| profile.merge.perf);
-    let bench = evidence.perf.iter().max_by_key(|accepted| accepted.signed_ms);
+    let bench = evidence
+        .perf
+        .iter()
+        .max_by_key(|accepted| accepted.signed_ms);
     let mut perf_card = None;
     if perf_policy != PerfPolicy::Off {
         match bench {
@@ -261,12 +286,17 @@ pub fn decide(candidate: &Candidate, evidence: &Evidence, approvals: &[Approval]
         }
     }
 
-    let failed: Vec<&CheckResult> = checks.iter().filter(|c| c.verdict == Verdict::Fail).collect();
+    let failed: Vec<&CheckResult> = checks
+        .iter()
+        .filter(|c| c.verdict == Verdict::Fail)
+        .collect();
     let not_run: Vec<&CheckResult> = checks
         .iter()
         .filter(|c| !matches!(c.verdict, Verdict::Pass | Verdict::Fail))
         .collect();
-    let approvable = profile.map_or_else(Vec::new, |profile| profile.merge.reviewer_may_approve.clone());
+    let approvable = profile.map_or_else(Vec::new, |profile| {
+        profile.merge.reviewer_may_approve.clone()
+    });
     let (allowed, verdict, approved_by, summary) = if !failed.is_empty() {
         let names: Vec<&str> = failed.iter().map(|c| c.check.as_str()).collect();
         (
@@ -286,7 +316,10 @@ pub fn decide(candidate: &Candidate, evidence: &Evidence, approvals: &[Approval]
             .reason
             .map_or("not run".to_string(), |reason| reason.label().to_string());
         let approval = ci.filter(|_| all_approvable).and_then(|accepted| {
-            approvals.iter().filter(|a| a.counts_for(binding, accepted.signed_ms)).max_by_key(|a| a.at_ms)
+            approvals
+                .iter()
+                .filter(|a| a.counts_for(binding, accepted.signed_ms))
+                .max_by_key(|a| a.at_ms)
         });
         match approval {
             Some(approval) => (
@@ -317,7 +350,10 @@ pub fn decide(candidate: &Candidate, evidence: &Evidence, approvals: &[Approval]
             true,
             Verdict::Pass,
             None,
-            format!("PASS: {} required check(s) passed for this exact merge candidate.", checks.len()),
+            format!(
+                "PASS: {} required check(s) passed for this exact merge candidate.",
+                checks.len()
+            ),
         )
     };
     Decision {
@@ -353,12 +389,18 @@ fn one_line(text: &str) -> String {
 
 /// The decision as a Markdown report (GitHub check output, Jenkins summary).
 pub fn report_markdown(decision: &Decision) -> String {
-    let mut out = format!("**{}**\n\n| check | result |\n|---|---|\n", decision.summary);
+    let mut out = format!(
+        "**{}**\n\n| check | result |\n|---|---|\n",
+        decision.summary
+    );
     for check in &decision.checks {
         out.push_str(&format!(
             "| {} | {} |\n",
             check.check.replace('|', "/"),
-            check.render_line().trim_start_matches(check_result::LINE_PREFIX).replace('|', "/")
+            check
+                .render_line()
+                .trim_start_matches(check_result::LINE_PREFIX)
+                .replace('|', "/")
         ));
     }
     out.push_str(&format!(

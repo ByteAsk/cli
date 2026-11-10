@@ -5,10 +5,13 @@ use app_test_support::create_fake_rollout;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::rollout_path;
 use app_test_support::to_response;
+use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::GitInfo;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadArchiveParams;
+use codex_app_server_protocol::ThreadArchiveResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
@@ -53,7 +56,7 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 
 #[tokio::test]
-async fn thread_section_move_pins_before_first_turn() -> Result<()> {
+async fn thread_section_move_pins_and_archives_before_first_turn() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri()).write(codex_home.path())?;
@@ -85,6 +88,9 @@ async fn thread_section_move_pins_before_first_turn() -> Result<()> {
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(move_id)).await??;
 
     let list_params = ThreadListParams {
+        excluded_thread_ids: None,
+        attached_to_thread_id: None,
+        originators: None,
         cursor: None,
         limit: Some(100),
         sort_key: None,
@@ -121,7 +127,7 @@ async fn thread_section_move_pins_before_first_turn() -> Result<()> {
 
     let move_id = mcp
         .send_thread_section_move_request(ThreadSectionMoveParams {
-            thread_id,
+            thread_id: thread_id.clone(),
             section_id: None,
             before_thread_id: None,
         })
@@ -131,12 +137,39 @@ async fn thread_section_move_pins_before_first_turn() -> Result<()> {
     let list_id = mcp
         .send_thread_list_request(ThreadListParams {
             section_id: None,
-            ..list_params
+            ..list_params.clone()
         })
         .await?;
     let listed: ThreadListResponse =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
     assert_eq!(listed.data, vec![]);
+
+    let _: ThreadArchiveResponse = mcp
+        .request(|request_id| ClientRequest::ThreadArchive {
+            request_id,
+            params: ThreadArchiveParams {
+                thread_id: thread_id.clone(),
+            },
+        })
+        .await?;
+    let archived: ThreadListResponse = mcp
+        .request(|request_id| ClientRequest::ThreadList {
+            request_id,
+            params: ThreadListParams {
+                archived: Some(true),
+                section_id: None,
+                ..list_params
+            },
+        })
+        .await?;
+    assert_eq!(
+        archived
+            .data
+            .iter()
+            .map(|thread| thread.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![thread_id.as_str()]
+    );
     Ok(())
 }
 
@@ -261,6 +294,9 @@ async fn thread_section_move_pins_and_unpins_with_filtered_recency_pagination() 
     }
 
     let list_params = ThreadListParams {
+        excluded_thread_ids: None,
+        attached_to_thread_id: None,
+        originators: None,
         cursor: None,
         limit: Some(1),
         sort_key: Some(ThreadSortKey::RecencyAt),
@@ -452,6 +488,9 @@ async fn thread_sections_preserve_server_owned_manual_order_across_moves_and_res
     }
 
     let list_params = ThreadListParams {
+        excluded_thread_ids: None,
+        attached_to_thread_id: None,
+        originators: None,
         cursor: None,
         limit: Some(10),
         sort_key: Some(ThreadSortKey::SectionPosition),
@@ -585,6 +624,7 @@ async fn thread_metadata_update_patches_git_branch_and_returns_updated_thread() 
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread.id.clone(),
             project_id: None,
+            daybreak_enabled: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: Some(Some("feature/sidebar-pr".to_string())),
@@ -687,6 +727,7 @@ async fn thread_metadata_update_sanitizes_git_origin_before_persisting() -> Resu
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread.id.clone(),
             project_id: None,
+            daybreak_enabled: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: None,
@@ -768,6 +809,7 @@ async fn thread_metadata_update_rejects_empty_git_info_patch() -> Result<()> {
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread.id,
             project_id: None,
+            daybreak_enabled: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: None,
@@ -819,6 +861,7 @@ async fn thread_metadata_update_rejects_ephemeral_thread() -> Result<()> {
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread.id.clone(),
             project_id: None,
+            daybreak_enabled: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: Some(Some("feature/ephemeral".to_string())),
@@ -894,6 +937,7 @@ async fn thread_metadata_update_repairs_missing_sqlite_row_for_stored_thread() -
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread_id.clone(),
             project_id: None,
+            daybreak_enabled: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: Some(Some("feature/stored-thread".to_string())),
@@ -981,6 +1025,7 @@ async fn thread_metadata_update_repairs_loaded_thread_without_resetting_summary(
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread_id.clone(),
             project_id: None,
+            daybreak_enabled: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: Some(Some("feature/loaded-thread".to_string())),
@@ -1053,6 +1098,7 @@ async fn thread_metadata_update_repairs_missing_sqlite_row_for_archived_thread()
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread_id.clone(),
             project_id: None,
+            daybreak_enabled: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: Some(Some("feature/archived-thread".to_string())),
@@ -1117,6 +1163,7 @@ async fn thread_metadata_update_can_clear_stored_git_fields() -> Result<()> {
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread_id.clone(),
             project_id: None,
+            daybreak_enabled: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: Some(None),
                 branch: Some(None),

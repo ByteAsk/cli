@@ -108,14 +108,19 @@ pub(crate) fn error_result(tool: &str, message: &str) -> CheckResult {
     {
         (
             NotRunReason::BadArguments,
-            format!("call {tool} again with the arguments its schema lists; the message above names the wrong one."),
+            format!(
+                "call {tool} again with the arguments its schema lists; the message above names the wrong one."
+            ),
         )
     } else if lower.contains("timed out") || lower.contains("did not finish") {
         (
             NotRunReason::TimeLimit,
             "call the tool again with a longer timeout, or on less code.".to_string(),
         )
-    } else if lower.contains("unavailable") || lower.contains("unreachable") || lower.contains("request failed") {
+    } else if lower.contains("unavailable")
+        || lower.contains("unreachable")
+        || lower.contains("request failed")
+    {
         (
             NotRunReason::ServiceUnavailable,
             "check the network, then call the tool again.".to_string(),
@@ -123,7 +128,12 @@ pub(crate) fn error_result(tool: &str, message: &str) -> CheckResult {
     } else {
         (NotRunReason::ToolError, String::new())
     };
-    CheckResult::not_run(tool, reason, "The tool stopped with the message above; nothing was checked.", &fix)
+    CheckResult::not_run(
+        tool,
+        reason,
+        "The tool stopped with the message above; nothing was checked.",
+        &fix,
+    )
 }
 
 /// `err` with a result line, unless it already ends with one.
@@ -218,9 +228,15 @@ mod tests {
 
     #[test]
     fn findings_errors_and_warnings_fail_notes_alone_pass() {
-        assert_eq!(findings_result("cpp_check", &[], false).verdict, Verdict::Pass);
+        assert_eq!(
+            findings_result("cpp_check", &[], false).verdict,
+            Verdict::Pass
+        );
         let notes = [finding(Severity::Note, 1)];
-        assert_eq!(findings_result("cpp_check", &notes, false).verdict, Verdict::Pass);
+        assert_eq!(
+            findings_result("cpp_check", &notes, false).verdict,
+            Verdict::Pass
+        );
         for severity in [Severity::Error, Severity::Warning] {
             let found = [finding(Severity::Note, 1), finding(severity, 7)];
             let result = findings_result("cpp_check", &found, false);
@@ -300,7 +316,10 @@ mod tests {
         let FunctionCallError::RespondToModel(again) = again else {
             panic!();
         };
-        assert_eq!(again, text, "a message that already has a result is left alone");
+        assert_eq!(
+            again, text,
+            "a message that already has a result is left alone"
+        );
         assert!(matches!(
             with_result("cpp_check", FunctionCallError::Fatal("x".to_string())),
             FunctionCallError::Fatal(_)

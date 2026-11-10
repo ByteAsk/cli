@@ -188,7 +188,10 @@ impl RunnerKey {
 
     /// The enterprise server's key id: `rk_` + the first 16 hex digits of SHA-256(public key).
     pub fn key_id(&self) -> String {
-        format!("rk_{}", &sha256_hex(self.key.verifying_key().as_bytes())[..16])
+        format!(
+            "rk_{}",
+            &sha256_hex(self.key.verifying_key().as_bytes())[..16]
+        )
     }
 
     pub fn sign(&self, kind: RunnerKind, payload: String, signed_ms: u64) -> Envelope {
@@ -237,11 +240,25 @@ mod tests {
         let key = RunnerKey::from_seed([7u8; 32]);
         assert_eq!(
             message("ab".repeat(32).as_str(), 1_700_000_000_123),
-            format!("byteask-runner-result-v1\n{}\n1700000000123", "ab".repeat(32)).into_bytes()
+            format!(
+                "byteask-runner-result-v1\n{}\n1700000000123",
+                "ab".repeat(32)
+            )
+            .into_bytes()
         );
         let id = key.key_id();
         assert!(id.starts_with("rk_") && id.len() == 19, "{id}");
-        assert_eq!(id, format!("rk_{}", &sha256_hex(&base64::engine::general_purpose::STANDARD.decode(key.public_b64()).unwrap())[..16]));
+        assert_eq!(
+            id,
+            format!(
+                "rk_{}",
+                &sha256_hex(
+                    &base64::engine::general_purpose::STANDARD
+                        .decode(key.public_b64())
+                        .unwrap()
+                )[..16]
+            )
+        );
     }
 
     #[test]
@@ -253,10 +270,18 @@ mod tests {
             .unwrap();
         let sig = ed25519_dalek::Signature::from_slice(&sig).unwrap();
         let public = key.key.verifying_key();
-        assert!(public.verify_strict(&message(&envelope.digest(), 42), &sig).is_ok());
+        assert!(
+            public
+                .verify_strict(&message(&envelope.digest(), 42), &sig)
+                .is_ok()
+        );
         let mut edited = envelope;
         edited.payload = "{\"a\":2}".to_string();
-        assert!(public.verify_strict(&message(&edited.digest(), 42), &sig).is_err());
+        assert!(
+            public
+                .verify_strict(&message(&edited.digest(), 42), &sig)
+                .is_err()
+        );
     }
 
     #[test]
@@ -265,7 +290,10 @@ mod tests {
         let again = RunnerKey::parse(&key.to_pem().unwrap()).unwrap();
         assert_eq!(again.key_id(), key.key_id());
         let raw = base64::engine::general_purpose::STANDARD.encode([3u8; 32]);
-        assert_eq!(RunnerKey::parse(&raw).unwrap().key_id(), RunnerKey::from_seed([3u8; 32]).key_id());
+        assert_eq!(
+            RunnerKey::parse(&raw).unwrap().key_id(),
+            RunnerKey::from_seed([3u8; 32]).key_id()
+        );
         assert!(RunnerKey::parse("not a key").is_err());
     }
 

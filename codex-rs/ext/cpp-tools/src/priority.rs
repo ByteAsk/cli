@@ -89,7 +89,10 @@ pub(crate) fn parse_cpu_list(text: &str) -> Option<Vec<usize>> {
 }
 
 /// The settings for automatic checks on this machine.
-pub(crate) fn for_automatic_checks(env: impl Fn(&str) -> Option<String>, allowed: &[usize]) -> Background {
+pub(crate) fn for_automatic_checks(
+    env: impl Fn(&str) -> Option<String>,
+    allowed: &[usize],
+) -> Background {
     let nice = env(ENV_NICE)
         .and_then(|value| value.trim().parse::<i32>().ok())
         .map_or(DEFAULT_NICE, |nice| nice.clamp(0, 19));
@@ -98,7 +101,11 @@ pub(crate) fn for_automatic_checks(env: impl Fn(&str) -> Option<String>, allowed
     } else {
         let chosen = env(ENV_CPUS)
             .and_then(|value| parse_cpu_list(&value))
-            .map(|list| list.into_iter().filter(|cpu| allowed.contains(cpu)).collect::<Vec<_>>())
+            .map(|list| {
+                list.into_iter()
+                    .filter(|cpu| allowed.contains(cpu))
+                    .collect::<Vec<_>>()
+            })
             .filter(|list| !list.is_empty())
             .unwrap_or_else(|| spare(allowed));
         Some(chosen)
@@ -116,13 +123,18 @@ pub(crate) fn automatic() -> Background {
 /// memory runs out the kernel kills them before the agent's commands and the engine. Made before `fork` as bytes.
 #[cfg(target_os = "linux")]
 fn background_oom_score_adj() -> Option<([u8; 8], usize)> {
-    let value: i32 = std::env::var("BYTEASK_BACKGROUND_OOM_SCORE_ADJ").ok()?.trim().parse().ok()?;
+    let value: i32 = std::env::var("BYTEASK_BACKGROUND_OOM_SCORE_ADJ")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
     if !(0..=1000).contains(&value) {
         return None;
     }
     let digits = value.to_string();
     let mut text = [0u8; 8];
-    text.get_mut(..digits.len())?.copy_from_slice(digits.as_bytes());
+    text.get_mut(..digits.len())?
+        .copy_from_slice(digits.as_bytes());
     Some((text, digits.len()))
 }
 
@@ -180,7 +192,9 @@ pub(crate) fn apply(command: &mut tokio::process::Command) {
                 }
                 if let Some((text, len)) = &oom {
                     let fd = libc::open(
-                        b"/proc/self/oom_score_adj\0".as_ptr().cast::<libc::c_char>(),
+                        b"/proc/self/oom_score_adj\0"
+                            .as_ptr()
+                            .cast::<libc::c_char>(),
                         libc::O_WRONLY | libc::O_CLOEXEC,
                     );
                     if fd >= 0 {
@@ -223,7 +237,10 @@ mod tests {
     fn spare_cores_keep_the_lowest_quarter_free() {
         assert_eq!(spare(&[0]), vec![0]);
         assert_eq!(spare(&[0, 1]), vec![1]);
-        assert_eq!(spare(&(0..8).collect::<Vec<_>>()), (2..8).collect::<Vec<_>>());
+        assert_eq!(
+            spare(&(0..8).collect::<Vec<_>>()),
+            (2..8).collect::<Vec<_>>()
+        );
         assert_eq!(spare(&[4, 5, 6]), vec![5, 6]);
         assert_eq!(parse_cpu_list("2-4, 7,7"), Some(vec![2, 3, 4, 7]));
         assert_eq!(parse_cpu_list("4-2"), None);
@@ -282,18 +299,34 @@ mod tests {
         let inside = scope(background.clone(), run()).await;
         let mut lines = inside.lines();
         let nice: i32 = lines.next().unwrap().trim().parse().unwrap();
-        let list = lines.next().unwrap().split(':').nth(1).unwrap().trim().to_string();
+        let list = lines
+            .next()
+            .unwrap()
+            .split(':')
+            .nth(1)
+            .unwrap()
+            .trim()
+            .to_string();
         let own_nice = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
         // setpriority sets an absolute value; an unprivileged process can only raise it.
         assert_eq!(nice, own_nice.max(DEFAULT_NICE), "{inside}");
         assert_eq!(parse_cpu_list(&list), background.cpus, "{inside}");
         if allowed.len() >= 2 {
-            assert!(!parse_cpu_list(&list).unwrap().contains(&allowed[0]), "the first CPU stays free");
+            assert!(
+                !parse_cpu_list(&list).unwrap().contains(&allowed[0]),
+                "the first CPU stays free"
+            );
         }
         let outside = run().await;
         let nice_outside: i32 = outside.lines().next().unwrap().trim().parse().unwrap();
-        assert_eq!(nice_outside, own_nice, "a tool call outside an automatic check runs as before");
-        assert_eq!(scope(background.clone(), async { clamp_jobs(64) }).await, background.cpus.unwrap().len());
+        assert_eq!(
+            nice_outside, own_nice,
+            "a tool call outside an automatic check runs as before"
+        );
+        assert_eq!(
+            scope(background.clone(), async { clamp_jobs(64) }).await,
+            background.cpus.unwrap().len()
+        );
         assert_eq!(clamp_jobs(64), 64);
     }
 }

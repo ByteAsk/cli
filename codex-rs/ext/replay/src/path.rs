@@ -65,14 +65,10 @@ impl PathPattern {
     /// array indices are their decimal text)?
     pub fn matches(&self, path: &[String]) -> bool {
         self.segments.len() == path.len()
-            && self
-                .segments
-                .iter()
-                .zip(path)
-                .all(|(seg, part)| match seg {
-                    Segment::Any => true,
-                    Segment::Literal(lit) => lit == part,
-                })
+            && self.segments.iter().zip(path).all(|(seg, part)| match seg {
+                Segment::Any => true,
+                Segment::Literal(lit) => lit == part,
+            })
     }
 }
 
@@ -93,7 +89,9 @@ fn unescape(part: &str) -> Result<String, String> {
                 Some(other) => {
                     return Err(format!("'~' must be followed by 0 or 1 (got {other:?})"));
                 }
-                None => return Err("'~' must be followed by 0 or 1 (got end of segment)".to_string()),
+                None => {
+                    return Err("'~' must be followed by 0 or 1 (got end of segment)".to_string());
+                }
             }
         } else {
             out.push(c);
@@ -132,7 +130,10 @@ mod tests {
         let pat = PathPattern::parse("/out/*/qty").expect("parse");
         assert!(pat.matches(&p(&["out", "0", "qty"])));
         assert!(pat.matches(&p(&["out", "x", "qty"])));
-        assert!(!pat.matches(&p(&["out", "qty"])), "a * is exactly one segment");
+        assert!(
+            !pat.matches(&p(&["out", "qty"])),
+            "a * is exactly one segment"
+        );
         assert!(!pat.matches(&p(&["out", "0", "1", "qty"])));
         assert!(!pat.matches(&p(&["out", "0", "px"])));
         assert!(pat.has_wildcard());
@@ -153,7 +154,10 @@ mod tests {
         assert_eq!(render(&[]), "");
         // serde_json's own pointer lookup agrees with our rendering.
         let v = serde_json::json!({"a/b": {"c~d": 7}});
-        assert_eq!(v.pointer(&render(&p(&["a/b", "c~d"]))), Some(&serde_json::json!(7)));
+        assert_eq!(
+            v.pointer(&render(&p(&["a/b", "c~d"]))),
+            Some(&serde_json::json!(7))
+        );
     }
 
     #[test]
@@ -161,7 +165,10 @@ mod tests {
         let no_slash = PathPattern::parse("out/qty").expect_err("must refuse");
         assert!(no_slash.contains("must start with '/'"), "{no_slash}");
         let bad_escape = PathPattern::parse("/a~2").expect_err("must refuse");
-        assert!(bad_escape.contains("'~' must be followed by 0 or 1"), "{bad_escape}");
+        assert!(
+            bad_escape.contains("'~' must be followed by 0 or 1"),
+            "{bad_escape}"
+        );
         let trailing = PathPattern::parse("/a~").expect_err("must refuse");
         assert!(trailing.contains("end of segment"), "{trailing}");
     }

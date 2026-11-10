@@ -130,7 +130,12 @@ impl Event {
             s.push_str(&v);
         };
         match &self.body {
-            EventBody::Init { seed, symbols, depth, params } => {
+            EventBody::Init {
+                seed,
+                symbols,
+                depth,
+                params,
+            } => {
                 kv("seed", seed.to_string());
                 kv("syms", symbols.join(","));
                 kv("depth", depth.to_string());
@@ -169,7 +174,13 @@ impl Event {
                 }
             }
             EventBody::Ack { id } => kv("id", id.clone()),
-            EventBody::Fill { id, px, qty, leaves, liq } => {
+            EventBody::Fill {
+                id,
+                px,
+                qty,
+                leaves,
+                liq,
+            } => {
                 kv("id", id.clone());
                 kv("px", px.to_string());
                 kv("qty", qty.to_string());
@@ -197,7 +208,12 @@ impl Event {
             Value::Array(v.iter().map(|(p, q)| json!([p, q])).collect())
         };
         match &self.body {
-            EventBody::Init { seed, symbols, depth, params } => {
+            EventBody::Init {
+                seed,
+                symbols,
+                depth,
+                params,
+            } => {
                 json!({"seed": seed, "symbols": symbols, "depth": depth, "params": params})
             }
             EventBody::Md(md) => {
@@ -225,7 +241,13 @@ impl Event {
                 Value::Object(m)
             }
             EventBody::Ack { id } => json!({"id": id}),
-            EventBody::Fill { id, px, qty, leaves, liq } => {
+            EventBody::Fill {
+                id,
+                px,
+                qty,
+                leaves,
+                liq,
+            } => {
                 json!({"id": id, "px": px, "qty": qty, "leaves": leaves, "liq": liq})
             }
             EventBody::Reject { id, reason } | EventBody::CancelReject { id, reason } => {
@@ -263,7 +285,14 @@ pub enum Action {
 impl Action {
     pub fn json(&self) -> Value {
         match self {
-            Action::New { id, sym, side, px, qty, tif } => json!({
+            Action::New {
+                id,
+                sym,
+                side,
+                px,
+                qty,
+                tif,
+            } => json!({
                 "op": "new", "id": id, "sym": sym, "side": side.token(), "px": px, "qty": qty,
                 "tif": tif.token()
             }),
@@ -315,18 +344,17 @@ fn kv_pairs<'a>(tokens: &[&'a str], line: &str) -> Result<BTreeMap<&'a str, &'a 
     Ok(out)
 }
 
-fn take<'a>(
-    m: &mut BTreeMap<&'a str, &'a str>,
-    key: &str,
-    line: &str,
-) -> Result<&'a str, String> {
+fn take<'a>(m: &mut BTreeMap<&'a str, &'a str>, key: &str, line: &str) -> Result<&'a str, String> {
     m.remove(key)
         .ok_or_else(|| format!("missing {key}= in {line:?}"))
 }
 
 fn int(v: &str, key: &str, line: &str) -> Result<i64, String> {
-    v.parse::<i64>()
-        .map_err(|_| format!("{key}={v} in {line:?} must be a whole number (prices are integer units, never floats)"))
+    v.parse::<i64>().map_err(|_| {
+        format!(
+            "{key}={v} in {line:?} must be a whole number (prices are integer units, never floats)"
+        )
+    })
 }
 
 fn no_extra(m: &BTreeMap<&str, &str>, line: &str) -> Result<(), String> {
@@ -433,7 +461,14 @@ pub fn parse_response(lines: &[String]) -> Result<Response, String> {
                         .ok_or_else(|| format!("tif={t} in {line:?} must be day or ioc"))?,
                 };
                 no_extra(&m, line)?;
-                r.actions.push(Action::New { id, sym, side, px, qty, tif });
+                r.actions.push(Action::New {
+                    id,
+                    sym,
+                    side,
+                    px,
+                    qty,
+                    tif,
+                });
             }
             "cancel" => {
                 let id = take(&mut m, "id", line)?.to_string();
@@ -512,7 +547,10 @@ mod tests {
                 params: BTreeMap::from([("z".into(), "1".into()), ("a".into(), "x".into())]),
             },
         };
-        assert_eq!(init.line(), "init step=0 ts=5 seed=42 syms=A,B depth=2 p.a=x p.z=1");
+        assert_eq!(
+            init.line(),
+            "init step=0 ts=5 seed=42 syms=A,B depth=2 p.a=x p.z=1"
+        );
     }
 
     #[test]
@@ -533,7 +571,14 @@ mod tests {
         assert_eq!(r.actions.len(), 4);
         assert_eq!(
             r.actions[1],
-            Action::New { id: "o2".into(), sym: "AAPL".into(), side: Side::Sell, px: -3, qty: 1, tif: Tif::Ioc }
+            Action::New {
+                id: "o2".into(),
+                sym: "AAPL".into(),
+                side: Side::Sell,
+                px: -3,
+                qty: 1,
+                tif: Tif::Ioc
+            }
         );
         assert_eq!(
             r.decisions,
@@ -586,7 +631,9 @@ mod tests {
         for ok in ["0", "-1", "+2.5", ".5", "5.", "1e9", "1E-9", "-0.0"] {
             assert!(is_decimal(ok), "{ok}");
         }
-        for bad in ["", "-", ".", "e5", "1e", "1e+", "nan", "inf", "0x1", "1.2.3", "1_000"] {
+        for bad in [
+            "", "-", ".", "e5", "1e", "1e+", "nan", "inf", "0x1", "1.2.3", "1_000",
+        ] {
             assert!(!is_decimal(bad), "{bad}");
         }
     }

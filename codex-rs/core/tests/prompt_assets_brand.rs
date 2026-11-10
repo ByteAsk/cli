@@ -52,11 +52,15 @@ const IDENTITY_LEAKS: &[&str] = &[
 ];
 
 fn repo_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("codex-rs")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("codex-rs")
 }
 
 fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -85,7 +89,9 @@ fn no_prompt_asset_tells_the_model_it_is_another_product() {
 
     let mut findings = Vec::new();
     for file in &files {
-        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
         for leak in IDENTITY_LEAKS {
             if let Some(i) = text.find(leak) {
                 let rel = file.strip_prefix(root).unwrap_or(file);

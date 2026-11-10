@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::Weak;
 
@@ -30,12 +32,20 @@ use codex_skills::install_system_skills;
 
 use crate::HostSkillsSnapshot;
 use crate::SkillLoadOutcome;
+use crate::host_roots::EmptyRemoteRootsCache;
 use crate::host_roots::resolve_skill_roots;
 use crate::loader::HostSkillRoot;
 use crate::loader::HostSkillRootSnapshot;
 use crate::loader::MAX_CONCURRENT_ROOT_SCANS;
 use crate::loader::load_and_merge_host_skill_roots;
 use crate::loader::load_and_merge_host_skill_roots_with_request_snapshots;
+
+const CONFIG_SKILLS_CACHE_CAPACITY: usize = 32;
+
+struct ConfigSkillsCacheEntry {
+    key: ConfigSkillsCacheKey,
+    snapshot: Arc<OnceCell<HostSkillsSnapshot>>,
+}
 
 #[derive(Debug, Clone)]
 pub struct HostSkillsLoadInput {
@@ -77,7 +87,8 @@ pub struct HostSkillsService {
     restriction_product: Option<Product>,
     extra_roots: RwLock<Vec<AbsolutePathBuf>>,
     cache_by_cwd: RwLock<HashMap<AbsolutePathBuf, HostSkillsSnapshot>>,
-    cache_by_config: RwLock<HashMap<ConfigSkillsCacheKey, Arc<OnceCell<HostSkillsSnapshot>>>>,
+    cache_by_config: RwLock<VecDeque<ConfigSkillsCacheEntry>>,
+    empty_remote_roots: Mutex<EmptyRemoteRootsCache>,
     // Shared across cwds so root scheduling cannot multiply per-root I/O fanout.
     root_scan_slots: Arc<Semaphore>,
 }
@@ -124,7 +135,8 @@ impl HostSkillsService {
             restriction_product,
             extra_roots: RwLock::new(Vec::new()),
             cache_by_cwd: RwLock::new(HashMap::new()),
-            cache_by_config: RwLock::new(HashMap::new()),
+            cache_by_config: RwLock::new(VecDeque::new()),
+            empty_remote_roots: Mutex::default(),
             root_scan_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_ROOT_SCANS)),
         };
         // The cache is shared by every process using this CODEX_HOME. Disabled services filter
@@ -171,17 +183,15 @@ impl HostSkillsService {
         input: &HostSkillsLoadInput,
         fs: Option<Arc<dyn ExecutorFileSystem>>,
     ) -> HostSkillsSnapshot {
-        let roots = self.skill_roots_for_config(input, fs).await;
+        let roots = self
+            .skill_roots_for_config(input, fs, Some(&self.empty_remote_roots))
+            .await;
         let skill_config_rules = skill_config_rules_from_stack(&input.config_layer_stack);
         let cache_key = config_skills_cache_key(
             &roots,
             &skill_config_rules,
             input.plugin_skill_snapshots.as_ref(),
         );
-        if let Some(snapshot) = self.cached_snapshot_for_config(&cache_key) {
-            return snapshot;
-        }
-
         self.snapshot_for_skill_roots(
             input,
             roots,
@@ -202,7 +212,7 @@ impl HostSkillsService {
         input: &HostSkillsLoadInput,
         fs: Arc<dyn ExecutorFileSystem>,
     ) -> Vec<AbsolutePathBuf> {
-        self.skill_roots_for_config(input, Some(fs))
+        self.skill_roots_for_config(input, Some(fs), /*empty_remote_roots*/ None)
             .await
             .into_iter()
             .filter(|root| root.plugin_identity().is_none() && root.scope != SkillScope::System)
@@ -214,6 +224,7 @@ impl HostSkillsService {
         &self,
         input: &HostSkillsLoadInput,
         fs: Option<Arc<dyn ExecutorFileSystem>>,
+        empty_remote_roots: Option<&Mutex<EmptyRemoteRootsCache>>,
     ) -> Vec<HostSkillRoot> {
         let bundled_skills_enabled = bundled_skills_enabled_from_stack(&input.config_layer_stack);
         if bundled_skills_enabled {
@@ -225,6 +236,7 @@ impl HostSkillsService {
             &input.cwd,
             input.effective_skill_roots.clone(),
             self.extra_roots(),
+            empty_remote_roots,
         )
         .await;
         if !bundled_skills_enabled {
@@ -253,12 +265,19 @@ impl HostSkillsService {
             return snapshot;
         }
 
+        if force_reload {
+            self.empty_remote_roots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
         let mut roots = resolve_skill_roots(
             fs.clone(),
             &input.config_layer_stack,
             &input.cwd,
             input.effective_skill_roots.clone(),
             self.extra_roots(),
+            Some(&self.empty_remote_roots),
         )
         .await;
         if !bundled_skills_enabled {
@@ -310,17 +329,21 @@ impl HostSkillsService {
                 .cache_by_config
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if force_reload {
-                let snapshot_cell = Arc::new(OnceCell::new());
-                cache.insert(cache_key, Arc::clone(&snapshot_cell));
-                snapshot_cell
-            } else {
-                Arc::clone(
-                    cache
-                        .entry(cache_key)
-                        .or_insert_with(|| Arc::new(OnceCell::new())),
-                )
-            }
+            let snapshot_cell = cache
+                .iter()
+                .position(|entry| entry.key == cache_key)
+                .and_then(|index| cache.remove(index))
+                .filter(|_| !force_reload)
+                .map(|entry| entry.snapshot)
+                .unwrap_or_else(|| Arc::new(OnceCell::new()));
+            cache.push_front(ConfigSkillsCacheEntry {
+                key: cache_key,
+                snapshot: Arc::clone(&snapshot_cell),
+            });
+            // Keys retain parsed plugin generations; eviction releases obsolete catalogs while
+            // callers and in-flight loads keep their own snapshots alive.
+            cache.truncate(CONFIG_SKILLS_CACHE_CAPACITY);
+            snapshot_cell
         };
 
         snapshot_cell
@@ -365,6 +388,10 @@ impl HostSkillsService {
     }
 
     pub fn clear_cache(&self) {
+        self.empty_remote_roots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         let cleared_cwd = {
             let mut cache = self
                 .cache_by_cwd
@@ -391,23 +418,6 @@ impl HostSkillsService {
         match self.cache_by_cwd.read() {
             Ok(cache) => cache.get(cwd).cloned(),
             Err(err) => err.into_inner().get(cwd).cloned(),
-        }
-    }
-
-    fn cached_snapshot_for_config(
-        &self,
-        cache_key: &ConfigSkillsCacheKey,
-    ) -> Option<HostSkillsSnapshot> {
-        match self.cache_by_config.read() {
-            Ok(cache) => cache
-                .get(cache_key)
-                .and_then(|snapshot| snapshot.get())
-                .cloned(),
-            Err(err) => err
-                .into_inner()
-                .get(cache_key)
-                .and_then(|snapshot| snapshot.get())
-                .cloned(),
         }
     }
 

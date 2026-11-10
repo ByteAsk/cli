@@ -14,16 +14,33 @@ async fn start_session(
     target: &SessionTarget,
     action: SessionStartAction,
     confirm: impl AsyncFnOnce() -> Result<UnarchiveChoice>,
-) -> Result<Option<AppServerStartedThread>> {
-    let initial_result = action.start(app_server, config, target).await;
-    complete_session_start(app_server, config, target, action, initial_result, confirm).await
+) -> Result<SessionStartOutcome> {
+    let local_settings = LocalSettings::from(config);
+    let initial_result = action
+        .start(app_server, config, &local_settings, target)
+        .await;
+    complete_session_start(
+        app_server,
+        SessionStartConfig {
+            config,
+            local_settings: &local_settings,
+        },
+        target,
+        action,
+        initial_result,
+        confirm,
+    )
+    .await
 }
 
 #[tokio::test]
 async fn archived_session_requires_confirmation_before_resume_or_fork() -> Result<()> {
     for action in [
-        SessionStartAction::Resume(ResumeModelSettings::RestoreFromThread),
-        SessionStartAction::Fork,
+        SessionStartAction::Resume(
+            ResumeModelSettings::RestoreFromThread,
+            crate::resume_permissions::ResumePermissions::default(),
+        ),
+        SessionStartAction::Fork(crate::app_server_session::ForkPermissionMode::InheritSaved),
     ] {
         let codex_home = TempDir::new()?;
         let config = ConfigBuilder::default()
@@ -46,40 +63,60 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
         std::fs::create_dir_all(&archived_dir)?;
         let archived_path = archived_dir.join(active_path.file_name().unwrap());
         std::fs::rename(&active_path, &archived_path)?;
+        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
+        let backend_id = app_server.backend_id();
         let target = SessionTarget {
+            backend_id,
             path: Some(archived_path.clone()),
             thread_id: ThreadId::from_string(&id)?,
+            cwd: None,
             history_mode: None,
         };
-        let mut app_server = crate::start_embedded_app_server_for_picker(&config).await?;
         let prompts = Cell::new(0);
 
-        let cancelled = start_session(&mut app_server, &config, &target, action, async || {
-            prompts.set(prompts.get() + 1);
-            Ok(UnarchiveChoice::Cancel)
-        })
-        .await?;
-        assert!(cancelled.is_none());
-        assert_eq!(
-            (prompts.get(), archived_path.exists(), active_path.exists()),
-            (1, true, false)
-        );
+        for choice in [UnarchiveChoice::Cancel, UnarchiveChoice::Quit] {
+            let outcome = start_session(&mut app_server, &config, &target, action, async || {
+                prompts.set(prompts.get() + 1);
+                Ok(choice)
+            })
+            .await?;
+            assert!(matches!(
+                (choice, outcome),
+                (UnarchiveChoice::Cancel, SessionStartOutcome::CommandCenter)
+                    | (UnarchiveChoice::Quit, SessionStartOutcome::Exit)
+            ));
+            assert_eq!(
+                (archived_path.exists(), active_path.exists()),
+                (true, false)
+            );
+            assert!(
+                app_server
+                    .thread_loaded_list(Default::default())
+                    .await?
+                    .data
+                    .is_empty()
+            );
+        }
 
-        let started = start_session(&mut app_server, &config, &target, action, async || {
-            prompts.set(prompts.get() + 1);
-            Ok(UnarchiveChoice::Unarchive)
-        })
-        .await?
-        .expect("confirmed session should start");
+        assert_eq!(prompts.get(), 2);
+        let SessionStartOutcome::Started(started) =
+            start_session(&mut app_server, &config, &target, action, async || {
+                prompts.set(prompts.get() + 1);
+                Ok(UnarchiveChoice::Unarchive)
+            })
+            .await?
+        else {
+            panic!("confirmed session should start")
+        };
         assert_eq!(
             (prompts.get(), archived_path.exists(), active_path.exists()),
-            (2, false, true)
+            (3, false, true)
         );
         match action {
-            SessionStartAction::Resume(_) => {
+            SessionStartAction::Resume(..) => {
                 assert_eq!(started.session.thread_id, target.thread_id)
             }
-            SessionStartAction::Fork => {
+            SessionStartAction::Fork(_) => {
                 assert_ne!(started.session.thread_id, target.thread_id);
                 assert_eq!(
                     app_server
@@ -91,20 +128,27 @@ async fn archived_session_requires_confirmation_before_resume_or_fork() -> Resul
             }
         }
 
-        let resumed = start_session(
+        let SessionStartOutcome::Started(resumed) = start_session(
             &mut app_server,
             &config,
             &target,
-            SessionStartAction::Resume(ResumeModelSettings::RestoreFromThread),
+            SessionStartAction::Resume(
+                ResumeModelSettings::RestoreFromThread,
+                crate::resume_permissions::ResumePermissions::default(),
+            ),
             async || panic!("active sessions must not prompt"),
         )
         .await?
-        .expect("active session should start");
+        else {
+            panic!("active session should start")
+        };
         assert_eq!(resumed.session.thread_id, target.thread_id);
 
         let missing = SessionTarget {
+            backend_id,
             path: None,
             thread_id: ThreadId::new(),
+            cwd: None,
             history_mode: None,
         };
         let error = start_session(&mut app_server, &config, &missing, action, async || {
@@ -127,10 +171,12 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
     let thread_id =
         ThreadId::from_string("019e72f4-e09a-70f2-b2c2-a153a57b8cc0").expect("thread id");
     let target_session = SessionTarget {
+        backend_id: crate::backend_id::BackendId::new(),
         path: Some(std::path::PathBuf::from(
             "/Users/me/.codex/archived_sessions/rollout.jsonl",
         )),
         thread_id,
+        cwd: None,
         history_mode: None,
     };
     let expected = format!(

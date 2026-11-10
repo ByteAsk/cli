@@ -44,7 +44,8 @@ pub async fn request(home: &Path, cwd: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("{} is not inside a git repository", cwd.display()))?;
     let path = request_path(home, &root);
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|err| format!("could not create {}: {err}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|err| format!("could not create {}: {err}", dir.display()))?;
     }
     std::fs::write(&path, now_ms().to_string())
         .map_err(|err| format!("could not write {}: {err}", path.display()))?;
@@ -78,7 +79,11 @@ pub fn cancelled(check: &str, how: &str) -> CheckResult {
 
 /// Run `work` unless a cancel request for `root` arrives first (`None`). Requests older than
 /// the start of this call are ignored.
-pub(crate) async fn unless_requested<F: Future>(home: &Path, root: &Path, work: F) -> Option<F::Output> {
+pub(crate) async fn unless_requested<F: Future>(
+    home: &Path,
+    root: &Path,
+    work: F,
+) -> Option<F::Output> {
     let since = now_ms();
     tokio::select! {
         out = work => Some(out),
@@ -122,7 +127,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("repo");
         std::fs::create_dir(&root).unwrap();
-        let ok = std::process::Command::new("git").arg("-C").arg(&root).args(["init", "-q"]).status();
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q"])
+            .status();
         assert!(ok.is_ok_and(|s| s.success()));
         let home = dir.path().join("home");
         // A request from before the check started is ignored.
@@ -137,9 +146,14 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(300)).await;
             request(&home2, &root2).await.unwrap();
         });
-        let stopped = unless_requested(&home, &root, tokio::time::sleep(Duration::from_secs(30))).await;
+        let stopped =
+            unless_requested(&home, &root, tokio::time::sleep(Duration::from_secs(30))).await;
         assert_eq!(stopped, None);
-        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

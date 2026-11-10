@@ -108,8 +108,12 @@ impl LimitsSpec {
     fn compile(&self) -> RunLimits {
         let d = RunLimits::default();
         RunLimits {
-            first_response: self.first_response_timeout_ms.map_or(d.first_response, Duration::from_millis),
-            response: self.response_timeout_ms.map_or(d.response, Duration::from_millis),
+            first_response: self
+                .first_response_timeout_ms
+                .map_or(d.first_response, Duration::from_millis),
+            response: self
+                .response_timeout_ms
+                .map_or(d.response, Duration::from_millis),
             run: self.run_timeout_ms.map_or(d.run, Duration::from_millis),
             steps: StepLimits {
                 max_steps: self.max_steps.unwrap_or(d.steps.max_steps),
@@ -240,7 +244,10 @@ pub fn verify_recording(
         if let Some(last) = last_ts
             && r.ts < last
         {
-            return Err(format!("record {records} goes back in time ({} after {last})", r.ts));
+            return Err(format!(
+                "record {records} goes back in time ({} after {last})",
+                r.ts
+            ));
         }
         if let MdKind::Add { sym, .. } | MdKind::Trade { sym, .. } = &r.kind {
             symbols.insert(sym.clone());
@@ -358,8 +365,14 @@ fn step_text(c: &Comparison) -> String {
         return String::new();
     };
     let row = d.record_a.as_ref().or(d.record_b.as_ref());
-    let step = d.key.as_ref().map_or_else(|| "?".to_string(), Value::to_string);
-    let ev = row.and_then(|r| r.get("ev")).and_then(Value::as_str).unwrap_or("?");
+    let step = d
+        .key
+        .as_ref()
+        .map_or_else(|| "?".to_string(), Value::to_string);
+    let ev = row
+        .and_then(|r| r.get("ev"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
     let rec = row
         .and_then(|r| r.pointer("/in/rec"))
         .and_then(Value::as_u64)
@@ -438,7 +451,10 @@ fn run_set(
             .map(|i| {
                 let mut varied = BTreeMap::new();
                 if python {
-                    varied.insert("PYTHONHASHSEED".to_string(), PYTHON_HASH_SEEDS[i].to_string());
+                    varied.insert(
+                        "PYTHONHASHSEED".to_string(),
+                        PYTHON_HASH_SEEDS[i].to_string(),
+                    );
                 } else if !MALLOC_PERTURB[i].is_empty() {
                     varied.insert("MALLOC_PERTURB_".to_string(), MALLOC_PERTURB[i].to_string());
                 }
@@ -495,13 +511,28 @@ fn check_inner(req: &PortCheckRequest, evidence: &mut Value) -> Outcome {
         Ok(r) => r,
         Err(e) => return not_run(e),
     };
-    let initial_book = match req.initial_book.as_deref().map(read_initial_book).transpose() {
+    let initial_book = match req
+        .initial_book
+        .as_deref()
+        .map(read_initial_book)
+        .transpose()
+    {
         Ok(b) => b.unwrap_or_default(),
         Err(e) => return not_run(e),
     };
-    let info = match verify_recording(&req.recording, req.recording_format, &initial_book, req.harness.strict_book) {
+    let info = match verify_recording(
+        &req.recording,
+        req.recording_format,
+        &initial_book,
+        req.harness.strict_book,
+    ) {
         Ok(i) => i,
-        Err(e) => return not_run(format!("the recording {} is not usable: {e}", req.recording.display())),
+        Err(e) => {
+            return not_run(format!(
+                "the recording {} is not usable: {e}",
+                req.recording.display()
+            ));
+        }
     };
     evidence["recording"] = json!({
         "path": req.recording, "format": req.recording_format, "sha256": info.sha256, "records": info.records,
@@ -517,7 +548,10 @@ fn check_inner(req: &PortCheckRequest, evidence: &mut Value) -> Outcome {
         std::env::temp_dir().join(format!("byteask-port-check-{}-{nanos}", std::process::id()))
     });
     if let Err(e) = std::fs::create_dir_all(&workdir) {
-        return not_run(format!("cannot create the work directory {}: {e}", workdir.display()));
+        return not_run(format!(
+            "cannot create the work directory {}: {e}",
+            workdir.display()
+        ));
     }
     evidence["workdir"] = json!(workdir);
     let limits = req.limits.compile();
@@ -567,8 +601,17 @@ fn check_inner(req: &PortCheckRequest, evidence: &mut Value) -> Outcome {
     // 2. C++ against Python, then against itself.
     let cc = run_set("cpp", req.cpp_runs, &req.cpp, false, &setup);
     evidence["cpp"]["runs"] = json!(cc);
-    if let Some(bad) = cc.iter().find(|r| matches!(r.end, RunEnd::SpawnFailed { .. } | RunEnd::HarnessError { .. })) {
-        return not_run(format!("the C++ version {} {}.", bad.label, bad.end.describe()));
+    if let Some(bad) = cc.iter().find(|r| {
+        matches!(
+            r.end,
+            RunEnd::SpawnFailed { .. } | RunEnd::HarnessError { .. }
+        )
+    }) {
+        return not_run(format!(
+            "the C++ version {} {}.",
+            bad.label,
+            bad.end.describe()
+        ));
     }
     let which = format!("{} vs {}", py[0].label, cc[0].label);
     let port = match compare_transcripts(&py[0].transcript, &cc[0].transcript, &rules) {
@@ -578,7 +621,11 @@ fn check_inner(req: &PortCheckRequest, evidence: &mut Value) -> Outcome {
     evidence["comparison"] = json!({"rules": port.rules, "steps_compared": port.records_a});
     if !port.same {
         if let RunEnd::StrategyTimedOut { step, detail } = &cc[0].end {
-            let diff_step = port.first_difference.as_ref().and_then(|d| d.key.as_ref()).and_then(Value::as_u64);
+            let diff_step = port
+                .first_difference
+                .as_ref()
+                .and_then(|d| d.key.as_ref())
+                .and_then(Value::as_u64);
             if diff_step == Some(*step) {
                 let mut o = not_run(format!(
                     "the C++ version matched Python for {step} steps and then timed out at step {step} ({detail}); a hang or a very slow step cannot be called a mismatch.{}",
@@ -589,8 +636,12 @@ fn check_inner(req: &PortCheckRequest, evidence: &mut Value) -> Outcome {
             }
         }
         let crash = match &cc[0].end {
-            RunEnd::StrategyFailed { step, detail } => format!(" The C++ run {detail} at step {step}.{}", tail_note(&cc[0])),
-            RunEnd::HarnessLimit { step, detail } => format!(" The C++ run hit a harness limit at step {step}: {detail}."),
+            RunEnd::StrategyFailed { step, detail } => {
+                format!(" The C++ run {detail} at step {step}.{}", tail_note(&cc[0]))
+            }
+            RunEnd::HarnessLimit { step, detail } => {
+                format!(" The C++ run hit a harness limit at step {step}: {detail}.")
+            }
             _ => String::new(),
         };
         return Outcome {
@@ -627,7 +678,11 @@ fn check_inner(req: &PortCheckRequest, evidence: &mut Value) -> Outcome {
     evidence["self_check"]["cpp"] = json!(format!("reproduced exactly in {} runs", cc.len()));
 
     // 3. What was actually exercised.
-    let counts = py[0].summary.as_ref().map(|s| s["counts"].clone()).unwrap_or(Value::Null);
+    let counts = py[0]
+        .summary
+        .as_ref()
+        .map(|s| s["counts"].clone())
+        .unwrap_or(Value::Null);
     evidence["coverage"] = counts.clone();
     let n = |k: &str| counts.get(k).and_then(Value::as_u64).unwrap_or(0);
     let steps = py[0].steps;
@@ -656,10 +711,10 @@ fn check_inner(req: &PortCheckRequest, evidence: &mut Value) -> Outcome {
     } else {
         format!(" Not exercised by this recording: {}.", untested.join("; "))
     };
-    let file = req
-        .recording
-        .file_name()
-        .map_or_else(|| req.recording.display().to_string(), |f| f.to_string_lossy().to_string());
+    let file = req.recording.file_name().map_or_else(
+        || req.recording.display().to_string(),
+        |f| f.to_string_lossy().to_string(),
+    );
     Outcome {
         status: Status::Pass,
         reason: None,

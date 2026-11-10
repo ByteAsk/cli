@@ -26,7 +26,9 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_core::config::set_project_trust_level;
+use codex_core_plugins::store::PluginStore;
 use codex_features::Feature;
+use codex_plugin::PluginId;
 use codex_protocol::config_types::TrustLevel;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::skip_if_host_windows;
@@ -198,6 +200,7 @@ async fn hooks_list_shows_discovered_hook() -> Result<()> {
     let request_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![cwd.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -223,6 +226,7 @@ async fn hooks_list_shows_discovered_hook() -> Result<()> {
                 source_path: config_path,
                 source: HookSource::User,
                 plugin_id: None,
+                environment_id: None,
                 display_order: 0,
                 enabled: true,
                 is_managed: false,
@@ -278,6 +282,7 @@ async fn hooks_list_shows_discovered_plugin_hook() -> Result<()> {
     let request_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![cwd.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -287,6 +292,7 @@ async fn hooks_list_shows_discovered_plugin_hook() -> Result<()> {
             .path()
             .join("plugins/cache/test/demo/local/hooks/hooks.json"),
     )?)?;
+    let current_hash = data[0].hooks[0].current_hash.clone();
     assert_eq!(
         data,
         vec![HooksListEntry {
@@ -305,18 +311,11 @@ async fn hooks_list_shows_discovered_plugin_hook() -> Result<()> {
                 source_path: plugin_hooks_path,
                 source: HookSource::Plugin,
                 plugin_id: Some("demo@test".to_string()),
+                environment_id: None,
                 display_order: 0,
                 enabled: true,
                 is_managed: false,
-                current_hash: command_hook_hash(
-                    "pre_tool_use",
-                    Some("Bash"),
-                    "echo plugin hook",
-                    /*timeout_sec*/ 7,
-                    /*async*/ false,
-                    Some("running plugin hook"),
-                    /*additional_context_limit*/ None,
-                ),
+                current_hash,
                 trust_status: HookTrustStatus::Untrusted,
             }],
             warnings: Vec::new(),
@@ -380,6 +379,7 @@ async fn plugin_upgrade_refreshes_hook_runtime_for_loaded_session() -> Result<()
     let hooks_list_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![codex_home.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -417,6 +417,11 @@ async fn plugin_upgrade_refreshes_hook_runtime_for_loaded_session() -> Result<()
     let thread_start_id = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            // Keep this refresh/disablement test independent of approval changes.
+            config: Some(std::collections::HashMap::from([(
+                "bypass_hook_trust".to_string(),
+                serde_json::json!(true),
+            )])),
             ..Default::default()
         })
         .await?;
@@ -494,11 +499,13 @@ async fn plugin_upgrade_refreshes_hook_runtime_for_loaded_session() -> Result<()
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
-    assert_eq!(std::fs::read_to_string(&hook_log_path)?, "1\n2\n");
+    // Installation also applies the staged user-config change to this session.
+    assert_eq!(std::fs::read_to_string(&hook_log_path)?, "1\n");
 
     let hooks_list_id = mcp
         .send_hooks_list_request(HooksListParams {
-            cwds: vec![codex_home.path().to_path_buf()],
+            thread_id: Some(thread.id.clone()),
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -544,11 +551,176 @@ async fn plugin_upgrade_refreshes_hook_runtime_for_loaded_session() -> Result<()
         .await?;
     let _: ThreadArchiveResponse =
         timeout(DEFAULT_TIMEOUT, mcp.read_response(archive_id)).await??;
-    assert_eq!(std::fs::read_to_string(&hook_log_path)?, "1\n2\n3\n");
+    assert_eq!(std::fs::read_to_string(&hook_log_path)?, "1\n3\n");
 
     Ok(())
 }
 
+#[tokio::test]
+async fn loaded_session_refreshes_externally_updated_plugin_hooks() -> Result<()> {
+    skip_if_host_windows!(Ok(()));
+    skip_if_remote!(Ok(()), "command hooks use host-local script and log paths");
+
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("Version 1")?,
+        create_final_assistant_message_sse_response("Version 2 needs approval")?,
+        create_final_assistant_message_sse_response("Version 2")?,
+        create_final_assistant_message_sse_response("Rollback needs approval")?,
+        create_final_assistant_message_sse_response("Rollback")?,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    let source = TempDir::new()?;
+    let hook_log_path = codex_home.path().join("plugin-hook-versions.log");
+    let plugin_id = PluginId::parse("demo@test")?;
+    let store = PluginStore::new(codex_home.path().to_path_buf());
+    write_versioned_plugin_hook(source.path(), "1.0.0", &hook_log_path)?;
+    store.install(AbsolutePathBuf::try_from(source.path())?, plugin_id.clone())?;
+    MockResponsesConfig::new(&server.uri())
+        .enable_feature(Feature::Plugins)
+        .enable_feature(Feature::CodexHooks)
+        .write(codex_home.path())?;
+    let mut config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+    config.push_str("\n[plugins.\"demo@test\"]\nenabled = true\n");
+    std::fs::write(codex_home.path().join("config.toml"), config)?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized_with_timeout(DEFAULT_TIMEOUT)
+        .await?;
+    let list_id = mcp
+        .send_hooks_list_request(HooksListParams {
+            cwds: vec![codex_home.path().to_path_buf()],
+            ..Default::default()
+        })
+        .await?;
+    let HooksListResponse { data } = timeout(DEFAULT_TIMEOUT, mcp.read_response(list_id)).await??;
+    let trusted_hooks = data[0]
+        .hooks
+        .iter()
+        .map(|hook| {
+            (
+                hook.key.clone(),
+                serde_json::json!({ "trusted_hash": hook.current_hash }),
+            )
+        })
+        .collect::<serde_json::Map<String, serde_json::Value>>();
+    let trust_id = mcp
+        .send_config_batch_write_request(ConfigBatchWriteParams {
+            edits: vec![ConfigEdit {
+                key_path: "hooks.state".to_string(),
+                value: serde_json::Value::Object(trusted_hooks),
+                merge_strategy: MergeStrategy::Upsert,
+            }],
+            file_path: None,
+            expected_version: None,
+            reload_user_config: true,
+        })
+        .await?;
+    let _: codex_app_server_protocol::ConfigWriteResponse =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(trust_id)).await??;
+    let start_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(start_id)).await??;
+
+    let mut expected_versions = String::new();
+    for (version, expected_trust) in [
+        ("1.0.0", HookTrustStatus::Trusted),
+        ("2.0.0", HookTrustStatus::Modified),
+        ("2.0.0", HookTrustStatus::Trusted),
+        ("0.9.0", HookTrustStatus::Modified),
+        ("0.9.0", HookTrustStatus::Trusted),
+    ] {
+        // This test process updates the shared store without notifying app-server.
+        write_versioned_plugin_hook(source.path(), version, &hook_log_path)?;
+        store.install(AbsolutePathBuf::try_from(source.path())?, plugin_id.clone())?;
+        let turn_id = mcp
+            .send_turn_start_request(TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: format!("run version {version}"),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            })
+            .await?;
+        let _: TurnStartResponse = timeout(DEFAULT_TIMEOUT, mcp.read_response(turn_id)).await??;
+        timeout(
+            DEFAULT_TIMEOUT,
+            mcp.read_stream_until_notification_message("turn/completed"),
+        )
+        .await??;
+        if expected_trust == HookTrustStatus::Trusted {
+            expected_versions.push_str(&format!("{version}\n"));
+        }
+        assert_eq!(std::fs::read_to_string(&hook_log_path)?, expected_versions);
+        let list_id = mcp
+            .send_hooks_list_request(HooksListParams {
+                cwds: vec![codex_home.path().to_path_buf()],
+                ..Default::default()
+            })
+            .await?;
+        let HooksListResponse { data } =
+            timeout(DEFAULT_TIMEOUT, mcp.read_response(list_id)).await??;
+        let hook = data[0]
+            .hooks
+            .iter()
+            .find(|hook| hook.event_name == HookEventName::UserPromptSubmit)
+            .expect("plugin should register a user-prompt hook");
+        assert_eq!(hook.trust_status, expected_trust);
+        if expected_trust == HookTrustStatus::Trusted {
+            let saved: toml::Value = toml::from_str(&std::fs::read_to_string(
+                codex_home.path().join("config.toml"),
+            )?)?;
+            // Older clients compare only the declaration hash; keep that approval valid.
+            let declaration_hash = command_hook_hash(
+                "user_prompt_submit",
+                /*matcher*/ None,
+                "python3 ${PLUGIN_ROOT}/hooks/log_version.py",
+                hook.timeout_sec,
+                /*async*/ false,
+                /*status_message*/ None,
+                /*additional_context_limit*/ None,
+            );
+            assert_eq!(
+                saved["hooks"]["state"][&hook.key]
+                    .clone()
+                    .try_into::<codex_config::HookStateToml>()?,
+                codex_config::HookStateToml {
+                    enabled: None,
+                    trusted_hash: Some(declaration_hash),
+                    trusted_content_hash: Some(
+                        hook.current_hash.split_once('/').unwrap().1.to_string()
+                    ),
+                },
+            );
+        }
+        if expected_trust == HookTrustStatus::Modified {
+            let trust_id = mcp
+                .send_config_batch_write_request(ConfigBatchWriteParams {
+                    edits: vec![ConfigEdit {
+                        key_path: format!("hooks.state.\"{}\".trusted_hash", hook.key),
+                        value: serde_json::json!(hook.current_hash),
+                        merge_strategy: MergeStrategy::Upsert,
+                    }],
+                    file_path: None,
+                    expected_version: None,
+                    reload_user_config: true,
+                })
+                .await?;
+            let _: codex_app_server_protocol::ConfigWriteResponse =
+                timeout(DEFAULT_TIMEOUT, mcp.read_response(trust_id)).await??;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn automatic_marketplace_upgrade_refreshes_hook_runtime_for_loaded_session() -> Result<()> {
     skip_if_host_windows!(Ok(()));
@@ -606,9 +778,9 @@ async fn automatic_marketplace_upgrade_refreshes_hook_runtime_for_loaded_session
         .find(|path| path.is_file())
         .ok_or_else(|| anyhow::anyhow!("git was not found on PATH"))?;
     let wrapper_path = git_wrapper.path().join("git");
-    std::fs::write(
+    codex_utils_cargo_bin::write_executable(
         &wrapper_path,
-        format!(
+        &format!(
             r#"#!/bin/sh
 if [ "$3" = "ls-remote" ] && [ "$4" = "{marketplace}" ]; then
     while [ ! -e "{upgrade_gate}" ]; do
@@ -622,14 +794,6 @@ exec "{real_git}" "$@"
             real_git = real_git.display(),
         ),
     )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut permissions = std::fs::metadata(&wrapper_path)?.permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&wrapper_path, permissions)?;
-    }
     let path_with_wrapper = std::env::join_paths(
         std::iter::once(git_wrapper.path().to_path_buf())
             .chain(std::env::split_paths(&original_path)),
@@ -687,6 +851,7 @@ source = "{}"
     let hooks_list_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![codex_home.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -760,6 +925,7 @@ async fn hooks_list_shows_discovered_plugin_mcp_tool_hook() -> Result<()> {
     let request_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![cwd.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -769,22 +935,7 @@ async fn hooks_list_shows_discovered_plugin_mcp_tool_hook() -> Result<()> {
             .path()
             .join("plugins/cache/test/demo/local/hooks/hooks.json"),
     )?)?;
-    let identity = NormalizedHookIdentity {
-        event_name: "pre_tool_use",
-        group: codex_config::MatcherGroup {
-            matcher: Some("Bash".to_string()),
-            hooks: vec![codex_config::HookHandlerConfig::McpTool {
-                server: "security".to_string(),
-                tool: "inspect".to_string(),
-                input: serde_json::from_value(serde_json::json!({
-                    "path": "${tool_input.path}",
-                }))?,
-                timeout_sec: Some(9),
-                status_message: Some("checking security policy".to_string()),
-            }],
-        },
-    };
-    let identity = codex_config::TomlValue::try_from(identity)?;
+    let current_hash = data[0].hooks[0].current_hash.clone();
 
     assert_eq!(
         data,
@@ -804,10 +955,11 @@ async fn hooks_list_shows_discovered_plugin_mcp_tool_hook() -> Result<()> {
                 source_path,
                 source: HookSource::Plugin,
                 plugin_id: Some("demo@test".to_string()),
+                environment_id: None,
                 display_order: 0,
                 enabled: true,
                 is_managed: false,
-                current_hash: codex_config::version_for_toml(&identity),
+                current_hash,
                 trust_status: HookTrustStatus::Untrusted,
             }],
             warnings: Vec::new(),
@@ -870,6 +1022,7 @@ enabled = false
     let request_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![cwd.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -877,6 +1030,7 @@ enabled = false
     let source_path = AbsolutePathBuf::from_absolute_path(std::fs::canonicalize(
         plugin_root.join("hooks/hooks.json"),
     )?)?;
+    let current_hash = data[0].hooks[0].current_hash.clone();
     assert_eq!(
         data,
         vec![HooksListEntry {
@@ -895,18 +1049,11 @@ enabled = false
                 source_path,
                 source: HookSource::Plugin,
                 plugin_id: Some(plugin_id),
+                environment_id: None,
                 display_order: 1,
                 enabled: false,
                 is_managed: false,
-                current_hash: command_hook_hash(
-                    "stop",
-                    /*matcher*/ None,
-                    ordinary_command,
-                    /*timeout_sec*/ 5,
-                    /*async*/ false,
-                    /*status_message*/ None,
-                    /*additional_context_limit*/ None,
-                ),
+                current_hash,
                 trust_status: HookTrustStatus::Untrusted,
             }],
             warnings: Vec::new(),
@@ -959,6 +1106,7 @@ async fn hooks_list_warms_plugin_capabilities_for_thread_start() -> Result<()> {
     let hooks_list_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![cwd.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let _: HooksListResponse = timeout(DEFAULT_TIMEOUT, mcp.read_response(hooks_list_id)).await??;
@@ -1002,6 +1150,7 @@ async fn hooks_list_shows_plugin_hook_load_warnings() -> Result<()> {
     let request_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![cwd.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -1060,6 +1209,7 @@ timeout = 5
                 codex_home.path().to_path_buf(),
                 workspace.path().to_path_buf(),
             ],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -1094,6 +1244,7 @@ timeout = 5
                     source_path: project_config_path,
                     source: HookSource::Project,
                     plugin_id: None,
+                    environment_id: None,
                     display_order: 0,
                     enabled: true,
                     is_managed: false,
@@ -1148,6 +1299,7 @@ async fn hooks_list_uses_root_repo_hooks_for_linked_worktrees() -> Result<()> {
     let list_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![repo_root.clone(), worktree_root.clone()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } = timeout(DEFAULT_TIMEOUT, mcp.read_response(list_id)).await??;
@@ -1196,6 +1348,7 @@ async fn hooks_list_uses_root_repo_hooks_for_linked_worktrees() -> Result<()> {
     let list_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![worktree_root],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } = timeout(DEFAULT_TIMEOUT, mcp.read_response(list_id)).await??;
@@ -1219,6 +1372,7 @@ async fn config_batch_write_toggles_user_hook() -> Result<()> {
     let request_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![cwd.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -1248,6 +1402,7 @@ async fn config_batch_write_toggles_user_hook() -> Result<()> {
     let request_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![cwd.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -1278,6 +1433,7 @@ async fn config_batch_write_toggles_user_hook() -> Result<()> {
     let request_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![cwd.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -1338,6 +1494,7 @@ command = "python3 {}"
     let hook_list_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![codex_home.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -1395,6 +1552,7 @@ command = "python3 {}"
     let hook_list_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![codex_home.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -1454,6 +1612,7 @@ command = "python3 {}"
     let hook_list_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![codex_home.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =
@@ -1541,6 +1700,7 @@ command = "python3 {}"
     let hook_list_id = mcp
         .send_hooks_list_request(HooksListParams {
             cwds: vec![codex_home.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let HooksListResponse { data } =

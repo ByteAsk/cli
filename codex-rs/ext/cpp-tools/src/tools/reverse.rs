@@ -139,24 +139,38 @@ struct Request {
 
 fn check_request(args: &ReverseArgs) -> Result<Request, String> {
     let query = Query::parse(&args.query)?;
-    let expr = args.expr.as_deref().map(str::trim).filter(|e| !e.is_empty()).map(str::to_string);
+    let expr = args
+        .expr
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_string);
     let location = args
         .location
         .as_deref()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(str::to_string);
-    let stop_at = args.stop_at.as_deref().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string);
+    let stop_at = args
+        .stop_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string);
     match query {
         Query::WhoWrote if expr.is_none() => {
-            return Err("query \"who_wrote\" needs `expr`: the variable, field or address whose \
+            return Err(
+                "query \"who_wrote\" needs `expr`: the variable, field or address whose \
                         writes you want (e.g. \"book.ask\", \"o->next\", \"*(long*)0x7ffd1234\")"
-                .to_string());
+                    .to_string(),
+            );
         }
         Query::LastReached if location.is_none() => {
-            return Err("query \"last_reached\" needs `location`: a function or file:line \
+            return Err(
+                "query \"last_reached\" needs `location`: a function or file:line \
                         (e.g. \"OrderBook::apply\", \"book.cpp:42\")"
-                .to_string());
+                    .to_string(),
+            );
         }
         _ => {}
     }
@@ -180,7 +194,10 @@ fn check_request(args: &ReverseArgs) -> Result<Request, String> {
             check_location(field, spec)?;
         }
     }
-    let count = args.count.unwrap_or(query.default_count()).clamp(1, MAX_COUNT);
+    let count = args
+        .count
+        .unwrap_or(query.default_count())
+        .clamp(1, MAX_COUNT);
     Ok(Request {
         query,
         expr,
@@ -213,7 +230,9 @@ fn check_expr(expr: &str) -> Result<(), String> {
         }
     }
     if expr.contains("++") || expr.contains("--") {
-        return Err(format!("`expr` {expr:?} modifies a value (`++`/`--`): it may only read"));
+        return Err(format!(
+            "`expr` {expr:?} modifies a value (`++`/`--`): it may only read"
+        ));
     }
     // A call: an identifier, `)` or `]` directly followed by `(`, except the
     // operators that look like calls but only read.
@@ -223,9 +242,10 @@ fn check_expr(expr: &str) -> Result<(), String> {
         if c == '(' {
             let calls = match last_significant {
                 Some(')') | Some(']') => true,
-                Some(p) if p.is_alphanumeric() || p == '_' => {
-                    !matches!(word.as_str(), "sizeof" | "alignof" | "_Alignof" | "decltype" | "typeof")
-                }
+                Some(p) if p.is_alphanumeric() || p == '_' => !matches!(
+                    word.as_str(),
+                    "sizeof" | "alignof" | "_Alignof" | "decltype" | "typeof"
+                ),
                 _ => false,
             };
             if calls {
@@ -255,10 +275,18 @@ fn check_location(field: &str, spec: &str) -> Result<(), String> {
         return Err(format!("`{field}` is longer than 300 characters"));
     }
     if spec.chars().any(char::is_control) {
-        return Err(format!("`{field}` contains a line break or control character"));
+        return Err(format!(
+            "`{field}` contains a line break or control character"
+        ));
     }
     let lower = format!(" {} ", spec.to_ascii_lowercase());
-    for word in [" if ", " thread ", " task ", " -force-condition ", " inferior "] {
+    for word in [
+        " if ",
+        " thread ",
+        " task ",
+        " -force-condition ",
+        " inferior ",
+    ] {
         if lower.contains(word) {
             return Err(format!(
                 "`{field}` {spec:?} carries a breakpoint condition or qualifier ({}); give a plain \
@@ -345,7 +373,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReverseTool {
         );
         properties.insert(
             "stop_hit".to_string(),
-            JsonSchema::number(Some("Which arrival at `stop_at` to stop on (1 = the first).".to_string())),
+            JsonSchema::number(Some(
+                "Which arrival at `stop_at` to stop on (1 = the first).".to_string(),
+            )),
         );
         properties.insert(
             "stop_event".to_string(),
@@ -358,7 +388,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReverseTool {
         );
         properties.insert(
             "timeout_sec".to_string(),
-            JsonSchema::number(Some("Wall-clock limit for the replay (default 300).".to_string())),
+            JsonSchema::number(Some(
+                "Wall-clock limit for the replay (default 300).".to_string(),
+            )),
         );
 
         ToolSpec::Function(ResponsesApiTool {
@@ -408,7 +440,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReverseTool {
 }
 
 impl ReverseTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: ReverseArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -422,23 +457,46 @@ impl ReverseTool {
             Err(TraceError::NotRun { reason, fix }) => {
                 let body = not_run(&reason, &fix);
                 let result = crate::tools::runtime_util::verdict(TOOL_NAME, &body, false, "");
-                return Ok(crate::report::report(TOOL_NAME, request.query.wire(), body, result));
+                return Ok(crate::report::report(
+                    TOOL_NAME,
+                    request.query.wire(),
+                    body,
+                    result,
+                ));
             }
         };
         let label = format!("{} · {}", request.query.wire(), trace.display());
 
-        let processes = match run_capped("rr", &["ps".to_string(), trace.to_string_lossy().into_owned()], &self.cwd, timeout_from(Some(60))).await? {
-            RunOutcome::Finished { success: true, stdout, .. } => crate::tools::runtime_util::parse_rr_ps(&stdout),
+        let processes = match run_capped(
+            "rr",
+            &["ps".to_string(), trace.to_string_lossy().into_owned()],
+            &self.cwd,
+            timeout_from(Some(60)),
+        )
+        .await?
+        {
+            RunOutcome::Finished {
+                success: true,
+                stdout,
+                ..
+            } => crate::tools::runtime_util::parse_rr_ps(&stdout),
             RunOutcome::Finished { stderr, .. } => {
                 let body = not_run(
-                    &format!("rr could not read the recording {}: {}", trace.display(), tail_lines(&stderr, 3)),
+                    &format!(
+                        "rr could not read the recording {}: {}",
+                        trace.display(),
+                        tail_lines(&stderr, 3)
+                    ),
                     "point `trace` at a directory rr recorded (rr ls lists them), with the rr that recorded it",
                 );
                 let result = crate::tools::runtime_util::verdict(TOOL_NAME, &body, false, "");
                 return Ok(crate::report::report(TOOL_NAME, &label, body, result));
             }
             RunOutcome::TimedOut { secs } => {
-                let body = not_run(&format!("`rr ps` did not answer within {secs}s"), "check the trace directory is on a local disk");
+                let body = not_run(
+                    &format!("`rr ps` did not answer within {secs}s"),
+                    "check the trace directory is on a local disk",
+                );
                 let result = crate::tools::runtime_util::verdict(TOOL_NAME, &body, false, "");
                 return Ok(crate::report::report(TOOL_NAME, &label, body, result));
             }
@@ -457,7 +515,9 @@ impl ReverseTool {
         let driver = scratch.path().join("byteask_rr_driver.py");
         let hook = scratch.path().join("hook.gdb");
         let out = scratch.path().join("answer.jsonl");
-        let io = |e: std::io::Error| FunctionCallError::RespondToModel(format!("cannot write the replay driver: {e}"));
+        let io = |e: std::io::Error| {
+            FunctionCallError::RespondToModel(format!("cannot write the replay driver: {e}"))
+        };
         std::fs::write(&driver, DRIVER).map_err(io)?;
         std::fs::write(&hook, hook_script(&driver)).map_err(io)?;
         let roots = vec![std::fs::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone())];
@@ -469,13 +529,18 @@ impl ReverseTool {
             let argv = build_replay_argv(&trace, start, unbound, &hook);
             let envs = vec![
                 ("BYTEASK_RR_QUERY".to_string(), query_json.clone()),
-                ("BYTEASK_RR_OUT".to_string(), out.to_string_lossy().into_owned()),
+                (
+                    "BYTEASK_RR_OUT".to_string(),
+                    out.to_string_lossy().into_owned(),
+                ),
             ];
             let outcome = run_capped_env("rr", &argv, &self.cwd, timeout, &envs).await?;
             let records = read_records(&out);
             let (timed_out, stderr) = match outcome {
                 RunOutcome::TimedOut { secs } => (Some(secs), String::new()),
-                RunOutcome::Finished { stdout, stderr, .. } => (None, format!("{stdout}\n{stderr}")),
+                RunOutcome::Finished { stdout, stderr, .. } => {
+                    (None, format!("{stdout}\n{stderr}"))
+                }
             };
             if !unbound && records.is_empty() && cpu_bind_failed(&stderr) {
                 // The trace was recorded on a CPU this process may not use (an
@@ -497,7 +562,12 @@ impl ReverseTool {
             cut,
             "Answered from the recording by running it backwards.",
         );
-        Ok(crate::report::report(TOOL_NAME, &label, cap(body, OUTPUT_CAP), result))
+        Ok(crate::report::report(
+            TOOL_NAME,
+            &label,
+            cap(body, OUTPUT_CAP),
+            result,
+        ))
     }
 }
 
@@ -508,9 +578,16 @@ enum TraceError {
 
 fn resolve_trace(cwd: &Path, given: Option<&str>) -> Result<PathBuf, TraceError> {
     if let Some(given) = given.map(str::trim).filter(|g| !g.is_empty()) {
-        let path = if Path::new(given).is_absolute() { PathBuf::from(given) } else { cwd.join(given) };
+        let path = if Path::new(given).is_absolute() {
+            PathBuf::from(given)
+        } else {
+            cwd.join(given)
+        };
         if !path.is_dir() {
-            return Err(TraceError::Model(format!("trace {} is not a directory", path.display())));
+            return Err(TraceError::Model(format!(
+                "trace {} is not a directory",
+                path.display()
+            )));
         }
         if !crate::tools::runtime_util::is_rr_trace(&path) {
             return Err(TraceError::Model(format!(
@@ -713,7 +790,12 @@ fn read_records(path: &Path) -> Vec<Record> {
 
 // --------------------------------- rendering ---------------------------------
 
-fn header_lines(trace: &Path, first: Option<&TraceProcess>, processes: usize, unbound: bool) -> String {
+fn header_lines(
+    trace: &Path,
+    first: Option<&TraceProcess>,
+    processes: usize,
+    unbound: bool,
+) -> String {
     let mut text = match first {
         Some(p) => format!(
             "recording: {} — `{}` {}\n",
@@ -744,7 +826,10 @@ fn user_frame(frames: &[Frame]) -> Option<&Frame> {
 }
 
 fn frame_text(frame: &Frame, cwd: &Path) -> String {
-    let name = frame.function.clone().unwrap_or_else(|| frame.pc.clone().unwrap_or_else(|| "??".to_string()));
+    let name = frame
+        .function
+        .clone()
+        .unwrap_or_else(|| frame.pc.clone().unwrap_or_else(|| "??".to_string()));
     match (&frame.file, frame.line) {
         (Some(file), Some(line)) => format!("{name}() at {}:{line}", display_path(file, cwd)),
         _ => match &frame.library {
@@ -767,7 +852,11 @@ fn site_text(frames: &[Frame], cwd: &Path) -> String {
     if top.user {
         return frame_text(top, cwd);
     }
-    let lib = top.library.as_deref().map(short_lib).unwrap_or("system code");
+    let lib = top
+        .library
+        .as_deref()
+        .map(short_lib)
+        .unwrap_or("system code");
     let inner = top.function.clone().unwrap_or_else(|| "??".to_string());
     match user_frame(frames) {
         Some(user) => format!("{inner} ({lib}), called from {}", frame_text(user, cwd)),
@@ -783,14 +872,21 @@ fn source_of(frames: &[Frame]) -> Option<String> {
 /// "thread 4221 (risk_reset)": the outermost frame of the user's own code on
 /// that thread is how a person knows which thread it is.
 fn thread_text(tid: i64, frames: &[Frame]) -> String {
-    match frames.iter().rev().find(|f| f.user).and_then(|f| f.function.as_deref()) {
+    match frames
+        .iter()
+        .rev()
+        .find(|f| f.user)
+        .and_then(|f| f.function.as_deref())
+    {
         Some(entry) => format!("thread {tid} ({entry})"),
         None => format!("thread {tid}"),
     }
 }
 
 fn event_text(event: Option<u64>) -> String {
-    event.map(|e| format!("event {e}")).unwrap_or_else(|| "event ?".to_string())
+    event
+        .map(|e| format!("event {e}"))
+        .unwrap_or_else(|| "event ?".to_string())
 }
 
 fn render(
@@ -803,7 +899,14 @@ fn render(
 ) -> Result<String, FunctionCallError> {
     let mut text = header.to_string();
     let stop = records.iter().find_map(|r| match r {
-        Record::Stop { how, event, frames, signal, thread, note } => Some((how, event, frames, signal, thread, note)),
+        Record::Stop {
+            how,
+            event,
+            frames,
+            signal,
+            thread,
+            note,
+        } => Some((how, event, frames, signal, thread, note)),
         _ => None,
     });
     let done = records.iter().any(|r| matches!(r, Record::Done));
@@ -814,12 +917,15 @@ fn render(
         Record::Error { place, message } => Some((place.as_str(), message.as_str())),
         _ => None,
     }) {
-        let at = stop.map(|(_, event, frames, signal, ..)| stop_text(signal.as_deref(), *event, frames, cwd));
+        let at = stop.map(|(_, event, frames, signal, ..)| {
+            stop_text(signal.as_deref(), *event, frames, cwd)
+        });
         match place {
             "expr" | "location" | "stop_at" => {
                 return Err(FunctionCallError::RespondToModel(format!(
                     "{text}Nothing answered: `{place}` was refused by gdb: {message}{}",
-                    at.map(|a| format!("\n(the stop point was: {a})")).unwrap_or_default()
+                    at.map(|a| format!("\n(the stop point was: {a})"))
+                        .unwrap_or_default()
                 )));
             }
             _ => {
@@ -839,13 +945,21 @@ fn render(
     };
 
     let stop_line = match how.as_str() {
-        "end" => format!("the end of the recording (after the program exited, {})", event_text(*event)),
+        "end" => format!(
+            "the end of the recording (after the program exited, {})",
+            event_text(*event)
+        ),
         "stop_at" => format!(
             "arrival {} at `{}`: {} in {} ({})",
             request.stop_hit,
             request.stop_at.as_deref().unwrap_or(""),
-            user_frame(frames).map(|f| frame_text(f, cwd)).unwrap_or_else(|| site_text(frames, cwd)),
-            thread.as_ref().map(|t| thread_text(t.tid, frames)).unwrap_or_else(|| "thread ?".into()),
+            user_frame(frames)
+                .map(|f| frame_text(f, cwd))
+                .unwrap_or_else(|| site_text(frames, cwd)),
+            thread
+                .as_ref()
+                .map(|t| thread_text(t.tid, frames))
+                .unwrap_or_else(|| "thread ?".into()),
             event_text(*event)
         ),
         "event" => match user_frame(frames) {
@@ -853,18 +967,27 @@ fn render(
                 "{}: {} in {}",
                 event_text(*event),
                 frame_text(f, cwd),
-                thread.as_ref().map(|t| thread_text(t.tid, frames)).unwrap_or_else(|| "thread ?".into())
+                thread
+                    .as_ref()
+                    .map(|t| thread_text(t.tid, frames))
+                    .unwrap_or_else(|| "thread ?".into())
             ),
             None => format!(
                 "{} (thread {} was outside your code there)",
                 event_text(*event),
-                thread.as_ref().map(|t| t.tid.to_string()).unwrap_or_else(|| "?".into())
+                thread
+                    .as_ref()
+                    .map(|t| t.tid.to_string())
+                    .unwrap_or_else(|| "?".into())
             ),
         },
         _ => format!(
             "{} in {}",
             stop_text(signal.as_deref(), *event, frames, cwd),
-            thread.as_ref().map(|t| thread_text(t.tid, frames)).unwrap_or_else(|| "thread ?".into())
+            thread
+                .as_ref()
+                .map(|t| thread_text(t.tid, frames))
+                .unwrap_or_else(|| "thread ?".into())
         ),
     };
     text.push_str(&format!("asked from: {stop_line}\n"));
@@ -879,20 +1002,35 @@ fn render(
     match request.query {
         Query::StopPoint => render_stop_point(&mut body, frames, records, stop_tid, cwd),
         Query::WhoWrote => {
-            if let Some(Record::Target { expr, address, size, ty, value }) =
-                records.iter().find(|r| matches!(r, Record::Target { .. }))
+            if let Some(Record::Target {
+                expr,
+                address,
+                size,
+                ty,
+                value,
+            }) = records.iter().find(|r| matches!(r, Record::Target { .. }))
             {
                 body.push_str(&format!(
                     "watching `{expr}` — {ty}, {size} bytes at {address}; its value at the stop: {value}\n\n"
                 ));
             }
-            body.push_str("writes, most recent first (found by running backwards from the stop):\n");
+            body.push_str(
+                "writes, most recent first (found by running backwards from the stop):\n",
+            );
             for r in records {
                 match r {
-                    Record::Write { event, thread, frames, before, after } => {
+                    Record::Write {
+                        event,
+                        thread,
+                        frames,
+                        before,
+                        after,
+                    } => {
                         found += 1;
                         let change = if before.starts_with("<unreadable") {
-                            format!("this memory did not exist before here (it was just allocated or mapped); now {after}")
+                            format!(
+                                "this memory did not exist before here (it was just allocated or mapped); now {after}"
+                            )
                         } else {
                             format!("{before} -> {after}")
                         };
@@ -940,9 +1078,18 @@ fn render(
             ));
             for r in records {
                 match r {
-                    Record::Hit { event, thread, frames, args } => {
+                    Record::Hit {
+                        event,
+                        thread,
+                        frames,
+                        args,
+                    } => {
                         found += 1;
-                        let shown_args = args.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join(", ");
+                        let shown_args = args
+                            .iter()
+                            .map(|(n, v)| format!("{n}={v}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         body.push_str(&format!(
                             "{found:>2}. {} · {} — {}\n",
                             event_text(*event),
@@ -953,7 +1100,10 @@ fn render(
                             body.push_str(&format!("    args: {shown_args}\n"));
                         }
                         if let Some(caller) = frames.iter().skip(1).find(|f| f.user) {
-                            body.push_str(&format!("    called from {}\n", frame_text(caller, cwd)));
+                            body.push_str(&format!(
+                                "    called from {}\n",
+                                frame_text(caller, cwd)
+                            ));
                         }
                     }
                     Record::Start { .. } => reached_start = Some(None),
@@ -979,17 +1129,31 @@ fn render(
                     _ => None,
                 })
                 .collect();
-            reached_start = records.iter().any(|r| matches!(r, Record::Start { .. })).then_some(None);
+            reached_start = records
+                .iter()
+                .any(|r| matches!(r, Record::Start { .. }))
+                .then_some(None);
             let user: Vec<_> = lines.iter().filter(|(_, f)| f.user).collect();
             found = user.len() as u32;
             body.push_str(&format!(
                 "the last {} line(s) {} ran before the stop, oldest first:\n",
                 user.len(),
-                stop_tid.map(|t| format!("thread {t}")).unwrap_or_else(|| "the stopped thread".into())
+                stop_tid
+                    .map(|t| format!("thread {t}"))
+                    .unwrap_or_else(|| "the stopped thread".into())
             ));
             for (i, (event, frame)) in user.iter().rev().enumerate() {
-                let marker = if i + 1 == user.len() { "   <- the stop" } else { "" };
-                let src = frame.file.as_deref().zip(frame.line).and_then(|(f, l)| source_line(f, l)).unwrap_or_default();
+                let marker = if i + 1 == user.len() {
+                    "   <- the stop"
+                } else {
+                    ""
+                };
+                let src = frame
+                    .file
+                    .as_deref()
+                    .zip(frame.line)
+                    .and_then(|(f, l)| source_line(f, l))
+                    .unwrap_or_default();
                 let row = format!(
                     "  {:<10} {:<28} {src}{marker}",
                     event_text(**event),
@@ -1031,15 +1195,29 @@ fn render(
 
 fn stop_text(signal: Option<&str>, event: Option<u64>, frames: &[Frame], cwd: &Path) -> String {
     let what = signal.unwrap_or("the stop");
-    format!("{what} at {} ({})", site_text(frames, cwd), event_text(event))
+    format!(
+        "{what} at {} ({})",
+        site_text(frames, cwd),
+        event_text(event)
+    )
 }
 
-fn render_stop_point(body: &mut String, frames: &[Frame], records: &[Record], stop_tid: Option<i64>, cwd: &Path) {
+fn render_stop_point(
+    body: &mut String,
+    frames: &[Frame],
+    records: &[Record],
+    stop_tid: Option<i64>,
+    cwd: &Path,
+) {
     body.push_str("backtrace of the stopped thread (your code marked *):\n");
     let mut hidden = 0;
     for (level, frame) in frames.iter().enumerate() {
         if frame.user || level == 0 {
-            body.push_str(&format!("  {}#{level} {}\n", if frame.user { "*" } else { " " }, frame_text(frame, cwd)));
+            body.push_str(&format!(
+                "  {}#{level} {}\n",
+                if frame.user { "*" } else { " " },
+                frame_text(frame, cwd)
+            ));
         } else {
             hidden += 1;
         }
@@ -1050,14 +1228,19 @@ fn render_stop_point(body: &mut String, frames: &[Frame], records: &[Record], st
     if let Some(src) = source_of(frames) {
         body.push_str(&format!("      | {src}\n"));
     }
-    if let Some(Record::Threads { threads }) = records.iter().find(|r| matches!(r, Record::Threads { .. })) {
+    if let Some(Record::Threads { threads }) =
+        records.iter().find(|r| matches!(r, Record::Threads { .. }))
+    {
         body.push_str(&format!("\nthreads at the stop ({}):\n", threads.len()));
         for t in threads {
             let mark = if Some(t.tid) == stop_tid { "*" } else { " " };
             let place = user_frame(&t.frames)
                 .map(|f| frame_text(f, cwd))
                 .unwrap_or_else(|| site_text(&t.frames, cwd));
-            body.push_str(&format!("  {mark} {} — {place}\n", thread_text(t.tid, &t.frames)));
+            body.push_str(&format!(
+                "  {mark} {} — {place}\n",
+                thread_text(t.tid, &t.frames)
+            ));
         }
     }
 }
@@ -1084,12 +1267,18 @@ fn not_run_reason(timed_out: Option<u64>, stderr: &str) -> String {
     }
     if cpu_bind_failed(stderr) {
         return not_run(
-            &format!("rr could not replay on the CPU the trace was recorded on, even unbound: {}", tail_lines(stderr, 2)),
+            &format!(
+                "rr could not replay on the CPU the trace was recorded on, even unbound: {}",
+                tail_lines(stderr, 2)
+            ),
             "replay where that CPU is available (e.g. inside the same cpuset), or record again on an allowed CPU",
         );
     }
     not_run(
-        &format!("rr replay stopped before answering: {}", tail_lines(stderr, 4)),
+        &format!(
+            "rr replay stopped before answering: {}",
+            tail_lines(stderr, 4)
+        ),
         "check the trace was recorded by this rr version on this kind of CPU (rr traces are not portable across CPU models)",
     )
 }

@@ -145,55 +145,44 @@ const DEFS: [Def; 15] = [
     Def {
         name: "context_bundle",
         description: "START HERE for a bug report, issue or change request in this C/C++ code base. Paste the task text (with any example code, error messages and stack traces): returns, under a token budget, where the change most likely belongs (ranked, with the evidence for each: names in the task, what the task's example code really calls when compiled with this build's flags, quoted errors, stack frames, similar past commits), the code itself, what it calls and what calls it, the tests that exercise it, and how to verify a change.",
-        strings: &[
-            ("task", Some("The full task or issue text.")),
-        ],
+        strings: &[("task", Some("The full task or issue text."))],
         enums: &[],
-        ints: &[
-            IntParam {
-                name: "budget_tokens",
-                min: 1000,
-                max: 8000,
-                description: "Token budget for the bundle, 1000-8000 (default 8000).",
-            },
-        ],
+        ints: &[IntParam {
+            name: "budget_tokens",
+            min: 1000,
+            max: 8000,
+            description: "Token budget for the bundle, 1000-8000 (default 8000).",
+        }],
         required: "task",
     },
     Def {
         name: "context_locate",
         description: "Rank the functions, methods and classes a task most likely needs changed, with the reasons for each (one list; no code bodies). Use it to decide where to read; context_bundle also includes the code.",
-        strings: &[
-            ("task", None),
-        ],
+        strings: &[("task", None)],
         enums: &[],
-        ints: &[
-            IntParam {
-                name: "k",
-                min: 1,
-                max: 40,
-                description: "How many places to return, 1-40 (default 15).",
-            },
-        ],
+        ints: &[IntParam {
+            name: "k",
+            min: 1,
+            max: 40,
+            description: "How many places to return, 1-40 (default 15).",
+        }],
         required: "task",
     },
     Def {
         name: "context_find",
         description: "Find the exact definition of a class or function by name, compiler-accurate: every overload with its signature, explicit and partial specializations, the base classes of a class, whether a method is virtual and what it overrides, and the template versions the build compiles. Unlike grep it never returns comments, call sites or forward declarations. kind: class or function.",
-        strings: &[
-            ("name", Some("Plain (Search) or qualified (fmt::context, ns::Book::update) name.")),
-        ],
-        enums: &[
-            ("kind", &["class", "function"]),
-        ],
+        strings: &[(
+            "name",
+            Some("Plain (Search) or qualified (fmt::context, ns::Book::update) name."),
+        )],
+        enums: &[("kind", &["class", "function"])],
         ints: &[],
         required: "name",
     },
     Def {
         name: "context_hierarchy",
         description: "Inheritance of a class: all bases up the chain and all derived classes down it. For a method: what it overrides and every override of it, i.e. the possible targets of a virtual call.",
-        strings: &[
-            ("name", None),
-        ],
+        strings: &[("name", None)],
         enums: &[],
         ints: &[],
         required: "name",
@@ -201,21 +190,18 @@ const DEFS: [Def; 15] = [
     Def {
         name: "context_calls",
         description: "Who calls a function and what it calls, as the compiler resolved each call (the overload actually chosen; calls into a template point at the template). For virtual methods it also lists every override as a possible target.",
-        strings: &[
-            ("name", None),
-        ],
-        enums: &[
-            ("direction", &["both", "callers", "callees"]),
-        ],
+        strings: &[("name", None)],
+        enums: &[("direction", &["both", "callers", "callees"])],
         ints: &[],
         required: "name",
     },
     Def {
         name: "context_example",
         description: "Compile a piece of example code (from a bug report, or a test you are about to write) with this project's own build flags, without touching the tree, and report the project functions it really reaches (template specializations and overloads as the compiler picked them, how many calls deep) and the compiler's errors on it. Answers 'what does this snippet actually execute in our code?'.",
-        strings: &[
-            ("code", Some("C/C++ code; includes and main() are added when missing.")),
-        ],
+        strings: &[(
+            "code",
+            Some("C/C++ code; includes and main() are added when missing."),
+        )],
         enums: &[],
         ints: &[],
         required: "code",
@@ -224,35 +210,37 @@ const DEFS: [Def; 15] = [
         name: "context_history",
         description: "What the project's history says: past commits similar to a task (and the files they changed), commits a task points at by hash or issue number, or the recent commits to a file and the files usually changed with it. Only history up to the indexed commit.",
         strings: &[
-            ("query", Some("The task text, a commit hash, or words to search past commit messages for.")),
-            ("path", Some("Also list the recent commits to this file and the files usually changed with it.")),
+            (
+                "query",
+                Some("The task text, a commit hash, or words to search past commit messages for."),
+            ),
+            (
+                "path",
+                Some(
+                    "Also list the recent commits to this file and the files usually changed with it.",
+                ),
+            ),
         ],
         enums: &[],
-        ints: &[
-            IntParam {
-                name: "k",
-                min: 1,
-                max: 30,
-                description: "How many commits to return, 1-30 (default 10).",
-            },
-        ],
+        ints: &[IntParam {
+            name: "k",
+            min: 1,
+            max: 30,
+            description: "How many commits to return, 1-30 (default 10).",
+        }],
         required: "query",
     },
     Def {
         name: "context_memory",
         description: "Lessons from past fixes in this code base, recorded by earlier sessions after a verified fix: the root cause, what fixed it, where, and what was tried and did not work. Returns the single best-matching lesson (k for more), or nothing when no past lesson is close.",
-        strings: &[
-            ("query", Some("The task, or what you are about to change.")),
-        ],
+        strings: &[("query", Some("The task, or what you are about to change."))],
         enums: &[],
-        ints: &[
-            IntParam {
-                name: "k",
-                min: 1,
-                max: 5,
-                description: "How many lessons to return, 1-5 (default 1).",
-            },
-        ],
+        ints: &[IntParam {
+            name: "k",
+            min: 1,
+            max: 5,
+            description: "How many lessons to return, 1-5 (default 1).",
+        }],
         required: "query",
     },
     Def {
@@ -288,7 +276,10 @@ fn spec_for(def: &Def) -> ToolSpec {
         properties.insert(
             (*name).to_string(),
             JsonSchema::string_enum(
-                values.iter().map(|value| serde_json::json!(value)).collect(),
+                values
+                    .iter()
+                    .map(|value| serde_json::json!(value))
+                    .collect(),
                 None,
             ),
         );
@@ -504,8 +495,12 @@ mod tests {
 
     #[test]
     fn enum_arguments_must_be_one_of_their_values() {
-        let args = prepare_arguments("context_calls", r#"{"name":"f","direction":"callers"}"#, None)
-            .expect("ok");
+        let args = prepare_arguments(
+            "context_calls",
+            r#"{"name":"f","direction":"callers"}"#,
+            None,
+        )
+        .expect("ok");
         assert_eq!(args["direction"], serde_json::json!("callers"));
         let err = prepare_arguments("context_calls", r#"{"name":"f","direction":"up"}"#, None)
             .expect_err("refused");

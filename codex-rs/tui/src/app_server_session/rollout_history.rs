@@ -1,33 +1,117 @@
-//! Resume history policy for local rollouts that may migrate between formats.
+//! Resume and read-only history loading across rollout formats.
 
 use super::AppServerSession;
 use super::AppServerStartedThread;
 use super::HistoryHydrationScope;
 use super::ResumeModelSettings;
 use super::ThreadHistorySupport;
+use super::ThreadSettingsOwner;
 use super::bootstrap_request_error;
 use super::is_history_pagination_unsupported;
 use super::started_thread_from_resume_response;
 use super::thread_resume_params_from_config;
+use super::thread_session_state_from_thread_response;
 use crate::legacy_core::config::Config;
 use codex_app_server_client::TypedRequestError;
+use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadResumeResponse;
-use codex_features::Feature;
+use codex_app_server_protocol::ThreadTurnsListParams;
+use codex_app_server_protocol::ThreadTurnsListResponse;
+use codex_app_server_protocol::TurnItemsView;
 use codex_protocol::ThreadId;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
 
+// Bound recovery to recent messages when item paging is unavailable.
+const READ_ONLY_HISTORY_TURN_LIMIT: u32 = 100;
+
 impl AppServerSession {
-    /// Captures the server's startup migration policy before workspace config can change.
-    ///
-    /// Sessions without a recorded startup config conservatively assume migration is enabled.
-    pub(crate) fn with_startup_config(mut self, config: &Config) -> Self {
-        self.background_rollout_migration_enabled = config
-            .features
-            .enabled(Feature::BackgroundPaginatedRolloutMigration);
-        self.task_tool_capabilities_dir = (!self.uses_embedded_app_server())
-            .then(|| config.codex_home.join("tui-thread-reference-capabilities"));
+    /// Read a conflicting thread without taking its writer lease. This is a snapshot, not an
+    /// attachment: the caller must not route turns through this session.
+    pub(crate) async fn read_thread_for_viewing(
+        &mut self,
+        config: &Config,
+        local_settings: &crate::local_settings::LocalSettings,
+        thread_id: ThreadId,
+    ) -> Result<(AppServerStartedThread, Option<&'static str>)> {
+        let mut thread = self.thread_read(thread_id, /*include_turns*/ false).await?;
+        let mut history_notice = None;
+        if let Err(error) = self
+            .hydrate_initial_thread_history(
+                &mut thread,
+                /*turn_cursor*/ None,
+                /*item_cursor*/ None,
+                Some(config),
+                Some(local_settings),
+                HistoryHydrationScope::Initial,
+            )
+            .await
+        {
+            if thread.history_mode == ThreadHistoryMode::Legacy {
+                return Err(error);
+            }
+            // Summary pages retain user messages and final replies without scanning
+            // every tool item when the item-paging endpoint is unavailable.
+            tracing::warn!("Failed to page read-only thread history; trying summary pages");
+            let request_id = self.next_request_id();
+            let page: ThreadTurnsListResponse = self
+                .request_handle
+                .request_typed(ClientRequest::ThreadTurnsList {
+                    request_id,
+                    params: ThreadTurnsListParams {
+                        thread_id: thread_id.to_string(),
+                        cursor: None,
+                        limit: Some(READ_ONLY_HISTORY_TURN_LIMIT),
+                        sort_direction: Some(SortDirection::Desc),
+                        items_view: Some(TurnItemsView::Summary),
+                    },
+                })
+                .await?;
+            thread.turns = page.data.into_iter().rev().collect();
+            self.history_pagination.remove(&thread_id);
+            history_notice = Some(
+                "Showing up to 100 recent prompts and final replies. Intermediate messages and tool activity are unavailable.",
+            );
+        }
+        let session = thread_session_state_from_thread_response(
+            &thread.id,
+            crate::windows_sandbox::host_from_environments(thread.environments.as_deref()),
+            thread.forked_from_id.clone(),
+            thread.name.clone(),
+            thread.path.clone(),
+            thread.model.clone().unwrap_or_default(),
+            thread.model_provider.clone(),
+            config.service_tier.clone(),
+            AskForApproval::from(config.permissions.approval_policy.value()),
+            config.approvals_reviewer,
+            config.permissions.permission_profile().clone(),
+            config.permissions.active_permission_profile(),
+            thread.cwd.clone(),
+            config.workspace_roots.clone(),
+            Vec::new(),
+            thread.reasoning_effort,
+            local_settings,
+        )
+        .await
+        .map_err(color_eyre::eyre::Report::msg)?;
+        self.freeze_viewed_receipt(thread_id);
+        Ok((
+            AppServerStartedThread {
+                session,
+                turns: thread.turns,
+                blocks_direct_input: false,
+                task_tools_available: false,
+            },
+            history_notice,
+        ))
+    }
+
+    pub(crate) fn with_local_codex_home(mut self, codex_home: &AbsolutePathBuf) -> Self {
+        self.task_tool_capabilities_dir =
+            Some(codex_home.join("tui-thread-reference-capabilities"));
         self
     }
 
@@ -50,10 +134,32 @@ impl AppServerSession {
 
     pub(crate) async fn resume_thread(
         &mut self,
+        local_settings: &crate::local_settings::LocalSettings,
         config: Config,
         thread_id: ThreadId,
         model_settings: ResumeModelSettings,
     ) -> Result<AppServerStartedThread> {
+        Box::pin(self.resume_thread_with_permission_overrides(
+            local_settings,
+            config,
+            thread_id,
+            model_settings,
+            crate::resume_permissions::ResumePermissions::default(),
+        ))
+        .await
+    }
+
+    pub(crate) async fn resume_thread_with_permission_overrides(
+        &mut self,
+        local_settings: &crate::local_settings::LocalSettings,
+        config: Config,
+        thread_id: ThreadId,
+        model_settings: ResumeModelSettings,
+        permission_overrides: crate::resume_permissions::ResumePermissions,
+    ) -> Result<AppServerStartedThread> {
+        if self.thread_params_mode().settings_owner() == ThreadSettingsOwner::Client {
+            self.thread_tool_transport().validate_config(&config)?;
+        }
         let session_config = if matches!(
             model_settings,
             ResumeModelSettings::RestoreFromThread | ResumeModelSettings::PreserveExistingThread
@@ -68,43 +174,48 @@ impl AppServerSession {
             self.thread_params_mode(),
             self.remote_cwd_override.as_deref(),
             model_settings,
+            permission_overrides,
         );
-        self.thread_tool_transport()
-            .configure_mcp(&mut params.config);
-        let mut rollout_maintenance_guard = None;
-        params.exclude_turns = if self.history_support == ThreadHistorySupport::Paginated {
-            let known_legacy_history = self
+        if self.thread_params_mode().settings_owner() == ThreadSettingsOwner::Client
+            && model_settings == ResumeModelSettings::OverrideFromCurrentConfig
+        {
+            params.model_provider = self.explicit_model_provider(&config);
+        }
+        if self.thread_params_mode().settings_owner() == ThreadSettingsOwner::Client {
+            self.thread_tool_transport()
+                .configure_mcp(&mut params.config);
+        }
+        let paginated = self.history_support == ThreadHistorySupport::Paginated;
+        let cached_legacy = paginated
+            && self
                 .history_pagination
                 .get(&thread_id)
-                .is_some_and(|state| state.history_mode == ThreadHistoryMode::Legacy)
-                && (!self.uses_embedded_app_server()
-                    || (!self.background_rollout_migration_enabled
-                        && !config
-                            .features
-                            .enabled(Feature::BackgroundPaginatedRolloutMigration)
-                        && {
-                            rollout_maintenance_guard =
-                                codex_rollout::try_acquire_rollout_maintenance_lock(
-                                    config.codex_home.as_path(),
-                                )
-                                .ok()
-                                .flatten();
-                            rollout_maintenance_guard.is_some()
-                        }
-                        && self
-                            .thread_read(thread_id, /*include_turns*/ false)
-                            .await
-                            .is_ok_and(|thread| thread.history_mode == ThreadHistoryMode::Legacy)));
-            !known_legacy_history
+                .is_some_and(|state| state.history_mode == ThreadHistoryMode::Legacy);
+        // Hold the maintenance lock through a full legacy resume to prevent migration.
+        let mut rollout_maintenance_guard = if cached_legacy && self.uses_embedded_app_server() {
+            codex_rollout::try_acquire_rollout_maintenance_lock(config.codex_home.as_path())
+                .ok()
+                .flatten()
         } else {
-            false
+            None
         };
+        // Capture the receipt before the resume-time history boundary. Later results are delivered live.
+        self.unread_revisions.remove(&thread_id);
+        let metadata = Box::pin(self.thread_read(thread_id, /*include_turns*/ false))
+            .await
+            .ok();
+        let known_legacy = cached_legacy
+            && (!self.uses_embedded_app_server()
+                || (rollout_maintenance_guard.is_some()
+                    && metadata
+                        .is_some_and(|thread| thread.history_mode == ThreadHistoryMode::Legacy)));
+        params.exclude_turns = paginated && !known_legacy;
         if params.exclude_turns {
             rollout_maintenance_guard = None;
         }
         let request_id = self.next_request_id();
         let resume_response = self
-            .client
+            .request_handle
             .request_typed(ClientRequest::ThreadResume {
                 request_id,
                 params: params.clone(),
@@ -119,7 +230,7 @@ impl AppServerSession {
                 self.history_support = ThreadHistorySupport::LegacyOnly;
                 params.exclude_turns = false;
                 let request_id = self.next_request_id();
-                self.client
+                self.request_handle
                     .request_typed(ClientRequest::ThreadResume { request_id, params })
                     .await
                     .map_err(|err| {
@@ -138,15 +249,19 @@ impl AppServerSession {
             response.turns_backwards_cursor.clone(),
             response.items_backwards_cursor.clone(),
             Some(&config),
+            Some(local_settings),
             HistoryHydrationScope::Initial,
         )
         .await?;
         let fork_parent_title = self
             .fork_parent_title_from_app_server(response.thread.forked_from_id.as_deref())
             .await;
-        let mut started =
-            started_thread_from_resume_response(response, &config, self.thread_params_mode())
-                .await?;
+        let mut started = started_thread_from_resume_response(
+            response,
+            local_settings,
+            self.thread_params_mode(),
+        )
+        .await?;
         started.session.fork_parent_title = fork_parent_title;
         if self.task_tools_available(thread_id) {
             self.remember_task_tool_thread(thread_id);

@@ -165,7 +165,13 @@ mod tests {
     #[tokio::test]
     async fn exit_status_and_tail_are_kept() {
         let dir = tempfile::tempdir().expect("tmp");
-        let ok = run("echo one; echo two >&2", dir.path(), &[], Duration::from_secs(10)).await;
+        let ok = run(
+            "echo one; echo two >&2",
+            dir.path(),
+            &[],
+            Duration::from_secs(10),
+        )
+        .await;
         assert!(ok.succeeded(), "{ok:?}");
         assert_eq!(ok.tail, vec!["one".to_string(), "two".to_string()]);
         let failed = run("exit 3", dir.path(), &[], Duration::from_secs(10)).await;
@@ -189,7 +195,11 @@ mod tests {
         let started = Instant::now();
         let out = run(&command, dir.path(), &[], Duration::from_millis(300)).await;
         assert_eq!(out.end, StepEnd::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
         tokio::time::sleep(Duration::from_secs(4)).await;
         assert!(!marker.exists(), "the background child kept running");
     }

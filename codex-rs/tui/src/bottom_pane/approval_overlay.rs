@@ -122,6 +122,18 @@ pub(crate) struct McpElicitationApprovalRequest {
 }
 
 impl ApprovalRequest {
+    pub(super) fn program_status_blocked_kind(
+        &self,
+    ) -> crate::terminal_program_status::ProgramStatusKind {
+        use crate::terminal_program_status::ProgramStatusKind;
+        match self {
+            Self::Exec(_) | Self::Permissions(_) | Self::ApplyPatch(_) => {
+                ProgramStatusKind::Permission
+            }
+            Self::McpElicitation(_) => ProgramStatusKind::Question,
+        }
+    }
+
     pub(super) fn thread_id(&self) -> ThreadId {
         match self {
             ApprovalRequest::Exec(request) => request.thread_id,
@@ -296,7 +308,9 @@ impl ApprovalOverlay {
         };
 
         let header = Box::new(ColumnRenderable::with([
-            Line::from(title.bold()).into(),
+            Paragraph::new(title.bold())
+                .wrap(Wrap { trim: false })
+                .into(),
             Line::from("").into(),
             header,
         ]));
@@ -315,7 +329,9 @@ impl ApprovalOverlay {
             footer_hint: Some(approval_footer_hint(request, approval_keymap, list_keymap)),
             items,
             header,
-            ..Default::default()
+            header_view_all_hint: approval_keymap
+                .primary_hint("open_fullscreen", &approval_keymap.open_fullscreen),
+            ..SelectionViewParams::picker()
         };
 
         (options, params)
@@ -601,6 +617,13 @@ impl BottomPaneView for ApprovalOverlay {
         self.done
     }
 
+    fn current_patch_approval(&self) -> Option<&ApplyPatchApprovalRequest> {
+        let ApprovalRequest::ApplyPatch(patch) = self.current_request.as_ref()? else {
+            return None;
+        };
+        Some(patch)
+    }
+
     fn try_consume_approval_request(
         &mut self,
         request: ApprovalRequest,
@@ -615,6 +638,14 @@ impl BottomPaneView for ApprovalOverlay {
 
     fn terminal_title_requires_action(&self) -> bool {
         true
+    }
+
+    fn program_status_blocked_kind(
+        &self,
+    ) -> Option<crate::terminal_program_status::ProgramStatusKind> {
+        self.current_request
+            .as_ref()
+            .map(ApprovalRequest::program_status_blocked_kind)
     }
 }
 
@@ -731,7 +762,7 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
                     header.extend(full_cmd_lines);
                 }
             }
-            Box::new(Paragraph::new(header).wrap(Wrap { trim: false }))
+            Box::new(crate::terminal_hyperlinks::HyperlinkText::new(header))
         }
         ApprovalRequest::Permissions(request) => {
             let mut header: Vec<Line<'static>> = Vec::new();
@@ -759,7 +790,7 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
                     rule_line.fg(crate::style::accent_color()),
                 ]));
             }
-            Box::new(Paragraph::new(header).wrap(Wrap { trim: false }))
+            Box::new(crate::terminal_hyperlinks::HyperlinkText::new(header))
         }
         ApprovalRequest::ApplyPatch(request) => super::apply_patch_header::build_header(request),
         ApprovalRequest::McpElicitation(request) => {
@@ -776,8 +807,7 @@ fn build_header(request: &ApprovalRequest) -> Box<dyn Renderable> {
                 Line::from(""),
                 Line::from(request.message.clone()),
             ]);
-            let header = Paragraph::new(lines).wrap(Wrap { trim: false });
-            Box::new(header)
+            Box::new(crate::terminal_hyperlinks::HyperlinkText::new(lines))
         }
     }
 }
@@ -1433,6 +1463,60 @@ mod tests {
             }
         }
         assert!(saw_denied, "expected deny shortcut to emit denied decision");
+    }
+
+    #[test]
+    fn approval_headers_preserve_wrapped_url_destinations() {
+        let url = "https://github.com/openai/codex/pull/12345?diff=split";
+        for mut request in [
+            make_exec_request(),
+            make_permissions_request(),
+            make_elicitation_request(),
+            ApprovalRequest::ApplyPatch(ApplyPatchApprovalRequest {
+                thread_id: ThreadId::new(),
+                thread_label: None,
+                id: "patch".into(),
+                reason: None,
+                cwd: absolute_path("/tmp"),
+                changes: HashMap::new(),
+            }),
+        ] {
+            match &mut request {
+                ApprovalRequest::Exec(request) => request.reason = Some(url.into()),
+                ApprovalRequest::Permissions(request) => request.reason = Some(url.into()),
+                ApprovalRequest::McpElicitation(request) => request.message = url.into(),
+                ApprovalRequest::ApplyPatch(request) => request.reason = Some(url.into()),
+            }
+            let header = build_header(&request);
+            let area = Rect::new(0, 0, 32, header.desired_height(/*width*/ 32));
+            let mut buf = Buffer::empty(area);
+            header.render(area, &mut buf);
+            let linked = buf
+                .content
+                .iter()
+                .filter(|cell| cell.symbol().contains("\x1b]8;;"))
+                .map(|cell| {
+                    assert!(cell.symbol().starts_with(&format!("\x1b]8;;{url}\x07")));
+                    crate::terminal_hyperlinks::strip_osc8(cell.symbol())
+                })
+                .collect::<String>();
+            assert_eq!(linked, url);
+            if matches!(request, ApprovalRequest::Exec(_)) {
+                let visible = buf
+                    .content
+                    .chunks(32)
+                    .map(|row| {
+                        row.iter()
+                            .map(|cell| crate::terminal_hyperlinks::strip_osc8(cell.symbol()))
+                            .collect::<String>()
+                            .trim_end()
+                            .to_owned()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                insta::assert_snapshot!("approval_header_wrapped_url", visible);
+            }
+        }
     }
 
     #[test]
@@ -2509,3 +2593,7 @@ mod tests {
         assert_eq!(decision, Some(CommandExecutionApprovalDecision::Accept));
     }
 }
+
+#[cfg(test)]
+#[path = "approval_overlay/clipping_tests.rs"]
+mod clipping_tests;

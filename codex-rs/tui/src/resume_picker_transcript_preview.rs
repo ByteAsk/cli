@@ -17,12 +17,11 @@ use crate::git_action_directives::parse_assistant_markdown;
 use crate::inline_visualization::InlineVisualizationContext;
 use crate::legacy_core::config::Config;
 use codex_app_server_protocol::ThreadHistoryMode;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
 use codex_rollout::ReverseJsonlScanner;
 use codex_rollout::RolloutItem;
-use codex_rollout::RolloutLine;
 use codex_rollout::ScanOutcome;
 
 const MAX_TRANSCRIPT_PREVIEW_LINES: usize = 6;
@@ -77,6 +76,7 @@ pub(crate) async fn load_transcript_preview(
                     /*turn_cursor*/ None,
                     /*item_cursor*/ None,
                     /*config*/ None,
+                    /*local_settings*/ None,
                     HistoryHydrationScope::Initial,
                 )
                 .await
@@ -87,7 +87,7 @@ pub(crate) async fn load_transcript_preview(
                     .turns
                     .iter()
                     .rev()
-                    .flat_map(|turn| turn.items.iter().rev()),
+                    .flat_map(|turn| turn.item_payloads().rev()),
                 thread.cwd.as_path(),
                 inline_visualization_context.as_ref(),
             );
@@ -118,7 +118,7 @@ pub(crate) async fn load_transcript_preview(
                     page.data
                         .iter()
                         .take(remaining_items)
-                        .map(|entry| &entry.item),
+                        .map(|entry| &entry.item.payload),
                     cwd,
                     inline_visualization_context.as_ref(),
                 );
@@ -161,7 +161,7 @@ fn scan_legacy_transcript_preview(
     )?
     .with_max_record_bytes(MAX_LEGACY_TRANSCRIPT_PREVIEW_SCAN_BYTES);
     loop {
-        let outcome = match scanner.scan_next::<RolloutLine>() {
+        let outcome = match scanner.scan_next_rollout_line() {
             Ok(Some(outcome)) => outcome,
             Ok(None) => break,
             Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
@@ -228,13 +228,13 @@ impl Seek for BoundedRolloutTailReader {
 /// Appends the newest preview lines from items already ordered newest-first.
 fn append_transcript_preview_lines<'a>(
     lines: &mut Vec<TranscriptPreviewLine>,
-    items: impl Iterator<Item = &'a ThreadItem>,
+    items: impl Iterator<Item = &'a ThreadItemPayload>,
     cwd: &Path,
     inline_visualization_context: Option<&InlineVisualizationContext>,
 ) {
     for item in items {
         match item {
-            ThreadItem::UserMessage { content, .. } => {
+            ThreadItemPayload::UserMessage { content, .. } => {
                 let text = content
                     .iter()
                     .filter_map(|input| match input {
@@ -253,7 +253,7 @@ fn append_transcript_preview_lines<'a>(
                     inline_visualization_context,
                 );
             }
-            ThreadItem::AgentMessage { text, .. } => {
+            ThreadItemPayload::AgentMessage { text, .. } => {
                 append_transcript_preview_text(
                     lines,
                     TranscriptPreviewSpeaker::Assistant,

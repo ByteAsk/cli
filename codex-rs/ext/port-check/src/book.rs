@@ -146,8 +146,19 @@ impl Book {
     /// The best `depth` levels of one side: (price, displayed quantity), best first.
     pub fn top(&self, side: Side, depth: usize) -> Vec<(i64, i64)> {
         match side {
-            Side::Buy => self.bids.iter().rev().take(depth).map(|(p, l)| (*p, l.qty)).collect(),
-            Side::Sell => self.asks.iter().take(depth).map(|(p, l)| (*p, l.qty)).collect(),
+            Side::Buy => self
+                .bids
+                .iter()
+                .rev()
+                .take(depth)
+                .map(|(p, l)| (*p, l.qty))
+                .collect(),
+            Side::Sell => self
+                .asks
+                .iter()
+                .take(depth)
+                .map(|(p, l)| (*p, l.qty))
+                .collect(),
         }
     }
 
@@ -174,7 +185,9 @@ impl Book {
                 break;
             }
             let ids: Vec<u64> = match self.levels(side).get(&px) {
-                Some(level) if level.qty > level.consumed => level.queue.values().copied().collect(),
+                Some(level) if level.qty > level.consumed => {
+                    level.queue.values().copied().collect()
+                }
                 _ => continue,
             };
             let mut took = 0;
@@ -221,7 +234,12 @@ impl Book {
                 }
             }
         }
-        let filed: usize = self.bids.values().chain(self.asks.values()).map(|l| l.queue.len()).sum();
+        let filed: usize = self
+            .bids
+            .values()
+            .chain(self.asks.values())
+            .map(|l| l.queue.len())
+            .sum();
         if filed != self.orders.len() {
             return Err("orders and levels disagree".into());
         }
@@ -245,8 +263,15 @@ mod tests {
         b.check().expect("invariants");
         assert_eq!(b.top(Side::Buy, 5), vec![(101, 3), (100, 7)]);
         assert_eq!(b.top(Side::Sell, 1), vec![(102, 1)]);
-        assert_eq!((b.best(Side::Buy), b.best(Side::Sell)), (Some(101), Some(102)));
-        assert!(b.add(1, Side::Sell, 1, 1).expect_err("dup").contains("already in the book"));
+        assert_eq!(
+            (b.best(Side::Buy), b.best(Side::Sell)),
+            (Some(101), Some(102))
+        );
+        assert!(
+            b.add(1, Side::Sell, 1, 1)
+                .expect_err("dup")
+                .contains("already in the book")
+        );
     }
 
     #[test]
@@ -254,7 +279,13 @@ mod tests {
         let mut b = Book::default();
         b.add(1, Side::Sell, 102, 10).expect("add");
         b.add(2, Side::Sell, 102, 5).expect("add");
-        assert_eq!(b.reduce(1, 4).expect("reduce"), Touched { side: Side::Sell, px: 102 });
+        assert_eq!(
+            b.reduce(1, 4).expect("reduce"),
+            Touched {
+                side: Side::Sell,
+                px: 102
+            }
+        );
         assert_eq!(b.top(Side::Sell, 1), vec![(102, 11)]);
         let (_, gone) = b.delete(2).expect("delete");
         assert_eq!(gone, 5);
@@ -262,8 +293,16 @@ mod tests {
         assert_eq!(b.top(Side::Sell, 3), vec![(105, 3)]);
         assert!(!b.contains(1) && b.contains(9));
         b.check().expect("invariants");
-        assert!(b.reduce(9, 4).expect_err("too much").contains("only 3 resting"));
-        assert!(b.reduce(77, 1).expect_err("unknown").contains("not in the book"));
+        assert!(
+            b.reduce(9, 4)
+                .expect_err("too much")
+                .contains("only 3 resting")
+        );
+        assert!(
+            b.reduce(77, 1)
+                .expect_err("unknown")
+                .contains("not in the book")
+        );
         b.reduce(9, 3).expect("all of it");
         assert_eq!(b.top(Side::Sell, 3), vec![]);
         b.check().expect("invariants");
@@ -278,7 +317,11 @@ mod tests {
         assert_eq!(b.take(Side::Sell, 102, 5), vec![(101, 3), (102, 2)]);
         // Displayed quantities are unchanged: consumption is the harness's own ledger.
         assert_eq!(b.top(Side::Sell, 3), vec![(101, 3), (102, 4), (104, 9)]);
-        assert_eq!(b.take(Side::Sell, 102, 5), vec![(102, 2)], "only 2 shares were left below 103");
+        assert_eq!(
+            b.take(Side::Sell, 102, 5),
+            vec![(102, 2)],
+            "only 2 shares were left below 103"
+        );
         assert_eq!(b.take(Side::Sell, 103, 5), vec![]);
         b.check().expect("invariants");
         // Bids are taken from the top down.
@@ -298,7 +341,11 @@ mod tests {
         // 3 remain and all 3 were already consumed by us.
         assert_eq!(b.take(Side::Sell, 101, 6), vec![]);
         b.add(2, Side::Sell, 101, 4).expect("add");
-        assert_eq!(b.take(Side::Sell, 101, 10), vec![(101, 4)], "new liquidity is available");
+        assert_eq!(
+            b.take(Side::Sell, 101, 10),
+            vec![(101, 4)],
+            "new liquidity is available"
+        );
         b.check().expect("invariants");
     }
 

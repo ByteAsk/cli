@@ -9,7 +9,10 @@
 
 use pretty_assertions::assert_eq;
 
-const SNAPSHOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/snapshots/model_facing_text.json");
+const SNAPSHOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/snapshots/model_facing_text.json"
+);
 
 fn current() -> String {
     let mut tools: Vec<serde_json::Value> = crate::tools::ref_tools()
@@ -58,7 +61,10 @@ fn description_snapshot_is_byte_identical() {
     }
     let pinned = std::fs::read_to_string(SNAPSHOT)
         .expect("snapshot missing: run once with BYTEASK_UPDATE_TOOL_SNAPSHOT=1");
-    assert_eq!(pinned, now, "model-facing tool text changed; see the module comment");
+    assert_eq!(
+        pinned, now,
+        "model-facing tool text changed; see the module comment"
+    );
 }
 
 #[test]

@@ -1,0 +1,17 @@
+[package]
+name = "codex-utils-head-tail-buffer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+byteask-output-reducers = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+
+[lib]
+doctest = false

@@ -13,6 +13,8 @@
 //!   `SIGTERM` when the parent exits, and re-checks the parent PID to avoid
 //!   races during fork/exec.
 //!
+//! On macOS, `terminate_process_group` and `kill_process_group` retry denied
+//! group signals against individual members.
 //! On non-Unix platforms these helpers are no-ops.
 
 use std::io;
@@ -95,7 +97,9 @@ pub fn set_own_oom_score_adj(value: OomScoreAdj) {
     let bytes = value.as_bytes();
     unsafe {
         let fd = libc::open(
-            b"/proc/self/oom_score_adj\0".as_ptr().cast::<libc::c_char>(),
+            b"/proc/self/oom_score_adj\0"
+                .as_ptr()
+                .cast::<libc::c_char>(),
             libc::O_WRONLY | libc::O_CLOEXEC,
         );
         if fd >= 0 {
@@ -289,7 +293,7 @@ fn signal_process_group_with_member_fallback(
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 /// Send SIGTERM to a specific process group ID (best-effort).
 ///
 /// Returns `Ok(true)` when SIGTERM was delivered to an existing group and
@@ -299,8 +303,10 @@ pub fn terminate_process_group(process_group_id: u32) -> io::Result<bool> {
 }
 
 #[cfg(target_os = "macos")]
-/// Retry a denied SIGTERM against the exact group's individual members.
-pub fn terminate_process_group_with_member_fallback(process_group_id: u32) -> io::Result<bool> {
+/// Send SIGTERM to a specific process group, retrying denied signals against its members.
+///
+/// Returns `Ok(true)` when the group or at least one member was signalled.
+pub fn terminate_process_group(process_group_id: u32) -> io::Result<bool> {
     signal_process_group_with_member_fallback(
         process_group_id,
         libc::SIGTERM,
@@ -327,15 +333,15 @@ pub fn interrupt_process_group(_process_group_id: u32) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 /// Kill a specific process group ID (best-effort).
 pub fn kill_process_group(process_group_id: u32) -> io::Result<()> {
     signal_process_group_id(process_group_id as libc::pid_t, libc::SIGKILL).map(|_| ())
 }
 
 #[cfg(target_os = "macos")]
-/// Retry a denied SIGKILL against the exact group's individual members.
-pub fn kill_process_group_with_member_fallback(process_group_id: u32) -> io::Result<()> {
+/// Kill a specific process group, retrying denied signals against its members (best-effort).
+pub fn kill_process_group(process_group_id: u32) -> io::Result<()> {
     signal_process_group_with_member_fallback(
         process_group_id,
         libc::SIGKILL,
@@ -349,6 +355,33 @@ pub fn kill_process_group_with_member_fallback(process_group_id: u32) -> io::Res
 /// No-op on non-Unix platforms.
 pub fn kill_process_group(_process_group_id: u32) -> io::Result<()> {
     Ok(())
+}
+
+/// Wait up to `grace` for a signaled group's members to release their resources.
+/// After that, allow the caller to proceed. An unreaped zombie or a recycled group ID
+/// can remain visible after the original processes have released their resources.
+#[cfg(unix)]
+pub fn wait_for_process_group_exit(process_group_id: u32, grace: std::time::Duration) {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        #[cfg(target_os = "macos")]
+        let exists = signal_process_group_with_member_fallback(
+            process_group_id,
+            /*signal*/ 0,
+            signal_process_group_id,
+            signal_process_id,
+        );
+        #[cfg(not(target_os = "macos"))]
+        let exists = signal_process_group_id(process_group_id as libc::pid_t, /*signal*/ 0);
+        if matches!(exists, Ok(false)) {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+    }
 }
 
 #[cfg(unix)]

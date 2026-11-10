@@ -98,7 +98,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for InsightsTool {
 }
 
 impl InsightsTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: InsightsArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -109,7 +112,8 @@ impl InsightsTool {
         // read the file's contents when `source` names one.
         // A path that does not exist must not be sent to the site AS CODE:
         // it answers "Compilation failed!" with the real reason hidden.
-        if resolve_existing_file(&self.cwd, &args.source).is_none() && looks_like_path(&args.source) {
+        if resolve_existing_file(&self.cwd, &args.source).is_none() && looks_like_path(&args.source)
+        {
             return Err(FunctionCallError::RespondToModel(format!(
                 "no such file: {} (relative to the workspace). Pass an existing file, or the \
                  C++ code itself.",
@@ -169,7 +173,10 @@ impl InsightsTool {
                 TOOL_NAME,
                 &source_label,
                 failure,
-                check_result::CheckResult::fail(TOOL_NAME, "C++ Insights could not compile the code (its error is above)."),
+                check_result::CheckResult::fail(
+                    TOOL_NAME,
+                    "C++ Insights could not compile the code (its error is above).",
+                ),
             ));
         }
         let transformed = parse_stdout(&value).ok_or_else(|| {
@@ -181,11 +188,22 @@ impl InsightsTool {
 
         let text = truncate_lines(&transformed, MAX_LINES);
         let result = if text.ends_with("... [output truncated]") {
-            check_result::CheckResult::approximate(TOOL_NAME, "The transformed code was longer than this tool shows, so it was cut.")
+            check_result::CheckResult::approximate(
+                TOOL_NAME,
+                "The transformed code was longer than this tool shows, so it was cut.",
+            )
         } else {
-            check_result::CheckResult::pass(TOOL_NAME, "C++ Insights showed what the compiler generates.")
+            check_result::CheckResult::pass(
+                TOOL_NAME,
+                "C++ Insights showed what the compiler generates.",
+            )
         };
-        Ok(crate::report::report(TOOL_NAME, &source_label, text, result))
+        Ok(crate::report::report(
+            TOOL_NAME,
+            &source_label,
+            text,
+            result,
+        ))
     }
 }
 
@@ -209,7 +227,11 @@ fn insights_option(std: &str) -> String {
         Some(rest) => format!("cpp{rest}"),
         None => std.to_string(),
     };
-    if option == "cpp26" { "cpp2c".to_string() } else { option }
+    if option == "cpp26" {
+        "cpp2c".to_string()
+    } else {
+        option
+    }
 }
 
 /// The API's own report of a failed transformation: a nonzero `returncode`,
@@ -219,10 +241,21 @@ fn compile_failure(value: &Value) -> Option<String> {
     if code == 0 {
         return None;
     }
-    let stderr = value.get("stderr").and_then(Value::as_str).unwrap_or("").trim();
+    let stderr = value
+        .get("stderr")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     Some(format!(
         "C++ Insights could not transform this code (the compiler failed, return code {code}):\n{}",
-        truncate_lines(if stderr.is_empty() { "(no compiler output)" } else { stderr }, MAX_LINES)
+        truncate_lines(
+            if stderr.is_empty() {
+                "(no compiler output)"
+            } else {
+                stderr
+            },
+            MAX_LINES
+        )
     ))
 }
 
@@ -230,12 +263,16 @@ fn compile_failure(value: &Value) -> Option<String> {
 /// source or header extension, and none of the characters code is made of.
 fn looks_like_path(source: &str) -> bool {
     let source = source.trim();
-    let ext = source.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase());
+    let ext = source
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase());
     !source.contains('\n')
         && !source.contains(['{', '}', ';', '(', ')', '<', '>', '#', '='])
         && ext.is_some_and(|ext| {
-            ["c", "cc", "cpp", "cxx", "c++", "h", "hh", "hpp", "hxx", "ipp", "tpp", "inl"]
-                .contains(&ext.as_str())
+            [
+                "c", "cc", "cpp", "cxx", "c++", "h", "hh", "hpp", "hxx", "ipp", "tpp", "inl",
+            ]
+            .contains(&ext.as_str())
         })
 }
 
@@ -309,7 +346,10 @@ mod tests {
         let failed = json!({"returncode": 1, "stdout": "Compilation failed!", "stderr": "a.cpp:1:5: error: expected ';'"});
         let text = compile_failure(&failed).expect("a failure");
         assert!(text.contains("expected ';'"), "{text}");
-        assert_eq!(compile_failure(&json!({"returncode": 0, "stdout": "int x;"})), None);
+        assert_eq!(
+            compile_failure(&json!({"returncode": 0, "stdout": "int x;"})),
+            None
+        );
     }
 
     #[test]
@@ -330,7 +370,9 @@ mod tests {
             "text/html",
             crate::test_support::body_straddling(ERROR_BODY_CAP),
         )]);
-        let _env = INSIGHTS_URL_ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env = INSIGHTS_URL_ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: every test that sets this variable holds INSIGHTS_URL_ENV.
         unsafe { std::env::set_var("BYTEASK_CPPINSIGHTS_URL", &base) };
         let tool = InsightsTool {
@@ -425,7 +467,10 @@ mod tests {
     #[test]
     fn detection_uses_file_directly_else_inline() {
         let dir = std::env::temp_dir();
-        let file = dir.join(format!("byteask_insights_detect_{}.cpp", std::process::id()));
+        let file = dir.join(format!(
+            "byteask_insights_detect_{}.cpp",
+            std::process::id()
+        ));
         std::fs::write(&file, "int main(){}").unwrap();
         let name = file.file_name().unwrap().to_str().unwrap();
 
@@ -543,7 +588,9 @@ mod tests {
     #[test]
     fn transform_url_targets_public_cppinsights_endpoint() {
         // No override -> the public cppinsights.io transform endpoint.
-        let _env = INSIGHTS_URL_ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env = INSIGHTS_URL_ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: every test that sets this variable holds INSIGHTS_URL_ENV.
         unsafe { std::env::remove_var("BYTEASK_CPPINSIGHTS_URL") };
         assert_eq!(transform_url(), "https://cppinsights.io/api/v1/transform");
@@ -551,7 +598,9 @@ mod tests {
 
     #[test]
     fn transform_url_honors_env_override_and_trims_slash() {
-        let _env = INSIGHTS_URL_ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env = INSIGHTS_URL_ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: every test that sets this variable holds INSIGHTS_URL_ENV.
         unsafe { std::env::set_var("BYTEASK_CPPINSIGHTS_URL", "http://localhost:9000/") };
         assert_eq!(transform_url(), "http://localhost:9000/api/v1/transform");

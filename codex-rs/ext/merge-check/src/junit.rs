@@ -41,8 +41,12 @@ fn attr(element: &BytesStart<'_>, key: &[u8]) -> Option<String> {
 
 fn status_from_attrs(element: &BytesStart<'_>) -> CaseStatus {
     // CTest: status="notrun"/"disabled"; GoogleTest: result="skipped"/"suppressed".
-    let status = attr(element, b"status").unwrap_or_default().to_ascii_lowercase();
-    let result = attr(element, b"result").unwrap_or_default().to_ascii_lowercase();
+    let status = attr(element, b"status")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let result = attr(element, b"result")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if matches!(status.as_str(), "notrun" | "disabled" | "skipped")
         || matches!(result.as_str(), "skipped" | "suppressed")
     {
@@ -66,18 +70,21 @@ pub fn parse(xml: &str) -> Result<Vec<Case>, String> {
             Err(err) => return Err(format!("the test report is not valid XML: {err}")),
             Ok(Event::Eof) => break,
             Ok(Event::Start(element))
-                if element.name().as_ref() == b"testsuites" || element.name().as_ref() == b"testsuite" =>
+                if element.name().as_ref() == b"testsuites"
+                    || element.name().as_ref() == b"testsuite" =>
             {
                 saw_root = true;
                 depth += 1;
             }
             Ok(Event::Empty(element))
-                if element.name().as_ref() == b"testsuites" || element.name().as_ref() == b"testsuite" =>
+                if element.name().as_ref() == b"testsuites"
+                    || element.name().as_ref() == b"testsuite" =>
             {
                 saw_root = true;
             }
             Ok(Event::End(element))
-                if element.name().as_ref() == b"testsuites" || element.name().as_ref() == b"testsuite" =>
+                if element.name().as_ref() == b"testsuites"
+                    || element.name().as_ref() == b"testsuite" =>
             {
                 depth = depth.saturating_sub(1);
             }
@@ -183,7 +190,11 @@ mod tests {
         ] {
             assert!(parse(broken).is_err(), "{broken:?}");
         }
-        assert_eq!(parse("<testsuite/>"), Ok(Vec::new()), "an empty suite is a valid report");
+        assert_eq!(
+            parse("<testsuite/>"),
+            Ok(Vec::new()),
+            "an empty suite is a valid report"
+        );
     }
 
     #[test]

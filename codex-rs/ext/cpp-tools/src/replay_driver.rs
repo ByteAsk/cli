@@ -138,7 +138,12 @@ async fn replay_driver() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::current_dir().expect("cwd"));
     let out_path = std::env::var("BYTEASK_REPLAY_OUT").expect("BYTEASK_REPLAY_OUT");
-    replay(std::path::Path::new(&cases), std::path::Path::new(&out_path), &cwd).await;
+    replay(
+        std::path::Path::new(&cases),
+        std::path::Path::new(&out_path),
+        &cwd,
+    )
+    .await;
 }
 
 /// Run the hooks in `cases` (JSONL) for the workspace at `cwd`; write one JSON line per hook
@@ -173,7 +178,8 @@ async fn replay(cases: &std::path::Path, out_path: &std::path::Path, cwd: &std::
                     .get("native_exec")
                     .and_then(Value::as_bool)
                     .unwrap_or(true);
-                let started_workflow = Workflow::start(settings.clone(), native_exec, true, cwd.clone());
+                let started_workflow =
+                    Workflow::start(settings.clone(), native_exec, true, cwd.clone());
                 let snapshot = started_workflow.snapshot().await;
                 let data = match &snapshot {
                     Some(s) => json!({
@@ -212,7 +218,11 @@ async fn replay(cases: &std::path::Path, out_path: &std::path::Path, cwd: &std::
                 Some(w) => {
                     w.note_tool_call();
                     let fragments = w.after_step(TURN).await;
-                    let text: String = fragments.iter().map(|f| f.body()).collect::<Vec<_>>().join("\n");
+                    let text: String = fragments
+                        .iter()
+                        .map(|f| f.body())
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     if !text.is_empty() {
                         history.push(message("developer", &text));
                     }
@@ -228,7 +238,11 @@ async fn replay(cases: &std::path::Path, out_path: &std::path::Path, cwd: &std::
                     let snapshot_history: Arc<dyn ConversationHistorySnapshot> =
                         Arc::new(History(history.clone()));
                     let fragments = w.before_stop(TURN, snapshot_history).await;
-                    let text: String = fragments.iter().map(|f| f.body()).collect::<Vec<_>>().join("\n");
+                    let text: String = fragments
+                        .iter()
+                        .map(|f| f.body())
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     if !text.is_empty() {
                         history.push(message("developer", &text));
                     }
@@ -236,7 +250,11 @@ async fn replay(cases: &std::path::Path, out_path: &std::path::Path, cwd: &std::
                         Some(s) => last_gate_record(&s.scratch),
                         None => Value::Null,
                     };
-                    (true, text, json!({"feedback": !fragments.is_empty(), "record": record}))
+                    (
+                        true,
+                        text,
+                        json!({"feedback": !fragments.is_empty(), "record": record}),
+                    )
                 }
                 None => (false, "no snapshot hook ran first".to_string(), Value::Null),
             },
@@ -259,7 +277,8 @@ async fn replay(cases: &std::path::Path, out_path: &std::path::Path, cwd: &std::
                     None => crate::gitx::primary_root(&cwd).await,
                 }
                 .unwrap_or_else(|| cwd.clone());
-                let (ok, text) = git_text(&root, &["status", "--porcelain", "--untracked-files=all"]).await;
+                let (ok, text) =
+                    git_text(&root, &["status", "--porcelain", "--untracked-files=all"]).await;
                 (ok, text, Value::Null)
             }
             "tool" => {
@@ -292,7 +311,9 @@ async fn replay(cases: &std::path::Path, out_path: &std::path::Path, cwd: &std::
                         match result {
                             Ok(output) => (
                                 true,
-                                crate::probe_driver::output_text(output.to_response_item(&id, &payload)),
+                                crate::probe_driver::output_text(
+                                    output.to_response_item(&id, &payload),
+                                ),
                                 Value::Null,
                             ),
                             Err(err) => (false, err.to_string(), Value::Null),
@@ -321,7 +342,9 @@ mod tests {
 
     #[test]
     fn replay_settings_map_to_gate_settings() {
-        let settings = settings_from(&json!({"gate": true, "impact": false, "budget_secs": 120, "max_loops": 1}));
+        let settings = settings_from(
+            &json!({"gate": true, "impact": false, "budget_secs": 120, "max_loops": 1}),
+        );
         assert!(settings.gate && !settings.impact);
         assert_eq!(settings.budget, std::time::Duration::from_secs(120));
         assert_eq!(settings.max_loops, 1);
@@ -366,10 +389,29 @@ mod tests {
             .collect();
         assert_eq!(lines.len(), 6, "{lines:#?}");
         assert!(lines.iter().all(|l| l["ok"] == true), "{lines:#?}");
-        assert!(lines[2]["text"].as_str().unwrap_or("").starts_with(crate::workflow::IMPACT_TITLE));
-        assert!(lines[3]["text"].as_str().unwrap_or("").contains("GENERATED COPIES OUT OF SYNC"));
-        assert!(lines[3]["data"]["record"]["problems"].is_array(), "{:#?}", lines[3]);
+        assert!(
+            lines[2]["text"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with(crate::workflow::IMPACT_TITLE)
+        );
+        assert!(
+            lines[3]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("GENERATED COPIES OUT OF SYNC")
+        );
+        assert!(
+            lines[3]["data"]["record"]["problems"].is_array(),
+            "{:#?}",
+            lines[3]
+        );
         assert!(lines[4]["data"]["jobs"].as_u64().unwrap_or(0) >= 1);
-        assert!(lines[5]["text"].as_str().unwrap_or("").contains("cpp_impact"));
+        assert!(
+            lines[5]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("cpp_impact")
+        );
     }
 }

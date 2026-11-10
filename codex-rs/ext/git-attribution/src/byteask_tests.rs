@@ -39,8 +39,14 @@ fn the_enabled_fragment_carries_the_byteask_trailer_and_pr_line_once() {
     let body = fragment.body();
     assert_eq!(body.matches(BYTEASK_TRAILER).count(), 1, "{body}");
     assert_eq!(body.matches(BYTEASK_PR_LINE).count(), 1, "{body}");
-    assert_eq!(BYTEASK_TRAILER, "Co-authored-by: ByteAsk <noreply@byteask.ai>");
-    assert_eq!(BYTEASK_PR_LINE, "Generated with [ByteAsk](https://byteask.ai/).");
+    assert_eq!(
+        BYTEASK_TRAILER,
+        "Co-authored-by: ByteAsk <noreply@byteask.ai>"
+    );
+    assert_eq!(
+        BYTEASK_PR_LINE,
+        "Generated with [ByteAsk](https://byteask.ai/)."
+    );
 }
 
 #[test]
@@ -86,7 +92,10 @@ fn the_matcher_recognises_the_fragment_we_emit() {
     let emitted = wrapped(ENABLED_INSTRUCTIONS);
     for enabled in [true, false] {
         let section = git_attribution_world_state_section(enabled);
-        assert!(section.matches_legacy_fragment("developer", &emitted), "enabled={enabled}");
+        assert!(
+            section.matches_legacy_fragment("developer", &emitted),
+            "enabled={enabled}"
+        );
         assert!(!section.matches_legacy_fragment("user", &emitted));
     }
     assert!(

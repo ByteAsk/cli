@@ -107,7 +107,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for CompileDbTool {
 }
 
 impl CompileDbTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: CompileDbArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -123,8 +126,14 @@ impl CompileDbTool {
                 ),
             };
             let result = match count {
-                Some(n) => CheckResult::pass(TOOL_NAME, &format!("Found a compile database with {n} entries.")),
-                None => CheckResult::fail(TOOL_NAME, "A compile database exists but is not a valid JSON array."),
+                Some(n) => CheckResult::pass(
+                    TOOL_NAME,
+                    &format!("Found a compile database with {n} entries."),
+                ),
+                None => CheckResult::fail(
+                    TOOL_NAME,
+                    "A compile database exists but is not a valid JSON array.",
+                ),
             };
             return Ok(crate::report::report_plain(TOOL_NAME, text, result));
         }
@@ -152,26 +161,22 @@ impl CompileDbTool {
         // Generation writes into the project (build/, the copied DB);
         // concurrent calls on one project break each other's configure. The
         // lock holds across sessions, not just inside this process.
-        let _project = match crate::builds::project_lock(
-            &self.cwd,
-            compile_timeout_from(timeout_sec),
-        )
-        .await
-        {
-            Ok(guard) => guard,
-            Err(busy) => {
-                return Ok(crate::report::report_plain(
-                    TOOL_NAME,
-                    busy.summary(),
-                    CheckResult::not_run(
+        let _project =
+            match crate::builds::project_lock(&self.cwd, compile_timeout_from(timeout_sec)).await {
+                Ok(guard) => guard,
+                Err(busy) => {
+                    return Ok(crate::report::report_plain(
                         TOOL_NAME,
-                        NotRunReason::TimeLimit,
-                        &busy.summary(),
-                        crate::builds::ProjectBusy::FIX,
-                    ),
-                ));
-            }
-        };
+                        busy.summary(),
+                        CheckResult::not_run(
+                            TOOL_NAME,
+                            NotRunReason::TimeLimit,
+                            &busy.summary(),
+                            crate::builds::ProjectBusy::FIX,
+                        ),
+                    ));
+                }
+            };
         if self.cwd.join("CMakeLists.txt").is_file() {
             return self.generate_cmake(timeout_sec).await;
         }
@@ -326,7 +331,10 @@ impl CompileDbTool {
                         "make failed part-way, so the database covers only what compiled before the failure.",
                     )
                 } else {
-                    CheckResult::pass(TOOL_NAME, "Generated a compile database with `bear -- make`.")
+                    CheckResult::pass(
+                        TOOL_NAME,
+                        "Generated a compile database with `bear -- make`.",
+                    )
                 };
                 Ok(crate::report::report_plain(TOOL_NAME, text, result))
             }
@@ -423,8 +431,14 @@ impl CompileDbTool {
         };
         let result = match entries {
             Some(0) => CheckResult::fail(TOOL_NAME, "The generated compile database is empty."),
-            Some(n) => CheckResult::pass(TOOL_NAME, &format!("Generated a compile database with {n} entries.")),
-            None => CheckResult::fail(TOOL_NAME, "The generated compile database is not a valid JSON array."),
+            Some(n) => CheckResult::pass(
+                TOOL_NAME,
+                &format!("Generated a compile database with {n} entries."),
+            ),
+            None => CheckResult::fail(
+                TOOL_NAME,
+                "The generated compile database is not a valid JSON array.",
+            ),
         };
         Ok(crate::report::report_plain(TOOL_NAME, text, result))
     }
@@ -443,8 +457,15 @@ pub(crate) fn find_compile_db(cwd: &Path) -> Option<PathBuf> {
     SEARCH_DIRS
         .iter()
         .map(|dir| cwd.join(dir).join(COMPILE_DB))
-        .chain(other_build_dirs(cwd).into_iter().map(|dir| dir.join(COMPILE_DB)))
-        .chain([scratch_dir(cwd).join(COMPILE_DB), scratch_dir(cwd).join("build").join(COMPILE_DB)])
+        .chain(
+            other_build_dirs(cwd)
+                .into_iter()
+                .map(|dir| dir.join(COMPILE_DB)),
+        )
+        .chain([
+            scratch_dir(cwd).join(COMPILE_DB),
+            scratch_dir(cwd).join("build").join(COMPILE_DB),
+        ])
         .find(|candidate| candidate.is_file())
 }
 
@@ -555,9 +576,8 @@ fn ninja_on_path() -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| {
-        dir.join("ninja").is_file() || dir.join("ninja.exe").is_file()
-    })
+    std::env::split_paths(&path)
+        .any(|dir| dir.join("ninja").is_file() || dir.join("ninja.exe").is_file())
 }
 
 fn truncate(text: &str, cap: usize) -> String {
@@ -757,12 +777,18 @@ mod tests {
     #[test]
     fn no_db_guidance_mentions_cmake_and_bear() {
         let text = no_db_guidance();
-        assert!(text.contains("CMake"), "guidance should mention CMake: {text}");
+        assert!(
+            text.contains("CMake"),
+            "guidance should mention CMake: {text}"
+        );
         assert!(
             text.contains("CMAKE_EXPORT_COMPILE_COMMANDS"),
             "guidance should give the cmake flag: {text}"
         );
-        assert!(text.contains("Bear"), "guidance should mention Bear: {text}");
+        assert!(
+            text.contains("Bear"),
+            "guidance should mention Bear: {text}"
+        );
         assert!(
             text.contains("bear -- make"),
             "guidance should show the bear invocation: {text}"
@@ -783,7 +809,13 @@ mod tests {
         let args = cmake_args(Path::new("/tmp/scratch/build"), false);
         assert_eq!(
             args,
-            vec!["-S", ".", "-B", "/tmp/scratch/build", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
+            vec![
+                "-S",
+                ".",
+                "-B",
+                "/tmp/scratch/build",
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+            ]
         );
         assert!(!args.contains(&"-G".to_string()), "no -G without ninja");
     }
@@ -811,10 +843,18 @@ mod tests {
         // IDE or its CI may own) and copied the DB into the repo root.
         let dir = temp_dir();
         let scratch = scratch_dir(&dir);
-        assert!(scratch.starts_with(std::env::temp_dir()), "{}", scratch.display());
+        assert!(
+            scratch.starts_with(std::env::temp_dir()),
+            "{}",
+            scratch.display()
+        );
         assert!(!scratch.starts_with(&dir), "{}", scratch.display());
         assert_eq!(scratch, scratch_dir(&dir), "stable per project");
-        assert_ne!(scratch, scratch_dir(&dir.join("other")), "distinct per project");
+        assert_ne!(
+            scratch,
+            scratch_dir(&dir.join("other")),
+            "distinct per project"
+        );
         let args = cmake_argv(&scratch.join("build"));
         assert_eq!(args[3], scratch.join("build").display().to_string());
         assert!(!args.contains(&"build".to_string()), "{args:?}");
@@ -826,7 +866,10 @@ mod tests {
         let dir = temp_dir();
         fs::create_dir_all(dir.join("cmake-build-debug")).unwrap();
         fs::write(dir.join("cmake-build-debug").join(COMPILE_DB), "[]").unwrap();
-        assert_eq!(find_compile_db(&dir), Some(dir.join("cmake-build-debug").join(COMPILE_DB)));
+        assert_eq!(
+            find_compile_db(&dir),
+            Some(dir.join("cmake-build-debug").join(COMPILE_DB))
+        );
         fs::remove_dir_all(dir.join("cmake-build-debug")).unwrap();
         // A database this tool generated earlier.
         let scratch = scratch_dir(&dir).join("build");
@@ -885,7 +928,10 @@ mod tests {
     fn bear_unavailable_keeps_the_manual_advice_and_names_the_reason() {
         // FAILS ON OLD CODE: `bear_unavailable` did not exist.
         let text = bear_unavailable("bear not installed (install bear and ensure it is on PATH)");
-        assert!(text.contains("bear -- make"), "keeps the manual advice: {text}");
+        assert!(
+            text.contains("bear -- make"),
+            "keeps the manual advice: {text}"
+        );
         assert!(text.contains("not installed"), "names the reason: {text}");
         assert!(
             text.contains(COMPILE_DB),
@@ -952,7 +998,10 @@ mod tests {
                 || text.contains("ran but produced no"),
             "must report what the bear run actually did: {text}"
         );
-        assert!(!dir.join(COMPILE_DB).exists(), "nothing is written into the project: {text}");
+        assert!(
+            !dir.join(COMPILE_DB).exists(),
+            "nothing is written into the project: {text}"
+        );
         if text.contains("Generated compile DB with") {
             assert!(
                 scratch_dir(&dir).join(COMPILE_DB).is_file(),
@@ -988,7 +1037,10 @@ mod tests {
             panic!("an untrusted CMake project must be refused, not configured");
         };
         assert!(msg.contains(crate::trust::ALLOW_ENV), "{msg}");
-        assert!(!dir.join("RAN").exists(), "the project's CMake code must not run");
+        assert!(
+            !dir.join("RAN").exists(),
+            "the project's CMake code must not run"
+        );
         assert!(!dir.join("build").exists(), "nothing may be configured");
         fs::remove_dir_all(&dir).ok();
     }
@@ -1016,7 +1068,11 @@ mod tests {
         let start = std::time::Instant::now();
         let out = tool.generate(Some(2)).await.expect("a report");
         let text = output_text(out.as_ref());
-        assert!(start.elapsed() < std::time::Duration::from_secs(20), "{:?}", start.elapsed());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            start.elapsed()
+        );
         assert!(text.contains("killed after 2s"), "{text}");
         fs::remove_dir_all(scratch_dir(&dir)).ok();
         fs::remove_dir_all(&dir).ok();
@@ -1111,7 +1167,10 @@ mod tests {
         );
         let text = output_text(out.as_ref());
         assert!(text.contains("hello body"), "body missing: {text}");
-        assert!(text.contains("cpp_compile_db"), "tool banner missing: {text}");
+        assert!(
+            text.contains("cpp_compile_db"),
+            "tool banner missing: {text}"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }

@@ -109,7 +109,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ClangTidyTool {
 }
 
 impl ClangTidyTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: ClangTidyArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -324,17 +327,30 @@ impl SingleFile {
             flags.push(language.to_string());
         }
         flags.push(format!("-std={}", self.std));
-        flags.extend(self.include_dirs.iter().map(|d| format!("-I{}", d.display())));
+        flags.extend(
+            self.include_dirs
+                .iter()
+                .map(|d| format!("-I{}", d.display())),
+        );
         flags
     }
 
     fn describe(&self) -> String {
-        let dirs: Vec<String> = self.include_dirs.iter().map(|d| d.display().to_string()).collect();
+        let dirs: Vec<String> = self
+            .include_dirs
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
         format!(
             "assumed (no compile_commands.json found): {}-std={}, include dirs: {}\n",
-            self.language.map_or_else(String::new, |l| format!("-x {l}, ")),
+            self.language
+                .map_or_else(String::new, |l| format!("-x {l}, ")),
             self.std,
-            if dirs.is_empty() { "none".to_string() } else { dirs.join(", ") }
+            if dirs.is_empty() {
+                "none".to_string()
+            } else {
+                dirs.join(", ")
+            }
         )
     }
 }
@@ -343,7 +359,11 @@ impl SingleFile {
 /// workspace, when they exist.
 const COMMON_INCLUDE_DIRS: &[&str] = &["include", "src", "lib"];
 
-fn single_file_flags(root: &Path, target: &Path, version: Option<crate::toolver::Version>) -> SingleFile {
+fn single_file_flags(
+    root: &Path,
+    target: &Path,
+    version: Option<crate::toolver::Version>,
+) -> SingleFile {
     let ext = target.extension().and_then(|e| e.to_str()).unwrap_or("");
     let is_c = match ext {
         "c" => true,
@@ -354,7 +374,11 @@ fn single_file_flags(root: &Path, target: &Path, version: Option<crate::toolver:
         _ => false,
     };
     let language = (ext == "h" && !is_c).then_some("c++");
-    let std = if is_c { c_std(version) } else { cpp_std(version) };
+    let std = if is_c {
+        c_std(version)
+    } else {
+        cpp_std(version)
+    };
     let mut include_dirs = Vec::new();
     let mut push = |dir: PathBuf| {
         if dir.is_dir() && !include_dirs.contains(&dir) {
@@ -449,7 +473,9 @@ fn parse_findings(stdout: &str) -> Vec<Finding> {
             continue;
         };
         // diagnostic, source line, caret line, [fix-it]
-        let caret = lines.get(i + 2).is_some_and(|l| l.trim_start().starts_with('^'));
+        let caret = lines
+            .get(i + 2)
+            .is_some_and(|l| l.trim_start().starts_with('^'));
         if caret
             && let Some(fix) = lines.get(i + 3)
             && !fix.trim().is_empty()
@@ -566,18 +592,27 @@ mod tests {
         )
         .await
         .expect("a report");
-        assert!(out.contains("DID NOT RUN") && out.contains("NOT a clean result"), "{out}");
+        assert!(
+            out.contains("DID NOT RUN") && out.contains("NOT a clean result"),
+            "{out}"
+        );
         assert!(out.contains("no checks enabled"), "{out}");
         assert!(!out.contains("No findings"), "{out}");
 
         let err = tidy(dir.path(), serde_json::json!({"path": "nope.cpp"}))
             .await
             .expect_err("missing file");
-        assert!(matches!(err, FunctionCallError::RespondToModel(_)), "{err:?}");
+        assert!(
+            matches!(err, FunctionCallError::RespondToModel(_)),
+            "{err:?}"
+        );
         let err = tidy(dir.path(), serde_json::json!({"path": "."}))
             .await
             .expect_err("a directory is not a source file");
-        assert!(matches!(err, FunctionCallError::RespondToModel(_)), "{err:?}");
+        assert!(
+            matches!(err, FunctionCallError::RespondToModel(_)),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
@@ -598,7 +633,10 @@ mod tests {
             .await
             .expect("a report");
         assert!(out.contains("No findings"), "{out}");
-        assert!(!out.contains("DID NOT RUN") && !out.contains("error"), "{out}");
+        assert!(
+            !out.contains("DID NOT RUN") && !out.contains("error"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -608,29 +646,52 @@ mod tests {
         let out = "/w/a.cpp:3:12: warning: use nullptr [modernize-use-nullptr]\n  int *p = NULL;\n           ^~~~\n           nullptr\n/w/a.cpp:9:3: warning: no fix here [bugprone-x]\n  f();\n  ^\n/w/a.cpp:10:3: warning: next [bugprone-y]\n  g();\n  ^\n";
         let findings = parse_findings(out);
         assert_eq!(findings.len(), 3);
-        assert!(findings[0].message.ends_with("suggested fix: `nullptr`"), "{}", findings[0].message);
+        assert!(
+            findings[0].message.ends_with("suggested fix: `nullptr`"),
+            "{}",
+            findings[0].message
+        );
         // A diagnostic that follows a caret is not a fix-it.
-        assert!(!findings[1].message.contains("suggested fix"), "{}", findings[1].message);
-        assert!(!findings[2].message.contains("suggested fix"), "{}", findings[2].message);
+        assert!(
+            !findings[1].message.contains("suggested fix"),
+            "{}",
+            findings[1].message
+        );
+        assert!(
+            !findings[2].message.contains("suggested fix"),
+            "{}",
+            findings[2].message
+        );
     }
 
     #[test]
     fn a_failed_run_with_findings_keeps_them_and_names_the_exit() {
         let finding = parse_finding("/w/a.cpp:3:5: error: boom [clang-diagnostic-error]").unwrap();
-        let body = tidy_body(&[finding], false, Some(1), "", "Error while processing /w/a.cpp.");
+        let body = tidy_body(
+            &[finding],
+            false,
+            Some(1),
+            "",
+            "Error while processing /w/a.cpp.",
+        );
         assert!(body.contains("boom"), "{body}");
-        assert!(body.contains("exit status 1") && body.contains("Error while processing"), "{body}");
+        assert!(
+            body.contains("exit status 1") && body.contains("Error while processing"),
+            "{body}"
+        );
         let clean = tidy_body(&[], true, Some(0), "", "");
         assert!(clean.starts_with("status: clean"), "{clean}");
-        assert!(clean.ends_with(&render_findings(&[], FINDINGS_CAP)), "{clean}");
+        assert!(
+            clean.ends_with(&render_findings(&[], FINDINGS_CAP)),
+            "{clean}"
+        );
     }
 
     #[test]
     fn parses_finding_with_rule() {
-        let finding = parse_finding(
-            "/work/main.cpp:10:5: warning: use after move [bugprone-use-after-move]",
-        )
-        .expect("should parse");
+        let finding =
+            parse_finding("/work/main.cpp:10:5: warning: use after move [bugprone-use-after-move]")
+                .expect("should parse");
         assert_eq!(
             finding,
             Finding {
@@ -647,8 +708,7 @@ mod tests {
 
     #[test]
     fn parses_error_without_rule() {
-        let finding =
-            parse_finding("src/util.c:3:1: error: expected ';'").expect("should parse");
+        let finding = parse_finding("src/util.c:3:1: error: expected ';'").expect("should parse");
         assert_eq!(finding.severity, Severity::Error);
         assert_eq!(finding.file, "src/util.c");
         assert_eq!(finding.line, 3);
@@ -664,7 +724,10 @@ mod tests {
         )
         .expect("should parse");
         assert_eq!(finding.severity, Severity::Note);
-        assert_eq!(finding.rule.as_deref(), Some("clang-analyzer-core.NullDereference"));
+        assert_eq!(
+            finding.rule.as_deref(),
+            Some("clang-analyzer-core.NullDereference")
+        );
     }
 
     #[test]
@@ -679,14 +742,14 @@ mod tests {
     #[test]
     fn does_not_peel_mid_message_or_spaced_brackets() {
         // Bracket is not at end of line: not a rule, message kept intact.
-        let mid = parse_finding("a.cpp:2:3: warning: array index [4] is bad")
-            .expect("should parse");
+        let mid =
+            parse_finding("a.cpp:2:3: warning: array index [4] is bad").expect("should parse");
         assert_eq!(mid.rule, None);
         assert_eq!(mid.message, "array index [4] is bad");
 
         // Trailing bracket containing spaces is not a valid check name.
-        let spaced = parse_finding("a.cpp:2:3: warning: thing happened [not a rule]")
-            .expect("should parse");
+        let spaced =
+            parse_finding("a.cpp:2:3: warning: thing happened [not a rule]").expect("should parse");
         assert_eq!(spaced.rule, None);
         assert_eq!(spaced.message, "thing happened [not a rule]");
     }
@@ -694,7 +757,10 @@ mod tests {
     #[test]
     fn resolves_relative_and_absolute_paths() {
         let cwd = Path::new("/work");
-        assert_eq!(resolve_path(cwd, "src/a.cpp"), PathBuf::from("/work/src/a.cpp"));
+        assert_eq!(
+            resolve_path(cwd, "src/a.cpp"),
+            PathBuf::from("/work/src/a.cpp")
+        );
         assert_eq!(resolve_path(cwd, "/abs/b.cpp"), PathBuf::from("/abs/b.cpp"));
     }
 
@@ -715,16 +781,28 @@ mod tests {
             let argv = tidy_argv(version, None, Some(Path::new("/w/build")), t, None);
             assert_eq!(
                 argv,
-                vec!["--quiet", "--warnings-as-errors=-*", "-p", "/w/build", "/w/a.cpp"],
+                vec![
+                    "--quiet",
+                    "--warnings-as-errors=-*",
+                    "-p",
+                    "/w/build",
+                    "/w/a.cpp"
+                ],
                 "{version:?}"
             );
         }
         // LLVM 4.x has no --quiet.
         let argv = tidy_argv(Some((4, 0)), None, None, t, None);
         assert!(!argv.contains(&"--quiet".to_string()), "{argv:?}");
-        assert!(argv.contains(&"--warnings-as-errors=-*".to_string()), "{argv:?}");
+        assert!(
+            argv.contains(&"--warnings-as-errors=-*".to_string()),
+            "{argv:?}"
+        );
         let argv = tidy_argv(Some((3, 7)), None, None, t, None);
-        assert!(!argv.iter().any(|a| a.starts_with("--warnings-as-errors")), "{argv:?}");
+        assert!(
+            !argv.iter().any(|a| a.starts_with("--warnings-as-errors")),
+            "{argv:?}"
+        );
     }
 
     #[test]
@@ -739,13 +817,28 @@ mod tests {
         assert_eq!(single.std, "c++20");
         assert_eq!(
             single.include_dirs,
-            vec![root.join("src/detail"), root.to_path_buf(), root.join("include"), root.join("src")]
+            vec![
+                root.join("src/detail"),
+                root.to_path_buf(),
+                root.join("include"),
+                root.join("src")
+            ]
         );
         let flags = single.flags();
-        assert!(flags.contains(&format!("-I{}", root.join("include").display())), "{flags:?}");
-        assert!(single.describe().starts_with("assumed (no compile_commands.json found)"));
+        assert!(
+            flags.contains(&format!("-I{}", root.join("include").display())),
+            "{flags:?}"
+        );
+        assert!(
+            single
+                .describe()
+                .starts_with("assumed (no compile_commands.json found)")
+        );
         // Old clang: a standard spelling it knows.
-        assert_eq!(single_file_flags(root, &root.join("src/detail/a.cpp"), Some((4, 0))).std, "c++1z");
+        assert_eq!(
+            single_file_flags(root, &root.join("src/detail/a.cpp"), Some((4, 0))).std,
+            "c++1z"
+        );
         assert_eq!(c_std(Some((5, 0))), "c11");
         assert_eq!(c_std(None), "c17");
     }
@@ -780,10 +873,18 @@ mod tests {
         );
         assert!(body.starts_with("status: DID NOT RUN"), "{body}");
         assert!(body.contains("not allowed with 'C'"), "{body}");
-        let missing = parse_finding("/w/a.cpp:1:10: error: 'x.h' file not found [clang-diagnostic-error]").unwrap();
+        let missing =
+            parse_finding("/w/a.cpp:1:10: error: 'x.h' file not found [clang-diagnostic-error]")
+                .unwrap();
         let body = tidy_body(&[missing], false, Some(1), "", "1 error generated.");
         assert!(body.contains("analysis PARTIAL — 1 #include(s)"), "{body}");
-        let body = tidy_body(&[], false, Some(1), "", "clang-tidy: Unknown command line argument '--quiet'.");
+        let body = tidy_body(
+            &[],
+            false,
+            Some(1),
+            "",
+            "clang-tidy: Unknown command line argument '--quiet'.",
+        );
         assert!(body.contains("does not accept an option"), "{body}");
     }
 
@@ -795,7 +896,11 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join(".clang-tidy"), "Checks: '-*,clang-analyzer-*'\nWarningsAsErrors: '*'\n").unwrap();
+        std::fs::write(
+            root.join(".clang-tidy"),
+            "Checks: '-*,clang-analyzer-*'\nWarningsAsErrors: '*'\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(root.join("include")).unwrap();
         std::fs::write(root.join("include/util.h"), "int get(int *p);\n").unwrap();
         std::fs::write(
@@ -803,9 +908,17 @@ mod tests {
             "#include \"util.h\"\nint get(int *p) { int x; *p = x; return *p; }\n",
         )
         .unwrap();
-        let out = tidy(root, serde_json::json!({"path": "main.cpp"})).await.expect("a report");
-        assert!(!out.contains("file not found"), "include/ must be searched: {out}");
-        assert!(!out.contains("DID NOT RUN") && !out.contains("exited with"), "{out}");
+        let out = tidy(root, serde_json::json!({"path": "main.cpp"}))
+            .await
+            .expect("a report");
+        assert!(
+            !out.contains("file not found"),
+            "include/ must be searched: {out}"
+        );
+        assert!(
+            !out.contains("DID NOT RUN") && !out.contains("exited with"),
+            "{out}"
+        );
         assert!(out.contains("finding(s)"), "{out}");
     }
 }

@@ -28,18 +28,48 @@ pub const LOSSLESS_REDUCERS: &[&str] = &["rle", "ws", "search-group", "path-fold
 
 /// Class N and G: shipped dark, switched on one by one from the policy object.
 pub const DARK_REDUCERS: &[&str] = &[
-    "json-min", "progress", "pkg", "cmake-conf", "tests", "warn-group", "incl-chain",
-    "cxx-templates", "cxx-candidates", "link-group", "stack-fold", "json-array", "gen-diff",
-    "vendor-ls", "html-text", "blob-line", "table", "log-prefix",
+    "json-min",
+    "progress",
+    "pkg",
+    "cmake-conf",
+    "tests",
+    "warn-group",
+    "incl-chain",
+    "cxx-templates",
+    "cxx-candidates",
+    "link-group",
+    "stack-fold",
+    "json-array",
+    "gen-diff",
+    "vendor-ls",
+    "html-text",
+    "blob-line",
+    "table",
+    "log-prefix",
 ];
 
 /// Budget keys the policy may set (tokens). `exec` is the fallback for every family.
-pub const BUDGET_KEYS: &[&str] = &["exec", "read", "search", "listing", "diff", "build_test", "other"];
+pub const BUDGET_KEYS: &[&str] = &[
+    "exec",
+    "read",
+    "search",
+    "listing",
+    "diff",
+    "build_test",
+    "other",
+];
 
 /// Behavioural switches (class B), all OFF unless the policy turns them on.
 pub const FLAG_KEYS: &[&str] = &[
-    "compact_header", "loop_nudge", "patch_echo", "reread_stub", "native_read",
-    "native_search", "compact_with_tools", "compact_working_set", "cold_slim",
+    "compact_header",
+    "loop_nudge",
+    "patch_echo",
+    "reread_stub",
+    "native_read",
+    "native_search",
+    "compact_with_tools",
+    "compact_working_set",
+    "cold_slim",
 ];
 
 /// Numeric knobs with their (min, max) clamp.
@@ -102,7 +132,8 @@ impl Default for Policy {
 fn is_model_slug(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
 }
 
 impl Policy {
@@ -208,7 +239,11 @@ impl Policy {
     }
 
     pub fn number(&self, name: &str) -> Option<u64> {
-        if self.brake { None } else { self.numbers.get(name).copied() }
+        if self.brake {
+            None
+        } else {
+            self.numbers.get(name).copied()
+        }
     }
 
     /// Token budget for a family: its own key, else `exec`. `None` = upstream's budget.
@@ -266,9 +301,18 @@ mod tests {
 
     #[test]
     fn a_catalog_without_the_object_gives_the_defaults() {
-        assert_eq!(Policy::from_catalog_json(r#"{"models":[]}"#), Policy::default());
-        assert_eq!(Policy::from_catalog_json("not json at all"), Policy::default());
-        assert_eq!(Policy::from_catalog_json(r#"{"byteask_efficiency": 7}"#), Policy::default());
+        assert_eq!(
+            Policy::from_catalog_json(r#"{"models":[]}"#),
+            Policy::default()
+        );
+        assert_eq!(
+            Policy::from_catalog_json("not json at all"),
+            Policy::default()
+        );
+        assert_eq!(
+            Policy::from_catalog_json(r#"{"byteask_efficiency": 7}"#),
+            Policy::default()
+        );
     }
 
     #[test]
@@ -294,7 +338,8 @@ mod tests {
     fn budgets_are_clamped() {
         let low = Policy::from_catalog_json(r#"{"byteask_efficiency":{"budgets":{"exec":5}}}"#);
         assert_eq!(low.exec_budget_tokens, Some(1000));
-        let high = Policy::from_catalog_json(r#"{"byteask_efficiency":{"budgets":{"exec":9999999}}}"#);
+        let high =
+            Policy::from_catalog_json(r#"{"byteask_efficiency":{"budgets":{"exec":9999999}}}"#);
         assert_eq!(high.exec_budget_tokens, Some(10000));
         let junk = Policy::from_catalog_json(r#"{"byteask_efficiency":{"budgets":{"exec":-3}}}"#);
         assert_eq!(junk.exec_budget_tokens, None);
@@ -323,22 +368,43 @@ mod tests {
         assert!(p.reducer_on("ws"), "untouched lossless reducers stay on");
         assert!(!p.reducer_on("made-up"));
         assert_eq!(p.budget_for(crate::family::Family::Search), Some(2000));
-        assert_eq!(p.budget_for(crate::family::Family::Build), Some(1000), "clamped up");
+        assert_eq!(
+            p.budget_for(crate::family::Family::Build),
+            Some(1000),
+            "clamped up"
+        );
         assert_eq!(p.budget_for(crate::family::Family::Diff), None);
         assert!(p.flag("loop_nudge"));
         assert!(!p.flag("compact_header"), "a non-boolean is not true");
         assert_eq!(p.number("first_yield_ms"), Some(300_000));
         assert_eq!(p.number("cold_after_secs"), Some(300));
-        assert_eq!(p.number("empty_poll_min_ms"), Some(5_000), "clamped up to upstream's floor");
-        assert_eq!(p.number("first_yield_min_ms"), Some(30_000), "clamped down to the cap");
+        assert_eq!(
+            p.number("empty_poll_min_ms"),
+            Some(5_000),
+            "clamped up to upstream's floor"
+        );
+        assert_eq!(
+            p.number("first_yield_min_ms"),
+            Some(30_000),
+            "clamped down to the cap"
+        );
     }
 
     #[test]
     fn the_explorer_model_is_validated_before_it_can_reach_a_toml_document() {
-        let ok = Policy::from_catalog_json(r#"{"byteask_efficiency":{"explorer":{"model":"gpt-5.6-luna","effort":"low"}}}"#);
-        assert_eq!(ok.explorer, Some(("gpt-5.6-luna".to_string(), "low".to_string())));
-        let default_effort = Policy::from_catalog_json(r#"{"byteask_efficiency":{"explorer":{"model":"kimi-k3"}}}"#);
-        assert_eq!(default_effort.explorer, Some(("kimi-k3".to_string(), "low".to_string())));
+        let ok = Policy::from_catalog_json(
+            r#"{"byteask_efficiency":{"explorer":{"model":"gpt-5.6-luna","effort":"low"}}}"#,
+        );
+        assert_eq!(
+            ok.explorer,
+            Some(("gpt-5.6-luna".to_string(), "low".to_string()))
+        );
+        let default_effort =
+            Policy::from_catalog_json(r#"{"byteask_efficiency":{"explorer":{"model":"kimi-k3"}}}"#);
+        assert_eq!(
+            default_effort.explorer,
+            Some(("kimi-k3".to_string(), "low".to_string()))
+        );
         for bad in [
             r#"{"byteask_efficiency":{"explorer":{"model":"x"
 sandbox_mode = "danger-full-access"}}}"#,
@@ -353,7 +419,9 @@ sandbox_mode = "danger-full-access"}}}"#,
 
     #[test]
     fn the_exec_budget_is_the_fallback_for_every_family() {
-        let p = Policy::from_catalog_json(r#"{"byteask_efficiency":{"budgets":{"exec":4000,"search":2000}}}"#);
+        let p = Policy::from_catalog_json(
+            r#"{"byteask_efficiency":{"budgets":{"exec":4000,"search":2000}}}"#,
+        );
         assert_eq!(p.budget_for(crate::family::Family::Unknown), Some(4000));
         assert_eq!(p.budget_for(crate::family::Family::Search), Some(2000));
     }
@@ -371,6 +439,9 @@ sandbox_mode = "danger-full-access"}}}"#,
 
     #[test]
     fn a_missing_file_gives_the_defaults() {
-        assert_eq!(Policy::from_catalog_file(Path::new("/nonexistent/x.json")), Policy::default());
+        assert_eq!(
+            Policy::from_catalog_file(Path::new("/nonexistent/x.json")),
+            Policy::default()
+        );
     }
 }

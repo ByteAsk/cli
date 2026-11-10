@@ -95,7 +95,11 @@ fn the_text_is_the_context_engines_own() {
         for (prop, their_schema) in their_props {
             let our_schema = &our_props[prop];
             assert_eq!(our_schema["type"], their_schema["type"], "{name}.{prop}");
-            assert_eq!(our_schema.get("enum"), their_schema.get("enum"), "{name}.{prop}");
+            assert_eq!(
+                our_schema.get("enum"),
+                their_schema.get("enum"),
+                "{name}.{prop}"
+            );
             if let Some(description) = their_schema.get("description") {
                 assert_eq!(&our_schema["description"], description, "{name}.{prop}");
             }

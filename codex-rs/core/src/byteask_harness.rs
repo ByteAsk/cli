@@ -110,7 +110,11 @@ pub fn shared_prefix_cache_key(config: &Config) -> Option<String> {
         return None;
     }
     let scope = table(config)
-        .and_then(|t| t.get("prefix_cache_scope").and_then(toml::Value::as_str).map(str::to_string))
+        .and_then(|t| {
+            t.get("prefix_cache_scope")
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+        })
         .unwrap_or_default();
     let model = config.model.as_deref().unwrap_or("default");
     Some(format!("byteask-prefix:{model}:{scope}"))

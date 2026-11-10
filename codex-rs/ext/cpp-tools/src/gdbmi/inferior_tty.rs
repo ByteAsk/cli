@@ -89,7 +89,10 @@ impl InferiorTty {
                 return Err(io::Error::from_raw_os_error(rc));
             }
             let path = CStr::from_ptr(name.as_ptr()).to_string_lossy().into_owned();
-            let slave = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC);
+            let slave = libc::open(
+                name.as_ptr(),
+                libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+            );
             if slave < 0 {
                 return Err(io::Error::last_os_error());
             }

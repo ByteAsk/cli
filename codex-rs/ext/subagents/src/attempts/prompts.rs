@@ -28,7 +28,13 @@ pub fn strategy_card(attempt: usize) -> &'static str {
 
 /// The brief for attempt `attempt`: the task, the private worktree, the strategy card, and how
 /// to hand back the change and any new tests.
-pub fn attempt_brief(task: &str, attempt: usize, repo: &Path, worktree: &Path, tests_patch: &Path) -> String {
+pub fn attempt_brief(
+    task: &str,
+    attempt: usize,
+    repo: &Path,
+    worktree: &Path,
+    tests_patch: &Path,
+) -> String {
     format!(
         "{ATTEMPT_MARK}\n\
 Resolve the task below. You work alone in a private copy of the repository.\n\n\
@@ -94,7 +100,13 @@ mod tests {
         assert_eq!(strategy_card(2), STRATEGY_CARDS[0]);
         assert_eq!(strategy_card(4), STRATEGY_CARDS[2]);
         assert_eq!(strategy_card(5), STRATEGY_CARDS[0]);
-        let brief = attempt_brief("fix it", 3, Path::new("/repo"), Path::new("/w/wt-3"), Path::new("/w/t.patch"));
+        let brief = attempt_brief(
+            "fix it",
+            3,
+            Path::new("/repo"),
+            Path::new("/w/wt-3"),
+            Path::new("/w/t.patch"),
+        );
         assert!(brief.starts_with(ATTEMPT_MARK));
         assert!(brief.contains(REPORT_MARKER));
         assert!(brief.contains(STRATEGY_CARDS[1]));
@@ -109,6 +121,9 @@ mod tests {
         assert_eq!(parse_judge("WINNER: A\n...actually WINNER: B"), Some(false));
         assert_eq!(parse_judge("no idea"), None);
         let p = judge_prompt("t", ("da", "ca"), ("db", "cb"));
-        assert!(p.contains("<patch id=\"A\">\nda\n</patch>") && p.contains("<checks id=\"B\">\ncb\n</checks>"));
+        assert!(
+            p.contains("<patch id=\"A\">\nda\n</patch>")
+                && p.contains("<checks id=\"B\">\ncb\n</checks>")
+        );
     }
 }

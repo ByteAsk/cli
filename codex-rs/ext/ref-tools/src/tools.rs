@@ -214,7 +214,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for RefSearchTool {
 }
 
 impl RefSearchTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: SearchArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -365,9 +368,15 @@ impl<'call> ToolExecutor<ToolCall<'call>> for RefRequestTool {
                     "request must not be empty".to_string(),
                 ));
             }
-            let text =
-                mcp::call_tool("request_document", serde_json::json!({ "request": request })).await?;
-            let result = check_result::CheckResult::pass("ref_request", "The document request was recorded.");
+            let text = mcp::call_tool(
+                "request_document",
+                serde_json::json!({ "request": request }),
+            )
+            .await?;
+            let result = check_result::CheckResult::pass(
+                "ref_request",
+                "The document request was recorded.",
+            );
             Ok(report("ref_request", "", text, result))
         })
     }
@@ -420,7 +429,10 @@ mod tests {
         let err = serde_json::from_str::<SearchArgs>(r#"{"query":"RCC","max_results":3}"#)
             .err()
             .expect("refused");
-        assert!(err.to_string().contains("unknown field `max_results`"), "{err}");
+        assert!(
+            err.to_string().contains("unknown field `max_results`"),
+            "{err}"
+        );
         assert!(serde_json::from_str::<SearchArgs>(r#"{"query":"RCC","limit":3}"#).is_ok());
         assert!(serde_json::from_str::<ContextArgs>(r#"{"ref_id":"x","query":"y"}"#).is_err());
         assert!(serde_json::from_str::<RequestArgs>(r#"{"request":"x","title":"y"}"#).is_err());
@@ -470,10 +482,22 @@ mod tests {
         // The "no confident match" contract must appear in each search tool so the
         // model never silently falls back to memory.
         for desc in [
-            AUTOSAR_DESC, MCU_DESC, FPGA_DESC, HFT_DESC, GRID_DESC, SCPI_DESC, X86_DESC,
+            AUTOSAR_DESC,
+            MCU_DESC,
+            FPGA_DESC,
+            HFT_DESC,
+            GRID_DESC,
+            SCPI_DESC,
+            X86_DESC,
         ] {
-            assert!(desc.contains("no confident match"), "missing miss-rule: {desc:.40}");
-            assert!(desc.contains("VERBATIM, page-cited"), "missing grounding pitch");
+            assert!(
+                desc.contains("no confident match"),
+                "missing miss-rule: {desc:.40}"
+            );
+            assert!(
+                desc.contains("VERBATIM, page-cited"),
+                "missing grounding pitch"
+            );
         }
     }
 
@@ -482,10 +506,16 @@ mod tests {
         // Hybrid policy: long-tail domains tell the model to fall through to
         // web_search; authoritative domains warn against web-guessing exact values.
         for desc in [MCU_DESC, FPGA_DESC, SCPI_DESC, GRID_DESC] {
-            assert!(desc.contains("web_search"), "long-tail tool should mention web_search");
+            assert!(
+                desc.contains("web_search"),
+                "long-tail tool should mention web_search"
+            );
         }
         for desc in [HFT_DESC, X86_DESC] {
-            assert!(desc.contains("do NOT"), "authoritative tool should warn against guessing");
+            assert!(
+                desc.contains("do NOT"),
+                "authoritative tool should warn against guessing"
+            );
         }
     }
 }

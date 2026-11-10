@@ -24,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::context::ContextualUserFragment;
+use codex_protocol::openai_models::ModelInfo;
 
 #[derive(Clone, Copy)]
 enum GatePoint {
@@ -35,11 +36,13 @@ enum GatePoint {
 pub(super) async fn after_step(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    model_info: &ModelInfo,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<()> {
     run(
         sess,
         turn_context,
+        model_info,
         None,
         cancellation_token,
         GatePoint::AfterStep,
@@ -54,12 +57,14 @@ pub(super) async fn after_step(
 pub(super) async fn before_stop(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    model_info: &ModelInfo,
     last_agent_message: Option<&str>,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     let continues = run(
         sess,
         turn_context,
+        model_info,
         last_agent_message,
         cancellation_token,
         GatePoint::BeforeStop,
@@ -104,6 +109,7 @@ async fn stop_notices(
 async fn run(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    model_info: &ModelInfo,
     last_agent_message: Option<&str>,
     cancellation_token: &CancellationToken,
     point: GatePoint,
@@ -139,6 +145,7 @@ async fn run(
     if items.is_empty() {
         return Ok(false);
     }
-    sess.record_conversation_items(turn_context, &items).await;
+    sess.record_conversation_items(turn_context, model_info, &items)
+        .await;
     Ok(true)
 }

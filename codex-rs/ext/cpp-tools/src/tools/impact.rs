@@ -186,11 +186,17 @@ impl ImpactTool {
         };
         // A checklist to answer, not a judgement of the code.
         let result = if report.changed.is_empty() {
-            check_result::CheckResult::no_claim(TOOL_NAME, "No changed C/C++ entity was found, so there is nothing to list.")
+            check_result::CheckResult::no_claim(
+                TOOL_NAME,
+                "No changed C/C++ entity was found, so there is nothing to list.",
+            )
         } else {
             check_result::CheckResult::no_claim(
                 TOOL_NAME,
-                &format!("{} change-impact item(s) to answer; this lists them and judges nothing.", report.items.len()),
+                &format!(
+                    "{} change-impact item(s) to answer; this lists them and judges nothing.",
+                    report.items.len()
+                ),
             )
         };
         Ok(crate::report::report(

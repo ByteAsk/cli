@@ -73,7 +73,6 @@ fn probe_text(sysfs_root: &Path, intel_pt: bool) -> String {
     )
 }
 
-
 impl<'call> ToolExecutor<ToolCall<'call>> for SpikeTraceTool {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(TOOL_NAME)
@@ -83,7 +82,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for SpikeTraceTool {
         let mut properties = BTreeMap::new();
         properties.insert(
             "program".to_string(),
-            JsonSchema::string(Some("The executable whose latency spikes to capture.".to_string())),
+            JsonSchema::string(Some(
+                "The executable whose latency spikes to capture.".to_string(),
+            )),
         );
         properties.insert(
             "args".to_string(),
@@ -123,7 +124,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for SpikeTraceTool {
 }
 
 impl SpikeTraceTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: SpikeArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -149,7 +153,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         // What a typical cloud VM lists: a core PMU and the software ones, no intel_pt.
         for pmu in ["cpu", "software", "tracepoint", "msr", "uprobe"] {
-            std::fs::create_dir_all(root.path().join("bus/event_source/devices").join(pmu)).unwrap();
+            std::fs::create_dir_all(root.path().join("bus/event_source/devices").join(pmu))
+                .unwrap();
         }
         if with_intel_pt {
             std::fs::create_dir_all(root.path().join(INTEL_PT_PMU).join("format")).unwrap();
@@ -161,13 +166,17 @@ mod tests {
         let tool = SpikeTraceTool {
             sysfs_root: root.to_path_buf(),
         };
-        crate::test_support::call(&tool, serde_json::json!({"program": "./feed", "args": "--hot"}))
-            .await
-            .expect("answers")
+        crate::test_support::call(
+            &tool,
+            serde_json::json!({"program": "./feed", "args": "--hot"}),
+        )
+        .await
+        .expect("answers")
     }
 
     fn result_of(text: &str) -> CheckResult {
-        CheckResult::from_tool_text(TOOL_NAME, text).unwrap_or_else(|| panic!("no shared result line:\n{text}"))
+        CheckResult::from_tool_text(TOOL_NAME, text)
+            .unwrap_or_else(|| panic!("no shared result line:\n{text}"))
     }
 
     #[tokio::test]
@@ -178,8 +187,17 @@ mod tests {
         assert_eq!(result.verdict, Verdict::NotRun);
         assert!(!result.is_pass());
         assert_eq!(result.reason, Some(NotRunReason::Unsupported));
-        assert_eq!(result.summary, "this machine has no Intel PT; it needs a bare-metal Intel host.");
-        assert!(result.fix.as_deref().is_some_and(|f| f.contains("bare-metal Intel")), "{text}");
+        assert_eq!(
+            result.summary,
+            "this machine has no Intel PT; it needs a bare-metal Intel host."
+        );
+        assert!(
+            result
+                .fix
+                .as_deref()
+                .is_some_and(|f| f.contains("bare-metal Intel")),
+            "{text}"
+        );
         assert!(result.validate().is_ok());
         assert!(text.contains("intel_pt does not exist"), "{text}");
     }
@@ -191,8 +209,14 @@ mod tests {
         let result = result_of(&text);
         assert_eq!(result.verdict, Verdict::NotRun, "{text}");
         assert!(!result.is_pass());
-        assert!(result.summary.contains("capture is not built yet"), "{text}");
-        assert!(result.fix.as_deref().is_some_and(|f| !f.trim().is_empty()), "{text}");
+        assert!(
+            result.summary.contains("capture is not built yet"),
+            "{text}"
+        );
+        assert!(
+            result.fix.as_deref().is_some_and(|f| !f.trim().is_empty()),
+            "{text}"
+        );
         assert!(result.validate().is_ok());
         assert!(text.contains("intel_pt exists"), "{text}");
     }

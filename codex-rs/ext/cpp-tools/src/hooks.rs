@@ -61,7 +61,10 @@ pub enum StopDecision {
     /// Let the turn end; show `message` to the user if there is one. `follow_up`: the check
     /// did not fit the fast tier, so the caller starts `toolbox hook follow-up` in the
     /// background, which finishes it with the whole budget.
-    Allow { message: Option<String>, follow_up: bool },
+    Allow {
+        message: Option<String>,
+        follow_up: bool,
+    },
     /// Keep the agent working: `reason` goes back to it.
     Block { reason: String },
 }
@@ -98,7 +101,11 @@ fn session_file(home: &Path, root: &Path, session_id: &str) -> PathBuf {
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
         .take(80)
         .collect();
-    let name = if name.is_empty() { "session".to_string() } else { name };
+    let name = if name.is_empty() {
+        "session".to_string()
+    } else {
+        name
+    };
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     home.join("results")
         .join(crate::builds::project_key(&root))
@@ -194,7 +201,8 @@ pub async fn stop(ctx: &HookContext) -> StopDecision {
         settings.budget = settings.budget.min(settings.fast_tier);
     }
     let key = changes.content_key.clone();
-    let notice = |result: &CheckResult| Some(format!("ByteAsk finish gate: {}", result.render_line()));
+    let notice =
+        |result: &CheckResult| Some(format!("ByteAsk finish gate: {}", result.render_line()));
 
     if let Some((passed, result)) = &state.passed
         && *passed == key
@@ -204,7 +212,9 @@ pub async fn stop(ctx: &HookContext) -> StopDecision {
     // A person skipped the check for exactly this version: NOT RUN (skipped), never
     // PASS, never a loop.
     if let Some(skipped) = crate::skip::active(&ctx.home, &root, gate::CHECK).await {
-        let fresh = results_store::fingerprint(&root, PROMPT_BUDGET).await.unwrap_or_default();
+        let fresh = results_store::fingerprint(&root, PROMPT_BUDGET)
+            .await
+            .unwrap_or_default();
         record(ctx, &root, &key, &skipped, fresh);
         state.last = Some((key, skipped.clone()));
         state.last_feedback = None;
@@ -223,7 +233,9 @@ pub async fn stop(ctx: &HookContext) -> StopDecision {
     if state.rounds >= settings.max_loops {
         let result =
             crate::workflow::retry_limit_result(state.last.as_ref(), &key, settings.max_loops);
-        let fresh = results_store::fingerprint(&root, PROMPT_BUDGET).await.unwrap_or_default();
+        let fresh = results_store::fingerprint(&root, PROMPT_BUDGET)
+            .await
+            .unwrap_or_default();
         record(ctx, &root, &key, &result, fresh);
         state.rounds = 0;
         save(&path, &state);
@@ -240,7 +252,9 @@ pub async fn stop(ctx: &HookContext) -> StopDecision {
         return StopDecision::Block { reason };
     }
 
-    let fresh = results_store::fingerprint(&root, PROMPT_BUDGET).await.unwrap_or_default();
+    let fresh = results_store::fingerprint(&root, PROMPT_BUDGET)
+        .await
+        .unwrap_or_default();
     let sandbox = Arc::new(crate::sandbox::Settings {
         helper: ctx.sandbox_helper.clone(),
         workspace: root.clone(),
@@ -290,7 +304,13 @@ pub async fn stop(ctx: &HookContext) -> StopDecision {
     let after = gate::agent_changes(&snapshot).await;
     let moved = after.content_key != key;
     let result = crate::workflow::bound_to_checked_code(outcome.result(), &key, &after.content_key);
-    record(ctx, &root, &key, &result, if moved { String::new() } else { fresh });
+    record(
+        ctx,
+        &root,
+        &key,
+        &result,
+        if moved { String::new() } else { fresh },
+    );
     state.last = Some((key.clone(), result.clone()));
     if gate::needs_feedback(&outcome) && !moved {
         state.rounds += 1;
@@ -303,7 +323,8 @@ pub async fn stop(ctx: &HookContext) -> StopDecision {
         state.passed = Some((key.clone(), result.clone()));
     }
     state.last_feedback = None;
-    let follow_up = !moved && crate::workflow::ran_out_of_time(&result) && settings.fast_tier > Duration::ZERO;
+    let follow_up =
+        !moved && crate::workflow::ran_out_of_time(&result) && settings.fast_tier > Duration::ZERO;
     if follow_up {
         state.pending_full = Some(key);
     }
@@ -349,11 +370,14 @@ pub async fn follow_up(ctx: &HookContext) {
         return;
     }
     let state = load(&path);
-    let (Some(snapshot), Some(pending)) = (state.snapshot.clone(), state.pending_full.clone()) else {
+    let (Some(snapshot), Some(pending)) = (state.snapshot.clone(), state.pending_full.clone())
+    else {
         return;
     };
     let settings = crate::workflow::settings_from_env();
-    let fresh = results_store::fingerprint(&root, PROMPT_BUDGET).await.unwrap_or_default();
+    let fresh = results_store::fingerprint(&root, PROMPT_BUDGET)
+        .await
+        .unwrap_or_default();
     // The agent keeps working while this runs, so it builds a copy of the code taken now.
     let Some(mirror) = gate::mirror_snapshot(&snapshot).await else {
         return;
@@ -496,9 +520,13 @@ pub async fn prompt(ctx: &HookContext) -> Option<String> {
     state.rounds = 0;
     state.turn_started = Some(results_store::now_unix());
     let entry = results_store::latest(&ctx.home, &root);
-    let shown = entry
-        .as_ref()
-        .map(|entry| format!("{}@{}", entry.result.content_key.clone().unwrap_or_default(), entry.at));
+    let shown = entry.as_ref().map(|entry| {
+        format!(
+            "{}@{}",
+            entry.result.content_key.clone().unwrap_or_default(),
+            entry.at
+        )
+    });
     let text = match (&entry, &shown) {
         (Some(entry), Some(key)) if state.shown.as_deref() != Some(key.as_str()) => {
             let freshness = results_store::freshness(entry, PROMPT_BUDGET).await;

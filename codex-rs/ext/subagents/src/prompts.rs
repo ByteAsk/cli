@@ -5,7 +5,13 @@ use std::path::Path;
 
 use crate::report::REPORT_MARKER;
 
-pub fn repro_brief(task: &str, worktree: &Path, tests_patch: &Path, max_steps: usize, minutes: u64) -> String {
+pub fn repro_brief(
+    task: &str,
+    worktree: &Path,
+    tests_patch: &Path,
+    max_steps: usize,
+    minutes: u64,
+) -> String {
     format!(
         "You are an independent test writer. Someone else is resolving the task below in a separate \
 copy of this repository; you will never see their changes. Do NOT implement the fix.\n\n\
@@ -135,7 +141,12 @@ mod tests {
         let brief = repro_brief("fix it", p, p, 40, 10);
         assert!(brief.contains(REPORT_MARKER));
         assert!(brief.contains("Do NOT implement the fix"));
-        let msg = repro_delivery(&["a".to_string()], "they fail when run", p, Path::new("/s.sh"));
+        let msg = repro_delivery(
+            &["a".to_string()],
+            "they fail when run",
+            p,
+            Path::new("/s.sh"),
+        );
         assert!(msg.contains("`sh /s.sh`"));
         assert!(msg.contains("must not end up in your final diff"));
     }

@@ -49,7 +49,12 @@ fn emit<I: Iterator<Item = Result<serde_json::Value, String>>>(items: I) -> Exit
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["decode", file] => match open(file) {
             Ok(r) => emit(read_events(r)),
             Err(e) => {

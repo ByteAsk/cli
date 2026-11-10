@@ -168,7 +168,13 @@ fn read_subscription_flags(codex_home: &Path) -> SubscriptionFlags {
 impl SettingsState {
     pub(crate) fn load(codex_home: &Path, provider_id: &str, current_model: &str) -> Self {
         let subscription = read_subscription_flags(codex_home);
-        Self::load_at(codex_home, provider_id, current_model, subscription, now_unix())
+        Self::load_at(
+            codex_home,
+            provider_id,
+            current_model,
+            subscription,
+            now_unix(),
+        )
     }
 
     /// Test seam: `now_unix` fixed so token-expiry behaviour is deterministic.
@@ -298,7 +304,10 @@ mod tests {
     fn read_subscription_flags_is_false_when_the_file_is_absent() {
         let dir = tempfile::tempdir().unwrap();
         // Fail-safe: no file at all => never offer a subscription path.
-        assert_eq!(read_subscription_flags(dir.path()), SubscriptionFlags::default());
+        assert_eq!(
+            read_subscription_flags(dir.path()),
+            SubscriptionFlags::default()
+        );
     }
 
     #[test]
@@ -321,14 +330,21 @@ mod tests {
         std::fs::write(dir.path().join("subscription-flags"), "claude=1\n").unwrap();
         let flags = read_subscription_flags(dir.path());
         assert_eq!(flags, SubscriptionFlags::default());
-        assert!(!flags.claude_launcher, "launcher stays off unless its own flag is set");
+        assert!(
+            !flags.claude_launcher,
+            "launcher stays off unless its own flag is set"
+        );
     }
 
     #[test]
     fn read_subscription_flags_ignores_junk_and_stays_off_by_default() {
         let dir = tempfile::tempdir().unwrap();
         // Only an explicit `=1` turns a provider on; anything else stays off.
-        std::fs::write(dir.path().join("subscription-flags"), "chatgpt=yes\ngarbage\nclaude_launcher=1\n").unwrap();
+        std::fs::write(
+            dir.path().join("subscription-flags"),
+            "chatgpt=yes\ngarbage\nclaude_launcher=1\n",
+        )
+        .unwrap();
         let flags = read_subscription_flags(dir.path());
         assert!(!flags.chatgpt);
         assert!(flags.claude_launcher);
@@ -337,7 +353,11 @@ mod tests {
     #[test]
     fn read_subscription_flags_takes_the_last_line_for_a_key() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("subscription-flags"), "chatgpt=yes\nchatgpt=1\n").unwrap();
+        std::fs::write(
+            dir.path().join("subscription-flags"),
+            "chatgpt=yes\nchatgpt=1\n",
+        )
+        .unwrap();
         let flags = read_subscription_flags(dir.path());
         assert!(flags.chatgpt, "last explicit chatgpt=1 wins");
     }
@@ -426,11 +446,23 @@ mod tests {
         )
         .expect("write");
 
-        let live = SettingsState::load_at(dir.path(), "byteask", "gpt-5.4", SubscriptionFlags::default(), 999);
+        let live = SettingsState::load_at(
+            dir.path(),
+            "byteask",
+            "gpt-5.4",
+            SubscriptionFlags::default(),
+            999,
+        );
         assert!(live.signed_in);
         assert_eq!(live.account_summary(), "a@b.com · signed in");
 
-        let expired = SettingsState::load_at(dir.path(), "byteask", "gpt-5.4", SubscriptionFlags::default(), 1001);
+        let expired = SettingsState::load_at(
+            dir.path(),
+            "byteask",
+            "gpt-5.4",
+            SubscriptionFlags::default(),
+            1001,
+        );
         assert!(!expired.signed_in);
         // Naming the account tells the user which one to sign back into.
         assert_eq!(expired.account_summary(), "a@b.com · session expired");

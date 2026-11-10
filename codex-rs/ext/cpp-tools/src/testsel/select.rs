@@ -80,7 +80,9 @@ impl Selection {
 /// Compute the tiers for `changes` in `model`.
 pub(crate) async fn select(model: &Model, changes: &Changes) -> Selection {
     let mut sel = Selection {
-        enabled: (0..model.tests.len()).filter(|i| !model.tests[*i].disabled).collect(),
+        enabled: (0..model.tests.len())
+            .filter(|i| !model.tests[*i].disabled)
+            .collect(),
         ..Selection::default()
     };
     sel.affected = graph::affected(model, &changes.files).await;
@@ -96,7 +98,10 @@ pub(crate) async fn select(model: &Model, changes: &Changes) -> Selection {
     // Tier 3.
     for &i in &sel.enabled {
         let test = &model.tests[i];
-        let by_target = test.target.as_ref().is_some_and(|t| sel.affected.targets.contains(t));
+        let by_target = test
+            .target
+            .as_ref()
+            .is_some_and(|t| sel.affected.targets.contains(t));
         let by_make = model.make_rebuilds.as_ref().is_some_and(|rebuilt| {
             test.command
                 .first()
@@ -104,7 +109,13 @@ pub(crate) async fn select(model: &Model, changes: &Changes) -> Selection {
         });
         let by_file = mentions_any(test, &data_files);
         let unmapped = test.target.is_none() && (cpp_changed || !data_files.is_empty());
-        if !build_files.is_empty() || (no_map && cpp_changed) || by_target || by_make || by_file || unmapped {
+        if !build_files.is_empty()
+            || (no_map && cpp_changed)
+            || by_target
+            || by_make
+            || by_file
+            || unmapped
+        {
             sel.tier3.push(i);
             if unmapped && !by_target && !by_file {
                 sel.unmapped_in_tier3 += 1;
@@ -123,8 +134,9 @@ pub(crate) async fn select(model: &Model, changes: &Changes) -> Selection {
         ));
     }
     if sel.affected.scan_truncated {
-        sel.warnings
-            .push("the #include scan stopped at its file cap; header reach may be incomplete".to_string());
+        sel.warnings.push(
+            "the #include scan stopped at its file cap; header reach may be incomplete".to_string(),
+        );
     }
 
     // Test sources of tier-3 tests, and symbol / edit hits in them.
@@ -193,7 +205,11 @@ pub(crate) async fn select(model: &Model, changes: &Changes) -> Selection {
         .tier3
         .iter()
         .copied()
-        .filter(|i| files_of.get(i).is_some_and(|fs| fs.iter().any(|f| hit_files.contains(f))))
+        .filter(|i| {
+            files_of
+                .get(i)
+                .is_some_and(|fs| fs.iter().any(|f| hit_files.contains(f)))
+        })
         .collect();
     // Script tests that name a changed file are as specific as it gets.
     for &i in &sel.tier3 {
@@ -205,7 +221,16 @@ pub(crate) async fn select(model: &Model, changes: &Changes) -> Selection {
         let why = if changes.symbols.is_empty() {
             "no changed function/type names were found".to_string()
         } else {
-            format!("no test source mentions {}", changes.symbols.iter().take(4).cloned().collect::<Vec<_>>().join(", "))
+            format!(
+                "no test source mentions {}",
+                changes
+                    .symbols
+                    .iter()
+                    .take(4)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         };
         // One step from the change: the test program compiles a changed file
         // (or an includer of a changed header), or links a target that does.
@@ -240,17 +265,24 @@ pub(crate) async fn select(model: &Model, changes: &Changes) -> Selection {
     for &i in &sel.tier2 {
         let test = &model.tests[i];
         let files = files_of.get(&i).cloned().unwrap_or_default();
-        let hits: Vec<&Hit> = sel.hits.iter().filter(|h| files.contains(&h.file)).collect();
+        let hits: Vec<&Hit> = sel
+            .hits
+            .iter()
+            .filter(|h| files.contains(&h.file))
+            .collect();
         let hit_cases: Vec<&TestCase> = hits
             .iter()
-            .filter_map(|h| h.case.and_then(|c| sel.cases.get(&h.file).and_then(|cs| cs.get(c))))
+            .filter_map(|h| {
+                h.case
+                    .and_then(|c| sel.cases.get(&h.file).and_then(|cs| cs.get(c)))
+            })
             .collect();
         // A test registered per case (gtest_discover_tests and the like).
         if let Some(id) = registered_case(test) {
             let wanted = hit_cases.is_empty()
-                || hit_cases
-                    .iter()
-                    .any(|c| glob_match(&c.filter, &id) || glob_match(&id, &c.filter) || c.name == id);
+                || hit_cases.iter().any(|c| {
+                    glob_match(&c.filter, &id) || glob_match(&id, &c.filter) || c.name == id
+                });
             if wanted {
                 sel.tier1.push(Pick {
                     test: i,
@@ -324,7 +356,8 @@ pub(crate) fn registered_case(test: &TestEntry) -> Option<String> {
         }
     }
     let spec = test.command.get(1)?;
-    (!spec.starts_with('-') && (test.name == *spec || test.name.ends_with(spec.as_str()))).then(|| spec.clone())
+    (!spec.starts_with('-') && (test.name == *spec || test.name.ends_with(spec.as_str())))
+        .then(|| spec.clone())
 }
 
 /// The test runs the program its target builds (so the program can be run
@@ -355,11 +388,20 @@ mod tests {
     fn recognises_per_case_registrations() {
         let t = |name: &str, args: &[&str]| TestEntry {
             name: name.to_string(),
-            command: std::iter::once("/b/prog").chain(args.iter().copied()).map(str::to_string).collect(),
+            command: std::iter::once("/b/prog")
+                .chain(args.iter().copied())
+                .map(str::to_string)
+                .collect(),
             ..TestEntry::default()
         };
-        assert_eq!(registered_case(&t("Core.Twice", &["--gtest_filter=Core.Twice"])).as_deref(), Some("Core.Twice"));
-        assert_eq!(registered_case(&t("parses x", &["parses x", "--reporter", "xml"])).as_deref(), Some("parses x"));
+        assert_eq!(
+            registered_case(&t("Core.Twice", &["--gtest_filter=Core.Twice"])).as_deref(),
+            Some("Core.Twice")
+        );
+        assert_eq!(
+            registered_case(&t("parses x", &["parses x", "--reporter", "xml"])).as_deref(),
+            Some("parses x")
+        );
         assert_eq!(registered_case(&t("whole", &["--verbose"])), None);
         assert_eq!(registered_case(&t("whole", &[])), None);
     }
@@ -369,9 +411,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = graph::canonical(dir.path());
         let files = [
-            ("src/core.cpp", "int twice(int x) { return 2 * x; }\nint add(int a, int b) { return a + b; }\n"),
-            ("tests/core_test.cpp", "TEST(Core, Twice) {\n  EXPECT_EQ(twice(2), 4);\n}\nTEST(Core, Add) {\n  EXPECT_EQ(add(1, 2), 3);\n}\n"),
-            ("tests/api_test.cpp", "TEST(Api, Add) {\n  EXPECT_EQ(add(1, 1), 2);\n}\n"),
+            (
+                "src/core.cpp",
+                "int twice(int x) { return 2 * x; }\nint add(int a, int b) { return a + b; }\n",
+            ),
+            (
+                "tests/core_test.cpp",
+                "TEST(Core, Twice) {\n  EXPECT_EQ(twice(2), 4);\n}\nTEST(Core, Add) {\n  EXPECT_EQ(add(1, 2), 3);\n}\n",
+            ),
+            (
+                "tests/api_test.cpp",
+                "TEST(Api, Add) {\n  EXPECT_EQ(add(1, 1), 2);\n}\n",
+            ),
             ("tests/other_test.cpp", "TEST(Other, X) {\n}\n"),
         ];
         for (path, text) in files {
@@ -450,6 +501,12 @@ mod tests {
         };
         let sel = select(&model, &changes).await;
         assert_eq!(sel.tier2, vec![0, 1]);
-        assert!(sel.warnings.iter().any(|w| w.contains("no test source mentions")), "{:?}", sel.warnings);
+        assert!(
+            sel.warnings
+                .iter()
+                .any(|w| w.contains("no test source mentions")),
+            "{:?}",
+            sel.warnings
+        );
     }
 }

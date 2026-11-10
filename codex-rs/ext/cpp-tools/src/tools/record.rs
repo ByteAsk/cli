@@ -60,14 +60,18 @@ struct RecordArgs {
 
 /// The schema says "number": `3.0` is a whole number, and was refused as
 /// "invalid type: floating point". A fraction or a negative still is.
-fn whole_number<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+fn whole_number<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
     use serde::de::Error;
     match Option::<f64>::deserialize(deserializer)? {
         None => Ok(None),
         Some(value) if value.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&value) => {
             Ok(Some(value as u32))
         }
-        Some(value) => Err(D::Error::custom(format!("expected a whole number, got {value}"))),
+        Some(value) => Err(D::Error::custom(format!(
+            "expected a whole number, got {value}"
+        ))),
     }
 }
 
@@ -176,7 +180,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for RecordTool {
 }
 
 impl RecordTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: RecordArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -346,7 +353,10 @@ impl RecordTool {
         }
 
         let result = if truncated || combined.len() > OUTPUT_CAP {
-            check_result::CheckResult::approximate(TOOL_NAME, "The replay output was cut, so what is shown is incomplete.")
+            check_result::CheckResult::approximate(
+                TOOL_NAME,
+                "The replay output was cut, so what is shown is incomplete.",
+            )
         } else {
             match (chaos, caught_on) {
                 (true, None) => check_result::CheckResult::no_claim(
@@ -359,7 +369,9 @@ impl RecordTool {
                     TOOL_NAME,
                     &format!("Caught a failing run on recording {attempt} and replayed it."),
                 ),
-                (false, _) => check_result::CheckResult::pass(TOOL_NAME, "Recorded the run and replayed it."),
+                (false, _) => {
+                    check_result::CheckResult::pass(TOOL_NAME, "Recorded the run and replayed it.")
+                }
             }
         };
         Ok(crate::report::report(
@@ -468,7 +480,12 @@ fn vet_commands(commands: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn build_record_args(trace_dir: &Path, program: &Path, prog_args: &[String], chaos: bool) -> Vec<String> {
+fn build_record_args(
+    trace_dir: &Path,
+    program: &Path,
+    prog_args: &[String],
+    chaos: bool,
+) -> Vec<String> {
     let mut argv = vec![
         "record".to_string(),
         "-o".to_string(),
@@ -551,7 +568,11 @@ fn has_core_pmu(devices: &std::path::Path) -> Option<bool> {
 /// can fix and then rr works, while a machine with no PMU can never record at
 /// all. The old message said "requires hardware performance counters" for both,
 /// which sent people away from a setting they could simply have changed.
-fn unavailable_message_for(pmu: Option<bool>, paranoid: Option<i32>, ptrace_scope: Option<i32>) -> String {
+fn unavailable_message_for(
+    pmu: Option<bool>,
+    paranoid: Option<i32>,
+    ptrace_scope: Option<i32>,
+) -> String {
     // No core PMU at all: lowering paranoid cannot help, and saying it would
     // sends the user to run a root sysctl for nothing.
     if let Some(p) = paranoid
@@ -625,7 +646,10 @@ pub(crate) mod tests {
         let err = serde_json::from_str::<RecordArgs>(r#"{"program":"a.out","run_args":"x"}"#)
             .err()
             .expect("unknown field refused");
-        assert!(err.to_string().contains("unknown field `run_args`"), "{err}");
+        assert!(
+            err.to_string().contains("unknown field `run_args`"),
+            "{err}"
+        );
     }
 
     use super::*;
@@ -679,7 +703,12 @@ pub(crate) mod tests {
         assert_ne!(a, b);
         assert!(!b.exists());
         assert!(a.starts_with(root.path()));
-        assert!(a.file_name().unwrap().to_string_lossy().starts_with("feed-byteask-"));
+        assert!(
+            a.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("feed-byteask-")
+        );
     }
 
     #[test]
@@ -803,7 +832,10 @@ pub(crate) mod tests {
 
     #[test]
     fn default_commands_are_a_reverse_debug_starter_set() {
-        assert_eq!(default_commands(), vec!["continue".to_string(), "bt".to_string()]);
+        assert_eq!(
+            default_commands(),
+            vec!["continue".to_string(), "bt".to_string()]
+        );
     }
 
     #[test]
@@ -812,7 +844,10 @@ pub(crate) mod tests {
             .split_whitespace()
             .map(str::to_string)
             .collect();
-        assert_eq!(split, vec!["--a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            split,
+            vec!["--a".to_string(), "b".to_string(), "c".to_string()]
+        );
     }
 
     #[test]
@@ -832,8 +867,12 @@ pub(crate) mod tests {
 
     #[test]
     fn detects_ptrace_and_pmu_failures() {
-        assert!(is_perf_unavailable("ptrace(PTRACE_TRACEME) failed: Operation not permitted"));
-        assert!(is_perf_unavailable("Unable to open performance counter (PMU not available)"));
+        assert!(is_perf_unavailable(
+            "ptrace(PTRACE_TRACEME) failed: Operation not permitted"
+        ));
+        assert!(is_perf_unavailable(
+            "Unable to open performance counter (PMU not available)"
+        ));
         assert!(is_perf_unavailable("requires CAP_SYS_ADMIN"));
     }
 
@@ -841,7 +880,9 @@ pub(crate) mod tests {
     fn does_not_flag_unrelated_failures_as_perf() {
         // A genuine "program not found" style failure must NOT be reported as the
         // perf/sandbox-unavailable case.
-        assert!(!is_perf_unavailable("rr: error: Unable to execute '/work/a.out': No such file"));
+        assert!(!is_perf_unavailable(
+            "rr: error: Unable to execute '/work/a.out': No such file"
+        ));
     }
 
     #[test]
@@ -853,7 +894,10 @@ pub(crate) mod tests {
         // Unknown PMU (sysfs unreadable): still the fixable advice.
         assert!(unavailable_message_for(None, Some(3), Some(0)).contains("FIXABLE"));
         assert!(msg.contains("perf_event_paranoid is 3"), "{msg}");
-        assert!(msg.contains("sudo sysctl kernel.perf_event_paranoid=1"), "{msg}");
+        assert!(
+            msg.contains("sudo sysctl kernel.perf_event_paranoid=1"),
+            "{msg}"
+        );
         assert!(msg.contains("debug"), "{msg}");
     }
 
@@ -883,7 +927,14 @@ pub(crate) mod tests {
     #[test]
     fn the_core_pmu_is_found_by_its_sysfs_name() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["breakpoint", "kprobe", "msr", "software", "tracepoint", "uprobe"] {
+        for name in [
+            "breakpoint",
+            "kprobe",
+            "msr",
+            "software",
+            "tracepoint",
+            "uprobe",
+        ] {
             std::fs::create_dir(dir.path().join(name)).unwrap();
         }
         assert_eq!(has_core_pmu(dir.path()), Some(false));
@@ -972,18 +1023,26 @@ pub(crate) mod tests {
         let traces = tempfile::tempdir().unwrap();
         let plain_dir = traces.path().join("plain");
         let plain = build_record_args(&plain_dir, Path::new("/bin/true"), &[], false);
-        let chaos = build_record_args(&traces.path().join("chaos"), Path::new("/bin/true"), &[], true);
+        let chaos = build_record_args(
+            &traces.path().join("chaos"),
+            Path::new("/bin/true"),
+            &[],
+            true,
+        );
         let with_args = build_record_args(
             &traces.path().join("args"),
             Path::new("/bin/true"),
             &["--some-program-arg".to_string()],
             true,
         );
-        let replay = build_replay_args(&plain_dir, &[
-            "continue".to_string(),
-            "watch -l magic".to_string(),
-            "reverse-continue".to_string(),
-        ]);
+        let replay = build_replay_args(
+            &plain_dir,
+            &[
+                "continue".to_string(),
+                "watch -l magic".to_string(),
+                "reverse-continue".to_string(),
+            ],
+        );
 
         for (label, argv) in [
             ("record", plain),
@@ -1044,13 +1103,20 @@ pub(crate) mod tests {
     /// Skip, or fail when this host is supposed to prove rr works.
     pub(crate) fn rr_live_skip(why: &str) {
         if crate::trust::truthy(std::env::var("BYTEASK_RR_LIVE_REQUIRED").ok().as_deref()) {
-            panic!("BYTEASK_RR_LIVE_REQUIRED is set but this host cannot run the live rr test: {why}");
+            panic!(
+                "BYTEASK_RR_LIVE_REQUIRED is set but this host cannot run the live rr test: {why}"
+            );
         }
         eprintln!("skip: {why}");
     }
 
     /// Compile a C fixture with `cc -g -O0` (plus `extra` flags) into `dir`.
-    pub(crate) async fn build_c(dir: &Path, name: &str, source: &str, extra: &[&str]) -> Option<PathBuf> {
+    pub(crate) async fn build_c(
+        dir: &Path,
+        name: &str,
+        source: &str,
+        extra: &[&str],
+    ) -> Option<PathBuf> {
         let src = dir.join(format!("{name}.c"));
         std::fs::write(&src, source).ok()?;
         let bin = dir.join(name);
@@ -1110,7 +1176,11 @@ pub(crate) mod tests {
             return rr_live_skip(&format!("this machine cannot record with rr:\n{stderr}"));
         }
         assert!(record.ok(), "rr record failed: {record:?}");
-        assert!(crate::tools::runtime_util::is_rr_trace(&trace), "no trace at {}", trace.display());
+        assert!(
+            crate::tools::runtime_util::is_rr_trace(&trace),
+            "no trace at {}",
+            trace.display()
+        );
 
         // Run to exit, then watch the global and walk BACKWARDS to its writer.
         let commands = vec![
@@ -1119,9 +1189,14 @@ pub(crate) mod tests {
             "reverse-continue".to_string(),
             "bt".to_string(),
         ];
-        let replay = run_capped("rr", &build_replay_args(&trace, &commands), dir.path(), timeout_from(None))
-            .await
-            .expect("replay runs");
+        let replay = run_capped(
+            "rr",
+            &build_replay_args(&trace, &commands),
+            dir.path(),
+            timeout_from(None),
+        )
+        .await
+        .expect("replay runs");
         let out = match replay {
             RunOutcome::Finished { stdout, stderr, .. } => format!("{stdout}\n{stderr}"),
             RunOutcome::TimedOut { secs } => panic!("replay timed out after {secs}s"),
@@ -1132,7 +1207,10 @@ pub(crate) mod tests {
         );
         // gdb reports a REVERSE stop's values in execution order: going
         // backwards over `magic = 0xdead`, the value before it is 0x1234.
-        assert!(out.contains("New value = 4660"), "the pre-write value 0x1234 must be shown:\n{out}");
+        assert!(
+            out.contains("New value = 4660"),
+            "the pre-write value 0x1234 must be shown:\n{out}"
+        );
     }
 
     /// Chaos mode must actually drive `rr record --chaos` against real rr.
@@ -1155,7 +1233,9 @@ pub(crate) mod tests {
             return rr_live_skip("this machine cannot record with rr");
         }
         match outcome {
-            RunOutcome::Finished { success, stderr, .. } => {
+            RunOutcome::Finished {
+                success, stderr, ..
+            } => {
                 assert!(success, "rr rejected --chaos: {stderr}");
             }
             RunOutcome::TimedOut { secs } => panic!("rr record --chaos timed out after {secs}s"),
@@ -1195,14 +1275,26 @@ pub(crate) mod tests {
         .await
         {
             Ok(text) => text,
-            Err(err) if is_perf_unavailable(&format!("{err:?}")) || format!("{err:?}").contains("cannot record") => {
+            Err(err)
+                if is_perf_unavailable(&format!("{err:?}"))
+                    || format!("{err:?}").contains("cannot record") =>
+            {
                 return rr_live_skip(&format!("{err:?}"));
             }
             Err(err) => panic!("debug_record failed: {err:?}"),
         };
-        assert!(text.contains("exited non-zero"), "exit 7 is the failing run:\n{text}");
-        assert!(text.contains("in clobber") || text.contains("clobber ()"), "{text}");
-        let trace_line = text.lines().find(|l| l.starts_with("trace: ")).expect("trace line");
+        assert!(
+            text.contains("exited non-zero"),
+            "exit 7 is the failing run:\n{text}"
+        );
+        assert!(
+            text.contains("in clobber") || text.contains("clobber ()"),
+            "{text}"
+        );
+        let trace_line = text
+            .lines()
+            .find(|l| l.starts_with("trace: "))
+            .expect("trace line");
         let trace = PathBuf::from(trace_line.trim_start_matches("trace: "));
         assert!(crate::tools::runtime_util::is_rr_trace(&trace), "{text}");
         // debug_reverse's default ("the most recent recording") is this one.

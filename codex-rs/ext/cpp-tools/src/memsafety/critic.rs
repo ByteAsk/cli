@@ -143,9 +143,9 @@ fn is_harness(file: &FileDiff, changes: &[Change]) -> bool {
         || name.contains("_fuzz.")
         || name.ends_with(".options")
         || name.ends_with(".dict")
-        || changes
-            .iter()
-            .any(|c| c.text.contains("LLVMFuzzerTestOneInput") || c.text.contains("LLVMFuzzerInitialize"))
+        || changes.iter().any(|c| {
+            c.text.contains("LLVMFuzzerTestOneInput") || c.text.contains("LLVMFuzzerInitialize")
+        })
 }
 
 /// A test/harness change that can hide a failure: any change to a fuzz
@@ -156,7 +156,10 @@ fn edits_test_or_harness(file: &FileDiff, changes: &[Change]) -> bool {
     if is_harness(file, changes) {
         return true;
     }
-    is_test_or_harness(file, changes) && changes.iter().any(|c| !c.added && !code_of(&c.text).is_empty())
+    is_test_or_harness(file, changes)
+        && changes
+            .iter()
+            .any(|c| !c.added && !code_of(&c.text).is_empty())
 }
 
 fn is_test_or_harness(file: &FileDiff, changes: &[Change]) -> bool {
@@ -164,8 +167,22 @@ fn is_test_or_harness(file: &FileDiff, changes: &[Change]) -> bool {
     let parts: Vec<&str> = lower.split('/').collect();
     let name = parts.last().copied().unwrap_or("");
     const DIRS: &[&str] = &[
-        "test", "tests", "testing", "unittest", "unittests", "unit_tests", "testsuite", "fuzz",
-        "fuzzer", "fuzzers", "fuzzing", "oss-fuzz", "corpus", "corpora", "regress", "regression",
+        "test",
+        "tests",
+        "testing",
+        "unittest",
+        "unittests",
+        "unit_tests",
+        "testsuite",
+        "fuzz",
+        "fuzzer",
+        "fuzzers",
+        "fuzzing",
+        "oss-fuzz",
+        "corpus",
+        "corpora",
+        "regress",
+        "regression",
     ];
     let in_test_dir = parts[..parts.len().saturating_sub(1)]
         .iter()
@@ -179,9 +196,9 @@ fn is_test_or_harness(file: &FileDiff, changes: &[Change]) -> bool {
         || name.contains("_fuzz.")
         || name.ends_with(".options")
         || name.ends_with(".dict");
-    let harness_code = changes
-        .iter()
-        .any(|c| c.text.contains("LLVMFuzzerTestOneInput") || c.text.contains("LLVMFuzzerInitialize"));
+    let harness_code = changes.iter().any(|c| {
+        c.text.contains("LLVMFuzzerTestOneInput") || c.text.contains("LLVMFuzzerInitialize")
+    });
     in_test_dir || test_name || harness_code
 }
 
@@ -246,9 +263,18 @@ fn frees(text: &str) -> bool {
 }
 
 fn is_assert(code: &str) -> bool {
-    ["assert", "ASSERT", "CHECK", "DCHECK", "BUG_ON", "static_assert", "abort", "assume"]
-        .iter()
-        .any(|name| calls(code, name))
+    [
+        "assert",
+        "ASSERT",
+        "CHECK",
+        "DCHECK",
+        "BUG_ON",
+        "static_assert",
+        "abort",
+        "assume",
+    ]
+    .iter()
+    .any(|name| calls(code, name))
         || code.contains("_ASSERT(")
         || code.contains("_ASSERT (")
 }
@@ -266,7 +292,10 @@ fn primary_call(code: &str) -> Option<&str> {
         }
         let name = &head[start..];
         if !name.is_empty()
-            && !matches!(name, "if" | "while" | "for" | "switch" | "return" | "sizeof" | "void")
+            && !matches!(
+                name,
+                "if" | "while" | "for" | "switch" | "return" | "sizeof" | "void"
+            )
             && !name.as_bytes()[0].is_ascii_digit()
         {
             return Some(name);
@@ -332,10 +361,13 @@ fn array_sizes(code: &str) -> Vec<(String, u64)> {
 fn is_declarator_prefix(prefix: &str) -> bool {
     let prefix = prefix.trim();
     !prefix.is_empty()
+        && prefix.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '_' | ' ' | '*' | ':' | '<' | '>' | ',')
+        })
         && prefix
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ' ' | '*' | ':' | '<' | '>' | ','))
-        && prefix.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
 }
 
 fn parse_int_literal(text: &str) -> Option<u64> {
@@ -346,7 +378,9 @@ fn parse_int_literal(text: &str) -> Option<u64> {
     text.parse::<u64>().ok()
 }
 
-const ALLOCATORS: &[&str] = &["malloc", "calloc", "realloc", "alloca", "xmalloc", "xcalloc", "xrealloc"];
+const ALLOCATORS: &[&str] = &[
+    "malloc", "calloc", "realloc", "alloca", "xmalloc", "xcalloc", "xrealloc",
+];
 
 fn allocates(code: &str) -> bool {
     ALLOCATORS.iter().any(|name| calls(code, name))
@@ -454,9 +488,8 @@ fn line_rules(file: &FileDiff, changes: &[Change], out: &mut Vec<ShapeFinding>) 
                 );
             } else if starts_if(code)
                 && !added_any_if
-                && !primary_call(code).is_some_and(|name| {
-                    added_code.iter().any(|a| calls(code_of(&a.text), name))
-                })
+                && !primary_call(code)
+                    .is_some_and(|name| added_code.iter().any(|a| calls(code_of(&a.text), name)))
             {
                 push(
                     "deleted-check",
@@ -500,11 +533,14 @@ fn line_rules(file: &FileDiff, changes: &[Change], out: &mut Vec<ShapeFinding>) 
                 "suppresses a sanitizer. The report disappears, the bug does not.".to_string(),
             );
         }
-        if calls(code, "signal") && (code.contains("SIGSEGV") || code.contains("SIGABRT") || code.contains("SIGBUS")) {
+        if calls(code, "signal")
+            && (code.contains("SIGSEGV") || code.contains("SIGABRT") || code.contains("SIGBUS"))
+        {
             push(
                 "silenced-error",
                 change.line,
-                "installs a crash-signal handler. That hides the crash; fix the access.".to_string(),
+                "installs a crash-signal handler. That hides the crash; fix the access."
+                    .to_string(),
             );
         }
         if let Some(name) = code.strip_prefix("(void)").and_then(primary_call)
@@ -519,9 +555,19 @@ fn line_rules(file: &FileDiff, changes: &[Change], out: &mut Vec<ShapeFinding>) 
                 ),
             );
         }
-        if ["std::min", "std::max", "std::clamp", "MIN", "MAX", "min", "max", "CLAMP", "clamp"]
-            .iter()
-            .any(|name| calls(code, name))
+        if [
+            "std::min",
+            "std::max",
+            "std::clamp",
+            "MIN",
+            "MAX",
+            "min",
+            "max",
+            "CLAMP",
+            "clamp",
+        ]
+        .iter()
+        .any(|name| calls(code, name))
         {
             push(
                 "clamp",
@@ -608,10 +654,12 @@ fn guard_lines(changes: &[Change]) -> (usize, usize, Option<u32>) {
     let mut previous_if = false;
     for change in changes.iter().filter(|c| c.added) {
         let code = code_of(&change.text);
-        if code.is_empty() || code == "{" || code == "}" || code == "else" || code.starts_with("#") {
+        if code.is_empty() || code == "{" || code == "}" || code == "else" || code.starts_with("#")
+        {
             continue;
         }
-        let is_guard = (starts_if(code) && (exits(code) || null_test(code) || code.ends_with(')') || code.ends_with('{')))
+        let is_guard = (starts_if(code)
+            && (exits(code) || null_test(code) || code.ends_with(')') || code.ends_with('{')))
             || (previous_if && exits(code));
         if is_guard {
             guards += 1;
@@ -731,8 +779,15 @@ diff --git a/src/reader.c b/src/reader.c
     fn a_guard_in_the_crashing_function_is_flagged() {
         let findings = critique(GUARD, &["parse_header".to_string(), "main".to_string()]);
         assert_eq!(rules(&findings), vec!["crash-site-guard"]);
-        assert!(findings[0].message.contains("only the crashing function (parse_header)"));
-        assert_eq!((findings[0].file.as_str(), findings[0].line), ("src/reader.c", 12));
+        assert!(
+            findings[0]
+                .message
+                .contains("only the crashing function (parse_header)")
+        );
+        assert_eq!(
+            (findings[0].file.as_str(), findings[0].line),
+            ("src/reader.c", 12)
+        );
     }
 
     #[test]
@@ -803,7 +858,10 @@ diff --git a/a.c b/a.c
     #[test]
     fn test_and_harness_edits() {
         let text = "diff --git a/tests/fuzz/parse_fuzzer.cc b/tests/fuzz/parse_fuzzer.cc\n--- a/tests/fuzz/parse_fuzzer.cc\n+++ b/tests/fuzz/parse_fuzzer.cc\n@@ -1,2 +1,3 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)\n+  if (n > 100) return 0;\n   parse(d, n);\n";
-        assert_eq!(rules(&critique(text, &["parse".to_string()])), vec!["test-or-harness-edit"]);
+        assert_eq!(
+            rules(&critique(text, &["parse".to_string()])),
+            vec!["test-or-harness-edit"]
+        );
     }
 
     #[test]
@@ -849,7 +907,11 @@ diff --git a/tests/unit/parse_test.c b/tests/unit/parse_test.c
 +  /* A length past the end is rejected. */
 +  check (read_len (&short_input, &n) == ERR_TRUNCATED);
 ";
-        assert!(critique(added_test, &[]).is_empty(), "{:?}", critique(added_test, &[]));
+        assert!(
+            critique(added_test, &[]).is_empty(),
+            "{:?}",
+            critique(added_test, &[])
+        );
         let edited_test = "\
 diff --git a/tests/unit/parse_test.c b/tests/unit/parse_test.c
 --- a/tests/unit/parse_test.c
@@ -858,7 +920,10 @@ diff --git a/tests/unit/parse_test.c b/tests/unit/parse_test.c
 -  check (read_len (&bad, &n) == ERR_TRUNCATED);
 +  check (read_len (&bad, &n) == 0);
 ";
-        assert_eq!(rules(&critique(edited_test, &[])), vec!["test-or-harness-edit"]);
+        assert_eq!(
+            rules(&critique(edited_test, &[])),
+            vec!["test-or-harness-edit"]
+        );
     }
 
     #[test]
@@ -893,7 +958,11 @@ diff --git a/tests/unit/parse_test.c b/tests/unit/parse_test.c
     #[test]
     fn a_void_cast_counts_only_when_a_checked_result_is_now_discarded() {
         let idiom = "diff --git a/a.c b/a.c\n--- a/a.c\n+++ b/a.c\n@@ -1,1 +1,2 @@ void f(char *d, const char *s)\n+  (void) memcpy (d, s, 4);\n";
-        assert!(critique(idiom, &[]).is_empty(), "{:?}", critique(idiom, &[]));
+        assert!(
+            critique(idiom, &[]).is_empty(),
+            "{:?}",
+            critique(idiom, &[])
+        );
         let silenced = "diff --git a/a.c b/a.c\n--- a/a.c\n+++ b/a.c\n@@ -1,2 +1,1 @@ int f(int fd)\n-  if (close_it (fd) < 0) return -1;\n+  (void) close_it (fd);\n";
         assert!(rules(&critique(silenced, &[])).contains(&"silenced-error"));
     }
@@ -902,7 +971,13 @@ diff --git a/tests/unit/parse_test.c b/tests/unit/parse_test.c
     fn rendering() {
         assert_eq!(render(&[]), "patch-shape review: no findings.");
         let text = render(&critique(GUARD, &["parse_header".to_string()]));
-        assert!(text.starts_with("patch-shape review (advisory, static)"), "{text}");
-        assert!(text.contains("- [crash-site-guard] src/reader.c:12 "), "{text}");
+        assert!(
+            text.starts_with("patch-shape review (advisory, static)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- [crash-site-guard] src/reader.c:12 "),
+            "{text}"
+        );
     }
 }

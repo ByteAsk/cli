@@ -129,8 +129,9 @@ pub(crate) fn repo_roots_sync(cwd: &Path) -> Vec<PathBuf> {
 fn is_git_marker(path: &Path) -> bool {
     match std::fs::metadata(path) {
         Ok(meta) if meta.is_dir() => path.join("HEAD").is_file(),
-        Ok(meta) if meta.is_file() => std::fs::read_to_string(path)
-            .is_ok_and(|text| text.trim_start().starts_with("gitdir:")),
+        Ok(meta) if meta.is_file() => {
+            std::fs::read_to_string(path).is_ok_and(|text| text.trim_start().starts_with("gitdir:"))
+        }
         _ => false,
     }
 }
@@ -164,7 +165,16 @@ pub(crate) fn repos_below(cwd: &Path) -> Vec<PathBuf> {
                 .filter(|e| {
                     let name = e.file_name().to_string_lossy().to_string();
                     !name.starts_with('.')
-                        && !matches!(name.as_str(), "node_modules" | "target" | "__pycache__" | "venv" | "proc" | "sys" | "dev")
+                        && !matches!(
+                            name.as_str(),
+                            "node_modules"
+                                | "target"
+                                | "__pycache__"
+                                | "venv"
+                                | "proc"
+                                | "sys"
+                                | "dev"
+                        )
                 })
                 .map(|e| e.path())
                 .collect();
@@ -473,12 +483,22 @@ impl Audit {
         }
         let list: Vec<String> = kinds
             .iter()
-            .map(|(k, n)| if *n == 1 { k.clone() } else { format!("{k}×{n}") })
+            .map(|(k, n)| {
+                if *n == 1 {
+                    k.clone()
+                } else {
+                    format!("{k}×{n}")
+                }
+            })
             .collect();
         format!(
             "audit: {} git call(s) ({}); {bound}",
             calls.len(),
-            if list.is_empty() { "none".to_string() } else { list.join(", ") }
+            if list.is_empty() {
+                "none".to_string()
+            } else {
+                list.join(", ")
+            }
         )
     }
 }
@@ -643,7 +663,6 @@ mod tests {
         assert!(!is_cpp_path("a/b.py"));
     }
 
-
     #[test]
     fn every_command_is_hardened() {
         let args = argv(&["log".to_string(), "abc1234".to_string()]);
@@ -693,7 +712,10 @@ mod tests {
         std::fs::create_dir(dir.path().join(".git")).unwrap();
         let work = dir.path().join("work");
         std::fs::create_dir(&work).unwrap();
-        assert!(repo_roots_sync(&work).is_empty(), "an empty .git is not a repository");
+        assert!(
+            repo_roots_sync(&work).is_empty(),
+            "an empty .git is not a repository"
+        );
         // A real one above still is.
         let real = tempfile::tempdir().unwrap();
         assert!(crate::impact::tests::git(real.path(), &["init", "-q"]));

@@ -1,16 +1,29 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use bytes::Bytes;
+use codex_file_system::FILE_WRITE_CHUNK_SIZE;
+use codex_protocol::models::ManagedFileSystemPermissions;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemPath;
 use codex_utils_path_uri::PathUri;
+use futures::StreamExt;
+use futures::TryFutureExt;
+use futures::stream::BoxStream;
 use tokio::io;
-use tokio::sync::Mutex;
 use tokio::sync::OnceCell;
+use tracing::Instrument;
+use tracing::instrument::WithSubscriber;
 use tracing::trace;
+use uuid::Uuid;
 
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
+use crate::ExecServerClient;
 use crate::ExecServerError;
 use crate::ExecutorFileSystem;
 use crate::ExecutorFileSystemFuture;
@@ -27,13 +40,17 @@ use crate::WalkOutcome;
 use crate::WriteFileOptions;
 use crate::client::LazyRemoteExecServerClient;
 use crate::protocol::FsCanonicalizeParams;
+use crate::protocol::FsCloseParams;
 use crate::protocol::FsCopyParams;
 use crate::protocol::FsCreateDirectoryParams;
 use crate::protocol::FsGetMetadataParams;
+use crate::protocol::FsOpenMode;
+use crate::protocol::FsOpenParams;
 use crate::protocol::FsReadDirectoryParams;
 use crate::protocol::FsReadFileParams;
 use crate::protocol::FsRemoveParams;
 use crate::protocol::FsWalkParams;
+use crate::protocol::FsWriteBlockParams;
 use crate::protocol::FsWriteFileParams;
 
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
@@ -46,6 +63,7 @@ type InFlightMetadataRequest = OnceCell<Result<FileMetadata, Arc<io::Error>>>;
 
 pub(crate) struct RemoteFileSystem {
     client: LazyRemoteExecServerClient,
+    // Only the in-flight request map is locked; metadata I/O happens outside this lock.
     metadata_requests: Mutex<HashMap<PathUri, Arc<InFlightMetadataRequest>>>,
 }
 
@@ -58,6 +76,14 @@ impl RemoteFileSystem {
         }
     }
 
+    fn lock_metadata_requests(
+        &self,
+    ) -> MutexGuard<'_, HashMap<PathUri, Arc<InFlightMetadataRequest>>> {
+        self.metadata_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     async fn canonicalize(
         &self,
         path: &PathUri,
@@ -68,7 +94,7 @@ impl RemoteFileSystem {
         let response = client
             .fs_canonicalize(FsCanonicalizeParams {
                 path: path.clone(),
-                sandbox: remote_sandbox_context(sandbox),
+                sandbox: read_sandbox(&client, path, sandbox).await?.cloned(),
             })
             .await
             .map_err(map_remote_error)?;
@@ -87,7 +113,7 @@ impl RemoteFileSystem {
             .fs_read_file(FsReadFileParams {
                 path: path.clone(),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: remote_sandbox_context(sandbox),
+                sandbox: read_sandbox(&client, path, sandbox).await?.cloned(),
             })
             .await
             .map_err(map_remote_error)?;
@@ -106,7 +132,8 @@ impl RemoteFileSystem {
     ) -> FileSystemResult<FileSystemReadStream> {
         trace!("remote fs read_file_stream");
         let client = self.client.get().await.map_err(map_remote_error)?;
-        file_stream::open(client, path.clone(), remote_sandbox_context(sandbox)).await
+        let sandbox = read_sandbox(&client, path, sandbox).await?;
+        file_stream::open(client, path.clone(), sandbox).await
     }
 
     async fn write_file(
@@ -123,10 +150,10 @@ impl RemoteFileSystem {
                 path: path.clone(),
                 data_base64: STANDARD.encode(contents),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: remote_sandbox_context(sandbox),
+                sandbox: sandbox.cloned(),
             })
             .await;
-        self.metadata_requests.lock().await.clear();
+        self.lock_metadata_requests().clear();
         result.map_err(map_remote_error)?;
         Ok(())
     }
@@ -144,10 +171,10 @@ impl RemoteFileSystem {
                 path: path.clone(),
                 recursive: Some(options.recursive),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: remote_sandbox_context(sandbox),
+                sandbox: sandbox.cloned(),
             })
             .await;
-        self.metadata_requests.lock().await.clear();
+        self.lock_metadata_requests().clear();
         result.map_err(map_remote_error)?;
         Ok(())
     }
@@ -164,7 +191,7 @@ impl RemoteFileSystem {
         }
 
         let request = {
-            let mut requests = self.metadata_requests.lock().await;
+            let mut requests = self.lock_metadata_requests();
             requests.retain(|_, in_flight| Arc::strong_count(in_flight) > 1);
             Arc::clone(requests.entry(path.clone()).or_default())
         };
@@ -180,7 +207,7 @@ impl RemoteFileSystem {
             Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
         };
 
-        let mut requests = self.metadata_requests.lock().await;
+        let mut requests = self.lock_metadata_requests();
         if requests
             .get(path)
             .is_some_and(|in_flight| Arc::ptr_eq(in_flight, &request))
@@ -204,7 +231,7 @@ impl RemoteFileSystem {
             .fs_get_metadata(FsGetMetadataParams {
                 path: path.clone(),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: remote_sandbox_context(sandbox),
+                sandbox: read_sandbox(&client, path, sandbox).await?.cloned(),
             })
             .await
             .map_err(map_remote_error)?;
@@ -228,7 +255,7 @@ impl RemoteFileSystem {
         let response = client
             .fs_read_directory(FsReadDirectoryParams {
                 path: path.clone(),
-                sandbox: remote_sandbox_context(sandbox),
+                sandbox: read_sandbox(&client, path, sandbox).await?.cloned(),
             })
             .await
             .map_err(map_remote_error)?;
@@ -255,7 +282,7 @@ impl RemoteFileSystem {
             .fs_walk(FsWalkParams {
                 path: path.clone(),
                 options,
-                sandbox: remote_sandbox_context(sandbox),
+                sandbox: read_sandbox(&client, path, sandbox).await?.cloned(),
             })
             .await
             .map_err(map_remote_error)
@@ -275,10 +302,10 @@ impl RemoteFileSystem {
                 recursive: Some(options.recursive),
                 force: Some(options.force),
                 follow_symlinks: (!options.follow_symlinks).then_some(false),
-                sandbox: remote_sandbox_context(sandbox),
+                sandbox: sandbox.cloned(),
             })
             .await;
-        self.metadata_requests.lock().await.clear();
+        self.lock_metadata_requests().clear();
         result.map_err(map_remote_error)?;
         Ok(())
     }
@@ -297,16 +324,124 @@ impl RemoteFileSystem {
                 source_path: source_path.clone(),
                 destination_path: destination_path.clone(),
                 recursive: options.recursive,
-                sandbox: remote_sandbox_context(sandbox),
+                sandbox: sandbox.cloned(),
             })
             .await;
-        self.metadata_requests.lock().await.clear();
+        self.lock_metadata_requests().clear();
         result.map_err(map_remote_error)?;
         Ok(())
     }
 }
 
 impl ExecutorFileSystem for RemoteFileSystem {
+    fn watch_missing(
+        &self,
+        missing: Vec<PathUri>,
+        present: Option<PathUri>,
+    ) -> ExecutorFileSystemFuture<'_, Option<tokio::sync::oneshot::Receiver<()>>> {
+        Box::pin(async move {
+            self.client
+                .get()
+                .await
+                .map_err(map_remote_error)?
+                .fs_watch_missing(missing, present)
+                .await
+                .map_err(map_remote_error)
+        })
+    }
+
+    fn write_file_stream<'a>(
+        &'a self,
+        path: &'a PathUri,
+        contents: BoxStream<'a, FileSystemResult<Bytes>>,
+        sandbox: Option<&'a FileSystemSandboxContext>,
+    ) -> ExecutorFileSystemFuture<'a, u64> {
+        Box::pin(async move {
+            let client = self.client.get().await.map_err(map_remote_error)?;
+            let _invalidation = MetadataInvalidation(self);
+            let mut contents = contents.map(|chunk| {
+                let chunk = chunk?;
+                if !(1..=FILE_WRITE_CHUNK_SIZE).contains(&chunk.len()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid file stream block length",
+                    ));
+                }
+                Ok(chunk)
+            });
+            // Choose the legacy write before opening a stream, so an open or write failure
+            // can never cause us to replay a replacement that may have already modified the file.
+            if !client
+                .supports_file_write_streaming()
+                .await
+                .map_err(map_remote_error)?
+            {
+                let mut bytes = Vec::new();
+                while let Some(chunk) = contents.next().await {
+                    bytes.extend_from_slice(&chunk?);
+                }
+                let len = bytes.len() as u64;
+                self.write_file(path, bytes, WriteFileOptions::default(), sandbox)
+                    .await?;
+                return Ok(len);
+            }
+
+            // Dropping the JoinHandle lets the open finish. If it succeeds after cancellation,
+            // Tokio drops the unclaimed registration, which closes that exact handle.
+            let open = client
+                .fs_open(FsOpenParams {
+                    handle_id: Uuid::new_v4().simple().to_string(),
+                    path: path.clone(),
+                    mode: FsOpenMode::Replace,
+                    sandbox: sandbox.cloned(),
+                })
+                .map_ok(move |opened| FileWriteRegistration {
+                    client,
+                    handle_id: opened.handle_id,
+                    active: true,
+                    runtime: tokio::runtime::Handle::current(),
+                });
+            let open = tokio::spawn(open.in_current_span().with_current_subscriber());
+            let mut registration = open
+                .await
+                .map_err(io::Error::other)?
+                .map_err(map_remote_error)?;
+
+            let result: io::Result<u64> = async {
+                let mut written = 0_u64;
+                while let Some(chunk) = contents.next().await {
+                    let chunk = chunk?;
+                    let next_offset = written.checked_add(chunk.len() as u64).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "file stream offset overflow")
+                    })?;
+                    registration
+                        .client
+                        .fs_write_block(FsWriteBlockParams {
+                            handle_id: registration.handle_id.clone(),
+                            offset: written,
+                            chunk: chunk.to_vec().into(),
+                        })
+                        .await
+                        .map_err(map_remote_error)?;
+                    written = next_offset;
+                }
+                Ok(written)
+            }
+            .await;
+            let close_result = registration
+                .client
+                .fs_close(FsCloseParams {
+                    handle_id: registration.handle_id.clone(),
+                })
+                .await
+                .map_err(map_remote_error);
+            registration.active = close_result.is_err();
+            let written = result?;
+            close_result?;
+            Ok(written)
+        })
+    }
+
     fn canonicalize<'a>(
         &'a self,
         path: &'a PathUri,
@@ -407,15 +542,75 @@ impl ExecutorFileSystem for RemoteFileSystem {
     }
 }
 
-fn remote_sandbox_context(
-    sandbox: Option<&FileSystemSandboxContext>,
-) -> Option<FileSystemSandboxContext> {
-    sandbox
-        .cloned()
-        .map(FileSystemSandboxContext::drop_cwd_if_unused)
+/// A cancelled write must stop later lookups from joining pre-cancellation metadata requests.
+struct MetadataInvalidation<'a>(&'a RemoteFileSystem);
+
+impl Drop for MetadataInvalidation<'_> {
+    fn drop(&mut self) {
+        self.0.lock_metadata_requests().clear();
+    }
 }
 
-fn map_remote_error(error: ExecServerError) -> io::Error {
+/// Best-effort remote handle cleanup may outlive a cancelled transfer.
+struct FileWriteRegistration {
+    client: ExecServerClient,
+    handle_id: String,
+    active: bool,
+    runtime: tokio::runtime::Handle,
+}
+
+impl Drop for FileWriteRegistration {
+    fn drop(&mut self) {
+        if self.active {
+            let client = self.client.clone();
+            let handle_id = self.handle_id.clone();
+            self.runtime.spawn(async move {
+                let _ = client.fs_close(FsCloseParams { handle_id }).await;
+            });
+        }
+    }
+}
+
+// Older executors sandbox any supplied policy. Omit unrestricted read policies only when
+// their explicit paths are valid for the read target's convention. The executor rejects foreign
+// targets itself; keep uncertain policies intact so it also validates their explicit paths.
+async fn read_sandbox<'a>(
+    client: &ExecServerClient,
+    path: &PathUri,
+    sandbox: Option<&'a FileSystemSandboxContext>,
+) -> FileSystemResult<Option<&'a FileSystemSandboxContext>> {
+    let convention = path.infer_path_convention();
+    let sandbox = sandbox.filter(|sandbox| {
+        if sandbox.should_read_from_sandbox() {
+            return true;
+        }
+        let PermissionProfile::Managed {
+            file_system: ManagedFileSystemPermissions::Restricted { entries, .. },
+            ..
+        } = &sandbox.permissions
+        else {
+            return false;
+        };
+        entries.iter().any(|entry| {
+            let FileSystemPath::Path { path } = &entry.path else {
+                return false;
+            };
+            let Some(convention) = convention else {
+                return true;
+            };
+            path.validate_config_path(convention).is_err()
+        })
+    });
+    if sandbox.is_some_and(|sandbox| {
+        sandbox.windows_sandbox_selection == crate::WindowsSandboxSelection::Mxc
+    }) {
+        let info = client.environment_info().await.map_err(map_remote_error)?;
+        crate::sandbox_selection::validate_remote_mxc(&info)?;
+    }
+    Ok(sandbox)
+}
+
+pub(crate) fn map_remote_error(error: ExecServerError) -> io::Error {
     match error {
         ExecServerError::Server { code, message } if code == NOT_FOUND_ERROR_CODE => {
             io::Error::new(io::ErrorKind::NotFound, message)
@@ -423,10 +618,13 @@ fn map_remote_error(error: ExecServerError) -> io::Error {
         ExecServerError::Server { code, message } if code == INVALID_REQUEST_ERROR_CODE => {
             io::Error::new(io::ErrorKind::InvalidInput, message)
         }
-        ExecServerError::Server { message, .. } => io::Error::other(message),
         ExecServerError::Closed | ExecServerError::Disconnected(_) => {
             io::Error::new(io::ErrorKind::BrokenPipe, "exec-server transport closed")
         }
+        error if error.is_retryable_preparation_error() => {
+            io::Error::new(io::ErrorKind::BrokenPipe, error.to_string())
+        }
+        ExecServerError::Server { message, .. } => io::Error::other(message),
         _ => io::Error::other(error.to_string()),
     }
 }
@@ -437,61 +635,9 @@ mod path_uri_tests;
 
 #[cfg(test)]
 mod tests {
-    use codex_protocol::models::PermissionProfile;
-    use codex_protocol::permissions::FileSystemAccessMode;
-    use codex_protocol::permissions::FileSystemPath;
-    use codex_protocol::permissions::FileSystemSandboxEntry;
-    use codex_protocol::permissions::FileSystemSandboxPolicy;
-    use codex_protocol::permissions::FileSystemSpecialPath;
-    use codex_protocol::permissions::NetworkSandboxPolicy;
-    use codex_utils_absolute_path::AbsolutePathBuf;
-    use codex_utils_path_uri::PathUri;
     use pretty_assertions::assert_eq;
 
     use super::*;
-
-    #[test]
-    fn remote_sandbox_context_drops_unused_cwd() {
-        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Path {
-                path: absolute_test_path("remote-root").into(),
-            },
-            access: FileSystemAccessMode::Read,
-            missing_path_behavior: None,
-        }]);
-        let permissions =
-            PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Restricted);
-        let sandbox_context = FileSystemSandboxContext::from_permission_profile_with_cwd(
-            permissions,
-            path_uri("host-checkout"),
-        );
-
-        let remote_context =
-            remote_sandbox_context(Some(&sandbox_context)).expect("remote sandbox context");
-
-        assert_eq!(remote_context.cwd, None);
-    }
-
-    #[test]
-    fn remote_sandbox_context_preserves_required_cwd() {
-        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Special {
-                value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
-            },
-            access: FileSystemAccessMode::Write,
-            missing_path_behavior: None,
-        }]);
-        let permissions =
-            PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Restricted);
-        let cwd = path_uri("host-checkout");
-        let sandbox_context =
-            FileSystemSandboxContext::from_permission_profile_with_cwd(permissions, cwd.clone());
-
-        let remote_context =
-            remote_sandbox_context(Some(&sandbox_context)).expect("remote sandbox context");
-
-        assert_eq!(remote_context.cwd, Some(cwd));
-    }
 
     #[test]
     fn transport_errors_map_to_broken_pipe() {
@@ -523,12 +669,24 @@ mod tests {
         );
     }
 
-    fn absolute_test_path(name: &str) -> AbsolutePathBuf {
-        let path = std::env::temp_dir().join(name);
-        AbsolutePathBuf::from_absolute_path(&path).expect("absolute path")
-    }
+    #[test]
+    fn preparation_retryability_controls_filesystem_error_kind() {
+        let errors = [
+            ExecServerError::ConnectionAttempt(Arc::new(
+                ExecServerError::EnvironmentRegistryHttp {
+                    status: http::StatusCode::SERVICE_UNAVAILABLE,
+                    code: None,
+                    message: "registry unavailable".to_string(),
+                },
+            )),
+            ExecServerError::Protocol("exec-server transport closed".to_string()),
+        ];
 
-    fn path_uri(name: &str) -> PathUri {
-        PathUri::from_abs_path(&absolute_test_path(name))
+        let kinds = errors
+            .into_iter()
+            .map(|error| map_remote_error(error).kind())
+            .collect::<Vec<_>>();
+
+        assert_eq!(kinds, vec![io::ErrorKind::BrokenPipe, io::ErrorKind::Other]);
     }
 }

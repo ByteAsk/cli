@@ -169,7 +169,9 @@ pub fn classify(command: &str) -> Family {
         "kubectl" => match sub {
             "logs" => Family::Log,
             "get" | "describe"
-                if words.iter().any(|w| w == "json" || w == "-ojson" || w == "-o=json") =>
+                if words
+                    .iter()
+                    .any(|w| w == "json" || w == "-ojson" || w == "-o=json") =>
             {
                 Family::Network
             }
@@ -189,7 +191,15 @@ pub fn classify(command: &str) -> Family {
 fn simple_words(command: &str) -> Option<Vec<String>> {
     let mut cmd = command.trim();
     // Unwrap `bash -lc '…'`, `sh -c "…"`, `zsh -lc …`.
-    for shell in ["bash", "sh", "zsh", "/bin/bash", "/bin/sh", "/bin/zsh", "/usr/bin/bash"] {
+    for shell in [
+        "bash",
+        "sh",
+        "zsh",
+        "/bin/bash",
+        "/bin/sh",
+        "/bin/zsh",
+        "/usr/bin/bash",
+    ] {
         for flag in ["-lc", "-c", "-ic"] {
             let prefix = format!("{shell} {flag} ");
             if let Some(rest) = cmd.strip_prefix(&prefix) {
@@ -212,8 +222,7 @@ fn simple_words(command: &str) -> Option<Vec<String>> {
     if let Some(idx) = cmd.rfind('|') {
         let tail = cmd[idx + 1..].trim();
         let first = tail.split_whitespace().next().unwrap_or("");
-        if !matches!(first, "head" | "tail") || tail.contains(['|', ';', '&', '$', '`', '>', '<'])
-        {
+        if !matches!(first, "head" | "tail") || tail.contains(['|', ';', '&', '$', '`', '>', '<']) {
             return None;
         }
         // `||` is not a pipe.
@@ -232,9 +241,9 @@ fn simple_words(command: &str) -> Option<Vec<String>> {
     let mut words = split_words(&cmd)?;
     // Optional leading `VAR=value` assignments and `env`.
     while let Some(first) = words.first() {
-        let is_assignment = first
-            .split_once('=')
-            .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        let is_assignment = first.split_once('=').is_some_and(|(k, _)| {
+            !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        });
         if is_assignment || first == "env" || first == "time" || first == "nice" {
             words.remove(0);
         } else {
@@ -316,7 +325,10 @@ mod tests {
 
     #[test]
     fn wrappers_cd_env_and_a_trailing_tail_are_seen_through() {
-        assert_eq!(classify("bash -lc 'cargo build 2>&1 | tail -40'"), Family::Build);
+        assert_eq!(
+            classify("bash -lc 'cargo build 2>&1 | tail -40'"),
+            Family::Build
+        );
         assert_eq!(classify("bash -lc \"cd sub && make -j4\""), Family::Build);
         assert_eq!(classify("RUSTFLAGS=-Dwarnings cargo check"), Family::Build);
         assert_eq!(classify("/usr/bin/rg -n x"), Family::Search);

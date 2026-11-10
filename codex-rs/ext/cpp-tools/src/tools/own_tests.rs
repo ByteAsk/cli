@@ -23,7 +23,8 @@ pub(crate) const ENV_OWN_TESTS: &str = "BYTEASK_FINISH_REVIEW_OWN_TESTS";
 pub(crate) fn on() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
-        std::env::var(ENV_OWN_TESTS).is_ok_and(|value| matches!(value.trim(), "1" | "true" | "on" | "yes"))
+        std::env::var(ENV_OWN_TESTS)
+            .is_ok_and(|value| matches!(value.trim(), "1" | "true" | "on" | "yes"))
     })
 }
 
@@ -50,7 +51,13 @@ struct Note {
 static NOTES: OnceLock<mpsc::UnboundedSender<Note>> = OnceLock::new();
 
 /// Core's agent-command hook: one of the agent's shell commands that builds or runs tests finished.
-pub fn note_agent_command(command: &str, builds: bool, tests: bool, exit_code: Option<i32>, output: &str) {
+pub fn note_agent_command(
+    command: &str,
+    builds: bool,
+    tests: bool,
+    exit_code: Option<i32>,
+    output: &str,
+) {
     if !on() || exit_code != Some(0) {
         return;
     }
@@ -162,15 +169,31 @@ mod tests {
 
     #[test]
     fn passing_and_failing_outputs() {
-        assert!(shows_passing_tests("100% tests passed, 0 tests failed out of 406\n\nTotal Test time (real) = 1.99 sec\n"));
-        assert!(!shows_passing_tests("90% tests passed, 1 tests failed out of 10\n"));
+        assert!(shows_passing_tests(
+            "100% tests passed, 0 tests failed out of 406\n\nTotal Test time (real) = 1.99 sec\n"
+        ));
+        assert!(!shows_passing_tests(
+            "90% tests passed, 1 tests failed out of 10\n"
+        ));
         assert!(!shows_passing_tests("No tests were found!!!\n"));
-        assert!(shows_passing_tests("[==========] 12 tests ran.\n[  PASSED  ] 12 tests.\n"));
-        assert!(!shows_passing_tests("[  PASSED  ] 11 tests.\n[  FAILED  ] 1 test, listed below:\n"));
-        assert!(shows_passing_tests("All tests passed (42 assertions in 7 test cases)\n"));
-        assert!(!shows_passing_tests("test cases: 7 | 6 passed | 1 failed\n"));
+        assert!(shows_passing_tests(
+            "[==========] 12 tests ran.\n[  PASSED  ] 12 tests.\n"
+        ));
+        assert!(!shows_passing_tests(
+            "[  PASSED  ] 11 tests.\n[  FAILED  ] 1 test, listed below:\n"
+        ));
+        assert!(shows_passing_tests(
+            "All tests passed (42 assertions in 7 test cases)\n"
+        ));
+        assert!(!shows_passing_tests(
+            "test cases: 7 | 6 passed | 1 failed\n"
+        ));
         assert!(shows_passing_tests("*** No errors detected\n"));
-        assert!(!shows_passing_tests("FAILED: CMakeFiles/x.dir/a.cpp.o\n100% tests passed, 0 tests failed out of 3\n"));
-        assert!(!shows_passing_tests("src/a.cpp:3:5: error: expected ';'\n100% tests passed, 0 tests failed out of 3\n"));
+        assert!(!shows_passing_tests(
+            "FAILED: CMakeFiles/x.dir/a.cpp.o\n100% tests passed, 0 tests failed out of 3\n"
+        ));
+        assert!(!shows_passing_tests(
+            "src/a.cpp:3:5: error: expected ';'\n100% tests passed, 0 tests failed out of 3\n"
+        ));
     }
 }

@@ -74,7 +74,7 @@ async fn resolves_nested_lineage_with_empty_intermediate_segments() {
     );
 
     let lineage = store
-        .resolve_rollout_lineage(child)
+        .resolve_rollout_lineage(child, /*initial_path*/ None)
         .await
         .expect("resolve nested lineage");
 
@@ -127,7 +127,7 @@ async fn resolves_archived_ancestors() {
     );
 
     let lineage = store
-        .resolve_rollout_lineage(child)
+        .resolve_rollout_lineage(child, /*initial_path*/ None)
         .await
         .expect("resolve archived ancestor");
 
@@ -155,7 +155,7 @@ async fn resolves_lineage_at_explicit_history_position() {
     );
 
     let lineage = store
-        .resolve_rollout_lineage(child)
+        .resolve_rollout_lineage(child, /*initial_path*/ None)
         .await
         .expect("resolve child lineage")
         .truncate_at(end)
@@ -246,7 +246,7 @@ async fn rejects_missing_cycles_and_out_of_bounds_offsets() {
 
 async fn assert_invalid_lineage(store: &LocalThreadStore, thread_id: ThreadId, detail: &str) {
     let err = store
-        .resolve_rollout_lineage(thread_id)
+        .resolve_rollout_lineage(thread_id, /*initial_path*/ None)
         .await
         .expect_err("lineage should be invalid");
     assert!(err.to_string().contains(detail), "{err}");
@@ -277,7 +277,7 @@ fn write_rollout_under(
     let initial_ordinal = history_base.map_or(0, |base| base.end_ordinal_exclusive);
     let mut lines = vec![rollout_line(
         initial_ordinal,
-        RolloutItem::SessionMeta(SessionMetaLine {
+        RolloutItem::SessionMeta(Box::new(SessionMetaLine {
             meta: SessionMeta {
                 session_id: thread_id.into(),
                 id: thread_id,
@@ -286,7 +286,7 @@ fn write_rollout_under(
                 ..SessionMeta::default()
             },
             git: None,
-        }),
+        })),
     )];
     for offset in 1..next_ordinal {
         let ordinal = initial_ordinal
@@ -327,7 +327,7 @@ fn rollout_end_byte_offset(path: &Path, end_ordinal_exclusive: u64) -> u64 {
     let end_byte_offset = bytes
         .split_inclusive(|byte| *byte == b'\n')
         .take_while(|line| {
-            serde_json::from_slice::<RolloutLine>(line)
+            codex_rollout::parse_rollout_line_bytes(line)
                 .expect("parse rollout fixture")
                 .ordinal
                 .expect("paginated rollout ordinal")

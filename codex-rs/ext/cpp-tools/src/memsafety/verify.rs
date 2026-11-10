@@ -234,7 +234,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for FixVerifyTool {
 }
 
 impl FixVerifyTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: Args = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -265,14 +268,19 @@ impl FixVerifyTool {
                 )));
             }
         };
-        let sanitizer = args.sanitizer.as_deref().unwrap_or("asan_ubsan").to_string();
+        let sanitizer = args
+            .sanitizer
+            .as_deref()
+            .unwrap_or("asan_ubsan")
+            .to_string();
         if !matches!(sanitizer.as_str(), "asan_ubsan" | "msan" | "tsan") {
             return Err(FunctionCallError::RespondToModel(format!(
                 "unknown sanitizer {sanitizer:?}; expected \"asan_ubsan\", \"msan\" or \"tsan\""
             )));
         }
-        let run_args = crate::program_args::parse("run_args", args.run_args.as_deref().unwrap_or(""))
-            .map_err(FunctionCallError::RespondToModel)?;
+        let run_args =
+            crate::program_args::parse("run_args", args.run_args.as_deref().unwrap_or(""))
+                .map_err(FunctionCallError::RespondToModel)?;
         let baseline = match &args.baseline_binary {
             Some(p) => Some(resolve_existing(&self.cwd, p, "baseline_binary")?),
             None => None,
@@ -291,7 +299,9 @@ impl FixVerifyTool {
             benign,
             test_command: args.test_command.unwrap_or_default(),
             diff: args.diff.clone(),
-            timeout: timeout_from(Some(args.timeout_sec.unwrap_or(DEFAULT_REPLAY_TIMEOUT_SECS))),
+            timeout: timeout_from(Some(
+                args.timeout_sec.unwrap_or(DEFAULT_REPLAY_TIMEOUT_SECS),
+            )),
         })
     }
 
@@ -397,7 +407,16 @@ impl FixVerifyTool {
         input: &Path,
         env: &[(String, String)],
     ) -> Result<Outcome, FunctionCallError> {
-        runner::run_once(&req.binary, &req.run_args, input, req.mode, env, &self.cwd, req.timeout).await
+        runner::run_once(
+            &req.binary,
+            &req.run_args,
+            input,
+            req.mode,
+            env,
+            &self.cwd,
+            req.timeout,
+        )
+        .await
     }
 
     async fn run_tests(&self, req: &Request) -> Result<Check, FunctionCallError> {
@@ -415,7 +434,9 @@ impl FixVerifyTool {
             ));
         };
         let env = crate::resources::parallel_env(crate::resources::jobs());
-        let cap = cap.saturating_sub(started.elapsed()).max(Duration::from_secs(1));
+        let cap = cap
+            .saturating_sub(started.elapsed())
+            .max(Duration::from_secs(1));
         let run = crate::run::run_capped_env(&program, &args, &self.cwd, cap, &env).await?;
         Ok(match run {
             RunOutcome::TimedOut { secs } => {
@@ -428,7 +449,8 @@ impl FixVerifyTool {
                     Check::Fail(format!(
                         "the project's tests fail on the patched tree (exit {}). Run them on the \
                          base commit too: a failure the base also has is pre-existing.",
-                        code.map(|c| c.to_string()).unwrap_or_else(|| "signal".to_string())
+                        code.map(|c| c.to_string())
+                            .unwrap_or_else(|| "signal".to_string())
                     ))
                 }
             }
@@ -451,8 +473,11 @@ impl FixVerifyTool {
         for source in req.benign.clone() {
             if source.is_dir() {
                 if let Ok(entries) = std::fs::read_dir(&source) {
-                    let mut files: Vec<PathBuf> =
-                        entries.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+                    let mut files: Vec<PathBuf> = entries
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| p.is_file())
+                        .collect();
                     files.sort();
                     for file in files {
                         add_file(&file, benign);
@@ -487,8 +512,18 @@ impl FixVerifyTool {
             let _ = std::fs::remove_file(&path);
             let (patched, base) = (patched?, base?);
             // Only inputs benign on BOTH builds are oracles for equality.
-            let (Outcome::Clean { code: pc, stdout: po, truncated: pt }, Outcome::Clean { code: bc, stdout: bo, truncated: bt }) =
-                (&patched, &base)
+            let (
+                Outcome::Clean {
+                    code: pc,
+                    stdout: po,
+                    truncated: pt,
+                },
+                Outcome::Clean {
+                    code: bc,
+                    stdout: bo,
+                    truncated: bt,
+                },
+            ) = (&patched, &base)
             else {
                 continue;
             };
@@ -505,7 +540,9 @@ impl FixVerifyTool {
             }
         }
         Ok(if compared == 0 {
-            Check::Note("no input was benign on both builds; behaviour diff inconclusive".to_string())
+            Check::Note(
+                "no input was benign on both builds; behaviour diff inconclusive".to_string(),
+            )
         } else if diffs.is_empty() {
             Check::Pass(format!(
                 "patched and unpatched agree on {compared} benign input(s)"
@@ -527,7 +564,16 @@ impl FixVerifyTool {
         input: &Path,
         env: &[(String, String)],
     ) -> Result<Outcome, FunctionCallError> {
-        runner::run_once(binary, &req.run_args, input, req.mode, env, &self.cwd, req.timeout).await
+        runner::run_once(
+            binary,
+            &req.run_args,
+            input,
+            req.mode,
+            env,
+            &self.cwd,
+            req.timeout,
+        )
+        .await
     }
 
     async fn critique(
@@ -539,7 +585,10 @@ impl FixVerifyTool {
             Some(path) => {
                 let path = resolve_existing(&self.cwd, &path.clone(), "diff")?;
                 std::fs::read_to_string(&path).map_err(|err| {
-                    FunctionCallError::RespondToModel(format!("cannot read diff {}: {err}", path.display()))
+                    FunctionCallError::RespondToModel(format!(
+                        "cannot read diff {}: {err}",
+                        path.display()
+                    ))
                 })?
             }
             None => {
@@ -549,13 +598,21 @@ impl FixVerifyTool {
                     .unwrap_or_else(|| self.cwd.clone());
                 let run = run_capped(
                     "git",
-                    &["-C".to_string(), repo.display().to_string(), "diff".to_string()],
+                    &[
+                        "-C".to_string(),
+                        repo.display().to_string(),
+                        "diff".to_string(),
+                    ],
                     &self.cwd,
                     Duration::from_secs(30),
                 )
                 .await?;
                 match run {
-                    RunOutcome::Finished { success: true, stdout, .. } => stdout,
+                    RunOutcome::Finished {
+                        success: true,
+                        stdout,
+                        ..
+                    } => stdout,
                     _ => return Ok(None), // not a git repo, or git absent
                 }
             }
@@ -678,7 +735,10 @@ impl Report {
         use check_result::CheckResult;
         let checks = self.checks();
         if let Some((name, _)) = checks.iter().find(|(_, c)| c.is_fail()) {
-            return CheckResult::fail(TOOL_NAME, &format!("The {name} check failed; the fix is incomplete or changes behaviour."));
+            return CheckResult::fail(
+                TOOL_NAME,
+                &format!("The {name} check failed; the fix is incomplete or changes behaviour."),
+            );
         }
         if checks
             .iter()
@@ -695,7 +755,10 @@ impl Report {
         if !gaps.is_empty() {
             return CheckResult::approximate(
                 TOOL_NAME,
-                &format!("No check failed, but this does not show the fix works: {}.", gaps.join("; ")),
+                &format!(
+                    "No check failed, but this does not show the fix works: {}.",
+                    gaps.join("; ")
+                ),
             );
         }
         CheckResult::pass(
@@ -778,7 +841,9 @@ mod tests {
     use super::*;
 
     fn reproduced() -> Option<Check> {
-        Some(Check::Pass("the unpatched build crashes on the PoC (heap-buffer-overflow)".to_string()))
+        Some(Check::Pass(
+            "the unpatched build crashes on the PoC (heap-buffer-overflow)".to_string(),
+        ))
     }
 
     #[test]
@@ -786,7 +851,9 @@ mod tests {
         let report = Report {
             baseline: reproduced(),
             poc: Check::Pass("the PoC no longer crashes".to_string()),
-            behaviour: Some(Check::Pass("patched and unpatched agree on 3 benign input(s)".to_string())),
+            behaviour: Some(Check::Pass(
+                "patched and unpatched agree on 3 benign input(s)".to_string(),
+            )),
             critic: Some("patch-shape review: no findings.".to_string()),
             ..Default::default()
         };
@@ -812,10 +879,17 @@ mod tests {
         let report = Report {
             baseline: reproduced(),
             poc: Check::Pass("ok".to_string()),
-            critic: Some("patch-shape review (advisory, static):\n- [crash-site-guard] a.c:1 ...".to_string()),
+            critic: Some(
+                "patch-shape review (advisory, static):\n- [crash-site-guard] a.c:1 ..."
+                    .to_string(),
+            ),
             ..Default::default()
         };
-        assert!(report.render().starts_with("VERDICT: VERIFIED, WITH PATCH-SHAPE FINDINGS"));
+        assert!(
+            report
+                .render()
+                .starts_with("VERDICT: VERIFIED, WITH PATCH-SHAPE FINDINGS")
+        );
     }
 
     /// Guards against an overclaim: a clean PoC replay with no unpatched build must not
@@ -836,14 +910,19 @@ mod tests {
     #[test]
     fn a_baseline_that_does_not_reproduce_is_partial() {
         let report = Report {
-            baseline: Some(Check::Note("the unpatched build does NOT crash".to_string())),
+            baseline: Some(Check::Note(
+                "the unpatched build does NOT crash".to_string(),
+            )),
             poc: Check::Pass("ok".to_string()),
             ..Default::default()
         };
         let text = report.render();
         assert!(text.starts_with("VERDICT: PARTIAL"), "{text}");
         assert!(text.contains("- NOTE unpatched build:"), "{text}");
-        assert!(text.contains("does not exercise the reported bug"), "{text}");
+        assert!(
+            text.contains("does not exercise the reported bug"),
+            "{text}"
+        );
     }
 
     /// The second overclaim: an inconclusive behaviour diff counted as a pass.
@@ -852,12 +931,17 @@ mod tests {
         let inconclusive = Report {
             baseline: reproduced(),
             poc: Check::Pass("ok".to_string()),
-            behaviour: Some(Check::Note("no input was benign on both builds".to_string())),
+            behaviour: Some(Check::Note(
+                "no input was benign on both builds".to_string(),
+            )),
             ..Default::default()
         };
         let text = inconclusive.render();
         assert!(text.starts_with("VERDICT: PARTIAL"), "{text}");
-        assert!(text.contains("the behaviour diff was inconclusive"), "{text}");
+        assert!(
+            text.contains("the behaviour diff was inconclusive"),
+            "{text}"
+        );
         let timed_out = Report {
             baseline: reproduced(),
             poc: Check::Note("the PoC run did not finish within 60s".to_string()),
@@ -867,10 +951,16 @@ mod tests {
         let slow_tests = Report {
             baseline: reproduced(),
             poc: Check::Pass("ok".to_string()),
-            tests: Some(Check::Note("the test command did not finish within 600s".to_string())),
+            tests: Some(Check::Note(
+                "the test command did not finish within 600s".to_string(),
+            )),
             ..Default::default()
         };
-        assert!(slow_tests.render().contains("the functionality tests did not finish"));
+        assert!(
+            slow_tests
+                .render()
+                .contains("the functionality tests did not finish")
+        );
     }
 
     /// A behaviour diff that was asked for without inputs did not run; it neither fails nor
@@ -880,7 +970,9 @@ mod tests {
         let report = Report {
             baseline: reproduced(),
             poc: Check::Pass("ok".to_string()),
-            behaviour: Some(Check::NotRun("no benign inputs to diff (pass benign_inputs)".to_string())),
+            behaviour: Some(Check::NotRun(
+                "no benign inputs to diff (pass benign_inputs)".to_string(),
+            )),
             ..Default::default()
         };
         let text = report.render();
@@ -891,7 +983,9 @@ mod tests {
     #[test]
     fn tests_alone_do_not_cover_the_crash() {
         let report = Report {
-            tests: Some(Check::Pass("the project's tests pass on the patched tree".to_string())),
+            tests: Some(Check::Pass(
+                "the project's tests pass on the patched tree".to_string(),
+            )),
             ..Default::default()
         };
         let text = report.render();
@@ -901,7 +995,11 @@ mod tests {
 
     #[test]
     fn nothing_checked() {
-        assert!(Report::default().render().starts_with("VERDICT: NOTHING CHECKED"));
+        assert!(
+            Report::default()
+                .render()
+                .starts_with("VERDICT: NOTHING CHECKED")
+        );
     }
 }
 
@@ -947,7 +1045,9 @@ mod live_tests {
     }
 
     async fn run(tool: &FixVerifyTool, args: serde_json::Value) -> String {
-        crate::test_support::call(tool, args).await.expect("verify runs")
+        crate::test_support::call(tool, args)
+            .await
+            .expect("verify runs")
     }
 
     // A CLI: reads argv[1] as a file, copies its body into a fixed 8-byte heap
@@ -996,7 +1096,8 @@ int main(int argc, char **argv) {
         std::fs::write(&fix_c, FIX).unwrap();
         let (vuln_bin, fix_bin): (PathBuf, PathBuf) = (root.join("vuln"), root.join("fix"));
         let san = ["-fsanitize=address,undefined"];
-        if !compile("clang", &vuln_c, &vuln_bin, &san) || !compile("clang", &fix_c, &fix_bin, &san) {
+        if !compile("clang", &vuln_c, &vuln_bin, &san) || !compile("clang", &fix_c, &fix_bin, &san)
+        {
             eprintln!("skip: no clang");
             return;
         }
@@ -1102,17 +1203,25 @@ mod replay_tests {
         // "wrong" = reward 0, "correct" = reward 1.
         let (mut wrong_flagged, mut wrong_total) = (0u32, 0u32);
         let (mut correct_flagged, mut correct_total) = (0u32, 0u32);
-        println!("\n{:<44} {:>6} {:>7} {}", "case", "reward", "flagged", "rules");
+        println!(
+            "\n{:<44} {:>6} {:>7} {}",
+            "case", "reward", "flagged", "rules"
+        );
         for case in &cases {
             let diff = std::fs::read_to_string(case.join("agent.diff")).unwrap_or_default();
-            let meta: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(case.join("meta.json")).unwrap_or_default())
-                    .unwrap_or(serde_json::Value::Null);
+            let meta: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(case.join("meta.json")).unwrap_or_default(),
+            )
+            .unwrap_or(serde_json::Value::Null);
             let reward = meta.get("reward").and_then(|r| r.as_f64()).unwrap_or(-1.0);
             let crash_functions: Vec<String> = meta
                 .get("crash_functions")
                 .and_then(|c| c.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
             let findings = super::super::critic::critique(&diff, &crash_functions);
             let flagged = !findings.is_empty();

@@ -23,7 +23,10 @@ pub const MIN_BYTES: usize = 512;
 /// `ansi` and `cr` are the policy switches. Idempotent: reducing a reduced text is a no-op.
 pub fn reduce_terminal(input: &str, ansi: bool, cr: bool) -> Reduced {
     if input.len() < MIN_BYTES || crate::is_reduced(input) {
-        return Reduced { text: input.to_string(), fired: Vec::new() };
+        return Reduced {
+            text: input.to_string(),
+            fired: Vec::new(),
+        };
     }
     let mut fired = Vec::new();
     let mut text = input.to_string();
@@ -97,7 +100,12 @@ pub fn strip_ansi(input: &str) -> String {
                 }
             }
             // ESC followed by one char in 0x40-0x5F or a charset selector: a 2-byte escape.
-            Some(next) if matches!(*next, '\u{40}'..='\u{5f}' | '(' | ')' | '=' | '>' | '7' | '8') => {
+            Some(next)
+                if matches!(
+                    *next,
+                    '\u{40}'..='\u{5f}' | '(' | ')' | '=' | '>' | '7' | '8'
+                ) =>
+            {
                 let skip = if matches!(*next, '(' | ')') { 3 } else { 2 };
                 i = (i + skip).min(chars.len());
             }
@@ -154,7 +162,10 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     fn pad(s: &str) -> String {
-        format!("{s}\n{}", "filler line that carries no escapes at all\n".repeat(20))
+        format!(
+            "{s}\n{}",
+            "filler line that carries no escapes at all\n".repeat(20)
+        )
     }
 
     #[test]
@@ -167,15 +178,25 @@ mod tests {
 
     #[test]
     fn colour_codes_go_and_the_text_stays() {
-        let r = reduce_terminal(&pad("\u{1b}[1;31merror\u{1b}[0m: \u{1b}[38;5;208mfoo.c\u{1b}[m:12"), true, true);
+        let r = reduce_terminal(
+            &pad("\u{1b}[1;31merror\u{1b}[0m: \u{1b}[38;5;208mfoo.c\u{1b}[m:12"),
+            true,
+            true,
+        );
         assert!(r.text.starts_with("error: foo.c:12\n"));
         assert_eq!(r.fired, vec!["ansi"]);
     }
 
     #[test]
     fn osc_hyperlinks_and_titles_go() {
-        let s = pad("\u{1b}]0;window title\u{07}\u{1b}]8;;https://x.y\u{1b}\\link\u{1b}]8;;\u{1b}\\ done");
-        assert!(reduce_terminal(&s, true, true).text.starts_with("link done\n"));
+        let s = pad(
+            "\u{1b}]0;window title\u{07}\u{1b}]8;;https://x.y\u{1b}\\link\u{1b}]8;;\u{1b}\\ done",
+        );
+        assert!(
+            reduce_terminal(&s, true, true)
+                .text
+                .starts_with("link done\n")
+        );
     }
 
     #[test]
@@ -227,6 +248,10 @@ mod tests {
     #[test]
     fn multibyte_text_survives() {
         let s = pad("\u{1b}[1m日本語 ✓ naïve\u{1b}[0m");
-        assert!(reduce_terminal(&s, true, true).text.starts_with("日本語 ✓ naïve\n"));
+        assert!(
+            reduce_terminal(&s, true, true)
+                .text
+                .starts_with("日本語 ✓ naïve\n")
+        );
     }
 }

@@ -72,7 +72,7 @@ async fn query_channel(wevtutil: &Path, channel: Channel) -> Option<Vec<Evidence
         .map(|id| format!("EventID={id}"))
         .collect::<Vec<_>>()
         .join(" or ");
-    let mut child = Command::new(wevtutil)
+    let mut child = Command::from(codex_utils_process::background_command(wevtutil))
         .args(["qe", channel.1])
         .arg(format!(
             "/q:*[System[({events}) and TimeCreated[timediff(@SystemTime) <= 604800000]]]"
@@ -201,7 +201,9 @@ fn classify(channels: &[Option<Vec<Evidence>>]) -> DoctorCheck {
         (CheckStatus::Ok, _) if channels.contains(&None) => "security event coverage is incomplete",
         (CheckStatus::Ok, _) => "no locally visible recent ByteAsk security enforcement was found",
         (CheckStatus::Warning, false) => "security event channels could not be inspected",
-        (CheckStatus::Warning, true) => "recent ByteAsk security audit or detection requires review",
+        (CheckStatus::Warning, true) => {
+            "recent ByteAsk security audit or detection requires review"
+        }
         (CheckStatus::Fail, _) => "endpoint security blocked or quarantined a ByteAsk executable",
     };
     let mut check = desktop_check("desktop.security.enforcement", status, summary).details(details);

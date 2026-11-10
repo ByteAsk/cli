@@ -26,7 +26,12 @@ fn a_real_clang_trace_names_the_slowest_file_and_its_templates() {
     std::fs::write(dir.path().join("light.cpp"), "int light() { return 1; }\n").unwrap();
     for name in ["heavy", "light"] {
         let status = std::process::Command::new("clang++")
-            .args(["-std=c++17", "-ftime-trace", "-ftime-trace-granularity=0", "-c"])
+            .args([
+                "-std=c++17",
+                "-ftime-trace",
+                "-ftime-trace-granularity=0",
+                "-c",
+            ])
             .arg(dir.path().join(format!("{name}.cpp")))
             .arg("-o")
             .arg(tree.join(format!("{name}.cpp.o")))
@@ -38,10 +43,19 @@ fn a_real_clang_trace_names_the_slowest_file_and_its_templates() {
     assert_eq!(costs.len(), 2, "{costs:?}");
     let card = card(&costs).expect("a card");
     let lines: Vec<&str> = card.lines().collect();
-    assert!(lines[0].starts_with("Why the build is slow (clang -ftime-trace, 2 file(s)"), "{card}");
-    assert!(lines[2].ends_with("CMakeFiles/feed.dir/src/heavy.cpp"), "heavy first: {card}");
+    assert!(
+        lines[0].starts_with("Why the build is slow (clang -ftime-trace, 2 file(s)"),
+        "{card}"
+    );
+    assert!(
+        lines[2].ends_with("CMakeFiles/feed.dir/src/heavy.cpp"),
+        "heavy first: {card}"
+    );
     assert!(card.contains("Heaviest template instantiations"), "{card}");
-    assert!(card.contains("Fib<") || card.contains("std::map<"), "{card}");
+    assert!(
+        card.contains("Fib<") || card.contains("std::map<"),
+        "{card}"
+    );
 }
 
 /// Per-file evidence exported from the context engine's index.
@@ -63,7 +77,11 @@ fn the_context_engines_evidence_gives_the_same_card() {
     std::fs::write(&file, export.to_string()).unwrap();
     let env = |key: &str| (key == ENV_TIME_TRACE).then(|| file.to_string_lossy().into_owned());
     let costs = collect(&[], env);
-    assert_eq!(costs.len(), 2, "a file without clang evidence has no cost: {costs:?}");
+    assert_eq!(
+        costs.len(),
+        2,
+        "a file without clang evidence has no cost: {costs:?}"
+    );
     let card = card(&costs).unwrap();
     assert_eq!(
         card.lines().take(5).collect::<Vec<_>>(),
@@ -75,7 +93,10 @@ fn the_context_engines_evidence_gives_the_same_card() {
             "Heaviest template instantiations (summed over files):",
         ]
     );
-    assert!(card.contains("    2.0 s  class std::map<int, Order> (in 2 file(s))"), "{card}");
+    assert!(
+        card.contains("    2.0 s  class std::map<int, Order> (in 2 file(s))"),
+        "{card}"
+    );
 }
 
 #[test]

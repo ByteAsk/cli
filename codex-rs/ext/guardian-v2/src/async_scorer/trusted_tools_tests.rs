@@ -1,22 +1,20 @@
 use std::path::Path;
 
 use anyhow::Result;
-use codex_extension_api::ContextualUserFragment;
 use codex_extension_api::McpToolInfo;
 use codex_extension_api::McpToolSource;
+use codex_features::Feature;
+use codex_guardian_context::TrustedTool;
+use codex_guardian_context::TrustedToolSource;
 use codex_login::CodexAuth;
-use codex_protocol::protocol::TruncationPolicy;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
-use super::GuardianTrustedToolFragment;
-use super::MAX_TRUSTED_TOOL_CONTEXT_TOKENS;
 #[cfg(unix)]
 use super::PluginCapability;
-use super::TRUSTED_TOOL_PREFIX;
 #[cfg(unix)]
 use super::is_home_owned_path;
 #[cfg(unix)]
@@ -40,12 +38,12 @@ fn mcp_tool(server: &str, connector_id: Option<&str>) -> Result<McpToolInfo> {
     }))?)
 }
 
-fn expected_context(tool: &McpToolInfo, source: &Path) -> serde_json::Value {
-    json!({
-        "server": tool.server_name,
-        "connector_id": tool.connector_id,
-        "source": source.display().to_string(),
-    })
+fn expected_context(tool: &McpToolInfo, source: &Path) -> TrustedTool {
+    TrustedTool {
+        server: tool.server_name.clone(),
+        connector_id: tool.connector_id.clone(),
+        source: TrustedToolSource::UserConfiguration(source.display().to_string()),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -79,11 +77,38 @@ async fn trusts_only_tools_configured_in_codex_home() -> Result<()> {
             .await
             .expect("home-configured tool should be trusted");
         assert_eq!(
-            context.metadata,
+            context,
             expected_context(&tool, &test.home.path().join("config.toml")),
         );
         assert_eq!(
             trusted_tool_context(&unrelated, &source, &test.thread_manager, &test.config).await,
+            None,
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejects_blank_orchestrator_connector_ids() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let mut config = test.config.clone();
+    config
+        .features
+        .enable(Feature::GuardianTrustOrchestratorConnectors)?;
+    for connector_id in [Some(""), Some(" \t\n "), None] {
+        let tool = mcp_tool("codex_apps", connector_id)?;
+        assert_eq!(
+            trusted_tool_context(
+                &tool,
+                &McpToolSource::Connector,
+                &test.thread_manager,
+                &config,
+            )
+            .await,
             None,
         );
     }
@@ -142,7 +167,7 @@ async fn trusts_connector_declared_by_home_owned_plugin() -> Result<()> {
     )
     .await
     .expect("home-owned plugin connector should be trusted");
-    assert_eq!(context.metadata, expected_context(&tool, &plugin_root));
+    assert_eq!(context, expected_context(&tool, &plugin_root));
 
     let mcp = mcp_tool("trusted_server", /*connector_id*/ None)?;
     let mcp_context = trusted_tool_context(
@@ -160,7 +185,7 @@ async fn trusts_connector_declared_by_home_owned_plugin() -> Result<()> {
     )
     .await
     .expect("home-owned plugin MCP server should be trusted");
-    assert_eq!(mcp_context.metadata, expected_context(&mcp, &plugin_root));
+    assert_eq!(mcp_context, expected_context(&mcp, &plugin_root));
     // A trusted cached plugin with the same ID must not replace the frozen outside-home root.
     assert_eq!(
         trusted_tool_context(
@@ -187,19 +212,6 @@ async fn trusts_connector_declared_by_home_owned_plugin() -> Result<()> {
     );
 
     Ok(())
-}
-
-#[test]
-fn trusted_tool_context_has_a_hard_token_budget() {
-    let fragment = GuardianTrustedToolFragment {
-        metadata: json!({ "description": "unbounded instructions ".repeat(1_000) }),
-    };
-    let context = fragment.render();
-    assert!(context.starts_with(TRUSTED_TOOL_PREFIX));
-    assert!(
-        context.len() <= TruncationPolicy::Tokens(MAX_TRUSTED_TOOL_CONTEXT_TOKENS).byte_budget()
-    );
-    assert!(context.contains("<truncated omitted_approx_tokens="));
 }
 
 #[cfg(unix)]

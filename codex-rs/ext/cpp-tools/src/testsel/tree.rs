@@ -293,7 +293,9 @@ pub(crate) fn plan_targets(model: &Model, tests: &[usize]) -> TargetPlan {
 fn programs_named_in(model: &Model, test: &TestEntry) -> Vec<String> {
     let mut words: BTreeSet<String> = BTreeSet::new();
     let mut add_words = |text: &str| {
-        for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-'))) {
+        for word in
+            text.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-')))
+        {
             if !word.is_empty() {
                 words.insert(word.to_string());
             }
@@ -301,7 +303,10 @@ fn programs_named_in(model: &Model, test: &TestEntry) -> Vec<String> {
     };
     for arg in &test.command {
         add_words(arg);
-        let path = super::normalize(test.workdir.as_deref().unwrap_or(&model.root), Path::new(arg));
+        let path = super::normalize(
+            test.workdir.as_deref().unwrap_or(&model.root),
+            Path::new(arg),
+        );
         if path.starts_with(&model.root)
             && !path.starts_with(&model.build_dir)
             && std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= SCRIPT_BYTES_CAP)
@@ -331,21 +336,36 @@ pub(crate) fn run_lines(model: &Model, items: &[RunItem]) -> Vec<String> {
     items
         .iter()
         .map(|item| match item {
-            RunItem::Ctest { names, .. } if names.is_empty() => "ctest (every registered test)".to_string(),
+            RunItem::Ctest { names, .. } if names.is_empty() => {
+                "ctest (every registered test)".to_string()
+            }
             RunItem::Ctest { names, .. } => {
                 let pattern = format!(
                     "^({})$",
-                    names.iter().map(|n| regex_escape(n)).collect::<Vec<_>>().join("|")
+                    names
+                        .iter()
+                        .map(|n| regex_escape(n))
+                        .collect::<Vec<_>>()
+                        .join("|")
                 );
                 format!("ctest -R {}", clip(&shell_quote(&pattern), 600))
             }
-            RunItem::Direct { argv, framework, cases, .. } => {
+            RunItem::Direct {
+                argv,
+                framework,
+                cases,
+                ..
+            } => {
                 let argv = filtered_argv(argv, *framework, cases);
                 let shown: Vec<String> = argv
                     .iter()
                     .enumerate()
                     .map(|(i, a)| {
-                        let a = if i == 0 { model.rel(Path::new(a)).to_string() } else { a.clone() };
+                        let a = if i == 0 {
+                            model.rel(Path::new(a)).to_string()
+                        } else {
+                            a.clone()
+                        };
                         shell_quote(&a)
                     })
                     .collect();
@@ -395,7 +415,8 @@ const DIFF_CHECK_SHOWN: usize = 6;
 /// first problems git reports (whitespace errors, leftover conflict markers).
 pub(crate) async fn diff_check(root: &Path, base: &str) -> String {
     let short = &base[..base.len().min(10)];
-    let Some((_, out)) = crate::gitx::git_status_out(root, &["diff", "--check", base, "--"]).await else {
+    let Some((_, out)) = crate::gitx::git_status_out(root, &["diff", "--check", base, "--"]).await
+    else {
         return format!("git diff --check {short}: could not run");
     };
     let problems: Vec<String> = out
@@ -510,23 +531,40 @@ mod tests {
         let m = model(dir.path());
         let plan = plan_targets(&m, &[0, 2]);
         assert_eq!(plan.targets, vec!["a_test".to_string(), "tool".to_string()]);
-        assert!(plan.notes[0].contains("uses_tool runs no program of its own; built tool"), "{plan:?}");
+        assert!(
+            plan.notes[0].contains("uses_tool runs no program of its own; built tool"),
+            "{plan:?}"
+        );
         // A script whose text names a program.
-        std::fs::write(dir.path().join("check.py"), "subprocess.run(['build/b_test'])\n").unwrap();
+        std::fs::write(
+            dir.path().join("check.py"),
+            "subprocess.run(['build/b_test'])\n",
+        )
+        .unwrap();
         let mut m2 = m.clone();
         m2.tests[3].workdir = Some(dir.path().to_path_buf());
         assert_eq!(plan_targets(&m2, &[3]).targets, vec!["b_test".to_string()]);
         // Nothing named: the smallest safe superset, every executable, and it says so.
         std::fs::write(dir.path().join("check.py"), "print('ok')\n").unwrap();
         let plan = plan_targets(&m2, &[3]);
-        assert_eq!(plan.targets, vec!["a_test".to_string(), "b_test".to_string(), "tool".to_string()]);
+        assert_eq!(
+            plan.targets,
+            vec![
+                "a_test".to_string(),
+                "b_test".to_string(),
+                "tool".to_string()
+            ]
+        );
         assert!(!plan.build_all);
         assert!(plan.notes[0].starts_with("fallback:"), "{plan:?}");
         // No target map at all: everything, stated.
         let mut bare = m;
         bare.targets.clear();
         let plan = plan_targets(&bare, &[0]);
-        assert!(plan.build_all && plan.notes[0].contains("no target map"), "{plan:?}");
+        assert!(
+            plan.build_all && plan.notes[0].contains("no target map"),
+            "{plan:?}"
+        );
     }
 
     #[test]
@@ -536,7 +574,10 @@ mod tests {
         let lines = run_lines(
             &m,
             &[
-                RunItem::Ctest { dir: m.build_dir.clone(), names: vec!["a".to_string(), "b.c".to_string()] },
+                RunItem::Ctest {
+                    dir: m.build_dir.clone(),
+                    names: vec!["a".to_string(), "b.c".to_string()],
+                },
                 RunItem::Direct {
                     test: "a".to_string(),
                     argv: vec![dir.path().join("build/a_test").display().to_string()],
@@ -547,6 +588,12 @@ mod tests {
                 },
             ],
         );
-        assert_eq!(lines, vec!["ctest -R '^(a|b\\.c)$'".to_string(), "build/a_test --gtest_filter=S.One".to_string()]);
+        assert_eq!(
+            lines,
+            vec![
+                "ctest -R '^(a|b\\.c)$'".to_string(),
+                "build/a_test --gtest_filter=S.One".to_string()
+            ]
+        );
     }
 }

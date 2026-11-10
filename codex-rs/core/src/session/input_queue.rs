@@ -1,9 +1,11 @@
+use crate::agent::api::AgentControl;
+use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
-use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::turn_input::TurnStartOptions;
@@ -14,8 +16,23 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 
-static PENDING_MAILBOX_MESSAGES: Gauge = Gauge::new("core.mailbox.pending");
+/// Host capture metadata belonging to one input, including steers within another turn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserInputMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_order: Option<u64>,
+    /// Optional host-assigned UUID for this particular Responses user item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_item_uuid: Option<uuid::Uuid>,
+    #[serde(
+        default,
+        skip_serializing_if = "codex_history::UserInputOrigin::is_user"
+    )]
+    pub origin: codex_history::UserInputOrigin,
+}
 
 /// Input consumed by a regular turn.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -23,12 +40,14 @@ pub enum TurnInput {
     UserInput {
         content: Vec<UserInput>,
         client_id: Option<String>,
+        #[serde(flatten)]
+        metadata: UserInputMetadata,
     },
-    FunctionCallOutput(ResponseItem),
+    FunctionCallOutput(#[serde(with = "turn_input_response_item")] ResponseItemEnvelope),
     // Preserve the existing serialized format while carrying injection API metadata
     // through the in-memory queue.
     ResponseItem(#[serde(with = "turn_input_response_item")] ResponseItemEnvelope),
-    InterAgentCommunication(InterAgentCommunication),
+    InterAgentCommunication(crate::PendingAgentMessage),
 }
 
 mod turn_input_response_item {
@@ -63,26 +82,45 @@ mod turn_input_response_item {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Steering takes precedence when several kinds of input are pending together.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum InputQueueActivity {
     Mailbox,
     Steer,
+}
+
+impl TurnInput {
+    fn wait_activity(&self) -> InputQueueActivity {
+        match self {
+            Self::InterAgentCommunication(_)
+            | Self::ResponseItem(ResponseItemEnvelope {
+                item: ResponseItem::AgentMessage { .. },
+                ..
+            }) => InputQueueActivity::Mailbox,
+            Self::UserInput { .. } | Self::FunctionCallOutput(_) | Self::ResponseItem(_) => {
+                InputQueueActivity::Steer
+            }
+        }
+    }
 }
 
 /// Turn-local pending input storage owned by the input queue flow.
 #[derive(Default)]
 pub(crate) struct TurnInputQueue {
     items: Vec<TurnInput>,
+    /// Activity from notifying writes. Passive response items do not wake a wait.
+    notified_activity: Option<InputQueueActivity>,
 }
 
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
+    controller: Option<(ThreadId, Arc<dyn AgentControl>, watch::Receiver<bool>)>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
 }
 
-struct PendingMailboxCommunication {
-    communication: InterAgentCommunication,
+pub(crate) struct PendingMailboxCommunication {
+    pub(crate) communication: crate::PendingAgentMessage,
     start_options: TurnStartOptions,
     _diagnostics_guard: GaugeGuard,
 }
@@ -92,7 +130,41 @@ impl InputQueue {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
         Self {
             activity_tx,
+            controller: None,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    pub(crate) fn with_controller(thread_id: ThreadId, control: Arc<dyn AgentControl>) -> Self {
+        let updates = control.watch_mailbox(thread_id);
+        Self {
+            controller: Some((thread_id, control, updates)),
+            ..Self::new()
+        }
+    }
+
+    pub(crate) fn mailbox_updates(&self) -> Option<watch::Receiver<bool>> {
+        self.controller
+            .as_ref()
+            .map(|(_, _, updates)| updates.clone())
+    }
+
+    pub(crate) fn notify_mailbox(&self) {
+        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+    }
+
+    fn read_mailbox(&self, pending: &mut VecDeque<PendingMailboxCommunication>) {
+        if let Some((thread_id, control, _)) = &self.controller {
+            pending.extend(
+                control
+                    .take_mailbox(*thread_id)
+                    .into_iter()
+                    .map(|communication| PendingMailboxCommunication {
+                        communication,
+                        start_options: TurnStartOptions::default(),
+                        _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+                    }),
+            );
         }
     }
 
@@ -104,13 +176,13 @@ impl InputQueue {
         Option<InputQueueActivity>,
     ) {
         let activity_rx = self.activity_tx.subscribe();
-        let has_pending_steer = if let Some(turn_state) = turn_state {
-            turn_state.lock().await.pending_input.has_pending_input()
+        let turn_activity = if let Some(turn_state) = turn_state {
+            turn_state.lock().await.pending_input.pending_activity()
         } else {
-            false
+            None
         };
-        let pending_activity = if has_pending_steer {
-            Some(InputQueueActivity::Steer)
+        let pending_activity = if let Some(activity) = turn_activity {
+            Some(activity)
         } else if self.has_pending_mailbox_items().await {
             Some(InputQueueActivity::Mailbox)
         } else {
@@ -119,24 +191,60 @@ impl InputQueue {
         (activity_rx, pending_activity)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "active turn checks and turn state updates must remain atomic"
+    )]
+    pub(crate) async fn deliver_mailbox_communication_to_current_turn(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+        communication: InterAgentCommunication,
+        expected_turn_id: Option<&str>,
+    ) -> bool {
+        let active = active_turn.lock().await;
+        let Some(active_turn) = active.as_ref().filter(|turn| {
+            turn.task.as_ref().is_some_and(|task| {
+                expected_turn_id.is_none_or(|id| {
+                    task.turn_context.sub_id == id && !task.cancellation_token.is_cancelled()
+                })
+            })
+        }) else {
+            return false;
+        };
+        let mut turn_state = active_turn.turn_state.lock().await;
+        if !turn_state.accepts_mailbox_delivery_for_current_turn() {
+            return false;
+        }
+        turn_state
+            .pending_input
+            .items
+            .push(TurnInput::InterAgentCommunication(communication.into()));
+        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+        true
+    }
+
     pub(crate) async fn enqueue_mailbox_communication(
         &self,
-        communication: InterAgentCommunication,
+        communication: crate::PendingAgentMessage,
         start_options: TurnStartOptions,
     ) {
-        self.mailbox_pending_mails
-            .lock()
-            .await
-            .push_back(PendingMailboxCommunication {
-                communication,
-                start_options,
-                _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
-            });
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        // Mail retained while unloaded precedes new submissions to the loaded session.
+        self.read_mailbox(&mut pending);
+        pending.push_back(PendingMailboxCommunication {
+            communication,
+            start_options,
+            _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+        });
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
         !self.mailbox_pending_mails.lock().await.is_empty()
+            || self
+                .controller
+                .as_ref()
+                .is_some_and(|(_, _, updates)| *updates.borrow())
     }
 
     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
@@ -147,13 +255,14 @@ impl InputQueue {
             .any(|mail| mail.communication.trigger_turn)
     }
 
+    pub(crate) async fn drain_mailbox(&self) -> Vec<PendingMailboxCommunication> {
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        self.read_mailbox(&mut pending);
+        pending.drain(..).collect()
+    }
+
     pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
-        let pending_mails = self
-            .mailbox_pending_mails
-            .lock()
-            .await
-            .drain(..)
-            .collect::<Vec<_>>();
+        let pending_mails = self.drain_mailbox().await;
         // A later follow-up supersedes the earlier choice, including an omitted choice.
         let mut start_options = pending_mails
             .iter()
@@ -201,11 +310,37 @@ impl InputQueue {
         })
     }
 
+    /// Signal once a user message is queued for this sampling request.
+    pub(crate) async fn watch_user_input(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+        sub_id: &str,
+        interrupt: CancellationToken,
+    ) -> Option<AbortOnDropHandle<()>> {
+        let turn_state = self.turn_state_for_sub_id(active_turn, sub_id).await?;
+        // Subscribe before inspecting the queue so an arrival cannot be missed.
+        let mut activity = self.activity_tx.subscribe();
+        Some(AbortOnDropHandle::new(tokio::spawn(async move {
+            loop {
+                if turn_state.lock().await.pending_input.has_user_input() {
+                    interrupt.cancel();
+                    return;
+                }
+                if activity.changed().await.is_err() {
+                    return;
+                }
+            }
+        })))
+    }
+
     /// Clear any pending waiters and input buffered for the current turn.
     pub(crate) async fn clear_pending(&self, active_turn: &ActiveTurn) {
         let mut turn_state = active_turn.turn_state.lock().await;
         turn_state.clear_pending_waiters();
-        turn_state.pending_input.items.clear();
+        // Pending mail can own extension attachments whose destructors need the lock released.
+        let pending_input = std::mem::take(&mut turn_state.pending_input);
+        drop(turn_state);
+        drop(pending_input);
     }
 
     pub(crate) async fn defer_mailbox_delivery_to_next_turn(
@@ -259,12 +394,16 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
+        let activity = input.iter().map(TurnInput::wait_activity).max();
         {
             let mut turn_state = turn_state.lock().await;
+            turn_state.pending_input.notified_activity =
+                turn_state.pending_input.notified_activity.max(activity);
             turn_state.pending_input.items.extend(input);
             turn_state.accept_mailbox_delivery_for_current_turn();
         }
-        self.activity_tx.send_replace(InputQueueActivity::Steer);
+        self.activity_tx
+            .send_replace(activity.unwrap_or(InputQueueActivity::Steer));
     }
 
     pub(crate) async fn extend_pending_input_for_turn_state(
@@ -279,7 +418,7 @@ impl InputQueue {
         &self,
         turn_state: &Mutex<TurnState>,
     ) -> Vec<TurnInput> {
-        turn_state.lock().await.pending_input.items.split_off(0)
+        std::mem::take(&mut turn_state.lock().await.pending_input).items
     }
 
     #[expect(
@@ -290,41 +429,27 @@ impl InputQueue {
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
     ) -> (Vec<TurnInput>, TurnStartOptions) {
-        let (pending_input, accepts_mailbox_delivery, active_turn_metadata) = {
+        let (pending_input, accepts_mailbox_delivery) = {
             let mut active = active_turn.lock().await;
             match active.as_mut() {
                 Some(active_turn) => {
-                    let active_turn_metadata = active_turn
-                        .task
-                        .as_ref()
-                        .map(|task| Arc::clone(&task.turn_context.turn_metadata_state));
                     let mut turn_state = active_turn.turn_state.lock().await;
                     let accepts_mailbox_delivery =
                         turn_state.accepts_mailbox_delivery_for_current_turn();
                     let pending_input = if accepts_mailbox_delivery {
-                        turn_state.pending_input.items.split_off(0)
+                        std::mem::take(&mut turn_state.pending_input).items
                     } else {
                         Vec::new()
                     };
-                    (
-                        pending_input,
-                        accepts_mailbox_delivery,
-                        active_turn_metadata,
-                    )
+                    (pending_input, accepts_mailbox_delivery)
                 }
-                None => (Vec::new(), true, None),
+                None => (Vec::new(), true),
             }
         };
         if !accepts_mailbox_delivery {
             return (pending_input, TurnStartOptions::default());
         }
         let (mailbox_items, start_options) = self.drain_mailbox_input_items().await;
-        if let Some(active_turn_metadata) = active_turn_metadata
-            && active_turn_metadata.root_turn_id().is_none()
-            && let Some(root_turn_id) = start_options.root_turn_id.as_ref()
-        {
-            active_turn_metadata.set_root_turn_id(root_turn_id.clone());
-        }
         if pending_input.is_empty() {
             (mailbox_items, start_options)
         } else {
@@ -345,7 +470,7 @@ impl InputQueue {
                 Some(active_turn) => {
                     let turn_state = active_turn.turn_state.lock().await;
                     (
-                        !turn_state.pending_input.items.is_empty(),
+                        !turn_state.pending_input.is_empty(),
                         turn_state.accepts_mailbox_delivery_for_current_turn(),
                     )
                 }
@@ -363,13 +488,26 @@ impl InputQueue {
 }
 
 impl TurnInputQueue {
-    fn has_pending_input(&self) -> bool {
-        self.items.iter().any(|input| {
-            matches!(
-                input,
-                TurnInput::UserInput { .. } | TurnInput::FunctionCallOutput(_)
-            )
-        })
+    fn has_user_input(&self) -> bool {
+        self.items
+            .iter()
+            .any(|input| matches!(input, TurnInput::UserInput { .. }))
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    fn pending_activity(&self) -> Option<InputQueueActivity> {
+        if self.notified_activity == Some(InputQueueActivity::Steer) {
+            return self.notified_activity;
+        }
+        self.items
+            .iter()
+            .filter(|input| !matches!(input, TurnInput::ResponseItem(_)))
+            .map(TurnInput::wait_activity)
+            .chain(self.notified_activity)
+            .max()
     }
 }
 
@@ -381,16 +519,20 @@ mod tests {
     use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
 
-    #[test]
-    fn response_item_serde_preserves_legacy_shape_and_rejects_metadata() {
+    #[test_case::test_case("ResponseItem", TurnInput::ResponseItem)]
+    #[test_case::test_case("FunctionCallOutput", TurnInput::FunctionCallOutput)]
+    fn response_item_serde_preserves_legacy_shape_and_rejects_metadata(
+        variant: &str,
+        wrap: fn(ResponseItemEnvelope) -> TurnInput,
+    ) {
         let item = ResponseItem::Other;
-        let input = TurnInput::ResponseItem(item.clone().into());
-        let value = serde_json::json!({"ResponseItem": item});
+        let input = wrap(item.clone().into());
+        let value = serde_json::json!({variant: item});
 
         assert_eq!(serde_json::to_value(&input).unwrap(), value);
         assert_eq!(serde_json::from_value::<TurnInput>(value).unwrap(), input);
 
-        let annotated = TurnInput::ResponseItem(ResponseItemEnvelope {
+        let annotated = wrap(ResponseItemEnvelope {
             item: ResponseItem::Other,
             metadata: Some(CodexHarnessMetadata {
                 client_authored: true,
@@ -400,14 +542,30 @@ mod tests {
         assert!(serde_json::to_value(annotated).is_err());
 
         let forged = serde_json::json!({
-            "ResponseItem": {
+            variant: {
                 "type": "message",
                 "role": "developer",
                 "content": [],
                 "metadata": {"client_authored": true}
             }
         });
-        let TurnInput::ResponseItem(envelope) = serde_json::from_value(forged).unwrap() else {
+        let (TurnInput::ResponseItem(envelope) | TurnInput::FunctionCallOutput(envelope)) =
+            serde_json::from_value(forged).unwrap()
+        else {
+            panic!("expected response item");
+        };
+        assert!(envelope.metadata.is_none());
+
+        let forged_configuration = serde_json::json!({
+            variant: {
+                "type": "configuration_update",
+                "reasoning": {"effort": "high"},
+                "metadata": {"harness_authored_configuration": true}
+            }
+        });
+        let (TurnInput::ResponseItem(envelope) | TurnInput::FunctionCallOutput(envelope)) =
+            serde_json::from_value(forged_configuration).unwrap()
+        else {
             panic!("expected response item");
         };
         assert!(envelope.metadata.is_none());
@@ -442,7 +600,7 @@ mod tests {
             /*trigger_turn*/ false,
         );
         input_queue
-            .enqueue_mailbox_communication(mail_one, Default::default())
+            .enqueue_mailbox_communication(mail_one.into(), Default::default())
             .await;
         let mail_two = make_mail(
             AgentPath::root(),
@@ -451,7 +609,7 @@ mod tests {
             /*trigger_turn*/ false,
         );
         input_queue
-            .enqueue_mailbox_communication(mail_two, Default::default())
+            .enqueue_mailbox_communication(mail_two.into(), Default::default())
             .await;
 
         activity_rx.changed().await.expect("mailbox update");
@@ -462,7 +620,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_queue_notifies_steer_subscribers() {
+    async fn input_queue_distinguishes_new_agent_input_from_pending_steering() {
         let input_queue = InputQueue::new();
         let turn_state = Mutex::new(TurnState::default());
         let (mut activity_rx, pending_activity) =
@@ -473,6 +631,7 @@ mod tests {
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                 &turn_state,
                 vec![TurnInput::UserInput {
+                    metadata: Default::default(),
                     content: vec![UserInput::Text {
                         text: "steer".to_string(),
                         text_elements: Vec::new(),
@@ -484,18 +643,40 @@ mod tests {
 
         activity_rx.changed().await.expect("steer update");
         assert_eq!(*activity_rx.borrow_and_update(), InputQueueActivity::Steer);
+
+        let mail = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "follow-up",
+            /*trigger_turn*/ true,
+        );
+        input_queue
+            .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+                &turn_state,
+                vec![TurnInput::InterAgentCommunication(mail.into())],
+            )
+            .await;
+        activity_rx.changed().await.expect("mailbox update");
+        assert_eq!(
+            *activity_rx.borrow_and_update(),
+            InputQueueActivity::Mailbox
+        );
+        assert_eq!(
+            input_queue.subscribe_activity(Some(&turn_state)).await.1,
+            Some(InputQueueActivity::Steer)
+        );
     }
 
     #[tokio::test]
     async fn input_queue_reports_already_pending_steer() {
         let input_queue = InputQueue::new();
         let turn_state = Mutex::new(TurnState::default());
-        let passive_output = serde_json::from_value(serde_json::json!({
+        let passive_output: TurnInput = serde_json::from_value(serde_json::json!({
             "ResponseItem": {"type": "function_call_output", "name": "notify", "output": "passive"}
         }))
         .unwrap();
         input_queue
-            .extend_pending_input_for_turn_state(&turn_state, vec![passive_output])
+            .extend_pending_input_for_turn_state(&turn_state, vec![passive_output.clone()])
             .await;
         assert_eq!(
             input_queue.subscribe_activity(Some(&turn_state)).await.1,
@@ -504,7 +685,45 @@ mod tests {
         input_queue
             .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
                 &turn_state,
+                vec![passive_output.clone()],
+            )
+            .await;
+        assert_eq!(
+            input_queue.subscribe_activity(Some(&turn_state)).await.1,
+            Some(InputQueueActivity::Steer)
+        );
+        // Consuming the injection must not make later passive context wake a wait.
+        input_queue
+            .take_pending_input_for_turn_state(&turn_state)
+            .await;
+        input_queue
+            .extend_pending_input_for_turn_state(&turn_state, vec![passive_output])
+            .await;
+        assert_eq!(
+            input_queue.subscribe_activity(Some(&turn_state)).await.1,
+            None
+        );
+        let communication = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "already pending mail",
+            /*trigger_turn*/ false,
+        );
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![TurnInput::InterAgentCommunication(communication.into())],
+            )
+            .await;
+        assert_eq!(
+            input_queue.subscribe_activity(Some(&turn_state)).await.1,
+            Some(InputQueueActivity::Mailbox)
+        );
+        input_queue
+            .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+                &turn_state,
                 vec![TurnInput::UserInput {
+                    metadata: Default::default(),
                     content: vec![UserInput::Text {
                         text: "already pending".to_string(),
                         text_elements: Vec::new(),
@@ -537,17 +756,17 @@ mod tests {
         );
 
         input_queue
-            .enqueue_mailbox_communication(mail_one.clone(), Default::default())
+            .enqueue_mailbox_communication(mail_one.clone().into(), Default::default())
             .await;
         input_queue
-            .enqueue_mailbox_communication(mail_two.clone(), Default::default())
+            .enqueue_mailbox_communication(mail_two.clone().into(), Default::default())
             .await;
 
         assert_eq!(
             input_queue.drain_mailbox_input_items().await.0,
             vec![
-                TurnInput::InterAgentCommunication(mail_one),
-                TurnInput::InterAgentCommunication(mail_two)
+                TurnInput::InterAgentCommunication(mail_one.into()),
+                TurnInput::InterAgentCommunication(mail_two.into())
             ]
         );
         assert!(!input_queue.has_pending_mailbox_items().await);
@@ -582,7 +801,8 @@ mod tests {
             for (trigger_turn, parent_turn_id, root_turn_id) in pending_mails {
                 input_queue
                     .enqueue_mailbox_communication(
-                        make_mail(AgentPath::root(), AgentPath::root(), "task", trigger_turn),
+                        make_mail(AgentPath::root(), AgentPath::root(), "task", trigger_turn)
+                            .into(),
                         TurnStartOptions {
                             parent_turn_id: parent_turn_id.map(str::to_string),
                             root_turn_id: root_turn_id.map(str::to_string),
@@ -613,7 +833,8 @@ mod tests {
             ] {
                 input_queue
                     .enqueue_mailbox_communication(
-                        make_mail(AgentPath::root(), AgentPath::root(), "task", trigger_turn),
+                        make_mail(AgentPath::root(), AgentPath::root(), "task", trigger_turn)
+                            .into(),
                         TurnStartOptions {
                             cyber_access_program: program,
                             ..Default::default()
@@ -637,7 +858,7 @@ mod tests {
             /*trigger_turn*/ false,
         );
         input_queue
-            .enqueue_mailbox_communication(queued_mail, Default::default())
+            .enqueue_mailbox_communication(queued_mail.into(), Default::default())
             .await;
         assert!(!input_queue.has_trigger_turn_mailbox_items().await);
 
@@ -648,7 +869,7 @@ mod tests {
             /*trigger_turn*/ true,
         );
         input_queue
-            .enqueue_mailbox_communication(trigger_mail, Default::default())
+            .enqueue_mailbox_communication(trigger_mail.into(), Default::default())
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
     }

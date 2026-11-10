@@ -48,7 +48,6 @@ struct RemoteModelResponse {
 fn remote_model(slug: &str) -> ModelInfo {
     ModelInfo {
         visibility: ModelVisibility::List,
-        used_fallback_model_metadata: false,
         ..model_info_from_slug(slug)
     }
 }
@@ -271,7 +270,8 @@ async fn remote_code_mode_only_selector_degrades_to_direct_when_host_is_disabled
         response
             .warnings
             .iter()
-            .all(|warning| !warning.contains("code-mode-host") && !warning.contains("code mode host")),
+            .all(|warning| !warning.contains("code-mode-host")
+                && !warning.contains("code mode host")),
         "degraded session must not leak the code-mode-host binary name: {:?}",
         response.warnings
     );

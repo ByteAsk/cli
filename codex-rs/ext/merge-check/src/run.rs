@@ -68,7 +68,12 @@ fn setup_fix(base: &str) -> String {
 }
 
 /// The results when nothing can be built: the same NOT RUN for every required check.
-fn not_run_all(profile: Option<&Profile>, reason: NotRunReason, summary: &str, fix: &str) -> Vec<CheckResult> {
+fn not_run_all(
+    profile: Option<&Profile>,
+    reason: NotRunReason,
+    summary: &str,
+    fix: &str,
+) -> Vec<CheckResult> {
     let mut names = vec![CHECK_BUILD, CHECK_TESTS];
     if profile
         .and_then(|profile| profile.test.as_ref())
@@ -96,14 +101,21 @@ pub async fn run_checks(options: &RunOptions) -> Result<RunReport, String> {
         BaseProfile::Missing => not_run_all(
             None,
             NotRunReason::NoBuildProfile,
-            &format!("The base branch has no {}, so nothing defines the checks.", checks_profile::PATH),
+            &format!(
+                "The base branch has no {}, so nothing defines the checks.",
+                checks_profile::PATH
+            ),
             &setup_fix(&options.base),
         ),
         BaseProfile::Invalid(err) => not_run_all(
             None,
             NotRunReason::NoBuildProfile,
             &format!("The base branch's build profile does not parse: {err}"),
-            &format!("fix {} on {} through code review.", checks_profile::PATH, options.base),
+            &format!(
+                "fix {} on {} through code review.",
+                checks_profile::PATH,
+                options.base
+            ),
         ),
         BaseProfile::Valid(profile) => {
             if let Some(paths) = &candidate.conflict {
@@ -115,7 +127,10 @@ pub async fn run_checks(options: &RunOptions) -> Result<RunReport, String> {
                         options.base,
                         paths.len()
                     ),
-                    &format!("merge or rebase onto {} and resolve the conflicts.", options.base),
+                    &format!(
+                        "merge or rebase onto {} and resolve the conflicts.",
+                        options.base
+                    ),
                 )
             } else if candidate.changed.is_empty()
                 || classes.only_non_code(candidate.changed.iter().map(String::as_str))
@@ -178,14 +193,18 @@ fn checkout(options: &RunOptions, binding: &Binding) -> Result<Checkout, String>
         &[&binding.base_commit, &binding.head_commit],
     )?;
     let parent = options.work_dir.clone().unwrap_or_else(std::env::temp_dir);
-    std::fs::create_dir_all(&parent).map_err(|err| format!("could not create {}: {err}", parent.display()))?;
+    std::fs::create_dir_all(&parent)
+        .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
     let dir = tempfile::Builder::new()
         .prefix("byteask-merge-")
         .tempdir_in(&parent)
         .map_err(|err| format!("could not create a scratch directory: {err}"))?;
     let path = dir.path().to_string_lossy().into_owned();
     // `worktree add` wants a missing or empty directory; the temp dir is empty.
-    git::git(&options.repo, &["worktree", "add", "--force", "--detach", &path, &commit])?;
+    git::git(
+        &options.repo,
+        &["worktree", "add", "--force", "--detach", &path, &commit],
+    )?;
     Ok(Checkout {
         repo: options.repo.clone(),
         dir,
@@ -237,9 +256,19 @@ fn evidence(outcomes: &[step::StepOutcome]) -> Vec<String> {
 
 /// The verdict of a list of steps: PASS, FAIL (non-zero exit), or NOT RUN (time limit, could
 /// not start).
-fn steps_result(name: &str, what: &str, outcomes: &[step::StepOutcome], timeout: Duration) -> CheckResult {
+fn steps_result(
+    name: &str,
+    what: &str,
+    outcomes: &[step::StepOutcome],
+    timeout: Duration,
+) -> CheckResult {
     let Some(last) = outcomes.last() else {
-        return CheckResult::not_run(name, NotRunReason::NoBuildProfile, &format!("The profile lists no {what} commands."), "");
+        return CheckResult::not_run(
+            name,
+            NotRunReason::NoBuildProfile,
+            &format!("The profile lists no {what} commands."),
+            "",
+        );
     };
     match &last.end {
         step::StepEnd::Exited(Some(0)) => CheckResult::pass(
@@ -258,7 +287,11 @@ fn steps_result(name: &str, what: &str, outcomes: &[step::StepOutcome], timeout:
         step::StepEnd::TimedOut => CheckResult::not_run(
             name,
             NotRunReason::TimeLimit,
-            &format!("`{}` was stopped at the {} s limit.", short(&last.command), timeout.as_secs()),
+            &format!(
+                "`{}` was stopped at the {} s limit.",
+                short(&last.command),
+                timeout.as_secs()
+            ),
             &format!("raise timeout_secs for [{what}] in the profile, or make the {what} faster."),
         )
         .with_evidence(evidence(outcomes)),
@@ -319,7 +352,10 @@ async fn check_candidate(
                 CHECK_BUILD,
                 NotRunReason::NoBuildProfile,
                 "The profile has no [build] section.",
-                &format!("add [build] to {} on the base branch.", checks_profile::PATH),
+                &format!(
+                    "add [build] to {} on the base branch.",
+                    checks_profile::PATH
+                ),
             ));
             false
         }
@@ -343,7 +379,11 @@ async fn check_candidate(
         )),
         Some(_) if !build_ok => {
             results.push(blocked(CHECK_TESTS));
-            if profile.test.as_ref().is_some_and(|test| test.manifest.is_some()) {
+            if profile
+                .test
+                .as_ref()
+                .is_some_and(|test| test.manifest.is_some())
+            {
                 results.push(blocked(CHECK_MANIFEST));
             }
         }
@@ -356,7 +396,9 @@ async fn check_candidate(
                     .map_err(|_| format!("the test report {path} was not written"))
                     .and_then(|xml| junit::parse(&xml))
             });
-            let ran = outcomes.last().is_some_and(|last| matches!(last.end, step::StepEnd::Exited(_)));
+            let ran = outcomes
+                .last()
+                .is_some_and(|last| matches!(last.end, step::StepEnd::Exited(_)));
             if let Some(report) = &report
                 && ran
             {
@@ -380,7 +422,10 @@ async fn check_candidate(
                                 .count();
                             result = CheckResult::pass(
                                 CHECK_TESTS,
-                                &format!("{passed} test(s) passed ({} in the report).", cases.len()),
+                                &format!(
+                                    "{passed} test(s) passed ({} in the report).",
+                                    cases.len()
+                                ),
                             );
                         }
                     }
@@ -448,7 +493,9 @@ fn manifest_result(
         return CheckResult::not_run(
             CHECK_MANIFEST,
             NotRunReason::NoBuildProfile,
-            &format!("The profile names the test manifest {path}, but the base branch has no such file."),
+            &format!(
+                "The profile names the test manifest {path}, but the base branch has no such file."
+            ),
             &format!("commit {path} to the base branch, or remove `manifest` from the profile."),
         );
     };
@@ -484,9 +531,15 @@ fn manifest_result(
         let found: Vec<&junit::Case> = cases.iter().filter(|case| case.matches(name)).collect();
         if found.is_empty() {
             missing.push(name.as_str());
-        } else if found.iter().any(|case| case.status == junit::CaseStatus::Failed) {
+        } else if found
+            .iter()
+            .any(|case| case.status == junit::CaseStatus::Failed)
+        {
             failed.push(name.as_str());
-        } else if found.iter().all(|case| case.status == junit::CaseStatus::Skipped) {
+        } else if found
+            .iter()
+            .all(|case| case.status == junit::CaseStatus::Skipped)
+        {
             skipped.push(name.as_str());
         }
     }
@@ -508,7 +561,10 @@ fn manifest_result(
     }
     CheckResult::fail(
         CHECK_MANIFEST,
-        &format!("Required tests from the base branch's manifest {}.", parts.join("; ")),
+        &format!(
+            "Required tests from the base branch's manifest {}.",
+            parts.join("; ")
+        ),
     )
 }
 

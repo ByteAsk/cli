@@ -135,7 +135,8 @@ mod tests {
 
     #[test]
     fn the_tool_spec_is_pinned_by_its_snapshot() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/snapshots/port_check_tool.json");
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/snapshots/port_check_tool.json");
         let now = serde_json::to_string_pretty(&tool_spec()).expect("encode") + "\n";
         if std::env::var("BYTEASK_UPDATE_TOOL_SNAPSHOT").as_deref() == Ok("1") {
             std::fs::write(&path, &now).expect("write snapshot");
@@ -146,7 +147,11 @@ mod tests {
         // Compared as JSON, not as text: key order depends on serde_json's preserve_order
         // feature, which a full workspace build turns on.
         let pinned: Value = serde_json::from_str(&pinned).expect("snapshot is JSON");
-        assert_eq!(pinned, tool_spec(), "the port_check tool spec changed; review and regenerate on purpose");
+        assert_eq!(
+            pinned,
+            tool_spec(),
+            "the port_check tool spec changed; review and regenerate on purpose"
+        );
         assert!(!TOOL_DESCRIPTION.to_ascii_lowercase().contains("codex"));
     }
 
@@ -154,9 +159,19 @@ mod tests {
     fn a_malformed_request_is_a_not_run_result() {
         let r = run_request_json("{\"recording\": 5}");
         assert_eq!(r.status, Status::NotRun);
-        assert!(r.sentence.starts_with("NOT RUN: the request is not valid"), "{}", r.sentence);
-        let r = run_request_json("{\"recording\":\"r\",\"python\":{\"argv\":[\"x\"]},\"cpp\":{\"argv\":[\"y\"]},\"tolerance\":1}");
-        assert!(r.sentence.contains("unknown field"), "typos are refused: {}", r.sentence);
+        assert!(
+            r.sentence.starts_with("NOT RUN: the request is not valid"),
+            "{}",
+            r.sentence
+        );
+        let r = run_request_json(
+            "{\"recording\":\"r\",\"python\":{\"argv\":[\"x\"]},\"cpp\":{\"argv\":[\"y\"]},\"tolerance\":1}",
+        );
+        assert!(
+            r.sentence.contains("unknown field"),
+            "typos are refused: {}",
+            r.sentence
+        );
         let text = run_json("not json");
         let v: Value = serde_json::from_str(&text).expect("always JSON");
         assert_eq!(v["status"], json!("NOT RUN"));

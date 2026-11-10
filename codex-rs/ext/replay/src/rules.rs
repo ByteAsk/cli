@@ -184,9 +184,7 @@ impl Rules {
         let ordering = match &spec.ordering {
             OrderingSpec::Exact => Ordering::Exact,
             OrderingSpec::Unordered => Ordering::Unordered,
-            OrderingSpec::GroupedBy(raw) => {
-                Ordering::GroupedBy(single_field(raw, "grouped_by")?)
-            }
+            OrderingSpec::GroupedBy(raw) => Ordering::GroupedBy(single_field(raw, "grouped_by")?),
         };
         let mut ignore = Vec::new();
         for raw in &spec.ignore {
@@ -329,7 +327,9 @@ mod tests {
     #[test]
     fn all_three_orderings_parse() {
         assert_eq!(
-            Rules::from_json(r#"{"ordering":"unordered"}"#).expect("parse").ordering,
+            Rules::from_json(r#"{"ordering":"unordered"}"#)
+                .expect("parse")
+                .ordering,
             Ordering::Unordered
         );
         assert_eq!(
@@ -345,9 +345,15 @@ mod tests {
         for (bad, want) in [
             (r#"{"tolerance": 1e-9}"#, "unknown field"),
             (r#"{"numbers":[{"path":"/x","tol":1}]}"#, "unknown field"),
-            (r#"{"numbers":[{"path":"/x","abs":-1}]}"#, "abs must be a finite number >= 0"),
+            (
+                r#"{"numbers":[{"path":"/x","abs":-1}]}"#,
+                "abs must be a finite number >= 0",
+            ),
             (r#"{"numbers":[{"path":"/x","rel":1.0}]}"#, "must be < 1"),
-            (r#"{"numbers":[{"path":"x","abs":1}]}"#, "must start with '/'"),
+            (
+                r#"{"numbers":[{"path":"x","abs":1}]}"#,
+                "must start with '/'",
+            ),
             (r#"{"key":"/a/*"}"#, "must name one field"),
             (r#"{"ordering":{"grouped_by":""}}"#, "must name one field"),
             (r#"{"ordering":"sorted"}"#, "unknown variant"),
@@ -366,11 +372,13 @@ mod tests {
         .expect("parse");
         assert_eq!(r.tolerance_at(&p(&["diag", "qty"])), None);
         assert_eq!(
-            r.tolerance_at(&p(&["diag", "pnl"])).map(NumberRule::describe),
+            r.tolerance_at(&p(&["diag", "pnl"]))
+                .map(NumberRule::describe),
             Some("abs<=5e-1".to_string())
         );
         assert_eq!(
-            r.tolerance_at(&p(&["diag", "edge"])).map(NumberRule::describe),
+            r.tolerance_at(&p(&["diag", "edge"]))
+                .map(NumberRule::describe),
             Some("ulps<=4".to_string())
         );
         let strict = r.without_tolerances();

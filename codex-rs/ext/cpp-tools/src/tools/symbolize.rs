@@ -123,7 +123,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for SymbolizeTool {
 }
 
 impl SymbolizeTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: SymbolizeArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -146,8 +149,8 @@ impl SymbolizeTool {
         }
 
         // Parse the requested runtime addresses.
-        let runtime_addrs = parse_addresses(&args.address)
-            .map_err(FunctionCallError::RespondToModel)?;
+        let runtime_addrs =
+            parse_addresses(&args.address).map_err(FunctionCallError::RespondToModel)?;
         if runtime_addrs.is_empty() {
             return Err(FunctionCallError::RespondToModel(
                 "no addresses provided".to_string(),
@@ -205,16 +208,16 @@ impl SymbolizeTool {
         for addr in &file_addrs {
             argv.push(format!("0x{addr:x}"));
         }
-        let (stdout, stderr) =
-            match run_capped("addr2line", &argv, &self.cwd, TOOL_TIMEOUT).await? {
-                RunOutcome::Finished { stdout, stderr, .. } => (stdout, stderr),
-                RunOutcome::TimedOut { secs } => {
-                    return Err(FunctionCallError::RespondToModel(format!(
-                        "addr2line did not finish within {secs}s and was stopped; nothing was \
+        let (stdout, stderr) = match run_capped("addr2line", &argv, &self.cwd, TOOL_TIMEOUT).await?
+        {
+            RunOutcome::Finished { stdout, stderr, .. } => (stdout, stderr),
+            RunOutcome::TimedOut { secs } => {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "addr2line did not finish within {secs}s and was stopped; nothing was \
                          resolved."
-                    )));
-                }
-            };
+                )));
+            }
+        };
 
         let mut text = String::new();
         text.push_str(&note);
@@ -290,7 +293,11 @@ fn parse_addresses(input: &str) -> Result<Vec<u64>, String> {
 /// base plus the file-relative address, so we subtract the load base. For a
 /// non-PIE binary (or when no load base is known) the runtime address already
 /// matches the file/link-time address and is used as-is.
-fn compute_file_addr(runtime_addr: u64, load_base: Option<u64>, is_pie: bool) -> Result<u64, String> {
+fn compute_file_addr(
+    runtime_addr: u64,
+    load_base: Option<u64>,
+    is_pie: bool,
+) -> Result<u64, String> {
     match load_base {
         Some(base) if is_pie => runtime_addr.checked_sub(base).ok_or_else(|| {
             format!(
@@ -306,9 +313,7 @@ fn compute_file_addr(runtime_addr: u64, load_base: Option<u64>, is_pie: bool) ->
 fn offset_note(is_pie: bool, load_base: Option<u64>, applied: bool) -> String {
     if applied {
         let base = load_base.unwrap_or(0);
-        format!(
-            "PIE: subtracted load base (file_addr = runtime_addr - 0x{base:x}); ELF Type=DYN."
-        )
+        format!("PIE: subtracted load base (file_addr = runtime_addr - 0x{base:x}); ELF Type=DYN.")
     } else if is_pie {
         "PIE binary (Type=DYN) but no load_base given: used addr as-is. If these are runtime \
          addresses from a running process, pass load_base: the start of the module's FIRST \
@@ -519,7 +524,10 @@ mod tests {
     fn only_a_readable_elf_header_decides_pie() {
         let header = "ELF Header:\n  Type:                              DYN (Position-Independent Executable file)\n";
         assert_eq!(elf_type_is_pie(true, header), Some(true));
-        assert_eq!(elf_type_is_pie(true, &header.replace("DYN", "EXEC")), Some(false));
+        assert_eq!(
+            elf_type_is_pie(true, &header.replace("DYN", "EXEC")),
+            Some(false)
+        );
         // readelf failed, or printed no Type: line -> not an ELF we can use.
         assert_eq!(elf_type_is_pie(false, header), None);
         assert_eq!(elf_type_is_pie(false, ""), None);
@@ -647,7 +655,10 @@ ELF Header:
     #[test]
     fn non_pie_with_load_base_greater_than_addr_does_not_underflow() {
         // The underflow guard only applies to PIE; non-PIE always uses addr as-is.
-        assert_eq!(compute_file_addr(0x1000, Some(0x2000), false).unwrap(), 0x1000);
+        assert_eq!(
+            compute_file_addr(0x1000, Some(0x2000), false).unwrap(),
+            0x1000
+        );
     }
 
     // ---- offset_note ------------------------------------------------------

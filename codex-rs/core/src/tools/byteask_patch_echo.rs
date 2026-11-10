@@ -20,12 +20,17 @@ pub(crate) fn echo_update(shown_path: &str, old: &str, new: &str) -> String {
     let new_lines: Vec<&str> = new.lines().collect();
     let mut out = String::new();
     for group in diff.grouped_ops(CONTEXT) {
-        let (Some(first), Some(last)) = (group.first(), group.last()) else { continue };
+        let (Some(first), Some(last)) = (group.first(), group.last()) else {
+            continue;
+        };
         let start = first.new_range().start;
         let end = last.new_range().end.min(new_lines.len());
         if start >= end {
             // A pure deletion at the end of the file: nothing remains to show there.
-            out.push_str(&format!("{shown_path}: lines removed near line {}\n", start + 1));
+            out.push_str(&format!(
+                "{shown_path}: lines removed near line {}\n",
+                start + 1
+            ));
             continue;
         }
         out.push_str(&format!("{shown_path} now, lines {}-{end}:\n", start + 1));
@@ -34,7 +39,10 @@ pub(crate) fn echo_update(shown_path: &str, old: &str, new: &str) -> String {
             out.push_str(&format!("{}: {line}\n", start + idx + 1));
         }
         if shown_end < end {
-            out.push_str(&format!("[byteask: {} more lines of this hunk not shown]\n", end - shown_end));
+            out.push_str(&format!(
+                "[byteask: {} more lines of this hunk not shown]\n",
+                end - shown_end
+            ));
         }
     }
     out
@@ -44,12 +52,20 @@ pub(crate) fn echo_update(shown_path: &str, old: &str, new: &str) -> String {
 pub(crate) fn echo(delta: &AppliedPatchDelta) -> String {
     let mut out = String::new();
     for change in delta.changes() {
-        let AppliedPatchFileChange::Update { move_path, old_content, new_content, .. } = &change.change
+        let AppliedPatchFileChange::Update {
+            move_path,
+            old_content,
+            new_content,
+            ..
+        } = &change.change
         else {
             // An added file was just written by the model; a deleted one has nothing to show.
             continue;
         };
-        let shown = move_path.as_ref().unwrap_or(&change.path).inferred_native_path_string();
+        let shown = move_path
+            .as_ref()
+            .unwrap_or(&change.path)
+            .inferred_native_path_string();
         let part = echo_update(&shown, old_content, new_content);
         if out.len() + part.len() > MAX_BYTES {
             out.push_str("[byteask: the remaining files are not echoed; read them if you need to check them]\n");
@@ -82,7 +98,9 @@ mod tests {
     #[test]
     fn distant_changes_are_echoed_separately() {
         let old = file(60);
-        let new = old.replace("line 5\n", "FIVE\n").replace("line 50\n", "FIFTY\n");
+        let new = old
+            .replace("line 5\n", "FIVE\n")
+            .replace("line 50\n", "FIFTY\n");
         let got = echo_update("a.txt", &old, &new);
         assert!(got.contains("a.txt now, lines 2-8:"));
         assert!(got.contains("a.txt now, lines 47-53:"));

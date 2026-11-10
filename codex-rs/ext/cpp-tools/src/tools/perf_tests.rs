@@ -49,8 +49,14 @@ fn render_time_under_the_floor_says_more_runs_will_not_help() {
     let a = Measurement::from_summary(1.00, Some(0.0001), 30, 0);
     let b = Measurement::from_summary(1.02, Some(0.0001), 30, 0);
     let out = render_time(30, &a, Some(&b), &[]);
-    assert!(out.contains("INSIDE the measurement noise (gate 3.0%)"), "{out}");
-    assert!(out.contains("benchmark the code in-process with cpp_bench"), "{out}");
+    assert!(
+        out.contains("INSIDE the measurement noise (gate 3.0%)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("benchmark the code in-process with cpp_bench"),
+        "{out}"
+    );
     assert!(!out.contains("increase repeat"), "{out}");
 }
 
@@ -80,7 +86,12 @@ fn render_time_single_run_notes_no_estimate() {
 #[test]
 fn render_time_appends_notes_last() {
     let a = Measurement::from_summary(0.5, Some(0.01), 5, 0);
-    let out = render_time(5, &a, None, &["note: one".to_string(), "note: two".to_string()]);
+    let out = render_time(
+        5,
+        &a,
+        None,
+        &["note: one".to_string(), "note: two".to_string()],
+    );
     assert!(out.ends_with("stderr)\nnote: one\nnote: two"), "{out}");
 }
 
@@ -90,7 +101,10 @@ fn shell_share_note_only_when_startup_distorts_the_numbers() {
     let slow = Measurement::from_summary(0.5, Some(0.001), 5, 0);
     // 2 ms of a 4 ms mean is half of it.
     let note = shell_share_note(Some(0.002), &fast, Some(&slow)).expect("note");
-    assert!(note.contains("~2.0 ms of every run is shell and process startup"), "{note}");
+    assert!(
+        note.contains("~2.0 ms of every run is shell and process startup"),
+        "{note}"
+    );
     assert!(note.contains("50% of the fastest mean"), "{note}");
     // 2 ms of a 0.5 s run is noise-level: say nothing.
     assert_eq!(shell_share_note(Some(0.002), &slow, None), None);
@@ -222,17 +236,36 @@ fn parses_callgrind_cpp_names_and_padded_percentages() {
     );
     assert_eq!(rows[0].ir, 77_244_808);
     assert!((rows[0].pct - 35.84).abs() < 1e-9);
-    assert!((rows[1].pct - 8.49).abs() < 1e-9, "padded percentage: {}", rows[1].pct);
-    assert!(rows[1].function.starts_with("__gnu_cxx::__normal_iterator<char const*, "));
-    assert!(rows[1].function.ends_with(">::base() const"), "{}", rows[1].function);
+    assert!(
+        (rows[1].pct - 8.49).abs() < 1e-9,
+        "padded percentage: {}",
+        rows[1].pct
+    );
+    assert!(
+        rows[1]
+            .function
+            .starts_with("__gnu_cxx::__normal_iterator<char const*, ")
+    );
+    assert!(
+        rows[1].function.ends_with(">::base() const"),
+        "{}",
+        rows[1].function
+    );
     // Unknown file: the name still starts after the `???:`.
-    assert!(rows[2].function.starts_with("std::__cxx11::basic_string<char, "));
+    assert!(
+        rows[2]
+            .function
+            .starts_with("std::__cxx11::basic_string<char, ")
+    );
     assert_eq!(rows[3].function, "__memcpy_avx_unaligned_erms");
     assert!((rows[3].pct - 0.67).abs() < 1e-9);
 
     let out = render_callgrind_profile(&rows, 1, "3329582");
     assert!(out.contains("  8.49  "), "{out}");
-    assert!(out.contains("engine::Book::hash(std::__cxx11::basic_string<cha…"), "{out}");
+    assert!(
+        out.contains("engine::Book::hash(std::__cxx11::basic_string<cha…"),
+        "{out}"
+    );
 }
 
 /// Real `callgrind_annotate` output (valgrind 3.19) WITH its default
@@ -297,7 +330,10 @@ async fn callgrind_profile_lists_functions_not_source_lines() {
     };
     assert!(out.contains("hot_loop"), "{out}");
     // hot.c is built with -g, so auto-annotation would print its source.
-    assert!(!out.contains("s+=i%7"), "source line reported as a function:\n{out}");
+    assert!(
+        !out.contains("s+=i%7"),
+        "source line reported as a function:\n{out}"
+    );
     assert!(!out.contains("events annotated"), "{out}");
 }
 
@@ -320,12 +356,16 @@ Ir                    file:function
     );
     assert!(out.contains("do not strip the binary"), "{out}");
     let out = render_callgrind_profile(&parse_callgrind_rows(CALLGRIND_ANNOTATE_CPP), 1, "1");
-    assert!(out.contains("symbol quality: OK (~100% of top-table Ir mass symbolized"), "{out}");
+    assert!(
+        out.contains("symbol quality: OK (~100% of top-table Ir mass symbolized"),
+        "{out}"
+    );
 }
 
 #[tokio::test]
 async fn callgrind_profile_of_a_stripped_binary_says_symbols_are_poor() {
-    if !crate::program_args::fixture::have("valgrind") || !crate::program_args::fixture::have("strip")
+    if !crate::program_args::fixture::have("valgrind")
+        || !crate::program_args::fixture::have("strip")
     {
         eprintln!("skip: valgrind or strip not installed");
         return;
@@ -413,7 +453,9 @@ fn render_tma_is_plain_classification() {
 // ---------------- topdown: generic counters (heuristic) ----------------
 
 fn counters_stderr(body: &str) -> String {
-    format!(" Performance counter stats for 'bash -c ./x':\n\n{body}\n       0.5 seconds time elapsed\n")
+    format!(
+        " Performance counter stats for 'bash -c ./x':\n\n{body}\n       0.5 seconds time elapsed\n"
+    )
 }
 
 #[test]
@@ -644,8 +686,9 @@ async fn call(tool: &PerfTool, arguments: serde_json::Value) -> Result<String, S
         payload: payload.clone(),
     };
     match tool.handle(call).await {
-        Ok(output) => Ok(serde_json::to_string(&output.to_response_item("call", &payload))
-            .expect("serialize")),
+        Ok(output) => Ok(
+            serde_json::to_string(&output.to_response_item("call", &payload)).expect("serialize"),
+        ),
         Err(err) => Err(err.to_string()),
     }
 }
@@ -662,7 +705,10 @@ async fn unknown_argument_names_are_refused() {
     .await
     .expect_err("an unknown field must be refused");
     assert!(err.contains("unknown field `command`"), "{err}");
-    assert!(err.contains("`command_b`"), "the error should list the real names: {err}");
+    assert!(
+        err.contains("`command_b`"),
+        "the error should list the real names: {err}"
+    );
 }
 
 #[tokio::test]
@@ -675,7 +721,10 @@ async fn single_command_modes_refuse_command_b_instead_of_dropping_it() {
         )
         .await
         .expect_err(mode);
-        assert!(err.contains("command_b is only used by mode=\"time\""), "{mode}: {err}");
+        assert!(
+            err.contains("command_b is only used by mode=\"time\""),
+            "{mode}: {err}"
+        );
         assert!(err.contains(&format!("mode={mode:?}")), "{mode}: {err}");
     }
 }
@@ -702,7 +751,11 @@ fn time_args(a: &str, b: Option<&str>, repeat: u32, timeout_sec: u64) -> PerfArg
 /// Run time mode the way `handle_call` does: clamped repeat, resolved timeout.
 async fn time_mode(dir: &std::path::Path, args: &PerfArgs) -> String {
     time_tool(dir)
-        .run_time_mode(args, clamp_repeat(args.repeat), timeout_from(args.timeout_sec))
+        .run_time_mode(
+            args,
+            clamp_repeat(args.repeat),
+            timeout_from(args.timeout_sec),
+        )
         .await
         .map(|(text, _)| text)
         .expect("time mode")
@@ -745,9 +798,15 @@ async fn time_mode_still_finds_a_real_2x_difference() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut last = String::new();
     for attempt in 1..=3 {
-        let out = time_mode(dir.path(), &time_args("sleep 0.1", Some("sleep 0.2"), 5, 60)).await;
+        let out = time_mode(
+            dir.path(),
+            &time_args("sleep 0.1", Some("sleep 0.2"), 5, 60),
+        )
+        .await;
         assert!(!out.contains("B is "), "{out}");
-        if out.contains("A is ") && out.contains("x faster than B") && out.contains("; significant).")
+        if out.contains("A is ")
+            && out.contains("x faster than B")
+            && out.contains("; significant).")
         {
             return;
         }
@@ -819,7 +878,10 @@ async fn time_mode_counts_failures_over_timed_runs_only() {
     // A command that passes its warmup and fails ONE timed run: 1 of 5.
     let flaky = "n=$(cat n 2>/dev/null || echo 0); echo $((n+1)) > n; [ $n -ne 2 ]";
     let out = time_mode(dir.path(), &time_args(flaky, Some("true"), 5, 60)).await;
-    assert!(out.contains("INVALID COMPARISON: A exited non-zero on 1/5 run(s)"), "{out}");
+    assert!(
+        out.contains("INVALID COMPARISON: A exited non-zero on 1/5 run(s)"),
+        "{out}"
+    );
 }
 
 #[tokio::test]
@@ -848,7 +910,10 @@ async fn time_mode_reports_shell_startup_when_it_dominates() {
     // present the shell's cost as the command's.
     let dir = tempfile::tempdir().expect("tempdir");
     let out = time_mode(dir.path(), &time_args("true", Some("true"), 5, 60)).await;
-    assert!(out.contains("of every run is shell and process startup"), "{out}");
+    assert!(
+        out.contains("of every run is shell and process startup"),
+        "{out}"
+    );
 }
 
 #[tokio::test]
@@ -865,7 +930,13 @@ async fn cachegrind_topdown_leaves_nothing_in_the_working_directory() {
         .expect("cachegrind");
     let left: Vec<String> = std::fs::read_dir(dir.path())
         .expect("read dir")
-        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     assert!(left.is_empty(), "left behind: {left:?}");
 }
@@ -922,7 +993,7 @@ async fn live_callgrind_finds_hot_function() {
         return;
     };
     let tool = PerfTool {
-            native_exec: true,
+        native_exec: true,
         cwd: dir.path().to_path_buf(),
     };
     let out = tool
@@ -936,11 +1007,14 @@ async fn live_callgrind_finds_hot_function() {
             assert!(text.contains("hot_loop"), "hot_loop missing from:\n{text}");
             assert!(text.contains("[simulated"));
         }
-        other => panic!("expected a callgrind Report, got a different outcome: {}", match other {
-            ProfileOutcome::TimedOut(s) => format!("TimedOut({s})"),
-            ProfileOutcome::Empty => "Empty".to_string(),
-            ProfileOutcome::Report(_) => unreachable!(),
-        }),
+        other => panic!(
+            "expected a callgrind Report, got a different outcome: {}",
+            match other {
+                ProfileOutcome::TimedOut(s) => format!("TimedOut({s})"),
+                ProfileOutcome::Empty => "Empty".to_string(),
+                ProfileOutcome::Report(_) => unreachable!(),
+            }
+        ),
     }
 }
 
@@ -948,7 +1022,7 @@ async fn live_callgrind_finds_hot_function() {
 #[ignore = "runs real commands; run with --include-ignored"]
 async fn live_time_mode_detects_real_difference() {
     let tool = PerfTool {
-            native_exec: true,
+        native_exec: true,
         cwd: std::env::temp_dir(),
     };
     let args = PerfArgs {
@@ -964,7 +1038,10 @@ async fn live_time_mode_detects_real_difference() {
         .map(|(text, _)| text)
         .expect("time mode");
     // A (true) is clearly faster than B (sleep 0.1); the gate must confirm it.
-    assert!(out.contains("A is") && out.contains("faster than B"), "{out}");
+    assert!(
+        out.contains("A is") && out.contains("faster than B"),
+        "{out}"
+    );
     assert!(out.contains("warmup=1 untimed"));
 }
 
@@ -972,7 +1049,7 @@ async fn live_time_mode_detects_real_difference() {
 #[ignore = "runs real commands; run with --include-ignored"]
 async fn live_time_mode_failure_invalidates() {
     let tool = PerfTool {
-            native_exec: true,
+        native_exec: true,
         cwd: std::env::temp_dir(),
     };
     let args = PerfArgs {
@@ -1007,7 +1084,7 @@ async fn live_callgrind_notes_failed_target() {
         return;
     };
     let tool = PerfTool {
-            native_exec: true,
+        native_exec: true,
         cwd: dir.path().to_path_buf(),
     };
     // A command that does real work (so callgrind produces a profile) then fails.
@@ -1018,7 +1095,10 @@ async fn live_callgrind_notes_failed_target() {
     match out {
         ProfileOutcome::Report(text) => {
             assert!(text.contains("hot_loop"), "{text}");
-            assert!(text.contains("exited non-zero"), "missing failed-target note:\n{text}");
+            assert!(
+                text.contains("exited non-zero"),
+                "missing failed-target note:\n{text}"
+            );
         }
         _ => panic!("expected a Report"),
     }
@@ -1040,7 +1120,7 @@ async fn live_cachegrind_topdown_classifies() {
         return;
     }
     let tool = PerfTool {
-            native_exec: true,
+        native_exec: true,
         cwd: dir.path().to_path_buf(),
     };
     let out = tool
@@ -1063,7 +1143,10 @@ fn profiling_runs_never_use_a_login_shell() {
     // `bash -lc` re-sources the profile files and RESETS PATH, so the
     // command profiled would not be the one the engine's PATH (and the probes) saw.
     let argv = shell_argv("perf stat -- ./app".to_string());
-    assert_eq!(argv, vec!["-c".to_string(), "perf stat -- ./app".to_string()]);
+    assert_eq!(
+        argv,
+        vec!["-c".to_string(), "perf stat -- ./app".to_string()]
+    );
     assert!(!argv.iter().any(|a| a.starts_with('-') && a.contains('l')));
 }
 
@@ -1096,7 +1179,10 @@ fn cachegrind_without_a_memory_or_branch_problem_is_inconclusive() {
         mispredict: Some(12.0),
         ..quiet
     };
-    assert_eq!(cachegrind_bottleneck(&branchy), Some(Bottleneck::BadSpeculation));
+    assert_eq!(
+        cachegrind_bottleneck(&branchy),
+        Some(Bottleneck::BadSpeculation)
+    );
     let missy = CachegrindRates {
         ll_miss: Some(4.0),
         mispredict: Some(0.0),

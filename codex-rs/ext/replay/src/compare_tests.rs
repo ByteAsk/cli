@@ -44,14 +44,21 @@ fn first_difference_is_reported_at_the_right_record_and_field() {
     assert_eq!(d.kind, DiffKind::ValueDiffers);
     assert_eq!((d.index_a, d.index_b), (Some(6), Some(6)));
     assert_eq!(d.path, "/qty");
-    assert_eq!((d.a.clone(), d.b.clone()), (Some(json!(10)), Some(json!(11))));
+    assert_eq!(
+        (d.a.clone(), d.b.clone()),
+        (Some(json!(10)), Some(json!(11)))
+    );
     assert_eq!(d.rule, "exact");
     assert_eq!(d.key, Some(json!(6)));
     assert_eq!(d.record_a, Some(json!({"seq":6,"qty":10})));
     assert_eq!(d.record_b, Some(json!({"seq":6,"qty":11})));
     assert_eq!(
         d.context_a,
-        vec![json!({"seq":3,"qty":10}), json!({"seq":4,"qty":10}), json!({"seq":5,"qty":10})],
+        vec![
+            json!({"seq":3,"qty":10}),
+            json!({"seq":4,"qty":10}),
+            json!({"seq":5,"qty":10})
+        ],
         "the three equal records before the difference"
     );
     assert!(!c.read_to_end, "stops at the first difference");
@@ -97,11 +104,17 @@ fn inside_a_record_keys_are_visited_in_sorted_order() {
 fn nested_paths_missing_and_extra_fields_and_type_changes() {
     let r = Rules::exact();
     let d = diff_values(&json!({"o":{"x":[1,2]}}), &json!({"o":{"x":[1,3]}}), &r).expect("diff");
-    assert_eq!((d.kind, d.path.as_str()), (DiffKind::ValueDiffers, "/o/x/1"));
+    assert_eq!(
+        (d.kind, d.path.as_str()),
+        (DiffKind::ValueDiffers, "/o/x/1")
+    );
     let d = diff_values(&json!({"o":{"x":[1,2]}}), &json!({"o":{"x":[1]}}), &r).expect("diff");
     assert_eq!((d.kind, d.path.as_str()), (DiffKind::MissingInB, "/o/x/1"));
     let d = diff_values(&json!({"a":1}), &json!({"a":1,"z":null}), &r).expect("diff");
-    assert_eq!((d.kind, d.path.as_str(), d.b), (DiffKind::ExtraInB, "/z", Some(json!(null))));
+    assert_eq!(
+        (d.kind, d.path.as_str(), d.b),
+        (DiffKind::ExtraInB, "/z", Some(json!(null)))
+    );
     let d = diff_values(&json!({"a":"1"}), &json!({"a":1}), &r).expect("diff");
     assert_eq!(d.kind, DiffKind::TypeDiffers);
     let d = diff_values(&json!(true), &json!(false), &r).expect("diff");
@@ -117,15 +130,24 @@ fn nested_paths_missing_and_extra_fields_and_type_changes() {
 fn exact_numbers_compare_by_value_and_integers_never_round_through_a_double() {
     let r = Rules::exact();
     let same = |a: Value, b: Value| diff_values(&a, &b, &r).is_none();
-    assert!(same(json!(1), json!(1.0)), "Python prints 1.0 where C++ prints 1");
+    assert!(
+        same(json!(1), json!(1.0)),
+        "Python prints 1.0 where C++ prints 1"
+    );
     assert!(same(json!(-0.0), json!(0)));
     assert!(same(json!(0.1), json!(0.1)));
-    assert!(!same(json!(0.1), json!(f64::from_bits(0.1f64.to_bits() + 1))), "one ulp is a difference");
+    assert!(
+        !same(json!(0.1), json!(f64::from_bits(0.1f64.to_bits() + 1))),
+        "one ulp is a difference"
+    );
     assert!(same(json!(u64::MAX), json!(u64::MAX)));
     assert!(!same(json!(u64::MAX), json!(u64::MAX - 1)));
     assert!(!same(json!(i64::MIN), json!(i64::MAX)));
     // 2^53 + 1 is not a double; comparing through f64 would call these equal.
-    assert!(!same(json!(9_007_199_254_740_993_u64), json!(9_007_199_254_740_992_u64)));
+    assert!(!same(
+        json!(9_007_199_254_740_993_u64),
+        json!(9_007_199_254_740_992_u64)
+    ));
     let parsed: Value = serde_json::from_str("9007199254740993.0").expect("json");
     assert!(
         !same(json!(9_007_199_254_740_993_u64), parsed),
@@ -138,7 +160,10 @@ fn exact_numbers_compare_by_value_and_integers_never_round_through_a_double() {
 #[test]
 fn tolerances_accept_inside_the_bound_and_refuse_just_outside_it() {
     let abs = rules(r#"{"numbers":[{"path":"/x","abs":0.5}]}"#);
-    assert!(diff_values(&json!({"x":1.0}), &json!({"x":1.5}), &abs).is_none(), "exactly at abs");
+    assert!(
+        diff_values(&json!({"x":1.0}), &json!({"x":1.5}), &abs).is_none(),
+        "exactly at abs"
+    );
     let d = diff_values(&json!({"x":1.0}), &json!({"x":1.5000001}), &abs).expect("outside");
     assert_eq!(d.rule, "abs<=5e-1");
     assert!(diff_values(&json!({"x":1}), &json!({"x":2}), &abs).is_some());
@@ -146,7 +171,10 @@ fn tolerances_accept_inside_the_bound_and_refuse_just_outside_it() {
     let rel = rules(r#"{"numbers":[{"path":"/x","rel":1e-3}]}"#);
     assert!(diff_values(&json!({"x":1000.0}), &json!({"x":1000.9}), &rel).is_none());
     assert!(diff_values(&json!({"x":1000.0}), &json!({"x":1001.1}), &rel).is_some());
-    assert!(diff_values(&json!({"x":0.0}), &json!({"x":1e-300}), &rel).is_some(), "rel near 0");
+    assert!(
+        diff_values(&json!({"x":0.0}), &json!({"x":1e-300}), &rel).is_some(),
+        "rel near 0"
+    );
 
     let ulps = rules(r#"{"numbers":[{"path":"/x","ulps":2}]}"#);
     let one_up = f64::from_bits(1.0f64.to_bits() + 2);
@@ -166,11 +194,18 @@ fn a_tolerance_applies_only_to_its_path_and_never_between_a_number_and_a_string(
     assert!(diff_values(&json!({"diag":{"pnl":1}}), &json!({"diag":{"pnl":1.9}}), &r).is_none());
     let d = diff_values(&json!({"px":1}), &json!({"px":1.9}), &r).expect("px is exact");
     assert_eq!((d.path.as_str(), d.rule.as_str()), ("/px", "exact"));
-    let d = diff_values(&json!({"diag":{"pnl":1}}), &json!({"diag":{"pnl":"1"}}), &r)
-        .expect("type");
+    let d =
+        diff_values(&json!({"diag":{"pnl":1}}), &json!({"diag":{"pnl":"1"}}), &r).expect("type");
     assert_eq!(d.kind, DiffKind::TypeDiffers);
     // Nested deeper than the wildcard: not covered.
-    assert!(diff_values(&json!({"diag":{"a":{"b":1}}}), &json!({"diag":{"a":{"b":1.5}}}), &r).is_some());
+    assert!(
+        diff_values(
+            &json!({"diag":{"a":{"b":1}}}),
+            &json!({"diag":{"a":{"b":1.5}}}),
+            &r
+        )
+        .is_some()
+    );
 }
 
 // ---- ignore ---------------------------------------------------------------------------------
@@ -197,11 +232,26 @@ fn an_ignored_field_never_counts_present_absent_or_different() {
 #[test]
 fn any_order_accepts_a_permutation_but_counts_duplicates() {
     let r = rules(r#"{"ordering":"unordered"}"#);
-    let a = vec![json!({"id":1}), json!({"id":2}), json!({"id":2}), json!({"id":3})];
-    let b = vec![json!({"id":3}), json!({"id":2}), json!({"id":1}), json!({"id":2})];
+    let a = vec![
+        json!({"id":1}),
+        json!({"id":2}),
+        json!({"id":2}),
+        json!({"id":3}),
+    ];
+    let b = vec![
+        json!({"id":3}),
+        json!({"id":2}),
+        json!({"id":1}),
+        json!({"id":2}),
+    ];
     assert!(cmp(&a, &b, &r).same);
     // Same set, different multiplicities: a multiset comparison must catch it.
-    let b2 = vec![json!({"id":3}), json!({"id":2}), json!({"id":1}), json!({"id":1})];
+    let b2 = vec![
+        json!({"id":3}),
+        json!({"id":2}),
+        json!({"id":1}),
+        json!({"id":1}),
+    ];
     let c = cmp(&a, &b2, &r);
     assert!(!c.same);
     assert_eq!((c.unmatched_a, c.unmatched_b), (1, 1));
@@ -212,7 +262,10 @@ fn any_order_accepts_a_permutation_but_counts_duplicates() {
     assert_eq!(d.index_a, Some(2));
     assert_eq!(d.record_a, Some(json!({"id":2})));
     let hint = d.closest.clone().expect("closest");
-    assert_eq!((hint.path.as_str(), hint.a, hint.b), ("/id", Some(json!(2)), Some(json!(1))));
+    assert_eq!(
+        (hint.path.as_str(), hint.a, hint.b),
+        ("/id", Some(json!(2)), Some(json!(1)))
+    );
 }
 
 #[test]
@@ -273,19 +326,38 @@ fn grouped_allows_reordering_inside_a_group_only() {
 #[test]
 fn grouped_reports_absolute_indices_and_key_mismatches() {
     let r = rules(r#"{"ordering":{"grouped_by":"/seq"},"key":"/seq"}"#);
-    let a = vec![json!({"seq":1,"x":1}), json!({"seq":2,"x":1}), json!({"seq":2,"x":2})];
-    let b = vec![json!({"seq":1,"x":1}), json!({"seq":2,"x":2}), json!({"seq":2,"x":3})];
+    let a = vec![
+        json!({"seq":1,"x":1}),
+        json!({"seq":2,"x":1}),
+        json!({"seq":2,"x":2}),
+    ];
+    let b = vec![
+        json!({"seq":1,"x":1}),
+        json!({"seq":2,"x":2}),
+        json!({"seq":2,"x":3}),
+    ];
     let c = cmp(&a, &b, &r);
     let d = first(&c);
     assert_eq!(d.kind, DiffKind::RecordMissingInB);
-    assert_eq!(d.index_a, Some(1), "absolute index in A, not the index inside the group");
+    assert_eq!(
+        d.index_a,
+        Some(1),
+        "absolute index in A, not the index inside the group"
+    );
     assert_eq!(d.key, Some(json!(2)));
     assert_eq!(d.context_a, vec![json!({"seq":1,"x":1})]);
     // Different group keys at the same position.
-    let b3 = vec![json!({"seq":1,"x":1}), json!({"seq":3,"x":1}), json!({"seq":3,"x":2})];
+    let b3 = vec![
+        json!({"seq":1,"x":1}),
+        json!({"seq":3,"x":1}),
+        json!({"seq":3,"x":2}),
+    ];
     let d = first(&cmp(&a, &b3, &r)).clone();
     assert_eq!(d.kind, DiffKind::GroupKeyDiffers);
-    assert_eq!((d.index_a, d.index_b, d.a, d.b), (Some(1), Some(1), Some(json!(2)), Some(json!(3))));
+    assert_eq!(
+        (d.index_a, d.index_b, d.a, d.b),
+        (Some(1), Some(1), Some(json!(2)), Some(json!(3)))
+    );
     // A whole trailing group missing in B.
     let d = first(&cmp(&a, &a[..1], &r)).clone();
     assert_eq!((d.kind, d.index_a), (DiffKind::RecordMissingInB, Some(1)));
@@ -294,9 +366,20 @@ fn grouped_reports_absolute_indices_and_key_mismatches() {
 #[test]
 fn grouped_treats_a_key_that_comes_back_later_as_a_new_group() {
     let r = rules(r#"{"ordering":{"grouped_by":"/k"}}"#);
-    let a = vec![json!({"k":1,"v":"a"}), json!({"k":2,"v":"b"}), json!({"k":1,"v":"c"})];
-    let b = vec![json!({"k":1,"v":"c"}), json!({"k":2,"v":"b"}), json!({"k":1,"v":"a"})];
-    assert!(!cmp(&a, &b, &r).same, "groups are consecutive runs, not global buckets");
+    let a = vec![
+        json!({"k":1,"v":"a"}),
+        json!({"k":2,"v":"b"}),
+        json!({"k":1,"v":"c"}),
+    ];
+    let b = vec![
+        json!({"k":1,"v":"c"}),
+        json!({"k":2,"v":"b"}),
+        json!({"k":1,"v":"a"}),
+    ];
+    assert!(
+        !cmp(&a, &b, &r).same,
+        "groups are consecutive runs, not global buckets"
+    );
 }
 
 // ---- unreadable input -----------------------------------------------------------------------
@@ -308,14 +391,28 @@ fn an_unreadable_record_is_an_error_never_a_verdict() {
         location: "line 2".to_string(),
         message: "not valid JSON".to_string(),
     };
-    for ordering in [r#"{}"#, r#"{"ordering":"unordered"}"#, r#"{"ordering":{"grouped_by":"/k"}}"#] {
+    for ordering in [
+        r#"{}"#,
+        r#"{"ordering":"unordered"}"#,
+        r#"{"ordering":{"grouped_by":"/k"}}"#,
+    ] {
         let r = rules(ordering);
         let a = vec![Ok(json!({"k":1})), Err(bad.clone())];
         let b = vec![Ok(json!({"k":1})), Ok(json!({"k":2}))];
         let err = compare_streams(a.clone(), b.clone(), &r).expect_err(ordering);
-        assert_eq!(err, CompareError::BadRecord { side: Side::A, error: bad.clone() }, "{ordering}");
+        assert_eq!(
+            err,
+            CompareError::BadRecord {
+                side: Side::A,
+                error: bad.clone()
+            },
+            "{ordering}"
+        );
         let err = compare_streams(b, a, &r).expect_err(ordering);
-        assert!(matches!(err, CompareError::BadRecord { side: Side::B, .. }), "{ordering}");
+        assert!(
+            matches!(err, CompareError::BadRecord { side: Side::B, .. }),
+            "{ordering}"
+        );
     }
 }
 
@@ -357,7 +454,11 @@ fn randomized_self_comparison_is_always_the_same_under_every_ordering() {
     for round in 0..200 {
         let n = rng.below(12);
         let a: Vec<Value> = (0..n).map(|i| random_record(&mut rng, i / 2)).collect();
-        for text in [r#"{}"#, r#"{"ordering":"unordered"}"#, r#"{"ordering":{"grouped_by":"/seq"}}"#] {
+        for text in [
+            r#"{}"#,
+            r#"{"ordering":"unordered"}"#,
+            r#"{"ordering":{"grouped_by":"/seq"}}"#,
+        ] {
             assert!(cmp(&a, &a, &rules(text)).same, "round {round} {text}");
         }
     }
@@ -374,16 +475,27 @@ fn randomized_single_mutation_is_found_at_exactly_that_record() {
         let (path, new) = match rng.below(3) {
             0 => ("/side", json!(if a[k]["side"] == "B" { "S" } else { "B" })),
             1 => ("/seq", json!(a[k]["seq"].as_u64().unwrap_or(0) + 1000)),
-            _ => ("/diag/edge", json!(a[k]["diag"]["edge"].as_f64().unwrap_or(0.0) + 1.0)),
+            _ => (
+                "/diag/edge",
+                json!(a[k]["diag"]["edge"].as_f64().unwrap_or(0.0) + 1.0),
+            ),
         };
         *b[k].pointer_mut(path).expect("path exists") = new;
         let strict = rules(r#"{"ignore":["/wall_ns"]}"#);
         let c = cmp(&a, &b, &strict);
         let d = first(&c);
-        assert_eq!((d.index_a, d.path.as_str()), (Some(k as u64), path), "round {round}");
+        assert_eq!(
+            (d.index_a, d.path.as_str()),
+            (Some(k as u64), path),
+            "round {round}"
+        );
         // A tolerance wide enough for the diag change hides it, and only it.
         let loose = rules(r#"{"ignore":["/wall_ns"],"numbers":[{"path":"/diag/edge","abs":2}]}"#);
-        assert_eq!(cmp(&a, &b, &loose).same, path == "/diag/edge", "round {round}");
+        assert_eq!(
+            cmp(&a, &b, &loose).same,
+            path == "/diag/edge",
+            "round {round}"
+        );
         // Shuffling B does not hide it from any-order comparison.
         let mut shuffled = b.clone();
         for i in (1..shuffled.len()).rev() {
@@ -440,12 +552,20 @@ fn randomized_equal_under_rules_implies_same_signature() {
             }
         }
         if diff_values(&a, &b, &r).is_none() {
-            assert_eq!(signature(&a, &r), signature(&b, &r), "round {round}: {a} vs {b}");
+            assert_eq!(
+                signature(&a, &r),
+                signature(&b, &r),
+                "round {round}: {a} vs {b}"
+            );
         }
         // And with no tolerance leaves, the same signature means equal.
         let exact = rules(r#"{"ignore":["/wall_ns","/legs/2"]}"#);
         if signature(&a, &exact) == signature(&b, &exact) {
-            assert_eq!(diff_values(&a, &b, &exact), None, "round {round}: {a} vs {b}");
+            assert_eq!(
+                diff_values(&a, &b, &exact),
+                None,
+                "round {round}: {a} vs {b}"
+            );
         }
     }
 }

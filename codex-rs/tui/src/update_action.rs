@@ -11,6 +11,8 @@ use codex_install_context::StandalonePlatform;
 /// user installed, not what to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
+    /// Replace the local daemon after restoring the terminal.
+    Daemon(DaemonUpdateSource),
     /// Installed as a global npm package.
     NpmGlobalLatest,
     /// Installed as a global bun package.
@@ -59,7 +61,16 @@ impl UpdateAction {
     /// The variant is still detected and reported (`from_install_context`);
     /// only the command it maps to changes.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
-        ("byteask", &["--update"])
+        match self {
+            UpdateAction::Daemon(source) => ("byteask", source.command_args()),
+            UpdateAction::NpmGlobalLatest
+            | UpdateAction::BunGlobalLatest
+            | UpdateAction::VitePlusGlobalLatest
+            | UpdateAction::PnpmGlobalLatest
+            | UpdateAction::BrewUpgrade
+            | UpdateAction::StandaloneUnix
+            | UpdateAction::StandaloneWindows => ("byteask", &["--update"]),
+        }
     }
 
     /// Returns string representation of the command-line arguments for invoking the update.
@@ -172,6 +183,22 @@ mod tests {
                 !rendered.contains("codex") && !rendered.contains("chatgpt"),
                 "update command leaks the upstream product: {rendered}"
             );
+        }
+    }
+}
+
+/// Package source explicitly selected by the user in the daemon menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonUpdateSource {
+    PublicStable,
+    ThisCli,
+}
+
+impl DaemonUpdateSource {
+    pub fn command_args(self) -> &'static [&'static str] {
+        match self {
+            Self::PublicStable => &["app-server", "daemon", "update"],
+            Self::ThisCli => &["app-server", "daemon", "update", "--from-cli", "--yes"],
         }
     }
 }

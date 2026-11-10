@@ -1,9 +1,14 @@
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_rollout::RolloutItem;
 use std::any::Any;
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
+use crate::AddThreadAttachmentOutcome;
+use crate::AddThreadAttachmentParams;
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
 use crate::ArchiveThreadsParams;
@@ -18,6 +23,8 @@ use crate::DeletedProject;
 use crate::ItemPage;
 use crate::ListItemsParams;
 use crate::ListProjectsParams;
+use crate::ListThreadAttachmentThreadsParams;
+use crate::ListThreadAttachmentsParams;
 use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
@@ -29,6 +36,8 @@ use crate::PreparedFork;
 use crate::ProjectMoveOutcome;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
+use crate::RemoveThreadAttachmentOutcome;
+use crate::RemoveThreadAttachmentParams;
 use crate::RenameThreadSectionParams;
 use crate::ResumeThreadParams;
 use crate::RevertThreadParams;
@@ -41,6 +50,8 @@ use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::StoredThreadSection;
 use crate::StoredThreadSectionsPage;
+use crate::ThreadAttachmentOwnerPage;
+use crate::ThreadAttachmentPage;
 use crate::ThreadMetadataPatch;
 use crate::ThreadOccurrenceSearchPage;
 use crate::ThreadPage;
@@ -55,13 +66,63 @@ use crate::UpdatedProject;
 /// Future returned by [`ThreadStore`] operations.
 pub type ThreadStoreFuture<'a, T> = Pin<Box<dyn Future<Output = ThreadStoreResult<T>> + Send + 'a>>;
 
+/// Data a [`ThreadStore`] has already loaded while preparing a thread for resume.
+///
+/// Core does not inspect this value. It gives the value back to the store when reopening the
+/// thread, allowing the store to reuse the loaded history and writer state instead of loading them
+/// again. The value can only be used once because it may own resources that cannot be copied.
+pub struct ThreadStoreResumePreparation {
+    state: Box<dyn Any + Send>,
+}
+
+impl ThreadStoreResumePreparation {
+    pub fn new<T: Any + Send>(state: T) -> Self {
+        Self {
+            state: Box::new(state),
+        }
+    }
+
+    pub fn downcast<T: Any + Send>(self) -> Result<T, Self> {
+        match self.state.downcast::<T>() {
+            Ok(state) => Ok(*state),
+            Err(state) => Err(Self { state }),
+        }
+    }
+}
+
+impl fmt::Debug for ThreadStoreResumePreparation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ThreadStoreResumePreparation")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Why thread persistence is being requested.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PersistContext {
+    /// Thread initialization or context injection is complete without starting a turn.
+    ThreadPreparation,
     /// Standard persistence makes the thread and all queued items durable and readable.
     Standard,
+    /// Copied subagent history may be enqueued so its durability fence can overlap relationship
+    /// persistence. The caller must await standard persistence before acknowledging the child.
+    SubagentSpawn,
     /// A turn is about to begin sampling after its input has been recorded.
     TurnStart,
+    /// Accepted user input is being recorded before an active turn's next sampling request.
+    /// This does not apply to tool outputs, cancellation, or task cleanup.
+    SteeredUserInput,
+}
+
+impl PersistContext {
+    /// Whether a store may enqueue this checkpoint before returning and fence it at a later
+    /// durability barrier. Stores may still choose to persist synchronously.
+    pub fn allows_background_persistence(self) -> bool {
+        match self {
+            Self::ThreadPreparation | Self::Standard => false,
+            Self::SubagentSpawn | Self::TurnStart | Self::SteeredUserInput => true,
+        }
+    }
 }
 
 /// Storage-neutral thread persistence boundary.
@@ -96,6 +157,14 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// Reads metadata staged for a reserved thread without persisting it.
+    fn read_pending_thread_metadata(
+        &self,
+        _thread_id: ThreadId,
+    ) -> ThreadStoreFuture<'_, Option<ThreadMetadataPatch>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Removes host-owned metadata staged for a reserved thread ID.
     fn remove_pending_thread_metadata(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async {
@@ -105,8 +174,34 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
-    /// Reopens an existing thread for live appends.
-    fn resume_thread(&self, params: ResumeThreadParams) -> ThreadStoreFuture<'_, ()>;
+    /// Reopens an existing thread for live appends and returns its authoritative replay context.
+    ///
+    /// Stored snapshots supplied by callers may predate writer acquisition. Implementations must
+    /// include writes committed before acquisition in the returned context. Explicitly supplied
+    /// histories without a canonical session header retain their import/override semantics.
+    /// A supplied revision may enable reuse of the shared snapshot after validation; missing or
+    /// unrecognized revisions must not be treated as proof that stored history is unchanged.
+    /// On failure, implementations must release any writer acquired by this operation.
+    fn resume_thread(
+        &self,
+        params: ResumeThreadParams,
+    ) -> ThreadStoreFuture<'_, Arc<Vec<RolloutItem>>>;
+
+    /// Reopens a thread using implementation-owned state prepared before Core startup.
+    ///
+    /// Stores should only override this when they also produce the preparation. The returned
+    /// history and failure cleanup guarantees are the same as [`Self::resume_thread`].
+    fn resume_thread_with_preparation(
+        &self,
+        _params: ResumeThreadParams,
+        _preparation: ThreadStoreResumePreparation,
+    ) -> ThreadStoreFuture<'_, Arc<Vec<RolloutItem>>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "resume_thread_with_preparation",
+            })
+        })
+    }
 
     /// Appends raw rollout items to a live thread.
     ///
@@ -114,11 +209,25 @@ pub trait ThreadStore: Any + Send + Sync {
     /// replay history and before updating any implementation-owned projections.
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()>;
 
+    /// Records metadata derived from rollout items.
+    /// Unlike [`Self::update_thread_metadata`], this allows the write to be deferred.
+    ///
+    /// The default implementation awaits the update. Deferred writes must respect the
+    /// flush and shutdown guarantees documented by [`Self::persist_thread`].
+    fn record_thread_metadata(
+        &self,
+        params: UpdateThreadMetadataParams,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move { self.update_thread_metadata(params).await.map(|_| ()) })
+    }
+
     /// Materializes the thread if persistence is lazy, then persists all queued items.
     ///
-    /// Standard persistence must complete before returning. Turn-start persistence may complete
-    /// in the background when the implementation enqueues it before returning, fences it with
-    /// subsequent flush or shutdown operations, and surfaces failures through those operations.
+    /// Preparation checkpoints may leave disposable preparation data in memory without
+    /// activating storage. Standard persistence must complete before returning. Contexts that allow background
+    /// persistence may complete asynchronously when the implementation enqueues the checkpoint
+    /// before returning, fences it with subsequent flush or shutdown operations, and surfaces
+    /// failures through those operations.
     fn persist_thread(
         &self,
         thread_id: ThreadId,
@@ -129,6 +238,7 @@ pub trait ThreadStore: Any + Send + Sync {
     fn flush_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 
     /// Flushes pending items and closes the live thread writer.
+    /// Stores with opt-in disposable preparations may discard an unactivated preparation.
     fn shutdown_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 
     /// Discards the live thread writer without forcing pending in-memory items to become durable.
@@ -138,7 +248,7 @@ pub trait ThreadStore: Any + Send + Sync {
     /// already-durable thread data.
     fn discard_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 
-    /// Loads persisted history for resume, fork, rollback, and memory jobs.
+    /// Loads persisted history for resume, fork, and memory jobs.
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,
@@ -156,6 +266,19 @@ pub trait ThreadStore: Any + Send + Sync {
                 operation: "load_latest_model_context",
             })
         })
+    }
+
+    /// Checks whether a previously loaded model context still represents the stored history.
+    ///
+    /// Stores that cannot validate the opaque revision must return false. A false result or an
+    /// error requires a fresh read. This does not acquire writer ownership;
+    /// [`Self::resume_thread`] must still validate the snapshot after acquisition.
+    fn is_model_context_current(
+        &self,
+        _params: LoadThreadHistoryParams,
+        _revision: String,
+    ) -> ThreadStoreFuture<'_, bool> {
+        Box::pin(async { Ok(false) })
     }
 
     /// Freezes source history and model context used to initialize a referenced fork.
@@ -247,6 +370,76 @@ pub trait ThreadStore: Any + Send + Sync {
         Box::pin(async {
             Err(ThreadStoreError::Unsupported {
                 operation: "threadSection/delete",
+            })
+        })
+    }
+
+    /// Whether this store can persist and discover thread-owned attachments.
+    fn supports_thread_attachments(&self) -> bool {
+        false
+    }
+
+    /// Copies current attachment membership into a newly persisted fork.
+    ///
+    /// Copies must be atomic and use new attachment IDs. The destination must be empty;
+    /// subsequent membership changes on either thread must remain independent.
+    fn copy_thread_attachments(
+        &self,
+        _source_thread_id: ThreadId,
+        _destination_thread_id: ThreadId,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "copy_thread_attachments",
+            })
+        })
+    }
+
+    /// Attaches an attachment, returning an existing attachment for repeated requests.
+    fn add_thread_attachment(
+        &self,
+        _params: AddThreadAttachmentParams,
+    ) -> ThreadStoreFuture<'_, AddThreadAttachmentOutcome> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "thread/attachment/add",
+            })
+        })
+    }
+
+    /// Lists attachments belonging to one persisted thread.
+    fn list_thread_attachments(
+        &self,
+        _params: ListThreadAttachmentsParams,
+    ) -> ThreadStoreFuture<'_, ThreadAttachmentPage> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "thread/attachment/list",
+            })
+        })
+    }
+
+    /// Lists owners of an exact attachment identity, without thread browser visibility filters.
+    /// Results describe persisted membership, not an atomic claim on the referenced resource.
+    fn list_thread_attachment_threads(
+        &self,
+        _params: ListThreadAttachmentThreadsParams,
+    ) -> ThreadStoreFuture<'_, ThreadAttachmentOwnerPage> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "thread/attachmentOwner/list",
+            })
+        })
+    }
+
+    /// Removes an attachment and reports whether it existed.
+    fn remove_thread_attachment(
+        &self,
+        _params: RemoveThreadAttachmentParams,
+    ) -> ThreadStoreFuture<'_, RemoveThreadAttachmentOutcome> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "thread/attachment/remove",
             })
         })
     }
@@ -426,10 +619,50 @@ pub trait ThreadStore: Any + Send + Sync {
     /// Unarchives a thread and returns its updated metadata.
     fn unarchive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, StoredThread>;
 
+    /// Restores threads in order, returning the first thread's metadata and restored ids.
+    ///
+    /// The requested thread must restore successfully; active descendants are skipped and
+    /// descendant failures are best effort. Stores can share rollout discovery work.
+    fn unarchive_threads(
+        &self,
+        params: ArchiveThreadParams,
+        descendant_thread_ids: Vec<ThreadId>,
+    ) -> ThreadStoreFuture<'_, (StoredThread, Vec<ThreadId>)> {
+        Box::pin(async move {
+            let thread_id = params.thread_id;
+            let root = self.unarchive_thread(params).await?;
+            let mut restored = vec![thread_id];
+            for thread_id in descendant_thread_ids {
+                let result = async {
+                    let thread = self
+                        .read_thread(ReadThreadParams {
+                            thread_id,
+                            include_archived: true,
+                            include_history: false,
+                        })
+                        .await?;
+                    if thread.archived_at.is_some() {
+                        self.unarchive_thread(ArchiveThreadParams { thread_id })
+                            .await?;
+                        restored.push(thread_id);
+                    }
+                    Ok::<_, ThreadStoreError>(())
+                }
+                .await;
+                if let Err(err) = result {
+                    tracing::warn!("failed to unarchive thread {thread_id}: {err}");
+                }
+            }
+            Ok((root, restored))
+        })
+    }
+
     /// Deletes a thread's persisted rollout data and associated metadata.
+    /// Success includes cleanup of associated persisted state; callers must not repeat it.
     fn delete_thread(&self, params: DeleteThreadParams) -> ThreadStoreFuture<'_, ()>;
 
-    /// Deletes threads in order, treating already-missing members as deleted.
+    /// Deletes threads and their associated persisted state in order, treating already-missing
+    /// members as deleted.
     ///
     /// Stores with request-scoped delete preflight should override this instead of repeating
     /// that work through [`ThreadStore::delete_thread`].

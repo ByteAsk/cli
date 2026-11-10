@@ -3,15 +3,16 @@ use codex_git_utils::GitBaselineDiff;
 use codex_git_utils::diff_since_latest_init;
 use codex_git_utils::ensure_git_baseline_repository;
 use codex_git_utils::reset_git_repository;
+use codex_protocol::MemoryVersion;
 #[cfg(windows)]
 use std::os::windows::fs::FileTypeExt;
 use std::path::Path;
 
 /// Prepares the memory directory for git-baseline diffing.
 ///
-/// This keeps an existing usable `.git/` baseline intact. It initializes a new git baseline when the
-/// metadata is missing or unusable, and removes any stale generated `phase2_workspace_diff.md` file
-/// so that the next diff does not include a previous prompt artifact.
+/// This keeps an existing current-version `.git/` baseline intact. Missing, outdated or unusable
+/// metadata is replaced with an empty baseline so existing memory files are reconsidered. Any stale
+/// generated `phase2_workspace_diff.md` is removed so it does not enter the next diff.
 pub async fn prepare_memory_workspace(root: &Path) -> anyhow::Result<()> {
     crate::ensure_layout(root)
         .await
@@ -23,8 +24,8 @@ pub async fn prepare_memory_workspace(root: &Path) -> anyhow::Result<()> {
 
 /// Returns the current workspace diff after removing any stale generated diff artifact.
 ///
-/// The removed file is only `phase2_workspace_diff.md`; memory artifacts and `.git/` metadata are
-/// left intact.
+/// Memory artifacts are left intact. The baseline is invalidated if a tracked file has grown
+/// beyond the snapshot size limit since preparation.
 pub async fn memory_workspace_diff(root: &Path) -> anyhow::Result<GitBaselineDiff> {
     remove_workspace_diff(root).await?;
     diff_since_latest_init(root).await
@@ -47,26 +48,55 @@ pub async fn reset_memory_workspace_baseline(root: &Path) -> anyhow::Result<()> 
     reset_git_repository(root).await
 }
 
+/// Sums regular-file contents without reading them, excluding git metadata and symbolic links.
+pub(crate) async fn memory_storage_bytes(root: &Path) -> std::io::Result<u64> {
+    let mut paths = vec![root.to_path_buf()];
+    let mut bytes = 0_u64;
+    while let Some(path) = paths.pop() {
+        let metadata = tokio::fs::symlink_metadata(&path).await?;
+        if metadata.is_file() {
+            bytes = bytes.saturating_add(metadata.len());
+        } else if metadata.is_dir() {
+            let mut entries = tokio::fs::read_dir(&path).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                if entry.file_name() != ".git" {
+                    paths.push(entry.path());
+                }
+            }
+        }
+    }
+    Ok(bytes)
+}
+
 /// Verifies that a completed consolidation run left the required memory artifacts in place.
 pub async fn validate_consolidation_artifacts(root: &Path) -> anyhow::Result<()> {
+    validate_consolidation_artifacts_for_version(root, MemoryVersion::V1).await
+}
+
+pub(crate) async fn validate_consolidation_artifacts_for_version(
+    root: &Path,
+    version: MemoryVersion,
+) -> anyhow::Result<()> {
     let removed_symlinks = remove_memory_symlinks(root).await?;
     anyhow::ensure!(
         removed_symlinks == 0,
         "removed {removed_symlinks} symbolic links from consolidated memory workspace"
     );
 
-    let memory_path = root.join("MEMORY.md");
-    let memory_metadata = tokio::fs::metadata(&memory_path).await.with_context(|| {
-        format!(
-            "read consolidated memory artifact {}",
+    if version == MemoryVersion::V1 {
+        let memory_path = root.join("MEMORY.md");
+        let memory_metadata = tokio::fs::metadata(&memory_path).await.with_context(|| {
+            format!(
+                "read consolidated memory artifact {}",
+                memory_path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            memory_metadata.is_file(),
+            "consolidated memory artifact is not a file: {}",
             memory_path.display()
-        )
-    })?;
-    anyhow::ensure!(
-        memory_metadata.is_file(),
-        "consolidated memory artifact is not a file: {}",
-        memory_path.display()
-    );
+        );
+    }
 
     let summary_path = root.join("memory_summary.md");
     let summary = tokio::fs::read_to_string(&summary_path)
@@ -78,7 +108,24 @@ pub async fn validate_consolidation_artifacts(root: &Path) -> anyhow::Result<()>
         summary_path.display()
     );
 
+    if version == MemoryVersion::V2 {
+        anyhow::ensure!(is_valid_v2_summary(&summary), "invalid v2 memory summary");
+    }
     Ok(())
+}
+
+/// Checks the artifact shared by the writer and the read-only readiness endpoint.
+pub fn is_valid_v2_summary(summary: &str) -> bool {
+    summary.lines().next() == Some("v1")
+        && summary.len() < 10_000
+        && [
+            "## User Profile",
+            "## User preferences",
+            "## General Tips",
+            "## What's in Memory",
+        ]
+        .iter()
+        .all(|heading| summary.lines().any(|line| line.trim() == *heading))
 }
 
 pub(crate) async fn remove_memory_symlinks(root: &Path) -> std::io::Result<usize> {

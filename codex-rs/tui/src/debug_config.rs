@@ -206,14 +206,6 @@ fn render_debug_config_lines(
         ));
     }
 
-    if let Some(sandbox_private_desktop) = requirements.windows_sandbox_private_desktop.as_ref() {
-        requirement_lines.push(requirement_line(
-            "windows.sandbox_private_desktop",
-            sandbox_private_desktop.value.to_string(),
-            Some(&sandbox_private_desktop.source),
-        ));
-    }
-
     if let Some(policies) = requirements_toml.allowed_approval_policies.as_ref() {
         let value = join_or_empty(policies.iter().map(ToString::to_string).collect::<Vec<_>>());
         requirement_lines.push(requirement_line(
@@ -366,8 +358,18 @@ fn render_debug_config_lines(
     }
 
     if let Some(network) = requirements.network.as_ref() {
+        let key = if requirements_toml
+            .permissions
+            .as_ref()
+            .and_then(|permissions| permissions.network.as_ref())
+            .is_some()
+        {
+            "permissions.network"
+        } else {
+            "network_proxy"
+        };
         requirement_lines.push(requirement_line(
-            "experimental_network",
+            key,
             format_network_constraints(&network.value),
             Some(&network.source),
         ));
@@ -565,6 +567,7 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
         dangerously_allow_non_loopback_proxy,
         dangerously_allow_all_unix_sockets,
         domains,
+        review_domains,
         managed_allowed_domains_only,
         unix_sockets,
         allow_local_binding,
@@ -598,6 +601,9 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
             "domains={}",
             format_network_permission_entries(&domains.entries, format_network_domain_permission)
         ));
+    }
+    if let Some(review_domains) = review_domains {
+        parts.push(format!("review_domains={{{}}}", review_domains.join(", ")));
     }
     if let Some(managed_allowed_domains_only) = managed_allowed_domains_only {
         parts.push(format!(
@@ -674,6 +680,7 @@ mod tests {
     use codex_config::ConfigLayerStack;
     use codex_config::ConfigRequirements;
     use codex_config::ConfigRequirementsToml;
+    use codex_config::ConfigRequirementsWithSources;
     use codex_config::Constrained;
     use codex_config::ConstrainedWithSource;
     use codex_config::ConstraintError;
@@ -865,10 +872,6 @@ interrupt_message = false
                 },
                 RequirementSource::LegacyManagedConfigTomlFromMdm,
             )),
-            windows_sandbox_private_desktop: Some(Sourced::new(
-                /*value*/ false,
-                RequirementSource::LegacyManagedConfigTomlFromMdm,
-            )),
             approval_policy: ConstrainedWithSource::new(
                 Constrained::allow_any(AskForApproval::OnRequest.to_core()),
                 Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
@@ -929,6 +932,7 @@ interrupt_message = false
                             NetworkDomainPermissionToml::Allow,
                         )]),
                     }),
+                    review_domains: Some(vec!["api.example.com".to_string()]),
                     header_injections: Some(vec![NetworkHeaderInjectionToml {
                         host: "api.example.com".to_string(),
                         methods: vec!["POST".to_string()],
@@ -955,13 +959,18 @@ interrupt_message = false
         };
 
         let requirements_toml = ConfigRequirementsToml {
+            config_server: None,
+            application: None,
             allowed_login_methods: None,
             allowed_chatgpt_workspaces: None,
             cli_auth_credentials_store: None,
             chatgpt_base_url: None,
             sqlite_home: Some(sqlite_home),
+            unsafe_enforce_sqlite_journal_mode: None,
             log_dir: Some(log_dir),
             model_catalog_json: Some(model_catalog_json),
+            model_provider: None,
+            model_providers: None,
             check_for_update_on_startup: Some(false),
             allow_login_shell: Some(false),
             feedback: Some(FeedbackConfigToml {
@@ -983,10 +992,12 @@ interrupt_message = false
             in_app_browser: None,
             windows: Some(WindowsRequirementsToml {
                 allowed_sandbox_implementations: None,
-                sandbox_private_desktop: Some(false),
+                allow_mxc: None,
+                require_mxc: None,
             }),
             additional_developer_instructions: None,
             guardian_policy_config: Some("Use the managed guardian policy.".to_string()),
+            guardian_extra_policy: None,
             feature_requirements: Some(FeatureRequirementsToml {
                 entries: BTreeMap::from([("guardian_approval".to_string(), true)]),
             }),
@@ -1001,6 +1012,7 @@ interrupt_message = false
             )])),
             plugins: None,
             marketplaces: None,
+            otel: None,
             apps: None,
             rules: None,
             enforce_residency: Some(ResidencyRequirement::Us),
@@ -1071,7 +1083,7 @@ interrupt_message = false
             "enforce_residency: us (source: {requirements_source})"
         )));
         assert!(rendered.contains(&format!(
-            "experimental_network: enabled=true, domains={{example.com=allow}}, header_injections=1 hosts={{api.example.com}} (source: {requirements_source})"
+            "network_proxy: enabled=true, domains={{example.com=allow}}, review_domains={{api.example.com}}, header_injections=1 hosts={{api.example.com}} (source: {requirements_source})"
         )));
         assert!(!rendered.contains("secret-looking-value"));
         assert!(
@@ -1227,8 +1239,29 @@ interrupt_message = false
         let rendered = render_stack_to_text(&stack);
         let requirements_source = (RequirementSource::LegacyManagedConfigTomlFromMdm).to_string();
         assert!(rendered.contains(&format!(
-            "experimental_network: unix_sockets={{/tmp/blocked.sock=deny, /tmp/codex.sock=allow}} (source: {requirements_source})"
+            "network_proxy: unix_sockets={{/tmp/blocked.sock=deny, /tmp/codex.sock=allow}} (source: {requirements_source})"
         )));
+    }
+
+    #[test]
+    fn debug_config_network_requirement_surfaces() {
+        let mut outputs = Vec::new();
+        for table in [
+            "network_proxy",
+            "experimental_network",
+            "permissions.network",
+        ] {
+            let toml: ConfigRequirementsToml =
+                toml::from_str(&format!("[{table}]\nenabled = true")).expect("requirements");
+            let mut sourced = ConfigRequirementsWithSources::default();
+            sourced.merge_unset_fields(RequirementSource::Unknown, toml.clone());
+            let requirements = ConfigRequirements::try_from(sourced).expect("valid requirements");
+            let stack =
+                ConfigLayerStack::new(Vec::new(), requirements, toml).expect("config layer stack");
+            outputs.push(format!("{table}:\n{}", render_stack_to_text(&stack)));
+        }
+
+        insta::assert_snapshot!(outputs.join("\n\n"));
     }
 
     #[test]
@@ -1357,6 +1390,7 @@ approval_policy = "never"
             computer_use: None,
             windows: None,
             guardian_policy_config: None,
+            guardian_extra_policy: None,
             feature_requirements: None,
             hooks: None,
             mcp_servers: None,
@@ -1392,7 +1426,7 @@ approval_policy = "never"
                         std::path::PathBuf::from("/enterprise/hooks")
                     }),
                     windows_managed_dir: Some(std::path::PathBuf::from(r"C:\enterprise\hooks")),
-                    hooks: HookEventsToml {
+                    hooks: Box::new(HookEventsToml {
                         pre_tool_use: vec![MatcherGroup {
                             matcher: Some("^Bash$".to_string()),
                             hooks: vec![HookHandlerConfig::Command {
@@ -1405,7 +1439,7 @@ approval_policy = "never"
                             }],
                         }],
                         ..Default::default()
-                    },
+                    }),
                 }),
                 Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
             )),

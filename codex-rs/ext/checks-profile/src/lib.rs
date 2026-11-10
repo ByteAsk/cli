@@ -98,11 +98,7 @@ pub const DEFAULT_NON_CODE: &[&str] = &[
 
 /// Paths that are code even when a non-code pattern matches them, when the profile does not
 /// name its own `code` list (build files with a text extension).
-pub const DEFAULT_CODE: &[&str] = &[
-    "**/*.cmake",
-    "**/conanfile.txt",
-    "**/requirements*.txt",
-];
+pub const DEFAULT_CODE: &[&str] = &["**/*.cmake", "**/conanfile.txt", "**/requirements*.txt"];
 
 /// Always code, whatever the profile says: the checks' own settings and CMake's build files.
 /// A change to the profile or the test manifest must never be skipped as "docs only".
@@ -234,7 +230,9 @@ impl Profile {
             );
         for (name, run, timeout) in steps {
             if run.is_empty() || run.iter().any(|command| command.trim().is_empty()) {
-                return Err(format!("{PATH}: [{name}] needs at least one non-empty command in `run`"));
+                return Err(format!(
+                    "{PATH}: [{name}] needs at least one non-empty command in `run`"
+                ));
             }
             if let Some(secs) = timeout
                 && !(1..=MAX_TIMEOUT_SECS).contains(&secs)
@@ -259,7 +257,10 @@ impl Profile {
                 ));
             }
             if RESERVED_NAMES.contains(&check.name.as_str()) || names.contains(&&check.name) {
-                return Err(format!("{PATH}: slow check name {:?} is used twice or reserved", check.name));
+                return Err(format!(
+                    "{PATH}: slow check name {:?} is used twice or reserved",
+                    check.name
+                ));
             }
             names.push(&check.name);
         }
@@ -274,7 +275,11 @@ impl Profile {
                 }
             }
         }
-        if self.merge.reviewer_may_approve.contains(&NotRunReason::NotChecked) {
+        if self
+            .merge
+            .reviewer_may_approve
+            .contains(&NotRunReason::NotChecked)
+        {
             return Err(format!(
                 "{PATH}: [merge] reviewer_may_approve cannot list not_checked: a version CI never \
                  checked cannot be approved"
@@ -484,7 +489,8 @@ fn find_compile_db_build_tree(root: &Path) -> Option<String> {
         candidates.extend(dirs);
     }
     candidates.into_iter().find_map(|dir| {
-        let has = dir.join("compile_commands.json").is_file() && dir.join("CMakeCache.txt").is_file();
+        let has =
+            dir.join("compile_commands.json").is_file() && dir.join("CMakeCache.txt").is_file();
         if !has {
             return None;
         }
@@ -508,8 +514,13 @@ fn render_proposal(build: &[String], test: &[String]) -> String {
          # the merge check reads it from there, never from the branch being checked.\n\
          schema = 1\n\n",
     );
-    text.push_str("# The golden-path build: each command runs with bash -c from the repository root.\n");
-    text.push_str(&format!("[build]\nrun = {}\ntimeout_secs = 1800\n\n", toml_list(build)));
+    text.push_str(
+        "# The golden-path build: each command runs with bash -c from the repository root.\n",
+    );
+    text.push_str(&format!(
+        "[build]\nrun = {}\ntimeout_secs = 1800\n\n",
+        toml_list(build)
+    ));
     text.push_str("# The golden-path tests. Reports go in $BYTEASK_RESULTS_DIR.\n");
     text.push_str(&format!(
         "[test]\nrun = {}\ntimeout_secs = 1800\njunit = \"junit.xml\"\n\

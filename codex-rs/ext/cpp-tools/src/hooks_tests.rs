@@ -4,10 +4,26 @@ use crate::impact::tests::git;
 fn repo() -> Option<tempfile::TempDir> {
     let dir = tempfile::tempdir().ok()?;
     std::fs::create_dir_all(dir.path().join("src")).ok()?;
-    std::fs::write(dir.path().join("src/tool.c"), "int answer(void) { return 1; }\n").ok()?;
+    std::fs::write(
+        dir.path().join("src/tool.c"),
+        "int answer(void) { return 1; }\n",
+    )
+    .ok()?;
     (git(dir.path(), &["init", "-q"])
         && git(dir.path(), &["add", "-A"])
-        && git(dir.path(), &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "b"]))
+        && git(
+            dir.path(),
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "b",
+            ],
+        ))
     .then_some(dir)
 }
 
@@ -41,9 +57,22 @@ async fn nothing_changed_or_no_session_start_means_no_claim() {
     let home = tempfile::tempdir().unwrap();
     let ctx = ctx(home.path(), dir.path());
     // No SessionStart snapshot: the agent's changes are unknown.
-    assert_eq!(stop(&ctx).await, StopDecision::Allow { message: None, follow_up: false });
+    assert_eq!(
+        stop(&ctx).await,
+        StopDecision::Allow {
+            message: None,
+            follow_up: false
+        }
+    );
     session_start(&ctx, true).await;
-    assert_eq!(stop(&ctx).await, StopDecision::Allow { message: None, follow_up: false }, "nothing changed");
+    assert_eq!(
+        stop(&ctx).await,
+        StopDecision::Allow {
+            message: None,
+            follow_up: false
+        },
+        "nothing changed"
+    );
 }
 
 #[tokio::test]
@@ -55,7 +84,11 @@ async fn a_failure_goes_back_to_the_agent_until_the_retry_limit_then_ends_as_fai
     let home = tempfile::tempdir().unwrap();
     let ctx = ctx(home.path(), dir.path());
     session_start(&ctx, true).await;
-    std::fs::write(dir.path().join("src/tool.c"), "int answer(void) { return 2; }\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/tool.c"),
+        "int answer(void) { return 2; }\n",
+    )
+    .unwrap();
     // A file the change does not use: the gate's leftover check fails it.
     std::fs::write(dir.path().join("scratch.txt"), "notes").unwrap();
 
@@ -68,7 +101,11 @@ async fn a_failure_goes_back_to_the_agent_until_the_retry_limit_then_ends_as_fai
     // Unchanged code: the same failure again (not rebuilt), round 2 of 2.
     assert!(matches!(stop(&ctx).await, StopDecision::Block { .. }));
     // The retry limit: the turn ends, and it ends as FAIL, shown to the user.
-    let StopDecision::Allow { message: Some(message), .. } = stop(&ctx).await else {
+    let StopDecision::Allow {
+        message: Some(message),
+        ..
+    } = stop(&ctx).await
+    else {
         panic!("the retry limit must let the turn end with a message");
     };
     assert!(message.contains("Result: FAIL"), "{message}");
@@ -92,15 +129,27 @@ async fn a_check_that_cannot_run_lets_the_turn_end_and_says_why() {
     let home = tempfile::tempdir().unwrap();
     let ctx = ctx(home.path(), dir.path());
     session_start(&ctx, true).await;
-    std::fs::write(dir.path().join("src/tool.c"), "int answer(void) { return 3; }\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/tool.c"),
+        "int answer(void) { return 3; }\n",
+    )
+    .unwrap();
     // Not trusted for native builds: NOT RUN, never a loop, never PASS.
     let decision = stop(&ctx).await;
-    let StopDecision::Allow { message: Some(message), .. } = &decision else {
+    let StopDecision::Allow {
+        message: Some(message),
+        ..
+    } = &decision
+    else {
         panic!("NOT RUN must let the turn end: {decision:?}");
     };
     assert!(message.contains("Result: NOT RUN"), "{message}");
     // After an edit the stored result reads as stale in the next prompt.
-    std::fs::write(dir.path().join("src/tool.c"), "int answer(void) { return 4; }\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/tool.c"),
+        "int answer(void) { return 4; }\n",
+    )
+    .unwrap();
     let told = prompt(&ctx).await.expect("reported");
     assert!(told.contains("STALE"), "{told}");
 }
@@ -114,10 +163,20 @@ async fn a_resumed_session_keeps_the_snapshot_it_started_with() {
     let home = tempfile::tempdir().unwrap();
     let ctx = ctx(home.path(), dir.path());
     session_start(&ctx, true).await;
-    std::fs::write(dir.path().join("src/tool.c"), "int answer(void) { return 5; }\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/tool.c"),
+        "int answer(void) { return 5; }\n",
+    )
+    .unwrap();
     session_start(&ctx, false).await;
     // The edit made before the resume is still the agent's change.
-    assert!(matches!(stop(&ctx).await, StopDecision::Allow { message: Some(_), .. }));
+    assert!(matches!(
+        stop(&ctx).await,
+        StopDecision::Allow {
+            message: Some(_),
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -143,7 +202,19 @@ fn slow_cmake_repo() -> Option<tempfile::TempDir> {
     std::fs::write(root.join("src/t.cpp"), "int main() { return 0; }\n").ok()?;
     (git(root, &["init", "-q"])
         && git(root, &["add", "-A"])
-        && git(root, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "b"]))
+        && git(
+            root,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "b",
+            ],
+        ))
     .then_some(dir)
 }
 
@@ -154,7 +225,9 @@ async fn a_check_that_does_not_fit_the_fast_tier_is_finished_by_the_follow_up() 
         return;
     };
     if std::env::var_os("BYTEASK_TEST_SANDBOX_HELPER").is_none() {
-        eprintln!("skip: BYTEASK_TEST_SANDBOX_HELPER not set (the hook gate builds in the sandbox)");
+        eprintln!(
+            "skip: BYTEASK_TEST_SANDBOX_HELPER not set (the hook gate builds in the sandbox)"
+        );
         return;
     }
     let home = tempfile::tempdir().unwrap();
@@ -162,10 +235,18 @@ async fn a_check_that_does_not_fit_the_fast_tier_is_finished_by_the_follow_up() 
     ctx.native_exec = true;
     ctx.fast_tier = Some(Duration::from_millis(500));
     session_start(&ctx, true).await;
-    std::fs::write(dir.path().join("src/t.cpp"), "int main() { return 0; } // edited\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/t.cpp"),
+        "int main() { return 0; } // edited\n",
+    )
+    .unwrap();
 
     let first = stop(&ctx).await;
-    let StopDecision::Allow { message: Some(message), follow_up: start } = &first else {
+    let StopDecision::Allow {
+        message: Some(message),
+        follow_up: start,
+    } = &first
+    else {
         panic!("{first:?}");
     };
     assert!(message.contains("NOT RUN (time limit)"), "{message}");
@@ -173,12 +254,24 @@ async fn a_check_that_does_not_fit_the_fast_tier_is_finished_by_the_follow_up() 
 
     follow_up(&ctx).await;
     let stored = results_store::all(home.path(), dir.path());
-    let full = stored.iter().find(|entry| entry.tier == "full").expect("the full result is stored");
-    assert_eq!(full.result.verdict, check_result::Verdict::Pass, "{:?}", full.result);
+    let full = stored
+        .iter()
+        .find(|entry| entry.tier == "full")
+        .expect("the full result is stored");
+    assert_eq!(
+        full.result.verdict,
+        check_result::Verdict::Pass,
+        "{:?}",
+        full.result
+    );
 
     // The next Stop for the same code takes the full result: PASS, no follow-up, no rebuild.
     let next = stop(&ctx).await;
-    let StopDecision::Allow { message: Some(message), follow_up: start } = &next else {
+    let StopDecision::Allow {
+        message: Some(message),
+        follow_up: start,
+    } = &next
+    else {
         panic!("{next:?}");
     };
     assert!(message.contains("Result: PASS"), "{message}");
@@ -279,14 +372,28 @@ async fn a_persons_skip_ends_the_turn_as_not_run_skipped_never_pass() {
     let home = tempfile::tempdir().unwrap();
     let ctx = ctx(home.path(), dir.path());
     session_start(&ctx, true).await;
-    std::fs::write(dir.path().join("src/tool.c"), "int answer(void) { return 7; }\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/tool.c"),
+        "int answer(void) { return 7; }\n",
+    )
+    .unwrap();
     // Would FAIL (leftover file) without the skip.
     std::fs::write(dir.path().join("scratch.txt"), "notes").unwrap();
-    crate::skip::record(home.path(), dir.path(), crate::gate::CHECK, "rig is down", "alice")
-        .await
-        .expect("recorded");
+    crate::skip::record(
+        home.path(),
+        dir.path(),
+        crate::gate::CHECK,
+        "rig is down",
+        "alice",
+    )
+    .await
+    .expect("recorded");
     let decision = stop(&ctx).await;
-    let StopDecision::Allow { message: Some(message), follow_up: false } = &decision else {
+    let StopDecision::Allow {
+        message: Some(message),
+        follow_up: false,
+    } = &decision
+    else {
         panic!("a skip lets the turn end: {decision:?}");
     };
     assert!(
@@ -295,7 +402,11 @@ async fn a_persons_skip_ends_the_turn_as_not_run_skipped_never_pass() {
     );
     assert!(!message.contains("PASS"), "{message}");
     // An edit ends the skip: the gate runs and the leftover file fails it again.
-    std::fs::write(dir.path().join("src/tool.c"), "int answer(void) { return 8; }\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/tool.c"),
+        "int answer(void) { return 8; }\n",
+    )
+    .unwrap();
     assert!(matches!(stop(&ctx).await, StopDecision::Block { .. }));
 }
 
@@ -325,13 +436,29 @@ async fn a_cancel_request_stops_the_check_within_two_seconds() {
     .unwrap();
     std::fs::write(root.join("src/t.cpp"), "int main() { return 0; }\n").unwrap();
     assert!(git(root, &["init", "-q"]) && git(root, &["add", "-A"]));
-    assert!(git(root, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "b"]));
+    assert!(git(
+        root,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "b"
+        ]
+    ));
     let home = tempfile::tempdir().unwrap();
     let mut ctx = ctx(home.path(), root);
     ctx.native_exec = true;
     ctx.fast_tier = Some(Duration::from_secs(120));
     session_start(&ctx, true).await;
-    std::fs::write(root.join("src/t.cpp"), "int main() { return 0; } // edited\n").unwrap();
+    std::fs::write(
+        root.join("src/t.cpp"),
+        "int main() { return 0; } // edited\n",
+    )
+    .unwrap();
 
     let home_path = home.path().to_path_buf();
     let root_path = root.to_path_buf();
@@ -348,7 +475,9 @@ async fn a_cancel_request_stops_the_check_within_two_seconds() {
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
         *at.lock().unwrap() = Some(std::time::Instant::now());
-        crate::cancel::request(&home_path, &root_path).await.unwrap();
+        crate::cancel::request(&home_path, &root_path)
+            .await
+            .unwrap();
     });
     let decision = stop(&ctx).await;
     let returned = std::time::Instant::now();
@@ -359,14 +488,24 @@ async fn a_cancel_request_stops_the_check_within_two_seconds() {
         "stopped {:?} after the request",
         returned.duration_since(asked)
     );
-    let StopDecision::Allow { message: Some(message), follow_up: false } = &decision else {
+    let StopDecision::Allow {
+        message: Some(message),
+        follow_up: false,
+    } = &decision
+    else {
         panic!("a cancel lets the turn end: {decision:?}");
     };
     assert!(message.contains("Result: NOT RUN (cancelled)"), "{message}");
     let stored = results_store::latest(home.path(), root).expect("stored");
-    assert_eq!(stored.result.reason, Some(check_result::NotRunReason::Cancelled));
+    assert_eq!(
+        stored.result.reason,
+        Some(check_result::NotRunReason::Cancelled)
+    );
     // Nothing the check started keeps running.
-    assert!(!slow_step_running(), "the build's slow step is still running");
+    assert!(
+        !slow_step_running(),
+        "the build's slow step is still running"
+    );
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!marker.exists());
 }
@@ -408,19 +547,41 @@ async fn a_check_that_runs_out_of_time_says_why_the_build_is_slow() {
         .to_string(),
     )
     .unwrap();
-    std::fs::write(dir.path().join("src/t.cpp"), "int main() { return 0; } // edited\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/t.cpp"),
+        "int main() { return 0; } // edited\n",
+    )
+    .unwrap();
     let first = stop(&ctx).await;
-    let StopDecision::Allow { message: Some(message), .. } = &first else {
+    let StopDecision::Allow {
+        message: Some(message),
+        ..
+    } = &first
+    else {
         panic!("{first:?}");
     };
     assert!(message.contains("NOT RUN (time limit)"), "{message}");
     assert!(message.contains("Why the build is slow"), "{message}");
-    assert!(message.contains("61.0 s  CMakeFiles/t_test.dir/src/t.cpp"), "{message}");
-    assert!(message.contains("12.0 s  class std::map<int, Order> (in 1 file(s))"), "{message}");
+    assert!(
+        message.contains("61.0 s  CMakeFiles/t_test.dir/src/t.cpp"),
+        "{message}"
+    );
+    assert!(
+        message.contains("12.0 s  class std::map<int, Order> (in 1 file(s))"),
+        "{message}"
+    );
     // Once per session.
-    std::fs::write(dir.path().join("src/t.cpp"), "int main() { return 0; } // again\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/t.cpp"),
+        "int main() { return 0; } // again\n",
+    )
+    .unwrap();
     let second = stop(&ctx).await;
-    let StopDecision::Allow { message: Some(message), .. } = &second else {
+    let StopDecision::Allow {
+        message: Some(message),
+        ..
+    } = &second
+    else {
         panic!("{second:?}");
     };
     assert!(!message.contains("Why the build is slow"), "{message}");

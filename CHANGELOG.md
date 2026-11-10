@@ -8,6 +8,12 @@ between releases.
 
 ## [Unreleased]
 
+### Changed
+
+- Merged upstream OpenAI Codex CLI `rust-v0.167.0` (from `rust-v0.153.4`). Upstream changes include a
+  background clipboard worker, reworked context updates and new terminal tips; ByteAsk's tools, sign-in and
+  panes are carried over. Tips that pointed to OpenAI's forum, Discord and desktop app are not shown.
+
 ### Added
 
 - Source code published under the Apache License 2.0.

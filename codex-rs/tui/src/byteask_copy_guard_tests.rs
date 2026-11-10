@@ -132,8 +132,8 @@ fn names_codex(literal: &str) -> bool {
             .iter()
             .collect::<String>()
             .to_ascii_lowercase();
-        let looks_like_a_model_id = prefix.contains("gpt")
-            && matches!(prefix.chars().next_back(), Some('-') | Some(' '));
+        let looks_like_a_model_id =
+            prefix.contains("gpt") && matches!(prefix.chars().next_back(), Some('-') | Some(' '));
         if !looks_like_a_model_id {
             return true;
         }
@@ -433,7 +433,13 @@ fn violations(source: &str) -> Vec<Finding> {
     string_literals(strip_test_module(source))
         .into_iter()
         .filter(|(_, literal)| !allowed.contains(literal.as_str()))
-        .filter_map(|(line, literal)| broken_rule(&literal).map(|rule| Finding { line, literal, rule }))
+        .filter_map(|(line, literal)| {
+            broken_rule(&literal).map(|rule| Finding {
+                line,
+                literal,
+                rule,
+            })
+        })
         .collect()
 }
 
@@ -453,7 +459,10 @@ fn rs_files_in(dir: &Path, prefix: Option<&str>) -> Vec<PathBuf> {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
         .filter(|path| {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
             // This file quotes every banned word as test data; guarding it would be a
             // guaranteed false positive.
             name != "byteask_copy_guard_tests.rs"
@@ -560,7 +569,10 @@ mod guard_tests {
             (r#"let s = "Routed through Vertex";"#, Rule::Vertex),
             (r#"let s = "Faster than Claude Code";"#, Rule::Competitor),
             (r#"let s = "Nicer than Cursor";"#, Rule::Competitor),
-            (r#"let s = "Pay at https://rzp.io/i/x";"#, Rule::PaymentDomain),
+            (
+                r#"let s = "Pay at https://rzp.io/i/x";"#,
+                Rule::PaymentDomain,
+            ),
             (r#"let s = "\u{1F389} Pro claimed";"#, Rule::Emoji),
             (r#"let s = "Signed in successfully!";"#, Rule::Exclamation),
             (r#"let s = "answered with auto instead";"#, Rule::AutoSlug),
@@ -574,7 +586,10 @@ mod guard_tests {
     fn an_escaped_emoji_is_still_an_emoji() {
         // The literal below is written with a `\u{...}` escape, which renders as 🎉 but reads
         // as plain ASCII in the source. Without decoding, this is a silent bypass.
-        assert_eq!(rules(r#"let s = "\u{1F389} Pro claimed";"#), vec![Rule::Emoji]);
+        assert_eq!(
+            rules(r#"let s = "\u{1F389} Pro claimed";"#),
+            vec![Rule::Emoji]
+        );
         // A backslash that is not a unicode escape is left alone.
         assert_eq!(rules(r#"let s = "line\nbreak";"#), Vec::<Rule>::new());
         assert_eq!(rules(r#"let s = "say \"hi\" now";"#), Vec::<Rule>::new());
@@ -594,7 +609,11 @@ mod guard_tests {
         // range-only check would ban the product's own vocabulary.
         for glyph in GLYPH_VOCABULARY {
             let source = format!("let s = \"{glyph} Copied to your clipboard\";");
-            assert_eq!(rules(&source), Vec::<Rule>::new(), "{glyph} flagged as emoji");
+            assert_eq!(
+                rules(&source),
+                Vec::<Rule>::new(),
+                "{glyph} flagged as emoji"
+            );
         }
     }
 
@@ -612,7 +631,10 @@ mod guard_tests {
             vec![Rule::Codex]
         );
         // Lowercase `codex` is a functional slug (paths, config keys), never policed.
-        assert_eq!(rules(r#"let s = "~/.codex/config.toml";"#), Vec::<Rule>::new());
+        assert_eq!(
+            rules(r#"let s = "~/.codex/config.toml";"#),
+            Vec::<Rule>::new()
+        );
         // A longer identifier is not the brand word.
         assert_eq!(rules(r#"let s = "CodexAuth";"#), Vec::<Rule>::new());
     }
@@ -627,7 +649,10 @@ mod guard_tests {
             rules(r#"let s = "Any OpenAI-compatible server";"#),
             Vec::<Rule>::new()
         );
-        assert_eq!(rules(r#"let s = "Answered by OpenAI";"#), vec![Rule::OpenAi]);
+        assert_eq!(
+            rules(r#"let s = "Answered by OpenAI";"#),
+            vec![Rule::OpenAi]
+        );
     }
 
     #[test]
@@ -636,10 +661,19 @@ mod guard_tests {
         assert_eq!(rules(r#"let s = "auto";"#), Vec::<Rule>::new());
         assert_eq!(rules(r#"let s = "model=auto";"#), Vec::<Rule>::new());
         assert_eq!(rules(r#"let s = "auto-review is on";"#), Vec::<Rule>::new());
-        assert_eq!(rules(r#"let s = "gpt-auto/mini here";"#), Vec::<Rule>::new());
+        assert_eq!(
+            rules(r#"let s = "gpt-auto/mini here";"#),
+            Vec::<Rule>::new()
+        );
         // The display name is what prose uses.
-        assert_eq!(rules(r#"let s = "Auto picks a model";"#), Vec::<Rule>::new());
-        assert_eq!(rules(r#"let s = "we used auto instead";"#), vec![Rule::AutoSlug]);
+        assert_eq!(
+            rules(r#"let s = "Auto picks a model";"#),
+            Vec::<Rule>::new()
+        );
+        assert_eq!(
+            rules(r#"let s = "we used auto instead";"#),
+            vec![Rule::AutoSlug]
+        );
     }
 
     #[test]
@@ -674,7 +708,10 @@ mod tests {
     #[test]
     fn raw_strings_are_read_too() {
         assert_eq!(rules("let s = r\"Codex here\";"), vec![Rule::Codex]);
-        assert_eq!(rules("let s = r#\"Codex \"quoted\" here\"#;"), vec![Rule::Codex]);
+        assert_eq!(
+            rules("let s = r#\"Codex \"quoted\" here\"#;"),
+            vec![Rule::Codex]
+        );
     }
 
     #[test]
@@ -702,7 +739,10 @@ mod tests {
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         for expected in ["byteask_a11y.rs", "byteask_account.rs"] {
-            assert!(names.contains(&expected.to_string()), "missing {expected} in {names:?}");
+            assert!(
+                names.contains(&expected.to_string()),
+                "missing {expected} in {names:?}"
+            );
         }
         assert!(
             !names.contains(&"byteask_copy_guard_tests.rs".to_string()),

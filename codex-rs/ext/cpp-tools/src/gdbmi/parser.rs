@@ -368,7 +368,8 @@ mod tests {
     fn octal_escapes_decode_to_utf8() {
         // Verbatim from gdb 13: every non-ASCII byte arrives as `\NNN`, and a
         // multi-byte character is several of them.
-        let line = r#"~"3\tstd::string s = \"caf\303\251-\344\270\255\346\226\207-\360\237\232\200\";\n""#;
+        let line =
+            r#"~"3\tstd::string s = \"caf\303\251-\344\270\255\346\226\207-\360\237\232\200\";\n""#;
         match parse_mi_line(line) {
             MiRecord::Stream { text, .. } => {
                 assert_eq!(text, "3\tstd::string s = \"café-中文-🚀\";\n");
@@ -493,7 +494,10 @@ mod tests {
         let line = r#"^done,stack=[frame={level="0",func="a"},frame={level="1",func="b"}]"#;
         match parse_mi_line(line) {
             MiRecord::Result { payload, .. } => {
-                let stack = payload.get("stack").and_then(Value::as_array).expect("array");
+                let stack = payload
+                    .get("stack")
+                    .and_then(Value::as_array)
+                    .expect("array");
                 assert_eq!(stack.len(), 2);
             }
             other => panic!("expected result, got {other:?}"),

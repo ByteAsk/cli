@@ -7,15 +7,13 @@ use codex_exec_server::ShellInfo;
 use codex_exec_server::ShellSnapshotRequest;
 use codex_features::Feature;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::sandbox::SandboxOverride;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxablePreference;
 use codex_tools::ToolName;
-use codex_tools::UnifiedExecShellMode;
-use codex_utils_path_uri::PathUri;
 use tokio_util::task::AbortOnDropHandle;
 use uuid::Uuid;
 
-use super::ExecCommandRequest;
 use super::UnifiedExecContext;
 use super::process_manager::apply_unified_exec_env;
 use super::process_manager::exec_env_policy_from_shell_policy;
@@ -23,11 +21,12 @@ use crate::config::NetworkProxySpec;
 use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
 use crate::exec_env::inject_apply_patch_env;
 use crate::exec_env::inject_permission_profile_env;
-use crate::exec_env::inject_session_id_env;
+use crate::exec_env::inject_session_env;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::shell::ShellType;
-use crate::tools::sandboxing::executor_windows_sandbox_level;
+use crate::tools::handlers::unified_exec::preparation::PreparedExecCommand;
+use crate::tools::sandboxing::executor_windows_sandbox_selection;
 
 impl Session {
     pub(crate) fn prewarm_shell_snapshots(
@@ -37,7 +36,7 @@ impl Session {
         if !self.features().enabled(Feature::ShellSnapshotV2)
             || step_context
                 .tool_router
-                .tool_runtime(&ToolName::plain("exec_command"))
+                .registered_tool(&ToolName::plain("exec_command"))
                 .is_none()
         {
             return None;
@@ -56,10 +55,6 @@ impl Session {
                 .network
                 .as_ref()
                 .is_some_and(NetworkProxySpec::enabled)
-            || !matches!(
-                step_context.turn.unified_exec_shell_mode,
-                UnifiedExecShellMode::Direct
-            )
         {
             return None;
         }
@@ -92,18 +87,17 @@ impl Session {
                         /*has_managed_network_requirements*/ false,
                     )
                     .then(|| FileSystemSandboxContext {
-                        permissions: environment.permission_profile().clone().into(),
-                        cwd: Some(environment.cwd().clone()),
+                        sandbox_override: SandboxOverride::NoOverride,
+                        permissions: environment.permission_profile().clone(),
+                        cwd: environment.cwd().clone(),
                         workspace_roots: environment.workspace_roots().to_vec(),
                         user_home_dir: None,
                         temporary_directories: None,
-                        windows_sandbox_level: executor_windows_sandbox_level(
+                        windows_sandbox_selection: executor_windows_sandbox_selection(
+                            environment.config().windows_sandbox_type,
                             environment.config().windows_sandbox_level,
                             environment.cwd(),
                         ),
-                        windows_sandbox_private_desktop: environment
-                            .config()
-                            .windows_sandbox_private_desktop,
                         windows_sandbox_proxy_settings_mode: Some(
                             session.windows_sandbox_proxy_settings_mode,
                         ),
@@ -114,8 +108,8 @@ impl Session {
                     CODEX_THREAD_ID_ENV_VAR.to_string(),
                     session.thread_id().to_string(),
                 );
-                inject_session_id_env(&mut env, session.session_id());
-                inject_apply_patch_env(&mut env, &config.features);
+                inject_session_env(&mut env, session.session_id());
+                inject_apply_patch_env(&mut env);
                 inject_permission_profile_env(
                     &mut env,
                     environment.active_permission_profile().as_ref(),
@@ -130,6 +124,7 @@ impl Session {
                 }
                 let params = ExecParams {
                     process_id: format!("shell-snapshot-warmup-{}", Uuid::new_v4()).into(),
+                    metadata: None,
                     // This capture-only operation never starts the command or routes
                     // speculative work through tool approvals or exec-policy bypass.
                     argv: shell.derive_exec_args("", /*use_login_shell*/ true),
@@ -172,23 +167,18 @@ impl Session {
 }
 
 pub(super) fn shell_snapshot_request(
-    request: &ExecCommandRequest,
-    cwd: &PathUri,
+    request: &PreparedExecCommand,
     context: &UnifiedExecContext,
 ) -> Option<ShellSnapshotRequest> {
     if !context.session.features().enabled(Feature::ShellSnapshotV2)
         || !request.turn_environment.shell_snapshot_v2_supported
-        || request.turn_environment.selection.cwd != *cwd
-        || !matches!(request.shell_mode, UnifiedExecShellMode::Direct)
-        || !matches!(
-            request.shell_type,
-            ShellType::Bash | ShellType::Zsh | ShellType::Sh
-        )
-        || request.command.get(1).is_none_or(|flag| flag != "-lc")
+        || request.turn_environment.selection.cwd != request.cwd
+        || !request.resolved.shell.is_posix_login()
     {
         return None;
     }
 
+    let shell = &request.resolved.shell.shell;
     Some(ShellSnapshotRequest {
         scope_id: format!(
             "{}:{}",
@@ -196,8 +186,8 @@ pub(super) fn shell_snapshot_request(
             request.turn_environment.selection.environment_id
         ),
         shell: ShellInfo {
-            name: request.shell_type.name().to_string(),
-            path: request.command.first()?.clone(),
+            name: shell.name().to_string(),
+            path: shell.shell_path.to_string_lossy().into_owned(),
         },
     })
 }

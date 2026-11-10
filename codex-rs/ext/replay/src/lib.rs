@@ -28,8 +28,8 @@ pub mod report;
 pub mod rules;
 pub mod run;
 
-pub use compare::Comparison;
 pub use compare::CompareError;
+pub use compare::Comparison;
 pub use compare::DiffKind;
 pub use compare::Difference;
 pub use compare::FieldDiff;

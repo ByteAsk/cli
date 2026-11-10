@@ -55,7 +55,12 @@ pub(crate) struct Jobs {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Waited {
     Done(String),
-    Running { id: u32, label: String, secs: u64, progress: String },
+    Running {
+        id: u32,
+        label: String,
+        secs: u64,
+        progress: String,
+    },
 }
 
 impl Jobs {
@@ -64,7 +69,9 @@ impl Jobs {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Has this thread started any run?
@@ -79,7 +86,14 @@ impl Jobs {
             .jobs
             .iter()
             .find(|j| j.result.borrow().is_none())
-            .map(|j| (j.id, j.label.clone(), j.started.elapsed().as_secs(), progress_of(j)))
+            .map(|j| {
+                (
+                    j.id,
+                    j.label.clone(),
+                    j.started.elapsed().as_secs(),
+                    progress_of(j),
+                )
+            })
     }
 
     /// Start `make(cancel, progress)` as a run labelled `label`.
@@ -190,7 +204,11 @@ impl Jobs {
                 let state = if j.result.borrow().is_some() {
                     "finished".to_string()
                 } else {
-                    format!("running for {}s ({})", j.started.elapsed().as_secs(), progress_of(j))
+                    format!(
+                        "running for {}s ({})",
+                        j.started.elapsed().as_secs(),
+                        progress_of(j)
+                    )
                 };
                 format!("run {}: {} — {state}", j.id, j.label)
             })
@@ -217,7 +235,7 @@ impl Jobs {
     /// per run, on the first request after it finished.
     pub(crate) fn world_state_section(&self) -> WorldStateSectionContribution {
         let (serial, items) = self.unseen();
-        WorldStateSectionContribution::new(WORLD_STATE_ID, Value::from(serial), move |previous| {
+        WorldStateSectionContribution::new(WORLD_STATE_ID, move |previous| {
             let seen = match previous {
                 PreviousWorldStateSection::Known(value) => value.as_u64().unwrap_or(0),
                 PreviousWorldStateSection::Absent => 0,
@@ -227,11 +245,18 @@ impl Jobs {
             let fresh: Vec<String> = items
                 .iter()
                 .filter(|(s, _, _)| *s > seen)
-                .map(|(_, id, text)| format!("Background run {id} of cpp_test_select finished:\n{text}"))
+                .map(|(_, id, text)| {
+                    format!("Background run {id} of cpp_test_select finished:\n{text}")
+                })
                 .collect();
-            (!fresh.is_empty()).then(|| {
-                RenderedWorldStateFragment::new("developer", (START_MARKER, END_MARKER), fresh.join("\n\n"))
-            })
+            let fragment = (!fresh.is_empty()).then(|| {
+                RenderedWorldStateFragment::new(
+                    "developer",
+                    (START_MARKER, END_MARKER),
+                    codex_protocol::models::input_text(fresh.join("\n\n")),
+                )
+            });
+            (Some(Value::from(serial)), fragment)
         })
     }
 }
@@ -252,7 +277,9 @@ mod tests {
     #[tokio::test]
     async fn a_quick_run_returns_directly_and_is_never_announced() {
         let jobs = Jobs::new();
-        jobs.start("quick".to_string(), |_, _| async { "all passed".to_string() });
+        jobs.start("quick".to_string(), |_, _| async {
+            "all passed".to_string()
+        });
         assert_eq!(
             jobs.wait(None, Duration::from_secs(5)).await,
             Some(Waited::Done("all passed".to_string()))
@@ -295,10 +322,17 @@ mod tests {
         let shown = after
             .render_diff(PreviousWorldStateSection::Known(&snapshot))
             .expect("announced");
-        assert!(shown.body().contains("Background run 1 of cpp_test_select finished:\n2 FAILED"));
+        assert!(
+            shown
+                .body()
+                .contains("Background run 1 of cpp_test_select finished:\n2 FAILED")
+        );
         // The next request (previous = this snapshot) does not repeat it.
         let again = jobs.world_state_section();
-        assert_eq!(again.render_diff(PreviousWorldStateSection::Known(after.snapshot())), None);
+        assert_eq!(
+            again.render_diff(PreviousWorldStateSection::Known(after.snapshot())),
+            None
+        );
         // Nor does a resumed thread with unknown state.
         assert_eq!(again.render_diff(PreviousWorldStateSection::Unknown), None);
     }
@@ -311,12 +345,21 @@ mod tests {
             let _ = go_rx.await;
             "done".to_string()
         });
-        assert!(matches!(jobs.wait(None, Duration::from_millis(20)).await, Some(Waited::Running { .. })));
+        assert!(matches!(
+            jobs.wait(None, Duration::from_millis(20)).await,
+            Some(Waited::Running { .. })
+        ));
         let snapshot = jobs.world_state_section().snapshot().clone();
         go_tx.send(()).unwrap();
-        assert_eq!(jobs.wait(Some(1), Duration::from_secs(5)).await, Some(Waited::Done("done".to_string())));
+        assert_eq!(
+            jobs.wait(Some(1), Duration::from_secs(5)).await,
+            Some(Waited::Done("done".to_string()))
+        );
         let section = jobs.world_state_section();
-        assert_eq!(section.render_diff(PreviousWorldStateSection::Known(&snapshot)), None);
+        assert_eq!(
+            section.render_diff(PreviousWorldStateSection::Known(&snapshot)),
+            None
+        );
     }
 
     #[tokio::test]
@@ -332,6 +375,9 @@ mod tests {
             Some(Waited::Done("cancelled".to_string()))
         );
         assert_eq!(jobs.cancel(None), None);
-        assert_eq!(jobs.summary(), vec!["run 1: cancellable — finished".to_string()]);
+        assert_eq!(
+            jobs.summary(),
+            vec!["run 1: cancellable — finished".to_string()]
+        );
     }
 }

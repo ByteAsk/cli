@@ -323,8 +323,11 @@ fn write_rollout_with_user_message(
         RolloutLine {
             timestamp: "2026-06-01T14:26:25Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: SessionMeta {
+                    attached_thread: false,
+                    creator_user_id: None,
+                    creator_account_id: None,
                     session_id: thread_id.into(),
                     id: thread_id,
                     forked_from_id: None,
@@ -332,6 +335,7 @@ fn write_rollout_with_user_message(
                     parent_thread_id: None,
                     timestamp: "2026-06-01T14:26:25Z".to_string(),
                     cwd: home.to_path_buf(),
+                    runtime_workspace_roots: None,
                     originator: "test".to_string(),
                     cli_version: "test".to_string(),
                     source: SessionSource::Cli,
@@ -351,7 +355,7 @@ fn write_rollout_with_user_message(
                     context_window: None,
                 },
                 git: None,
-            }),
+            })),
         },
         RolloutLine {
             timestamp: "2026-06-01T14:26:26Z".to_string(),

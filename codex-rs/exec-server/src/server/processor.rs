@@ -1,15 +1,19 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use codex_build_info::BuildInfo;
 use codex_exec_server_protocol::JSONRPCMessage;
 use tokio::sync::mpsc;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::debug;
 use tracing::warn;
 
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
+use crate::LocalFileSystem;
 use crate::connection::CHANNEL_CAPACITY;
 use crate::connection::JsonRpcConnection;
 use crate::connection::JsonRpcConnectionEvent;
+use crate::discover_v2::capability_manager::CapabilityManager;
 use crate::rpc::RpcCallError;
 use crate::rpc::RpcNotificationSender;
 use crate::rpc::RpcServerOutboundMessage;
@@ -23,38 +27,43 @@ use crate::server::request_dispatcher::RequestTaskResult;
 use crate::server::session_registry::SessionRegistry;
 use crate::telemetry::ConnectionTransport;
 use crate::telemetry::ExecServerTelemetry;
+use crate::telemetry::ExecutorRegistration;
 use codex_http_client::HttpClientFactory;
 
 #[derive(Clone)]
 pub(crate) struct ConnectionProcessor {
+    capability_manager: Arc<CapabilityManager>,
+    capability_prewarm: Arc<AbortOnDropHandle<()>>,
     session_registry: Arc<SessionRegistry>,
-    runtime_paths: ExecServerRuntimePaths,
+    runtime_paths: ExecServerRuntimeOptions,
     telemetry: ExecServerTelemetry,
     http_client_factory: HttpClientFactory,
     request_dispatch_mode: RequestDispatchMode,
 }
 
 impl ConnectionProcessor {
-    #[cfg(test)]
-    pub(crate) fn new(runtime_paths: ExecServerRuntimePaths) -> Self {
-        Self::new_with_telemetry(
-            runtime_paths,
-            ExecServerTelemetry::default(),
-            codex_http_client::HttpClientFactory::new(
-                codex_http_client::OutboundProxyPolicy::ReqwestDefault,
-            ),
-            RequestDispatchMode::Inline,
-        )
-    }
-
     pub(crate) fn new_with_telemetry(
-        runtime_paths: ExecServerRuntimePaths,
+        runtime_paths: ExecServerRuntimeOptions,
         telemetry: ExecServerTelemetry,
         http_client_factory: HttpClientFactory,
         request_dispatch_mode: RequestDispatchMode,
     ) -> Self {
+        // Library callers may bypass CLI startup. Capture the version before serving clients.
+        let _ = BuildInfo::get();
+        let capability_manager =
+            CapabilityManager::new(LocalFileSystem::with_runtime_paths(runtime_paths.clone()));
+        let manager = Arc::clone(&capability_manager);
+        // Start before any client connects; all sessions share these inert global locations.
+        let prewarm = tokio::spawn(async move {
+            // Home resolution failures are nonfatal, just like scan failures.
+            if let Err(error) = manager.prewarm_locations().await {
+                tracing::warn!(error_kind = ?error.kind(), "capability location prewarming unavailable");
+            }
+        });
         Self {
             session_registry: SessionRegistry::new(telemetry.clone()),
+            capability_manager,
+            capability_prewarm: Arc::new(AbortOnDropHandle::new(prewarm)),
             runtime_paths,
             telemetry,
             http_client_factory,
@@ -69,30 +78,48 @@ impl ConnectionProcessor {
     ) {
         run_connection(
             connection,
-            Arc::clone(&self.session_registry),
-            self.runtime_paths.clone(),
-            self.telemetry.clone(),
-            self.http_client_factory.clone(),
+            self.clone(),
             transport,
-            self.request_dispatch_mode,
+            /*executor_registration*/ None,
+        )
+        .await;
+    }
+
+    pub(crate) async fn run_registered_connection(
+        &self,
+        connection: JsonRpcConnection,
+        executor_registration: Option<Arc<ExecutorRegistration>>,
+    ) {
+        run_connection(
+            connection,
+            self.clone(),
+            ConnectionTransport::Relay,
+            executor_registration,
         )
         .await;
     }
 
     pub(crate) async fn shutdown(&self) {
+        self.capability_prewarm.abort();
         self.session_registry.shutdown().await;
     }
 }
 
 async fn run_connection(
     connection: JsonRpcConnection,
-    session_registry: Arc<SessionRegistry>,
-    runtime_paths: ExecServerRuntimePaths,
-    telemetry: ExecServerTelemetry,
-    http_client_factory: HttpClientFactory,
+    processor: ConnectionProcessor,
     transport: ConnectionTransport,
-    request_dispatch_mode: RequestDispatchMode,
+    executor_registration: Option<Arc<ExecutorRegistration>>,
 ) {
+    let ConnectionProcessor {
+        capability_manager,
+        capability_prewarm: _capability_prewarm,
+        session_registry,
+        runtime_paths,
+        telemetry,
+        http_client_factory,
+        request_dispatch_mode,
+    } = processor;
     let _connection_metrics = telemetry.connection_started(transport);
     let JsonRpcConnection {
         outgoing_tx: json_outgoing_tx,
@@ -105,12 +132,15 @@ async fn run_connection(
         mpsc::channel::<RpcServerOutboundMessage>(CHANNEL_CAPACITY);
     let notifications = RpcNotificationSender::new(outgoing_tx.clone());
     let requests = notifications.request_sender();
-    let handler = Arc::new(ExecServerHandler::new(
+    let mut handler = ExecServerHandler::new(
         session_registry,
+        capability_manager,
         notifications,
         runtime_paths,
         http_client_factory,
-    ));
+    );
+    handler.executor_registration = executor_registration;
+    let handler = Arc::new(handler);
 
     let outbound_task = tokio::spawn(async move {
         while let Some(message) = outgoing_rx.recv().await {
@@ -268,7 +298,7 @@ mod tests {
 
     use super::complete_queued_client_responses;
     use super::run_connection;
-    use crate::ExecServerRuntimePaths;
+    use crate::ExecServerRuntimeOptions;
     use crate::ProcessId;
     use crate::connection::JsonRpcConnection;
     use crate::connection::JsonRpcConnectionEvent;
@@ -294,8 +324,39 @@ mod tests {
     use crate::protocol::TerminateResponse;
     use crate::rpc::RpcServerOutboundMessage;
     use crate::rpc_server_requests::RpcServerRequestSender;
-    use crate::server::RequestDispatchMode;
     use crate::server::session_registry::SessionRegistry;
+
+    impl super::ConnectionProcessor {
+        // Discovery tests supply fixture homes without changing the process environment.
+        pub(crate) async fn seed_capability_locations(
+            &self,
+            request: crate::discover_v2::capability_locations::CapabilityLocationRequest,
+        ) -> std::io::Result<()> {
+            self.capability_manager
+                .seed_prewarmed_locations(request)
+                .await
+        }
+
+        // Connection-only tests do not prewarm or scan the real user home.
+        pub(crate) fn new(runtime_paths: ExecServerRuntimeOptions) -> Self {
+            let telemetry = crate::ExecServerTelemetry::default();
+            Self {
+                capability_manager: crate::discover_v2::capability_manager::CapabilityManager::new(
+                    crate::LocalFileSystem::with_runtime_paths(runtime_paths.clone()),
+                ),
+                capability_prewarm: Arc::new(tokio_util::task::AbortOnDropHandle::new(
+                    tokio::spawn(async {}),
+                )),
+                session_registry: SessionRegistry::new(telemetry.clone()),
+                runtime_paths,
+                telemetry,
+                http_client_factory: codex_http_client::HttpClientFactory::new(
+                    codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+                ),
+                request_dispatch_mode: crate::server::RequestDispatchMode::Inline,
+            }
+        }
+    }
 
     #[tokio::test]
     async fn connection_accepts_pipelined_scalar_requests() {
@@ -491,20 +552,18 @@ mod tests {
             JsonRpcConnection::from_stdio(server_reader, server_writer, label.to_string());
         let task = tokio::spawn(run_connection(
             connection,
-            registry,
-            test_runtime_paths(),
-            crate::ExecServerTelemetry::default(),
-            codex_http_client::HttpClientFactory::new(
-                codex_http_client::OutboundProxyPolicy::ReqwestDefault,
-            ),
+            super::ConnectionProcessor {
+                session_registry: registry,
+                ..super::ConnectionProcessor::new(test_runtime_paths())
+            },
             crate::telemetry::ConnectionTransport::Stdio,
-            RequestDispatchMode::Inline,
+            /*executor_registration*/ None,
         ));
         (client_writer, BufReader::new(client_reader).lines(), task)
     }
 
-    fn test_runtime_paths() -> ExecServerRuntimePaths {
-        ExecServerRuntimePaths::new(
+    fn test_runtime_paths() -> ExecServerRuntimeOptions {
+        ExecServerRuntimeOptions::new(
             std::env::current_exe().expect("current exe"),
             /*codex_linux_sandbox_exe*/ None,
         )
@@ -571,6 +630,7 @@ mod tests {
             env.insert("PATH".to_string(), path.to_string_lossy().into_owned());
         }
         ExecParams {
+            metadata: Default::default(),
             process_id,
             argv: sleep_then_print_argv(),
             cwd: PathUri::from_host_native_path(std::env::current_dir().expect("cwd"))

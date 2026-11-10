@@ -193,7 +193,11 @@ mod private_mode_tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn mode(path: &std::path::Path) -> u32 {
-        std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
     }
 
     #[test]

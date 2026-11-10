@@ -60,15 +60,25 @@ fn no_sandbox_runs_unsandboxed_and_says_so() {
         assert_eq!(wrapped, unchanged("true", &[]));
         let note = note.expect("the answer says so");
         assert!(note.starts_with("sandbox: unavailable"), "{note}");
-        assert!(note.contains("Permission denied"), "the real reason is shown: {note}");
+        assert!(
+            note.contains("Permission denied"),
+            "the real reason is shown: {note}"
+        );
     }
     // No helper at all, and a landlock-only machine that cannot fence ptrace: the same.
     let no_helper = Settings {
         helper: None,
         ..settings(dir.path())
     };
-    let (wrapped, note) = decide("cpp_sanitize", &no_helper, "true", &[], dir.path(), &Backend::Bubblewrap)
-        .expect("runs");
+    let (wrapped, note) = decide(
+        "cpp_sanitize",
+        &no_helper,
+        "true",
+        &[],
+        dir.path(),
+        &Backend::Bubblewrap,
+    )
+    .expect("runs");
     assert!(!wrapped.sandboxed);
     assert!(note.expect("note").contains("helper was not found"));
 }
@@ -94,8 +104,14 @@ fn a_policy_that_requires_the_sandbox_keeps_failing_closed() {
         let FunctionCallError::RespondToModel(text) = err else {
             panic!("must not end the turn");
         };
-        assert!(text.contains("Permission denied"), "the real reason is shown: {text}");
-        assert!(text.contains("[sandbox] required = true"), "the reason names the policy: {text}");
+        assert!(
+            text.contains("Permission denied"),
+            "the real reason is shown: {text}"
+        );
+        assert!(
+            text.contains("[sandbox] required = true"),
+            "the reason names the policy: {text}"
+        );
         let result = CheckResult::from_tool_text(tool, &text).expect("result line");
         assert_eq!(result.verdict, Verdict::NotRun);
         assert_eq!(result.reason, Some(NotRunReason::SandboxUnavailable));
@@ -104,10 +120,19 @@ fn a_policy_that_requires_the_sandbox_keeps_failing_closed() {
         assert!(fix.contains("byteask policy relax"), "{fix}");
     }
     // A working sandbox is used as before.
-    assert!(decide("cpp_check", &required, "sh", &[], dir.path(), &Backend::Bubblewrap)
+    assert!(
+        decide(
+            "cpp_check",
+            &required,
+            "sh",
+            &[],
+            dir.path(),
+            &Backend::Bubblewrap
+        )
         .expect("runs")
         .0
-        .sandboxed);
+        .sandboxed
+    );
 }
 
 #[test]
@@ -139,10 +164,20 @@ fn uncovered_profiles_and_platforms_run_as_before_and_say_so() {
         ("cpp_kdb", Backend::Bubblewrap),
         ("cpp_sanitize", Backend::NotWired),
     ] {
-        let (wrapped, note) = decide(tool, &settings(dir.path()), "gdb", &[], dir.path(), &backend)
-            .expect("runs");
+        let (wrapped, note) = decide(
+            tool,
+            &settings(dir.path()),
+            "gdb",
+            &[],
+            dir.path(),
+            &backend,
+        )
+        .expect("runs");
         assert!(!wrapped.sandboxed, "{tool}");
-        assert!(note.expect("note").starts_with("sandbox: not applied"), "{tool}");
+        assert!(
+            note.expect("note").starts_with("sandbox: not applied"),
+            "{tool}"
+        );
     }
 }
 
@@ -160,10 +195,17 @@ fn a_covered_tool_runs_inside_the_helper_with_its_profile() {
     .expect("runs");
     assert!(wrapped.sandboxed);
     assert_eq!(wrapped.program, "/opt/byteask/sandbox-helper");
-    assert!(wrapped.args.contains(&"--permission-profile".to_string()), "{:?}", wrapped.args);
+    assert!(
+        wrapped.args.contains(&"--permission-profile".to_string()),
+        "{:?}",
+        wrapped.args
+    );
     assert!(!wrapped.args.contains(&"--use-legacy-landlock".to_string()));
     let tail = &wrapped.args[wrapped.args.len() - 3..];
-    assert!(tail[0].ends_with("/sh"), "the program is resolved to a full path: {tail:?}");
+    assert!(
+        tail[0].ends_with("/sh"),
+        "the program is resolved to a full path: {tail:?}"
+    );
     assert_eq!(&tail[1..], &["-c".to_string(), "true".to_string()]);
     assert!(note.expect("note").contains("bubblewrap"));
 
@@ -213,7 +255,15 @@ fn a_build_under_landlock_needs_yama_to_fence_ptrace() {
     }
     // An analysis has no network, so the helper's filter already blocks ptrace.
     assert!(
-        decide("cpp_check", &settings(dir.path()), "sh", &[], dir.path(), &Backend::Landlock).is_ok()
+        decide(
+            "cpp_check",
+            &settings(dir.path()),
+            "sh",
+            &[],
+            dir.path(),
+            &Backend::Landlock
+        )
+        .is_ok()
     );
 }
 
@@ -280,9 +330,21 @@ async fn live_a_build_writes_its_workspace_and_nothing_outside_it() {
         ws = workspace.path().display(),
         other = elsewhere.path().display(),
     );
-    let outcome = sh("cpp_sanitize", live(workspace.path(), helper), workspace.path(), &script).await;
-    assert!(matches!(outcome, RunOutcome::Finished { .. }), "{outcome:?}");
-    assert!(workspace.path().join("inside").exists(), "the workspace is writable for a build");
+    let outcome = sh(
+        "cpp_sanitize",
+        live(workspace.path(), helper),
+        workspace.path(),
+        &script,
+    )
+    .await;
+    assert!(
+        matches!(outcome, RunOutcome::Finished { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        workspace.path().join("inside").exists(),
+        "the workspace is writable for a build"
+    );
     assert!(
         !elsewhere.path().join("escape").exists(),
         "a build wrote outside its workspace"
@@ -297,7 +359,13 @@ async fn live_an_analysis_cannot_write_the_workspace() {
     };
     let workspace = outside_dir();
     let script = format!("echo bad > '{}/x'", workspace.path().display());
-    let outcome = sh("cpp_check", live(workspace.path(), helper), workspace.path(), &script).await;
+    let outcome = sh(
+        "cpp_check",
+        live(workspace.path(), helper),
+        workspace.path(),
+        &script,
+    )
+    .await;
     assert!(
         matches!(outcome, RunOutcome::Finished { success: false, .. }),
         "{outcome:?}"
@@ -337,10 +405,16 @@ async fn live_no_network_inside_the_sandbox() {
     )
     .await
     .expect("spawned");
-    let RunOutcome::Finished { success, stdout, .. } = outcome else {
+    let RunOutcome::Finished {
+        success, stdout, ..
+    } = outcome
+    else {
         panic!("timed out");
     };
-    assert!(!success && !stdout.contains("connected"), "a sandboxed program reached the network");
+    assert!(
+        !success && !stdout.contains("connected"),
+        "a sandboxed program reached the network"
+    );
 }
 
 #[tokio::test]
@@ -350,12 +424,21 @@ async fn live_a_crash_inside_the_sandbox_is_still_a_crash() {
         return;
     };
     let workspace = outside_dir();
-    let outcome = sh("cpp_sanitize", live(workspace.path(), helper), workspace.path(), "kill -SEGV $$").await;
+    let outcome = sh(
+        "cpp_sanitize",
+        live(workspace.path(), helper),
+        workspace.path(),
+        "kill -SEGV $$",
+    )
+    .await;
     let RunOutcome::Finished { success, code, .. } = outcome else {
         panic!("timed out");
     };
     assert!(!success);
-    assert_eq!(code, None, "a signal death must read as 'killed by a signal'");
+    assert_eq!(
+        code, None,
+        "a signal death must read as 'killed by a signal'"
+    );
 }
 
 #[tokio::test]
@@ -385,13 +468,19 @@ async fn live_a_timeout_kills_everything_the_program_started() {
     )
     .await
     .expect("spawned");
-    assert!(matches!(outcome, RunOutcome::TimedOut { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, RunOutcome::TimedOut { .. }),
+        "{outcome:?}"
+    );
     tokio::time::sleep(Duration::from_millis(500)).await;
     let before = std::fs::read_to_string(&beat).unwrap_or_default().len();
     tokio::time::sleep(Duration::from_millis(800)).await;
     let after = std::fs::read_to_string(&beat).unwrap_or_default().len();
     assert!(before > 0, "the program never ran");
-    assert_eq!(before, after, "something the program started is still running");
+    assert_eq!(
+        before, after,
+        "something the program started is still running"
+    );
 }
 
 #[tokio::test]
@@ -446,7 +535,10 @@ async fn live_leak_sanitizer_still_works_inside_a_build() {
         panic!("timed out");
     };
     assert!(stderr.contains("detected memory leaks"), "{stderr}");
-    assert!(!stderr.contains("LeakSanitizer has encountered a fatal error"), "{stderr}");
+    assert!(
+        !stderr.contains("LeakSanitizer has encountered a fatal error"),
+        "{stderr}"
+    );
 }
 
 #[tokio::test]
@@ -471,7 +563,10 @@ async fn live_a_killed_sandbox_leaves_no_placeholder_behind() {
     )
     .await
     .expect("spawned");
-    assert!(matches!(outcome, RunOutcome::TimedOut { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, RunOutcome::TimedOut { .. }),
+        "{outcome:?}"
+    );
     for name in PROTECTED_NAMES {
         assert!(
             !workspace.path().join(name).exists(),
@@ -492,6 +587,9 @@ fn only_empty_placeholders_are_removed() {
     std::fs::write(&empty_file, "").unwrap();
     remove_placeholders(&[empty_dir.clone(), full_dir.clone(), empty_file.clone()]);
     assert!(!empty_dir.exists());
-    assert!(full_dir.join("config.toml").exists(), "real content is never removed");
+    assert!(
+        full_dir.join("config.toml").exists(),
+        "real content is never removed"
+    );
     assert!(!empty_file.exists());
 }

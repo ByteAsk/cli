@@ -20,7 +20,7 @@ use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -30,6 +30,7 @@ use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ImageReference;
 use codex_protocol::openai_models::InputModality;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses;
@@ -447,7 +448,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     let started = wait_for_dynamic_tool_started(&mut mcp, call_id).await?;
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(started.turn_id, turn_id.clone());
-    let ThreadItem::DynamicToolCall {
+    let ThreadItemPayload::DynamicToolCall {
         id,
         namespace,
         tool,
@@ -456,7 +457,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         content_items,
         success,
         duration_ms,
-    } = started.item
+    } = started.item.payload
     else {
         panic!("expected dynamic tool call item");
     };
@@ -503,7 +504,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     let completed = wait_for_dynamic_tool_completed(&mut mcp, call_id).await?;
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(completed.turn_id, turn_id);
-    let ThreadItem::DynamicToolCall {
+    let ThreadItemPayload::DynamicToolCall {
         id,
         namespace,
         tool,
@@ -512,7 +513,7 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         content_items,
         success,
         duration_ms,
-    } = completed.item
+    } = completed.item.payload
     else {
         panic!("expected dynamic tool call item");
     };
@@ -601,7 +602,7 @@ async fn start_function_dynamic_tool_call(call_id: &str) -> Result<PendingDynami
     let mut model_info =
         codex_core::test_support::construct_model_info_offline("mock-model", &config);
     model_info.input_modalities.push(InputModality::Audio);
-    write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+    write_models_cache_with_models(codex_home.path(), vec![model_info]).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -715,7 +716,9 @@ async fn dynamic_tool_call_round_trip_handles_content_items() -> Result<()> {
             text: "dynamic-ok".to_string(),
         },
         FunctionCallOutputContentItem::InputImage {
-            image_url: TINY_PNG_DATA_URL.to_string(),
+            image: ImageReference::Inline {
+                image_url: TINY_PNG_DATA_URL.to_string(),
+            },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         },
         FunctionCallOutputContentItem::InputAudio {
@@ -732,12 +735,12 @@ async fn dynamic_tool_call_round_trip_handles_content_items() -> Result<()> {
     let completed = wait_for_dynamic_tool_completed(&mut mcp, call_id).await?;
     assert_eq!(completed.thread_id, params.thread_id);
     assert_eq!(completed.turn_id, params.turn_id);
-    let ThreadItem::DynamicToolCall {
+    let ThreadItemPayload::DynamicToolCall {
         status,
         content_items: completed_content_items,
         success,
         ..
-    } = completed.item
+    } = completed.item.payload
     else {
         panic!("expected dynamic tool call item");
     };
@@ -827,12 +830,12 @@ async fn dynamic_tool_remote_image_response_becomes_model_visible_error() -> Res
     let completed = wait_for_dynamic_tool_completed(&mut mcp, call_id).await?;
     assert_eq!(completed.thread_id, params.thread_id);
     assert_eq!(completed.turn_id, params.turn_id);
-    let ThreadItem::DynamicToolCall {
+    let ThreadItemPayload::DynamicToolCall {
         status,
         content_items,
         success,
         ..
-    } = completed.item
+    } = completed.item.payload
     else {
         panic!("expected dynamic tool call item");
     };
@@ -883,12 +886,12 @@ async fn dynamic_tool_remote_audio_response_becomes_model_visible_error() -> Res
     let completed = wait_for_dynamic_tool_completed(&mut mcp, call_id).await?;
     assert_eq!(completed.thread_id, params.thread_id);
     assert_eq!(completed.turn_id, params.turn_id);
-    let ThreadItem::DynamicToolCall {
+    let ThreadItemPayload::DynamicToolCall {
         status,
         content_items,
         success,
         ..
-    } = completed.item
+    } = completed.item.payload
     else {
         panic!("expected dynamic tool call item");
     };
@@ -975,7 +978,8 @@ async fn wait_for_dynamic_tool_started(
             continue;
         };
         let started: ItemStartedNotification = serde_json::from_value(params)?;
-        if matches!(&started.item, ThreadItem::DynamicToolCall { id, .. } if id == call_id) {
+        if matches!(&started.item.payload, ThreadItemPayload::DynamicToolCall { id, .. } if id == call_id)
+        {
             return Ok(started);
         }
     }
@@ -995,7 +999,8 @@ async fn wait_for_dynamic_tool_completed(
             continue;
         };
         let completed: ItemCompletedNotification = serde_json::from_value(params)?;
-        if matches!(&completed.item, ThreadItem::DynamicToolCall { id, .. } if id == call_id) {
+        if matches!(&completed.item.payload, ThreadItemPayload::DynamicToolCall { id, .. } if id == call_id)
+        {
             return Ok(completed);
         }
     }

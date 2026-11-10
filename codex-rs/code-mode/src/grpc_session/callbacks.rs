@@ -1,7 +1,6 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::PoisonError;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_code_mode_protocol::CellId;
@@ -55,15 +54,11 @@ impl SessionInner {
                         }
                     }
                     Ok(None) => {
-                        if !inner.shutdown_requested.load(Ordering::Acquire) {
-                            inner.fail(format!("gRPC code-mode {stream_name} closed unexpectedly"));
-                        }
+                        inner.fail(format!("gRPC code-mode {stream_name} closed unexpectedly"));
                         return;
                     }
                     Err(error) => {
-                        if !inner.shutdown_requested.load(Ordering::Acquire) {
-                            inner.fail(deadline::failure(stream_name, error));
-                        }
+                        inner.fail(deadline::failure(stream_name, error));
                         return;
                     }
                 }
@@ -133,12 +128,12 @@ impl SessionInner {
         }
         let invocation_id = call.invocation_id.clone();
         let cancellation = match admission {
-            CallbackAdmission::Active(cancellation) => Ok(cancellation),
+            CallbackAdmission::Active(cancellation, delegate) => Ok((cancellation, delegate)),
             CallbackAdmission::Cancelled => return Ok(()),
             CallbackAdmission::Closed => Err(format!("code-mode cell {} is closed", call.cell_id)),
             CallbackAdmission::Rejected(error) => Err(error),
         };
-        let cancellation = match cancellation {
+        let (cancellation, delegate) = match cancellation {
             Ok(cancellation) => cancellation,
             Err(error) => {
                 let inner = Arc::clone(self);
@@ -157,19 +152,18 @@ impl SessionInner {
                 let result = match invocation {
                     Ok(invocation) => {
                         let callback = AssertUnwindSafe(async {
-                            inner
-                                .delegate
+                            delegate
                                 .invoke_tool(invocation, cancellation.child_token())
                                 .await
                         })
                         .catch_unwind();
                         tokio::select! {
-                            biased;
-                            _ = cancellation.cancelled() => return,
-                            result = callback => match result {
-                                Ok(result) => result,
-                                Err(_) => Err("code-mode tool delegate panicked".to_string()),
-                            },
+                                biased;
+                                _ = cancellation.cancelled() => return,
+                                result = callback => match result {
+                                    Ok(result) => result,
+                                    Err(_) => Err("code-mode tool delegate panicked".to_string()),
+                                },
                         }
                     }
                     Err(error) => Err(error),
@@ -194,11 +188,13 @@ impl SessionInner {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {}
+            // NotFound can mean an invocation in a live session was canceled.
+            // Check cancellation before treating a completion error as fatal.
             result = deadline::request(
                 self,
                 "tool invocation completion",
                 Duration::ZERO,
-                client.complete_tool_call(request),
+                client.complete_tool_call(self.request(request)),
             ) => {
                 if let Err(error) = result
                     && !cancellation.is_cancelled()
@@ -223,8 +219,8 @@ impl SessionInner {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .admit_notification(&notification)?;
-        let cancellation = match admission {
-            CallbackAdmission::Active(cancellation) => cancellation,
+        let (cancellation, delegate) = match admission {
+            CallbackAdmission::Active(cancellation, delegate) => (cancellation, delegate),
             CallbackAdmission::Cancelled | CallbackAdmission::Closed => return Ok(()),
             CallbackAdmission::Rejected(error) => {
                 warn!("code-mode notification was dropped: {error}");
@@ -237,8 +233,7 @@ impl SessionInner {
         // them without waiting for arbitrary delegate work to complete.
         tokio::spawn(async move {
             let callback = AssertUnwindSafe(async {
-                inner
-                    .delegate
+                delegate
                     .notify(
                         notification.call_id,
                         CellId::new(notification.cell_id),
@@ -268,3 +263,7 @@ impl SessionInner {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "callbacks_tests.rs"]
+mod tests;

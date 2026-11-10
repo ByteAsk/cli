@@ -104,7 +104,12 @@ impl FakeHost {
     }
 
     pub fn roles(&self) -> Vec<Role> {
-        self.spawned.lock().unwrap().iter().map(|(r, _, _)| *r).collect()
+        self.spawned
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(r, _, _)| *r)
+            .collect()
     }
 }
 
@@ -135,7 +140,8 @@ impl ChildHandle for FakeChild {
     fn interrupt(&self) -> BoxFut<'_, ()> {
         Box::pin(async move {
             if Instant::now() < self.ready_at {
-                self.interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.interrupted
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
             }
         })
     }

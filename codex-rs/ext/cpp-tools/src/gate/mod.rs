@@ -378,7 +378,14 @@ pub(crate) async fn mirror_snapshot(snapshot: &Snapshot) -> Option<Snapshot> {
         let target = mirror.display().to_string();
         gitx::git_timeout(
             &snapshot.scratch,
-            &["clone", "--quiet", "--shared", "--no-checkout", &source, &target],
+            &[
+                "clone",
+                "--quiet",
+                "--shared",
+                "--no-checkout",
+                &source,
+                &target,
+            ],
             Duration::from_secs(120),
         )
         .await?;
@@ -392,7 +399,13 @@ pub(crate) async fn mirror_snapshot(snapshot: &Snapshot) -> Option<Snapshot> {
     let listed = |dir: PathBuf| async move {
         gitx::git_timeout(
             &dir,
-            &["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            &[
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
             Duration::from_secs(120),
         )
         .await
@@ -596,7 +609,11 @@ fn content_of_new_path(root: &Path, path: &str, out: &mut String) {
             .collect();
         files.sort();
         for file in files {
-            let name = file.strip_prefix(root).unwrap_or(&file).to_string_lossy().into_owned();
+            let name = file
+                .strip_prefix(root)
+                .unwrap_or(&file)
+                .to_string_lossy()
+                .into_owned();
             out.push_str(&format!("{name}:{};", file_digest(&file)));
         }
         return;
@@ -830,7 +847,10 @@ async fn run_gate_inner(input: GateInput<'_>) -> GateOutcome {
     }
 
     // Patch-shape critic (advisory), in crash-fix sessions only.
-    if let Some(crash) = input.crash.filter(|_| input.settings.critic && !input.advisory) {
+    if let Some(crash) = input
+        .crash
+        .filter(|_| input.settings.critic && !input.advisory)
+    {
         shape_review(snapshot, changes, crash, input.advisories, &mut outcome).await;
     }
 
@@ -890,7 +910,9 @@ async fn run_gate_inner(input: GateInput<'_>) -> GateOutcome {
             check_result::NotRunReason::Skipped,
             "they are switched off in this configuration (byteask_cpp.gate_tests)".to_string(),
         );
-        outcome.notes.push("build/tests: off (configuration)".to_string());
+        outcome
+            .notes
+            .push("build/tests: off (configuration)".to_string());
     } else if input.session_left < MIN_SUITE_TIME {
         outcome.suite = SuiteState::NotRun(
             check_result::NotRunReason::TimeLimit,
@@ -910,8 +932,8 @@ async fn run_gate_inner(input: GateInput<'_>) -> GateOutcome {
         ));
     } else {
         outcome.suite = SuiteState::Ran;
-        let targeted = (input.advisory || input.settings.targeted)
-            && crate::testsel::verify::applies(root);
+        let targeted =
+            (input.advisory || input.settings.targeted) && crate::testsel::verify::applies(root);
         outcome.targeted = targeted;
         // `tree_owner`: a check cut short (something not checked) runs again on the kept build.
         let rerun_cut = input.advisory
@@ -992,7 +1014,12 @@ async fn run_gate_inner(input: GateInput<'_>) -> GateOutcome {
 
 /// The automatic gate's hygiene rules (not the advisory check's): existing test files edited,
 /// files left from this session, new test files added.
-fn hygiene(snapshot: &Snapshot, changes: &AgentChanges, advisories: &Advisories, outcome: &mut GateOutcome) {
+fn hygiene(
+    snapshot: &Snapshot,
+    changes: &AgentChanges,
+    advisories: &Advisories,
+    outcome: &mut GateOutcome,
+) {
     let root = &snapshot.root;
     // Existing test files edited.
     let edited_tests: Vec<&String> = changes
@@ -1051,7 +1078,11 @@ fn hygiene(snapshot: &Snapshot, changes: &AgentChanges, advisories: &Advisories,
 
 /// The one "could not check" note: what was not checked, and a bounded way to check it.
 fn not_checked_text(items: &[String], session_left: Duration) -> String {
-    let minutes = (session_left.saturating_sub(Duration::from_secs(300)).as_secs() / 60).min(10);
+    let minutes = (session_left
+        .saturating_sub(Duration::from_secs(300))
+        .as_secs()
+        / 60)
+        .min(10);
     let how = if minutes >= 2 {
         format!(
             " If you want to check it yourself, run only the tests that cover your change (cpp_test_select) under `timeout {}m`, not the whole suite; otherwise finish.",
@@ -1085,9 +1116,16 @@ impl GateOutcome {
     pub(crate) fn result(&self) -> check_result::CheckResult {
         use check_result::CheckResult;
         let check = if self.advisory { FINISH_CHECK } else { CHECK };
-        let open: Vec<&Problem> = self.problems.iter().filter(|p| p.kind.fails_check()).collect();
-        let still_open: Vec<&Problem> =
-            self.still_open.iter().filter(|p| p.kind.fails_check()).collect();
+        let open: Vec<&Problem> = self
+            .problems
+            .iter()
+            .filter(|p| p.kind.fails_check())
+            .collect();
+        let still_open: Vec<&Problem> = self
+            .still_open
+            .iter()
+            .filter(|p| p.kind.fails_check())
+            .collect();
         if let Some(first) = open.first().or(still_open.first()) {
             let count = open.len().max(still_open.len());
             return CheckResult::fail(
@@ -1110,7 +1148,10 @@ impl GateOutcome {
             return CheckResult::not_run(
                 check,
                 not_checked_reason(first),
-                &format!("Not everything was checked: {}.", self.not_checked.join("; ")),
+                &format!(
+                    "Not everything was checked: {}.",
+                    self.not_checked.join("; ")
+                ),
                 if self.advisory {
                     "run only the tests that cover the change (cpp_test_select) under a time limit, and say what is still unverified."
                 } else {
@@ -1187,7 +1228,11 @@ fn not_checked_reason(item: &str) -> check_result::NotRunReason {
 /// New untracked paths nothing in the change refers to (by file name). Build outputs (object
 /// files, archives, executables, directories holding only those or a configured build tree)
 /// and paths the gate's own builds created do not count.
-fn stray_paths(root: &Path, changes: &AgentChanges, gate_created: &BTreeSet<String>) -> Vec<String> {
+fn stray_paths(
+    root: &Path,
+    changes: &AgentChanges,
+    gate_created: &BTreeSet<String>,
+) -> Vec<String> {
     let mut referenced_text = String::new();
     for (_, path) in &changes.tracked {
         if let Ok(text) = std::fs::read_to_string(root.join(path)) {
@@ -1199,9 +1244,9 @@ fn stray_paths(root: &Path, changes: &AgentChanges, gate_created: &BTreeSet<Stri
         let trimmed = path.trim_end_matches('/');
         let name = trimmed.rsplit('/').next().unwrap_or(trimmed);
         let is_dir = path.ends_with('/');
-        let created_by_gate = gate_created.iter().any(|created| {
-            created == trimmed || created.starts_with(&format!("{trimmed}/"))
-        });
+        let created_by_gate = gate_created
+            .iter()
+            .any(|created| created == trimmed || created.starts_with(&format!("{trimmed}/")));
         if created_by_gate || is_build_output(&root.join(trimmed)) {
             continue;
         }
@@ -1238,7 +1283,11 @@ pub(crate) async fn session_file_classes(snapshot: &Snapshot) -> checks_profile:
 /// stands for itself, which counts as code). Configured build trees and build artifacts are
 /// outputs, not the change.
 pub(crate) fn changed_paths(root: &Path, changes: &AgentChanges) -> Vec<String> {
-    let mut paths: Vec<String> = changes.tracked.iter().map(|(_, path)| path.clone()).collect();
+    let mut paths: Vec<String> = changes
+        .tracked
+        .iter()
+        .map(|(_, path)| path.clone())
+        .collect();
     for path in &changes.new_untracked {
         let full = root.join(path.trim_end_matches('/'));
         if is_build_output(&full) {
@@ -1282,8 +1331,31 @@ pub(crate) fn slow_build_card(snapshot: &Snapshot) -> Option<String> {
 
 /// Extensions of build artifacts (objects, archives, libraries, dependency and coverage files).
 const ARTIFACT_EXTS: &[&str] = &[
-    "o", "obj", "a", "lib", "so", "dylib", "dll", "lo", "la", "d", "dep", "po", "plo", "tpo", "gcno",
-    "gcda", "pyc", "pyo", "class", "exp", "pdb", "ilk", "stamp", "ninja_deps", "ninja_log",
+    "o",
+    "obj",
+    "a",
+    "lib",
+    "so",
+    "dylib",
+    "dll",
+    "lo",
+    "la",
+    "d",
+    "dep",
+    "po",
+    "plo",
+    "tpo",
+    "gcno",
+    "gcda",
+    "pyc",
+    "pyo",
+    "class",
+    "exp",
+    "pdb",
+    "ilk",
+    "stamp",
+    "ninja_deps",
+    "ninja_log",
 ];
 
 /// A build artifact or a directory of nothing but build artifacts / a configured build tree.
@@ -1297,7 +1369,12 @@ fn is_build_output(path: &Path) -> bool {
             return true;
         }
         let mut files = 0usize;
-        for entry in walkdir::WalkDir::new(path).follow_links(false).into_iter().flatten().take(2_000) {
+        for entry in walkdir::WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .flatten()
+            .take(2_000)
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -1312,7 +1389,10 @@ fn is_build_output(path: &Path) -> bool {
 }
 
 fn is_artifact_file(path: &Path) -> bool {
-    let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     if ARTIFACT_EXTS.contains(&ext) || name.contains(".so.") {
         return true;
@@ -1322,7 +1402,9 @@ fn is_artifact_file(path: &Path) -> bool {
     std::fs::File::open(path)
         .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
         .is_ok()
-        && (magic == *b"\x7fELF" || magic == [0xcf, 0xfa, 0xed, 0xfe] || magic == [0xfe, 0xed, 0xfa, 0xcf])
+        && (magic == *b"\x7fELF"
+            || magic == [0xcf, 0xfa, 0xed, 0xfe]
+            || magic == [0xfe, 0xed, 0xfa, 0xcf])
 }
 
 async fn build_and_test(
@@ -1366,7 +1448,8 @@ async fn build_and_test(
                     .to_string(),
             );
             return SuiteRun::NotChecked(
-                "configuring a scratch build did not finish within the gate's time budget".to_string(),
+                "configuring a scratch build did not finish within the gate's time budget"
+                    .to_string(),
             );
         }
         if !ok {
@@ -1391,7 +1474,13 @@ async fn build_and_test(
         BTreeSet::new()
     };
     let suite = build_and_test_with(
-        snapshot, changes, base, &plan, deadline, outcome, not_checked,
+        snapshot,
+        changes,
+        base,
+        &plan,
+        deadline,
+        outcome,
+        not_checked,
     )
     .await;
     note_in_place_outputs(root, in_place, &before, gate_created, outcome).await;
@@ -1569,7 +1658,10 @@ async fn build_and_test_with(
     let still_failing_cases: BTreeSet<String> = failing_cases
         .iter()
         .filter(|case| {
-            let entry = case.split_once(build::CASE_SEP).map(|(e, _)| e).unwrap_or(case.as_str());
+            let entry = case
+                .split_once(build::CASE_SEP)
+                .map(|(e, _)| e)
+                .unwrap_or(case.as_str());
             if timed_out.contains(entry) {
                 return false;
             }
@@ -1578,7 +1670,10 @@ async fn build_and_test_with(
                     rerun.cases.get(*case).is_some_and(|s| s.failing())
                         || (!rerun.cases.contains_key(*case)
                             && rerun.results.get(entry).is_some_and(|s| s.failing())
-                            && !rerun.cases.keys().any(|k| k.starts_with(&format!("{entry}{}", build::CASE_SEP))))
+                            && !rerun
+                                .cases
+                                .keys()
+                                .any(|k| k.starts_with(&format!("{entry}{}", build::CASE_SEP))))
                 }
                 _ => true,
             }
@@ -1596,7 +1691,11 @@ async fn build_and_test_with(
     if still_failing.is_empty() && still_failing_cases.is_empty() {
         outcome.notes.push(format!(
             "tests: {total} ran; {flaky} failure(s) passed on the serial re-run (flaky){}",
-            if timed_out.is_empty() { String::new() } else { format!("; {} hit the time limit", timed_out.len()) }
+            if timed_out.is_empty() {
+                String::new()
+            } else {
+                format!("; {} hit the time limit", timed_out.len())
+            }
         ));
         return SuiteRun::Ran;
     }
@@ -1673,7 +1772,10 @@ async fn build_and_test_with(
                 if cases.is_empty() {
                     name.clone()
                 } else {
-                    format!("{name} (failing cases: {})", cases.iter().take(6).cloned().collect::<Vec<_>>().join(", "))
+                    format!(
+                        "{name} (failing cases: {})",
+                        cases.iter().take(6).cloned().collect::<Vec<_>>().join(", ")
+                    )
                 }
             })
             .collect();
@@ -1690,7 +1792,17 @@ async fn build_and_test_with(
         let listed: Vec<String> = case_regressions
             .iter()
             .take(6)
-            .map(|(entry, cases)| format!("{entry}: {}", cases.iter().take(10).cloned().collect::<Vec<_>>().join(", ")))
+            .map(|(entry, cases)| {
+                format!(
+                    "{entry}: {}",
+                    cases
+                        .iter()
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
             .collect();
         outcome.problems.push(Problem {
             kind: ProblemKind::Tests,
@@ -1737,7 +1849,10 @@ async fn build_and_test_with(
 fn failing_names(results: &BTreeMap<String, TestStatus>) -> BTreeSet<String> {
     results
         .iter()
-        .filter(|(name, status)| status.failing() && !name.ends_with(&format!("{}{}", build::CASE_SEP, build::OTHER_CASES)))
+        .filter(|(name, status)| {
+            status.failing()
+                && !name.ends_with(&format!("{}{}", build::CASE_SEP, build::OTHER_CASES))
+        })
         .map(|(name, _)| name.clone())
         .collect()
 }
@@ -1802,7 +1917,10 @@ async fn shape_review(
         } else {
             format!(" {}:{}", finding.file, finding.line)
         };
-        text.push_str(&format!("\n   - [{}]{at} {}", finding.rule, finding.message));
+        text.push_str(&format!(
+            "\n   - [{}]{at} {}",
+            finding.rule, finding.message
+        ));
     }
     outcome.problems.push(Problem {
         kind: ProblemKind::ShapeAdvisory,
@@ -1835,7 +1953,15 @@ async fn agent_diff(snapshot: &Snapshot, changes: &AgentChanges) -> Option<Strin
         // `--no-index` exits 1 when the files differ, which is the point here.
         if let Some((_, text)) = gitx::git_status_out(
             root,
-            &["diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", path.as_str()],
+            &[
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-index",
+                "--",
+                "/dev/null",
+                path.as_str(),
+            ],
         )
         .await
         {
@@ -2021,7 +2147,12 @@ async fn base_test_results(
         let known: Vec<(String, TestStatus)> = names
             .iter()
             .filter(|n| !base.asked.contains(*n))
-            .filter_map(|n| run.results.get(n).and_then(|s| from_shared(*s)).map(|s| (n.clone(), s)))
+            .filter_map(|n| {
+                run.results
+                    .get(n)
+                    .and_then(|s| from_shared(*s))
+                    .map(|s| (n.clone(), s))
+            })
             .collect();
         for (name, status) in known {
             base.tests.insert(name.clone(), status);
@@ -2119,7 +2250,10 @@ async fn base_test_results(
 /// tree (ctest names, the same key `cpp_test_select` computes for that tree) and only when the
 /// working tree was clean at session start (then the base is exactly the session-start
 /// commit, which is what the cache records).
-fn shared_base_key(snapshot: &Snapshot, plan: &BuildPlan) -> Option<crate::base_run_cache::BaseRunKey> {
+fn shared_base_key(
+    snapshot: &Snapshot,
+    plan: &BuildPlan,
+) -> Option<crate::base_run_cache::BaseRunKey> {
     if !snapshot.dirty.is_empty() || plan.scratch {
         return None;
     }
@@ -2127,7 +2261,11 @@ fn shared_base_key(snapshot: &Snapshot, plan: &BuildPlan) -> Option<crate::base_
         return None;
     };
     let config = crate::testsel::cmake::tree_config_key(dir)?;
-    Some(crate::base_run_cache::BaseRunKey::new(&snapshot.root, &snapshot.head, &config))
+    Some(crate::base_run_cache::BaseRunKey::new(
+        &snapshot.root,
+        &snapshot.head,
+        &config,
+    ))
 }
 
 fn to_shared(status: TestStatus) -> crate::base_run_cache::TestStatus {

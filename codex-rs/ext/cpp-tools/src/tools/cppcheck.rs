@@ -142,7 +142,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for CppCheckTool {
 }
 
 impl CppCheckTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: CppCheckArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -177,7 +180,8 @@ impl CppCheckTool {
                 // Not in the database (a header, a new file): borrow the -I/-D
                 // flags of the nearest entry rather than none at all.
                 None => match nearest_db_entry(db, &target).and_then(|entry| {
-                    super::sanitizers::db_includes_and_defines(db, &entry).map(|flags| (entry, flags))
+                    super::sanitizers::db_includes_and_defines(db, &entry)
+                        .map(|flags| (entry, flags))
                 }) {
                     Some((entry, flags)) => Scope::FileWithNearestFlags(db.clone(), entry, flags),
                     None => Scope::FileNotInProject(db.clone()),
@@ -255,7 +259,12 @@ impl CppCheckTool {
                     secs,
                     "don't retry the same call; narrow `path` to the one file you changed.",
                 );
-                return Ok(crate::report::report(TOOL_NAME, &target_label, body, result));
+                return Ok(crate::report::report(
+                    TOOL_NAME,
+                    &target_label,
+                    body,
+                    result,
+                ));
             }
         };
 
@@ -264,13 +273,16 @@ impl CppCheckTool {
 
         let mut body = describe_scope(&scope, includes.len());
         if cpp_header {
-            body.push_str("language: C++ (the header was parsed as C++, from the project's sources)\n");
+            body.push_str(
+                "language: C++ (the header was parsed as C++, from the project's sources)\n",
+            );
         }
         // cppcheck reports its OWN failures ("could not find or open any
         // of the paths given", an unknown --enable name) on stdout with exit
         // 1; only stderr was read, so every failure read "No findings.".
         if !success {
-            let status = code.map_or_else(|| "a signal".to_string(), |c| format!("exit status {c}"));
+            let status =
+                code.map_or_else(|| "a signal".to_string(), |c| format!("exit status {c}"));
             let said = format!("{}\n{}", stdout.trim(), stderr.trim());
             let said = said.trim();
             if findings.is_empty() {
@@ -281,7 +293,12 @@ impl CppCheckTool {
                     &format!("cppcheck itself failed ({status}), so nothing was checked."),
                     "do what the report above suggests, then call cpp_check again.",
                 );
-                return Ok(crate::report::report(TOOL_NAME, &target_label, body, result));
+                return Ok(crate::report::report(
+                    TOOL_NAME,
+                    &target_label,
+                    body,
+                    result,
+                ));
             }
             body.push_str(&format!("note: cppcheck exited with {status}: {said}\n"));
         }
@@ -294,7 +311,12 @@ impl CppCheckTool {
         body.push_str(&status_line(&findings));
         body.push_str(&render_findings(&findings, FINDINGS_CAP));
         let result = crate::results::findings_result(TOOL_NAME, &findings, truncated);
-        Ok(crate::report::report(TOOL_NAME, &target_label, body, result))
+        Ok(crate::report::report(
+            TOOL_NAME,
+            &target_label,
+            body,
+            result,
+        ))
     }
 }
 
@@ -326,7 +348,9 @@ fn supports_file_filter(version: Option<crate::toolver::Version>) -> bool {
 
 /// Max headers handed to cppcheck for a header-only directory.
 const HEADERS_CAP: usize = 200;
-const SOURCE_EXTS: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "C", "tpp", "txx", "ipp", "ixx"];
+const SOURCE_EXTS: &[&str] = &[
+    "c", "cc", "cpp", "cxx", "c++", "C", "tpp", "txx", "ipp", "ixx",
+];
 const HEADER_EXTS: &[&str] = &["h", "hh", "hpp", "hxx", "h++", "H"];
 
 /// The headers under `dir` when it holds headers but no source file cppcheck
@@ -337,7 +361,11 @@ fn headers_only(dir: &Path) -> Option<Vec<PathBuf>> {
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
     let mut visited = 0usize;
     while let Some((dir, depth)) = stack.pop() {
-        let mut entries: Vec<_> = std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path()).collect();
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .collect();
         entries.sort();
         for path in entries {
             visited += 1;
@@ -371,7 +399,11 @@ fn is_ambiguous_header(path: &Path) -> bool {
 /// Should this `.h` be parsed as C++? The project's evidence first, then the
 /// header's own syntax.
 fn header_is_cpp(root: &Path, target: &Path, db: Option<&Path>, sample: Option<&PathBuf>) -> bool {
-    let near = if target.is_dir() { Some(target) } else { target.parent() };
+    let near = if target.is_dir() {
+        Some(target)
+    } else {
+        target.parent()
+    };
     if let Some(verdict) = crate::toolver::project_is_cpp(root, near, db) {
         return verdict;
     }
@@ -394,7 +426,12 @@ fn status_line(findings: &[Finding]) -> String {
 }
 
 /// A cppcheck that failed before reporting anything: why, and what to do.
-fn failure_report(said: &str, status: &str, version: Option<crate::toolver::Version>, path: &str) -> String {
+fn failure_report(
+    said: &str,
+    status: &str,
+    version: Option<crate::toolver::Version>,
+    path: &str,
+) -> String {
     let ver = crate::toolver::version_label(version);
     let (reason, next) = if said.contains("unrecognized command line option") {
         (
@@ -521,7 +558,10 @@ fn db_entry_path(db: &Path, target: &Path) -> Option<String> {
     let want = super::sanitizers::canonical(target);
     let db_dir = db.parent().unwrap_or(Path::new("."));
     entries.as_array()?.iter().find_map(|entry| {
-        let directory = entry.get("directory").and_then(|v| v.as_str()).unwrap_or("");
+        let directory = entry
+            .get("directory")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let directory = super::sanitizers::resolve_path(db_dir, directory);
         let file = entry.get("file").and_then(|v| v.as_str())?;
         let path = super::sanitizers::resolve_path(&directory, file);
@@ -540,7 +580,10 @@ fn nearest_db_entry(db: &Path, target: &Path) -> Option<PathBuf> {
         .as_array()?
         .iter()
         .filter_map(|entry| {
-            let directory = entry.get("directory").and_then(|v| v.as_str()).unwrap_or("");
+            let directory = entry
+                .get("directory")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let directory = super::sanitizers::resolve_path(db_dir, directory);
             let file = entry.get("file").and_then(|v| v.as_str())?;
             Some(super::sanitizers::resolve_path(&directory, file))
@@ -699,7 +742,10 @@ mod tests {
     #[test]
     fn resolves_relative_and_absolute_paths() {
         let cwd = Path::new("/work");
-        assert_eq!(resolve_path(cwd, "src/a.cpp"), PathBuf::from("/work/src/a.cpp"));
+        assert_eq!(
+            resolve_path(cwd, "src/a.cpp"),
+            PathBuf::from("/work/src/a.cpp")
+        );
         assert_eq!(resolve_path(cwd, "/abs/b.cpp"), PathBuf::from("/abs/b.cpp"));
     }
 
@@ -709,7 +755,13 @@ mod tests {
     fn passes_no_include_paths_by_default() {
         // The pre-B3b behaviour, pinned: bare invocation (one configuration),
         // target last.
-        let argv = build_args(DEFAULT_ENABLE, Path::new("/w/a.cpp"), &Scope::Path, &[], false);
+        let argv = build_args(
+            DEFAULT_ENABLE,
+            Path::new("/w/a.cpp"),
+            &Scope::Path,
+            &[],
+            false,
+        );
         assert_eq!(
             argv,
             vec![
@@ -760,7 +812,10 @@ mod tests {
             &[],
             false,
         );
-        assert!(argv.contains(&"--file-filter=/w/a.cpp".to_string()), "{argv:?}");
+        assert!(
+            argv.contains(&"--file-filter=/w/a.cpp".to_string()),
+            "{argv:?}"
+        );
         // One file the DB does NOT list: that file, directly.
         let argv = build_args(
             DEFAULT_ENABLE,
@@ -780,7 +835,10 @@ mod tests {
             "Project: v2/bug.cpp:1:30: error: Array 'a[2]' accessed at index 3. [arrayIndexOutOfBounds]",
         )
         .expect("a finding");
-        assert_eq!((f.file.as_str(), f.line, f.column), ("Project: v2/bug.cpp", 1, 30));
+        assert_eq!(
+            (f.file.as_str(), f.line, f.column),
+            ("Project: v2/bug.cpp", 1, 30)
+        );
         assert!(f.message.starts_with("Array"), "{}", f.message);
     }
 
@@ -800,17 +858,30 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("bug.cpp"), "int main(){int a[2]; return a[3];}\n").unwrap();
-        let out = check(dir.path(), serde_json::json!({"path": "bug.cpp", "enable": "warnings"}))
-            .await
-            .expect("a report");
-        assert!(out.contains("DID NOT RUN") && out.contains("unknown name 'warnings'"), "{out}");
+        std::fs::write(
+            dir.path().join("bug.cpp"),
+            "int main(){int a[2]; return a[3];}\n",
+        )
+        .unwrap();
+        let out = check(
+            dir.path(),
+            serde_json::json!({"path": "bug.cpp", "enable": "warnings"}),
+        )
+        .await
+        .expect("a report");
+        assert!(
+            out.contains("DID NOT RUN") && out.contains("unknown name 'warnings'"),
+            "{out}"
+        );
         assert!(out.contains("NOT a clean result"), "{out}");
         assert!(!out.contains("No findings"), "{out}");
         let err = check(dir.path(), serde_json::json!({"path": "nope.cpp"}))
             .await
             .expect_err("missing");
-        assert!(matches!(err, FunctionCallError::RespondToModel(_)), "{err:?}");
+        assert!(
+            matches!(err, FunctionCallError::RespondToModel(_)),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
@@ -824,14 +895,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("old.cpp"), "int f(){ return 0; }\n").unwrap();
-        std::fs::write(root.join("new.cpp"), "int main(){int a[2]; a[0]=1; return a[3];}\n").unwrap();
+        std::fs::write(
+            root.join("new.cpp"),
+            "int main(){int a[2]; a[0]=1; return a[3];}\n",
+        )
+        .unwrap();
         let db = serde_json::json!([{
             "directory": root.display().to_string(),
             "file": "old.cpp",
             "command": "c++ -c old.cpp",
         }]);
         std::fs::write(root.join("compile_commands.json"), db.to_string()).unwrap();
-        let out = check(root, serde_json::json!({"path": "new.cpp"})).await.expect("a report");
+        let out = check(root, serde_json::json!({"path": "new.cpp"}))
+            .await
+            .expect("a report");
         assert!(out.contains("arrayIndexOutOfBounds"), "{out}");
         assert!(out.contains("does not list it"), "{out}");
     }
@@ -839,8 +916,11 @@ mod tests {
     #[test]
     fn scope_line_states_how_wide_the_analysis_was() {
         assert!(
-            describe_scope(&Scope::WholeProject(PathBuf::from("/w/compile_commands.json")), 0)
-                .contains("whole project")
+            describe_scope(
+                &Scope::WholeProject(PathBuf::from("/w/compile_commands.json")),
+                0
+            )
+            .contains("whole project")
         );
         assert!(describe_scope(&Scope::Path, 2).contains("2 include dir(s)"));
         // No database and no includes: nothing new to say, output unchanged.
@@ -850,7 +930,10 @@ mod tests {
     #[test]
     fn compile_db_use_is_opt_out() {
         let default: CppCheckArgs = serde_json::from_str(r#"{"path":"a.cpp"}"#).unwrap();
-        assert_eq!(default.use_compile_db, None, "absent means the true default");
+        assert_eq!(
+            default.use_compile_db, None,
+            "absent means the true default"
+        );
         assert!(default.use_compile_db.unwrap_or(true));
         let off: CppCheckArgs =
             serde_json::from_str(r#"{"path":"a.cpp","use_compile_db":false}"#).unwrap();
@@ -901,7 +984,10 @@ mod tests {
         assert!(!argv.iter().any(|a| a.starts_with("--project")), "{argv:?}");
         assert_eq!(argv.last().unwrap(), &target.display().to_string());
         let line = describe_scope(&scope, 0);
-        assert!(line.contains("does not list it") && line.contains("nearest entry"), "{line}");
+        assert!(
+            line.contains("does not list it") && line.contains("nearest entry"),
+            "{line}"
+        );
     }
 
     #[test]
@@ -935,15 +1021,29 @@ mod tests {
         assert!(argv.contains(&"-I/w/include".to_string()), "{argv:?}");
         assert!(argv.contains(&"-DNDEBUG".to_string()), "{argv:?}");
         assert_eq!(argv.last().unwrap(), "/w/a.cpp");
-        assert!(!argv.iter().any(|a| a.starts_with("--project") || a.starts_with("--file-filter")), "{argv:?}");
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a.starts_with("--project") || a.starts_with("--file-filter")),
+            "{argv:?}"
+        );
     }
 
     #[test]
     fn a_cpp_header_is_parsed_as_cpp() {
         let argv = build_args(DEFAULT_ENABLE, Path::new("/w/a.h"), &Scope::Path, &[], true);
         assert!(argv.contains(&"--language=c++".to_string()), "{argv:?}");
-        let argv = build_args(DEFAULT_ENABLE, Path::new("/w/a.c"), &Scope::Path, &[], false);
-        assert!(!argv.iter().any(|a| a.starts_with("--language")), "{argv:?}");
+        let argv = build_args(
+            DEFAULT_ENABLE,
+            Path::new("/w/a.c"),
+            &Scope::Path,
+            &[],
+            false,
+        );
+        assert!(
+            !argv.iter().any(|a| a.starts_with("--language")),
+            "{argv:?}"
+        );
 
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1013,10 +1113,14 @@ mod tests {
             "namespace lib {\ninline int get() { int a[2] = {0, 0}; return a[3]; }\n}\n",
         )
         .unwrap();
-        let out = check(root, serde_json::json!({"path": "include/lib.h"})).await.expect("a report");
+        let out = check(root, serde_json::json!({"path": "include/lib.h"}))
+            .await
+            .expect("a report");
         assert!(!out.contains("invalid C code"), "{out}");
         assert!(out.contains("arrayIndexOutOfBounds"), "{out}");
-        let out = check(root, serde_json::json!({"path": "include"})).await.expect("a report");
+        let out = check(root, serde_json::json!({"path": "include"}))
+            .await
+            .expect("a report");
         assert!(!out.contains("could not find or open"), "{out}");
         assert!(out.contains("header(s) in this directory"), "{out}");
     }

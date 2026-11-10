@@ -1,4 +1,44 @@
+//! Keeps a picker listing's pagination state and its checkout filter consistent across pages.
+
+use std::path::Path;
+
 use super::PageCursor;
+use super::SessionFilterMode;
+use super::repository_cwd_filter;
+use codex_app_server_protocol::ThreadListCwdFilter;
+
+/// Holds the expanded checkout set for the cursor's entire listing cycle.
+#[derive(Default)]
+pub(super) struct PageCwdFilter {
+    current: Option<ThreadListCwdFilter>,
+}
+
+impl PageCwdFilter {
+    pub(super) fn for_request(
+        &mut self,
+        cursor: Option<&PageCursor>,
+        cwd: Option<&Path>,
+        filter_mode: SessionFilterMode,
+        uses_remote_filesystem: bool,
+    ) -> Option<ThreadListCwdFilter> {
+        if cursor.is_none() {
+            self.current = match filter_mode {
+                SessionFilterMode::Cwd => {
+                    cwd.map(|cwd| ThreadListCwdFilter::One(cwd.to_string_lossy().into_owned()))
+                }
+                SessionFilterMode::Repo => {
+                    cwd.map(|cwd| repository_cwd_filter(cwd, uses_remote_filesystem))
+                }
+                SessionFilterMode::All => None,
+            };
+        }
+        self.current.clone()
+    }
+}
+
+#[cfg(test)]
+#[path = "page_loading_tests.rs"]
+mod tests;
 
 /// Selects whether thread listing trusts indexed metadata or uses the store's normal behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -12,7 +52,7 @@ pub(super) enum PageLoadMode {
 /// Tracks the current request and the cursor policy inherited by its next page.
 pub(super) struct PaginationState {
     pub(super) next_cursor: Option<PageCursor>,
-    next_page_mode: PageLoadMode,
+    pub(super) next_page_mode: PageLoadMode,
     pub(super) num_scanned_files: usize,
     pub(super) reached_scan_cap: bool,
     loading: LoadingState,
@@ -87,6 +127,9 @@ impl PaginationState {
     /// Returns the next cursor together with the listing mode that produced it.
     pub(super) fn next_page(&self) -> Option<(PageCursor, PageLoadMode)> {
         if self.is_loading() {
+            return None;
+        }
+        if matches!(self.next_cursor, Some(PageCursor::SourcesPending)) {
             return None;
         }
         self.next_cursor

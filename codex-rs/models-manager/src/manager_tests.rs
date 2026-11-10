@@ -16,7 +16,11 @@ use codex_login::ExternalAuth;
 use codex_login::ExternalAuthRefreshContext;
 use codex_login::TokenData;
 use codex_protocol::auth::AuthMode;
+use codex_protocol::error::CodexErr;
+use codex_protocol::openai_models::ModelAccessPrograms;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::turn_input::CyberAccessProgram;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::collections::VecDeque;
@@ -27,8 +31,17 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tempfile::tempdir;
 
+#[path = "api_key_discovery_tests.rs"]
+mod api_key_discovery_tests;
+
+#[path = "cache_identity_tests.rs"]
+mod cache_identity_tests;
+
 #[path = "model_info_overrides_tests.rs"]
 mod model_info_overrides_tests;
+
+#[path = "catalog_origin_tests.rs"]
+mod catalog_origin_tests;
 
 const DEFAULT_HTTP_CLIENT_FACTORY: HttpClientFactory =
     HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault);
@@ -57,7 +70,6 @@ fn remote_model_with_visibility(
             "upgrade": null,
             "model_messages": {
                 "instructions_template": "base instructions",
-                "instructions_variables": null,
                 "approvals": null,
                 "auto_review": null,
                 "permissions": null
@@ -84,16 +96,17 @@ fn assert_models_contain(actual: &[ModelInfo], expected: &[ModelInfo]) {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct TestModelsEndpoint {
     has_command_auth: bool,
     uses_codex_backend: bool,
-    responses: Mutex<VecDeque<Vec<ModelInfo>>>,
+    responses: Mutex<VecDeque<CoreResult<Vec<ModelInfo>>>>,
+    etag: Option<String>,
     fetch_count: AtomicUsize,
     observed_proxy_policy: Mutex<Option<OutboundProxyPolicy>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct TestModelsCache {
     entry: Mutex<Option<ModelsCacheEntry>>,
     load_error: bool,
@@ -153,6 +166,7 @@ impl ModelsCache for TestModelsCache {
             if self.store_error {
                 return Err(ModelsCacheError::new("test store failure"));
             }
+            *self.entry.lock().unwrap() = Some(entry.clone());
             self.stored_entries
                 .lock()
                 .expect("stored entries lock should not be poisoned")
@@ -164,6 +178,8 @@ impl ModelsCache for TestModelsCache {
     fn refresh_ttl<'a>(
         &'a self,
         _client_version: &'a str,
+        _identity: &'a str,
+        _etag: &'a str,
     ) -> ModelsCacheFuture<'a, Result<(), ModelsCacheError>> {
         Box::pin(async move {
             let refreshed = {
@@ -185,21 +201,24 @@ impl ModelsCache for TestModelsCache {
 impl TestModelsEndpoint {
     fn new(responses: Vec<Vec<ModelInfo>>) -> Arc<Self> {
         Arc::new(Self {
-            has_command_auth: false,
             uses_codex_backend: true,
-            responses: Mutex::new(responses.into()),
-            fetch_count: AtomicUsize::new(0),
-            observed_proxy_policy: Mutex::new(None),
+            responses: Mutex::new(responses.into_iter().map(Ok).collect()),
+            ..Self::default()
         })
     }
 
     fn without_refresh(responses: Vec<Vec<ModelInfo>>) -> Arc<Self> {
         Arc::new(Self {
-            has_command_auth: false,
-            uses_codex_backend: false,
+            responses: Mutex::new(responses.into_iter().map(Ok).collect()),
+            ..Self::default()
+        })
+    }
+
+    fn with_command_auth(responses: Vec<CoreResult<Vec<ModelInfo>>>) -> Arc<Self> {
+        Arc::new(Self {
+            has_command_auth: true,
             responses: Mutex::new(responses.into()),
-            fetch_count: AtomicUsize::new(0),
-            observed_proxy_policy: Mutex::new(None),
+            ..Self::default()
         })
     }
 
@@ -214,15 +233,19 @@ impl TestModelsEndpoint {
             .expect("observed proxy policy lock should not be poisoned")
     }
 
-    async fn list_models(&self) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
+    async fn list_models(&self) -> CoreResult<ModelsEndpointResponse> {
         self.fetch_count.fetch_add(1, Ordering::SeqCst);
         let models = self
             .responses
             .lock()
             .expect("responses lock should not be poisoned")
             .pop_front()
-            .unwrap_or_default();
-        Ok((models, None))
+            .unwrap_or_else(|| Ok(Vec::new()))?;
+        Ok(ModelsEndpointResponse {
+            models,
+            etag: self.etag.clone(),
+            identity: self.identity().expect("test endpoint identity"),
+        })
     }
 }
 
@@ -259,6 +282,14 @@ impl ExternalAuth for TestUnresolvedExternalApiKeyAuth {
 }
 
 impl ModelsEndpointClient for TestModelsEndpoint {
+    fn supports_api_key_models(&self) -> bool {
+        true
+    }
+
+    fn identity(&self) -> Option<String> {
+        Some("test-provider".to_string())
+    }
+
     fn has_command_auth(&self) -> bool {
         self.has_command_auth
     }
@@ -271,7 +302,7 @@ impl ModelsEndpointClient for TestModelsEndpoint {
         &'a self,
         _client_version: &'a str,
         http_client_factory: HttpClientFactory,
-    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+    ) -> ModelsEndpointFuture<'a, CoreResult<ModelsEndpointResponse>> {
         Box::pin(async move {
             *self
                 .observed_proxy_policy
@@ -320,7 +351,11 @@ where
 }
 
 fn static_manager_for_tests(model_catalog: ModelsResponse) -> StaticModelsManager {
-    StaticModelsManager::new(/*auth_manager*/ None, model_catalog)
+    StaticModelsManager::new(
+        /*auth_manager*/ None,
+        model_catalog,
+        ModelOrigin::ExplicitConfig,
+    )
 }
 
 #[tokio::test]
@@ -332,14 +367,19 @@ async fn file_cache_implements_models_cache_contract() {
     );
     let client_version = crate::client_version_to_whole();
     let entry = ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
         fetched_at: Utc::now(),
         etag: Some("file-etag".to_string()),
         client_version: Some(client_version.clone()),
-        models: vec![remote_model(
-            "file-cached",
-            "File Cached",
-            /*priority*/ 0,
-        )],
+        models: vec![ModelInfo {
+            available_access_programs: Some(ModelAccessPrograms {
+                cyber: vec![
+                    CyberAccessProgram::Standard,
+                    CyberAccessProgram::DaybreakBlue,
+                ],
+            }),
+            ..remote_model("file-cached", "File Cached", /*priority*/ 0)
+        }],
     };
 
     cache.store(&entry).await.expect("cache store succeeds");
@@ -363,6 +403,7 @@ async fn file_cache_refresh_ttl_renews_expired_entry_without_serving_it_stale() 
     let client_version = crate::client_version_to_whole();
     let expired_at = Utc::now() - chrono::Duration::hours(1);
     let entry = ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
         fetched_at: expired_at,
         etag: Some("expired-etag".to_string()),
         client_version: Some(client_version.clone()),
@@ -384,7 +425,11 @@ async fn file_cache_refresh_ttl_renews_expired_entry_without_serving_it_stale() 
     );
 
     cache
-        .refresh_ttl(&client_version)
+        .refresh_ttl(
+            &client_version,
+            entry.identity.as_deref().unwrap(),
+            entry.etag.as_deref().unwrap(),
+        )
         .await
         .expect("TTL refresh succeeds");
 
@@ -433,6 +478,7 @@ async fn manager_without_cache_fetches_on_every_refresh() {
 async fn injected_cache_hit_avoids_remote_fetch() {
     let cached_models = vec![remote_model("cached", "Cached", /*priority*/ 0)];
     let cache = TestModelsCache::with_entry(ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
         fetched_at: Utc::now(),
         etag: Some("cached-etag".to_string()),
         client_version: Some(crate::client_version_to_whole()),
@@ -486,6 +532,7 @@ async fn injected_cache_read_error_falls_back_and_persists_remote_models() {
     assert_eq!(
         stored_entries,
         vec![ModelsCacheEntry {
+            identity: Some("test-provider".to_string()),
             fetched_at: stored_entries[0].fetched_at,
             etag: None,
             client_version: Some(crate::client_version_to_whole()),
@@ -498,6 +545,13 @@ async fn injected_cache_read_error_falls_back_and_persists_remote_models() {
 async fn injected_cache_write_error_does_not_fail_remote_refresh() {
     let remote_models = vec![remote_model("remote", "Remote", /*priority*/ 0)];
     let cache = TestModelsCache::failing(/*load_error*/ false, /*store_error*/ true);
+    *cache.entry.lock().unwrap() = Some(ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
+        fetched_at: Utc::now(),
+        etag: None,
+        client_version: Some(crate::client_version_to_whole()),
+        models: vec![remote_model("cached", "Cached", /*priority*/ 0)],
+    });
     let endpoint = TestModelsEndpoint::new(vec![remote_models.clone()]);
     let manager = OpenAiModelsManager::new_with_cache(
         cache,
@@ -508,13 +562,22 @@ async fn injected_cache_write_error_does_not_fail_remote_refresh() {
     );
 
     let catalog = manager
-        .raw_model_catalog(
-            RefreshStrategy::OnlineIfUncached,
-            DEFAULT_HTTP_CLIENT_FACTORY,
-        )
+        .raw_model_catalog(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
         .await;
 
     assert_eq!(catalog.models, remote_models);
+    assert_eq!(
+        manager
+            .model_catalog_with_origins(RefreshStrategy::InMemory, DEFAULT_HTTP_CLIENT_FACTORY)
+            .await,
+        remote_models
+            .into_iter()
+            .map(|model| CatalogModel {
+                model: model.into(),
+                origin: ModelOrigin::Provider,
+            })
+            .collect::<Vec<_>>()
+    );
     assert_eq!(endpoint.fetch_count(), 1);
 }
 
@@ -523,6 +586,7 @@ async fn injected_cache_ttl_refresh_preserves_cached_payload() {
     let cached_models = vec![remote_model("cached", "Cached", /*priority*/ 0)];
     let cached_at = Utc::now() - chrono::Duration::minutes(1);
     let cache = TestModelsCache::with_entry(ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
         fetched_at: cached_at,
         etag: Some("cached-etag".to_string()),
         client_version: Some(crate::client_version_to_whole()),
@@ -535,6 +599,7 @@ async fn injected_cache_ttl_refresh_preserves_cached_payload() {
             "test-api-key",
         ))),
     );
+    manager.set_api_key_model_discovery_enabled(/*enabled*/ true);
 
     manager
         .raw_model_catalog(
@@ -570,6 +635,8 @@ c2ln",
             .expect("fake id token should parse"),
             access_token: "Access Token".to_string(),
             refresh_token: "test".to_string(),
+            oauth_provenance: None,
+            login_owner_id: None,
             account_id: Some("account_id".to_string()),
         }),
         last_refresh: Some(Utc::now()),
@@ -702,9 +769,12 @@ async fn dynamic_manager_preserves_requested_model_when_fallback_is_allowed() {
 }
 
 #[tokio::test]
-async fn get_model_info_tracks_fallback_usage() {
+async fn get_model_info_tracks_metadata_origin() {
     let codex_home = tempdir().expect("temp dir");
-    let config = ModelsManagerConfig::default();
+    let config = ModelsManagerConfig {
+        base_instructions: Some("Custom instructions".to_string()),
+        ..Default::default()
+    };
     let manager = openai_manager_for_tests(
         codex_home.path().to_path_buf(),
         TestModelsEndpoint::new(Vec::new()),
@@ -718,14 +788,21 @@ async fn get_model_info_tracks_fallback_usage() {
         .clone();
 
     let known = manager.get_model_info(known_slug.as_str(), &config).await;
-    assert!(!known.used_fallback_model_metadata);
+    assert_eq!(known.origin, ModelOrigin::Bundled);
     assert_eq!(known.slug, known_slug);
 
     let unknown = manager
         .get_model_info("model-that-does-not-exist", &config)
         .await;
-    assert!(unknown.used_fallback_model_metadata);
+    assert_eq!(unknown.origin, ModelOrigin::Synthetic);
     assert_eq!(unknown.slug, "model-that-does-not-exist");
+    assert_eq!(
+        unknown
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref()),
+        config.base_instructions.as_deref()
+    );
 }
 
 #[tokio::test]
@@ -769,7 +846,20 @@ async fn get_model_info_uses_custom_catalog() {
     assert_eq!(model_info.display_name, "Overlay");
     assert_eq!(model_info.context_window, Some(272_000));
     assert!(model_info.supports_image_detail_original);
-    assert!(!model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::ExplicitConfig);
+
+    let config = ModelsManagerConfig {
+        model_context_window: Some(128_000),
+        ..Default::default()
+    };
+    let mut expected = model_info;
+    expected.context_window = Some(128_000);
+    assert_eq!(
+        manager
+            .get_model_info("gpt-overlay-experiment", &config)
+            .await,
+        expected
+    );
 }
 
 #[tokio::test]
@@ -786,7 +876,7 @@ async fn get_model_info_matches_namespaced_suffix() {
 
     assert_eq!(model_info.slug, namespaced_model);
     assert!(model_info.supports_image_detail_original);
-    assert!(!model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::ExplicitConfig);
 }
 
 #[tokio::test]
@@ -801,7 +891,7 @@ async fn get_model_info_matches_hyphenated_provider_namespace_suffix() {
     let model_info = manager.get_model_info(&namespaced_model, &config).await;
 
     assert_eq!(model_info.slug, namespaced_model);
-    assert!(!model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::ExplicitConfig);
 }
 
 #[tokio::test]
@@ -824,7 +914,7 @@ async fn get_model_info_rejects_multi_segment_namespace_suffix_matching() {
     let model_info = manager.get_model_info(&namespaced_model, &config).await;
 
     assert_eq!(model_info.slug, namespaced_model);
-    assert!(model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::Synthetic);
 }
 
 #[tokio::test]
@@ -956,7 +1046,7 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
         .await;
 
     assert_eq!(model_info.slug, bundled_slug);
-    assert!(model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::Synthetic);
 }
 
 #[tokio::test]
@@ -1003,7 +1093,7 @@ async fn refresh_available_models_merges_hidden_only_chatgpt_remote_with_bundled
 }
 
 #[tokio::test]
-async fn refresh_available_models_keeps_merging_for_api_auth() {
+async fn refresh_available_models_keeps_merging_for_custom_api_auth() {
     let remote_models = vec![remote_model(
         "api-auth-visible-remote",
         "API Auth Visible",
@@ -1012,10 +1102,8 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
     let codex_home = tempdir().expect("temp dir");
     let endpoint = Arc::new(TestModelsEndpoint {
         has_command_auth: true,
-        uses_codex_backend: false,
-        responses: Mutex::new(vec![remote_models.clone()].into()),
-        fetch_count: AtomicUsize::new(0),
-        observed_proxy_policy: Mutex::new(None),
+        responses: Mutex::new(vec![Ok(remote_models.clone())].into()),
+        ..TestModelsEndpoint::default()
     });
     let manager = openai_manager_for_tests_with_auth(
         codex_home.path().to_path_buf(),
@@ -1037,6 +1125,227 @@ async fn refresh_available_models_keeps_merging_for_api_auth() {
 
     assert_eq!(manager.get_remote_models().await, expected);
     assert_eq!(endpoint.fetch_count(), 1, "expected a single model fetch");
+}
+
+#[tokio::test]
+async fn authoritative_catalog_preserves_hidden_models_and_matches_exact_ids() {
+    let model =
+        remote_model_with_visibility("gpt-6-sol", "Provider Model", /*priority*/ 0, "hide");
+    let endpoint = TestModelsEndpoint::with_command_auth(vec![Ok(vec![model.clone()])]);
+    let manager = OpenAiModelsManager::new_without_cache(endpoint, /*auth_manager*/ None)
+        .with_provider_catalog();
+    assert_eq!(
+        manager
+            .raw_model_catalog(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
+            .await
+            .models,
+        vec![model]
+    );
+    for unknown in ["gpt-6-sol-other", "namespace/gpt-6-sol"] {
+        assert_eq!(
+            manager
+                .get_model_info(unknown, &ModelsManagerConfig::default())
+                .await,
+            CatalogModel {
+                model: model_info::model_info_from_slug(unknown).into(),
+                origin: ModelOrigin::Synthetic
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn authoritative_catalog_access_rejection_invalidates_cache_until_refresh_succeeds() {
+    for error in [
+        catalog_http_error(/*status*/ 401),
+        catalog_http_error(/*status*/ 403),
+        CodexErr::RefreshTokenFailed(codex_protocol::error::RefreshTokenFailedError::new(
+            codex_protocol::error::RefreshTokenFailedReason::Revoked,
+            "credentials revoked",
+        )),
+        CodexErrorDetails::GatewayLoginRequired(
+            codex_login::GatewayAuthError::LoginRequired.to_string(),
+        )
+        .into(),
+    ] {
+        // Like a native TTL backend, this cache may return an invalidated stored entry.
+        let cache = Arc::new(TestModelsCache::default());
+        let models = vec![remote_model(
+            "provider-model",
+            "Provider Model",
+            /*priority*/ 0,
+        )];
+        let endpoint = TestModelsEndpoint::with_command_auth(vec![
+            Ok(models.clone()),
+            Err(error),
+            Ok(models.clone()),
+        ]);
+        let manager = OpenAiModelsManager::new_with_cache(
+            cache.clone(),
+            endpoint.clone(),
+            /*auth_manager*/ None,
+        )
+        .with_provider_catalog();
+        assert_eq!(
+            manager
+                .raw_model_catalog(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
+                .await
+                .models,
+            models
+        );
+        for strategy in [RefreshStrategy::Online, RefreshStrategy::Offline] {
+            assert_eq!(
+                manager
+                    .raw_model_catalog(strategy, DEFAULT_HTTP_CLIENT_FACTORY)
+                    .await,
+                ModelsResponse::default()
+            );
+        }
+        let restarted =
+            OpenAiModelsManager::new_with_cache(cache, endpoint, /*auth_manager*/ None)
+                .with_provider_catalog();
+        assert_eq!(
+            restarted
+                .raw_model_catalog(RefreshStrategy::Offline, DEFAULT_HTTP_CLIENT_FACTORY)
+                .await,
+            ModelsResponse::default()
+        );
+        assert_eq!(
+            restarted
+                .raw_model_catalog(
+                    RefreshStrategy::OnlineIfUncached,
+                    DEFAULT_HTTP_CLIENT_FACTORY,
+                )
+                .await
+                .models,
+            models
+        );
+    }
+}
+
+fn catalog_http_error(status: u16) -> CodexErr {
+    CodexErr::UnexpectedStatus(codex_protocol::error::UnexpectedResponseError {
+        status: status.try_into().expect("valid status"),
+        body: String::new(),
+        user_message: None,
+        url: None,
+        cf_ray: None,
+        request_id: None,
+        identity_authorization_error: None,
+        identity_error_code: None,
+    })
+}
+
+#[tokio::test]
+async fn authoritative_catalog_refresh_failure_preserves_snapshot_and_freshness() {
+    for error in [
+        CodexErr::RequestTimeout,
+        CodexErr::Stream("network unavailable".to_string()),
+        catalog_http_error(/*status*/ 429),
+        catalog_http_error(/*status*/ 503),
+        catalog_http_error(/*status*/ 404),
+        CodexErr::InvalidRequest("malformed catalog".to_string()),
+        CodexErr::InvalidRequest(codex_login::GatewayAuthError::LoginInProgress.to_string()),
+    ] {
+        let cache = Arc::new(TestModelsCache::default());
+        let mut model = remote_model("provider-model", "Provider Model", /*priority*/ 0);
+        model.supports_search_tool = true;
+        model.context_window = Some(1_000_000);
+        let models = vec![model];
+        let endpoint = Arc::new(TestModelsEndpoint {
+            has_command_auth: true,
+            etag: Some("last-successful-etag".into()),
+            responses: Mutex::new(vec![Ok(models.clone()), Err(error), Ok(Vec::new())].into()),
+            ..TestModelsEndpoint::default()
+        });
+        let manager = OpenAiModelsManager::new_with_cache(
+            cache.clone(),
+            endpoint.clone(),
+            /*auth_manager*/ None,
+        )
+        .with_provider_catalog();
+        let initial = manager
+            .raw_model_catalog(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
+            .await;
+        let initial_info = manager
+            .get_model_info("provider-model", &ModelsManagerConfig::default())
+            .await;
+        let stored = cache.stored_entries();
+        assert_eq!(initial.models, models);
+
+        manager
+            .refresh_if_new_etag("new-etag".to_string(), DEFAULT_HTTP_CLIENT_FACTORY)
+            .await;
+        assert_eq!(manager.get_remote_models().await, models);
+        assert_eq!(
+            manager
+                .get_model_info("provider-model", &ModelsManagerConfig::default())
+                .await,
+            initial_info
+        );
+        assert_eq!(manager.remote_models.read().await.entry, stored[0]);
+        assert_eq!(cache.stored_entries(), stored);
+
+        let restarted = OpenAiModelsManager::new_with_cache(
+            cache.clone(),
+            endpoint.clone(),
+            /*auth_manager*/ None,
+        )
+        .with_provider_catalog();
+        assert_eq!(
+            restarted
+                .raw_model_catalog(
+                    RefreshStrategy::OnlineIfUncached,
+                    DEFAULT_HTTP_CLIENT_FACTORY,
+                )
+                .await,
+            initial
+        );
+        assert_eq!(endpoint.fetch_count(), 2);
+
+        // A successful empty response remains authoritative and is persisted.
+        assert_eq!(
+            manager
+                .raw_model_catalog(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
+                .await,
+            ModelsResponse::default()
+        );
+        assert_eq!(
+            cache.stored_entries().last().unwrap().models,
+            Vec::<ModelInfo>::new()
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_discovery_does_not_reuse_a_catalog_from_another_identity() {
+    let stored = ModelsCacheEntry {
+        fetched_at: Utc::now(),
+        etag: Some("previous-etag".into()),
+        client_version: Some(crate::client_version_to_whole()),
+        identity: Some("previous-provider-or-account".into()),
+        models: vec![remote_model(
+            "private-model",
+            "Private Model",
+            /*priority*/ 0,
+        )],
+    };
+    let cache = TestModelsCache::with_entry(stored.clone());
+    let endpoint = TestModelsEndpoint::with_command_auth(vec![Err(CodexErr::RequestTimeout)]);
+    let manager =
+        OpenAiModelsManager::new_with_cache(cache.clone(), endpoint, /*auth_manager*/ None)
+            .with_provider_catalog();
+    assert_eq!(
+        manager
+            .raw_model_catalog(
+                RefreshStrategy::OnlineIfUncached,
+                DEFAULT_HTTP_CLIENT_FACTORY
+            )
+            .await,
+        ModelsResponse::default()
+    );
+    assert_eq!(cache.entry.lock().unwrap().as_ref(), Some(&stored));
+    assert_eq!(manager.get_remote_models().await, Vec::<ModelInfo>::new());
 }
 
 #[tokio::test]
@@ -1069,6 +1378,75 @@ async fn refresh_available_models_uses_cache_when_fresh() {
         1,
         "cache hit should avoid a second model fetch"
     );
+}
+
+#[tokio::test]
+async fn online_refresh_updates_access_programs_with_unchanged_etag() {
+    let codex_home = tempdir().expect("temp dir");
+    let granted_model = ModelInfo {
+        available_access_programs: Some(ModelAccessPrograms {
+            cyber: vec![
+                CyberAccessProgram::Standard,
+                CyberAccessProgram::DaybreakBlue,
+            ],
+        }),
+        ..remote_model("access-programs", "Access Programs", /*priority*/ 0)
+    };
+    let revoked_model = ModelInfo {
+        available_access_programs: Some(ModelAccessPrograms { cyber: Vec::new() }),
+        ..granted_model.clone()
+    };
+    let responses = vec![vec![granted_model.clone()], vec![revoked_model.clone()]];
+    let endpoint = Arc::new(TestModelsEndpoint {
+        uses_codex_backend: true,
+        responses: Mutex::new(responses.into_iter().map(Ok).collect()),
+        etag: Some("stable-catalog-etag".to_string()),
+        ..TestModelsEndpoint::default()
+    });
+    let manager = openai_manager_for_tests(codex_home.path().to_path_buf(), endpoint.clone());
+
+    // Caller-specific access can change without changing the catalog ETag.
+    for model in [granted_model, revoked_model] {
+        let mut expected = ModelPreset::from(model.clone());
+        expected.is_default = true;
+        assert_eq!(
+            manager
+                .list_models(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
+                .await,
+            vec![expected.clone()]
+        );
+        assert_eq!(manager.get_remote_models().await, vec![model]);
+        assert_eq!(
+            manager.remote_models.read().await.entry.etag.as_deref(),
+            Some("stable-catalog-etag")
+        );
+
+        // A new manager must read the latest access metadata from the disk cache.
+        let cache_endpoint = TestModelsEndpoint::new(Vec::new());
+        let cache_manager =
+            openai_manager_for_tests(codex_home.path().to_path_buf(), cache_endpoint.clone());
+        assert_eq!(
+            cache_manager
+                .list_models(
+                    RefreshStrategy::OnlineIfUncached,
+                    DEFAULT_HTTP_CLIENT_FACTORY
+                )
+                .await,
+            vec![expected]
+        );
+        assert_eq!(cache_endpoint.fetch_count(), 0);
+        assert_eq!(
+            cache_manager
+                .remote_models
+                .read()
+                .await
+                .entry
+                .etag
+                .as_deref(),
+            Some("stable-catalog-etag")
+        );
+    }
+    assert_eq!(endpoint.fetch_count(), 2);
 }
 
 #[tokio::test]
@@ -1205,7 +1583,7 @@ async fn refresh_available_models_drops_removed_remote_models() {
 }
 
 #[tokio::test]
-async fn refresh_available_models_skips_network_without_chatgpt_auth() {
+async fn refresh_available_models_skips_network_without_auth() {
     let dynamic_slug = "dynamic-model-only-for-test-noauth";
     let codex_home = tempdir().expect("temp dir");
     let endpoint = TestModelsEndpoint::without_refresh(vec![vec![remote_model(
@@ -1222,13 +1600,13 @@ async fn refresh_available_models_skips_network_without_chatgpt_auth() {
     manager
         .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
         .await
-        .expect("refresh should no-op without chatgpt auth");
+        .expect("refresh should no-op without auth");
     let cached_remote = manager.get_remote_models().await;
     assert!(
         !cached_remote
             .iter()
             .any(|candidate| candidate.slug == dynamic_slug),
-        "remote refresh should be skipped without chatgpt auth"
+        "remote refresh should be skipped without auth"
     );
     assert_eq!(
         endpoint.fetch_count(),
@@ -1268,7 +1646,7 @@ impl TestAuthAwareModelsEndpoint {
         }
     }
 
-    async fn list_models(&self) -> CoreResult<(Vec<ModelInfo>, Option<String>)> {
+    async fn list_models(&self) -> CoreResult<ModelsEndpointResponse> {
         self.fetch_count.fetch_add(1, Ordering::SeqCst);
         let models = self
             .responses
@@ -1276,11 +1654,26 @@ impl TestAuthAwareModelsEndpoint {
             .expect("responses lock should not be poisoned")
             .pop_front()
             .unwrap_or_default();
-        Ok((models, None))
+        Ok(ModelsEndpointResponse {
+            models,
+            etag: None,
+            identity: self.identity().expect("test endpoint identity"),
+        })
     }
 }
 
 impl ModelsEndpointClient for TestAuthAwareModelsEndpoint {
+    fn supports_api_key_models(&self) -> bool {
+        true
+    }
+
+    fn identity(&self) -> Option<String> {
+        self.auth_manager
+            .as_ref()
+            .and_then(|manager| manager.auth_mode())
+            .map(|mode| format!("{mode:?}"))
+    }
+
     fn has_command_auth(&self) -> bool {
         false
     }
@@ -1293,13 +1686,13 @@ impl ModelsEndpointClient for TestAuthAwareModelsEndpoint {
         &'a self,
         _client_version: &'a str,
         _http_client_factory: HttpClientFactory,
-    ) -> ModelsEndpointFuture<'a, CoreResult<(Vec<ModelInfo>, Option<String>)>> {
+    ) -> ModelsEndpointFuture<'a, CoreResult<ModelsEndpointResponse>> {
         Box::pin(TestAuthAwareModelsEndpoint::list_models(self))
     }
 }
 
 #[tokio::test]
-async fn refresh_available_models_skips_network_when_external_api_key_overrides_chatgpt_auth() {
+async fn refresh_available_models_fetches_when_external_api_key_overrides_chatgpt_auth() {
     let dynamic_slug = "dynamic-model-only-for-test-external-api-key";
     let codex_home = tempdir().expect("temp dir");
     let auth_manager =
@@ -1321,24 +1714,23 @@ async fn refresh_available_models_skips_network_when_external_api_key_overrides_
         endpoint.clone(),
         Some(auth_manager),
     );
+    manager.set_api_key_model_discovery_enabled(/*enabled*/ true);
 
     manager
         .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
         .await
-        .expect("refresh should no-op with API key auth");
+        .expect("refresh should fetch with API key auth");
     let cached_remote = manager.get_remote_models().await;
 
-    assert!(
-        !cached_remote
-            .iter()
-            .any(|candidate| candidate.slug == dynamic_slug),
-        "remote refresh should be skipped when external API key auth is active"
-    );
     assert_eq!(
-        endpoint.fetch_count(),
-        0,
-        "endpoint should avoid model fetches when external API key auth is active"
+        cached_remote,
+        vec![remote_model(
+            dynamic_slug,
+            "External API Key",
+            /*priority*/ 1
+        )]
     );
+    assert_eq!(endpoint.fetch_count(), 1);
 }
 
 #[tokio::test]
@@ -1364,6 +1756,7 @@ async fn refresh_available_models_uses_cached_chatgpt_when_external_api_key_is_u
         endpoint.clone(),
         Some(auth_manager),
     );
+    manager.set_api_key_model_discovery_enabled(/*enabled*/ true);
 
     manager
         .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
@@ -1454,6 +1847,7 @@ async fn static_manager_reads_latest_auth_mode() {
         ModelsResponse {
             models: vec![chatgpt_only_model, api_model],
         },
+        ModelOrigin::ExplicitConfig,
     );
 
     let chatgpt_models = manager

@@ -29,6 +29,7 @@ use codex_extension_api::TurnGateFragments;
 use codex_extension_api::TurnGateInput;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputContributor;
+use codex_protocol::models::ContentItem;
 use codex_protocol::user_input::UserInput;
 
 use crate::budget;
@@ -54,10 +55,6 @@ impl ContextualUserFragment for HarnessFragment {
         ContentItemKind(format!("byteask_harness.{}", self.kind))
     }
 
-    fn requires_separate_message(&self) -> bool {
-        true
-    }
-
     fn markers(&self) -> (&'static str, &'static str) {
         Self::type_markers()
     }
@@ -66,8 +63,8 @@ impl ContextualUserFragment for HarnessFragment {
         ("", "")
     }
 
-    fn body(&self) -> String {
-        self.text.clone()
+    fn body(&self) -> ContentItem {
+        codex_protocol::models::input_text(self.text.clone())
     }
 }
 

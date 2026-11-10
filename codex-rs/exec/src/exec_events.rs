@@ -348,6 +348,10 @@ pub struct WebSearchItem {
     pub id: String,
     pub query: String,
     pub action: WebSearchAction,
+    /// Structured results returned by web search, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub results: Option<Vec<JsonValue>>,
 }
 
 /// ByteAsk Context's turn-0 pack attempt for one user message.

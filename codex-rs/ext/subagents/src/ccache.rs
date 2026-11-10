@@ -65,10 +65,15 @@ fn compilers_on_path() -> Vec<String> {
         };
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            let base = name.rsplit_once("-linux-gnu-").map_or(name.as_str(), |(_, b)| b);
+            let base = name
+                .rsplit_once("-linux-gnu-")
+                .map_or(name.as_str(), |(_, b)| b);
             let family = base.split('-').next().unwrap_or(base);
             if COMPILER_NAMES.contains(&family)
-                && (base == family || base[family.len() + 1..].chars().all(|c| c.is_ascii_digit() || c == '.'))
+                && (base == family
+                    || base[family.len() + 1..]
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || c == '.'))
                 && !names.contains(&name)
             {
                 names.push(name);
@@ -82,7 +87,10 @@ fn compilers_on_path() -> Vec<String> {
 /// launcher under `scratch`. Returns an empty list when no ccache is available.
 pub fn build_env(scratch: &Path, parallel_jobs: usize) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vec![
-        ("CMAKE_BUILD_PARALLEL_LEVEL".to_string(), parallel_jobs.to_string()),
+        (
+            "CMAKE_BUILD_PARALLEL_LEVEL".to_string(),
+            parallel_jobs.to_string(),
+        ),
         ("MAKEFLAGS".to_string(), format!("-j{parallel_jobs}")),
     ];
     // The ccache masquerade (symlinks + an sh launcher) is Unix-only; elsewhere builds run uncached.
@@ -123,11 +131,20 @@ fn add_ccache_env(scratch: &Path, env: &mut Vec<(String, String)>) {
     let old_path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
     env.extend([
         ("PATH".to_string(), format!("{}:{old_path}", masq.display())),
-        ("CCACHE_DIR".to_string(), scratch.join("ccache").to_string_lossy().to_string()),
-        ("CCACHE_BASEDIR".to_string(), scratch.to_string_lossy().to_string()),
+        (
+            "CCACHE_DIR".to_string(),
+            scratch.join("ccache").to_string_lossy().to_string(),
+        ),
+        (
+            "CCACHE_BASEDIR".to_string(),
+            scratch.to_string_lossy().to_string(),
+        ),
         ("CCACHE_NOHASHDIR".to_string(), "1".to_string()),
         ("CCACHE_MAXSIZE".to_string(), "2G".to_string()),
-        ("CCACHE_SLOPPINESS".to_string(), "file_macro,time_macros".to_string()),
+        (
+            "CCACHE_SLOPPINESS".to_string(),
+            "file_macro,time_macros".to_string(),
+        ),
         ("CCACHE_COMPILERCHECK".to_string(), "content".to_string()),
     ]);
 }

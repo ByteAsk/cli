@@ -120,8 +120,10 @@ fn plain_repo(files: &[(&str, &str)]) -> Option<tempfile::TempDir> {
         std::fs::write(path, text).ok()?;
     }
     let root = dir.path();
-    (git(root, &["init", "-q"]) && git(root, &["add", "-A"]) && git(root, &["commit", "-q", "-m", "b"]))
-        .then_some(dir)
+    (git(root, &["init", "-q"])
+        && git(root, &["add", "-A"])
+        && git(root, &["commit", "-q", "-m", "b"]))
+    .then_some(dir)
 }
 
 fn kinds(outcome: &GateOutcome) -> Vec<ProblemKind> {
@@ -259,13 +261,25 @@ async fn the_targeted_gate_runs_tests_behind_an_off_option() {
                 targeted,
                 ..settings()
             };
-            gate_with(&snapshot, &mut base, &mut memo, &mut advisories, None, &settings, true).await
+            gate_with(
+                &snapshot,
+                &mut base,
+                &mut memo,
+                &mut advisories,
+                None,
+                &settings,
+                true,
+            )
+            .await
         }
     };
     let whole = run(false).await;
     assert!(!kinds(&whole).contains(&ProblemKind::Tests), "{whole:#?}");
     let targeted = run(true).await;
-    assert!(kinds(&targeted).contains(&ProblemKind::Tests), "{targeted:#?}");
+    assert!(
+        kinds(&targeted).contains(&ProblemKind::Tests),
+        "{targeted:#?}"
+    );
     assert!(
         targeted.problems.iter().any(|p| p.text.contains("adds")),
         "{targeted:#?}"
@@ -335,7 +349,10 @@ async fn make_project_is_built_in_place_and_nothing_is_deleted() {
     assert!(root.join("tool").exists());
     assert!(root.join("tool.c").exists());
     assert!(
-        outcome.notes.iter().any(|n| n.contains("left in place: tool")),
+        outcome
+            .notes
+            .iter()
+            .any(|n| n.contains("left in place: tool")),
         "{outcome:#?}"
     );
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
@@ -401,8 +418,14 @@ fn build_outputs_and_gate_created_paths_are_not_leftovers() {
 fn cases_inside_test_output_are_read() {
     let gtest = "make[1]: Entering directory '/r'\n[==========] Running 3 tests\n[ RUN      ] Lexer.Plain\n[       OK ] Lexer.Plain (0 ms)\n[ RUN      ] Lexer.Triple\nlexer.cc:9: Failure\n[  FAILED  ] Lexer.Triple (1 ms)\n[ RUN      ] Parser.Ok\n[       OK ] Parser.Ok (0 ms)\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] Lexer.Triple\n";
     let cases = build::parse_cases("make test", gtest);
-    assert_eq!(cases.get("make test::Lexer.Plain"), Some(&TestStatus::Passed));
-    assert_eq!(cases.get("make test::Lexer.Triple"), Some(&TestStatus::Failed));
+    assert_eq!(
+        cases.get("make test::Lexer.Plain"),
+        Some(&TestStatus::Passed)
+    );
+    assert_eq!(
+        cases.get("make test::Lexer.Triple"),
+        Some(&TestStatus::Failed)
+    );
     assert_eq!(cases.get("make test::Parser.Ok"), Some(&TestStatus::Passed));
     assert_eq!(cases.len(), 3, "{cases:?}");
 
@@ -412,18 +435,39 @@ fn cases_inside_test_output_are_read() {
     assert_eq!(cases.get("t::parses nested"), Some(&TestStatus::Passed));
     assert_eq!(cases.get("t::rejects junk"), Some(&TestStatus::Failed));
     assert_eq!(cases.get("t::4"), Some(&TestStatus::Skipped));
-    assert!(build::parse_cases("t", "ok so far\n").is_empty(), "no plan line, no TAP");
+    assert!(
+        build::parse_cases("t", "ok so far\n").is_empty(),
+        "no plan line, no TAP"
+    );
 
     let pytest = "tests/test_a.py::test_one PASSED\n=========== short test summary info ===========\nFAILED tests/test_b.py::test_two - AssertionError: x\n===== 1 failed, 41 passed in 3.20s =====\n";
     let cases = build::parse_cases("cmake check", pytest);
-    assert_eq!(cases.get("cmake check::tests/test_a.py::test_one"), Some(&TestStatus::Passed));
-    assert_eq!(cases.get("cmake check::tests/test_b.py::test_two"), Some(&TestStatus::Failed));
-    assert_eq!(cases.get("cmake check::*"), Some(&TestStatus::Passed), "completed: unlisted cases passed");
+    assert_eq!(
+        cases.get("cmake check::tests/test_a.py::test_one"),
+        Some(&TestStatus::Passed)
+    );
+    assert_eq!(
+        cases.get("cmake check::tests/test_b.py::test_two"),
+        Some(&TestStatus::Failed)
+    );
+    assert_eq!(
+        cases.get("cmake check::*"),
+        Some(&TestStatus::Passed),
+        "completed: unlisted cases passed"
+    );
 
     let rule = "-".repeat(79);
-    let catch = format!("{rule}\nparses a number\n  with a sign\n{rule}\nt.cpp:3\n{dots}\n\nt.cpp:5: FAILED:\n  REQUIRE( f() == 2 )\nwith expansion:\n  1 == 2\n\n{eq}\ntest cases: 2 | 1 passed | 1 failed\n", dots = ".".repeat(79), eq = "=".repeat(79));
+    let catch = format!(
+        "{rule}\nparses a number\n  with a sign\n{rule}\nt.cpp:3\n{dots}\n\nt.cpp:5: FAILED:\n  REQUIRE( f() == 2 )\nwith expansion:\n  1 == 2\n\n{eq}\ntest cases: 2 | 1 passed | 1 failed\n",
+        dots = ".".repeat(79),
+        eq = "=".repeat(79)
+    );
     let cases = build::parse_cases("ctest_entry", &catch);
-    assert_eq!(cases.get("ctest_entry::parses a number"), Some(&TestStatus::Failed), "{cases:?}");
+    assert_eq!(
+        cases.get("ctest_entry::parses a number"),
+        Some(&TestStatus::Failed),
+        "{cases:?}"
+    );
     assert_eq!(cases.get("ctest_entry::*"), Some(&TestStatus::Passed));
 
     let ctest = " 1/2 Test  #1: unit .............................***Failed    0.02 sec\n[ RUN      ] A.b\n[  FAILED  ] A.b (0 ms)\n[ RUN      ] A.c\n[       OK ] A.c (0 ms)\n      Start  2: other\n 2/2 Test  #2: other ............................   Passed    0.01 sec\n";
@@ -444,7 +488,10 @@ async fn a_new_failing_case_inside_an_already_failing_suite_is_caught() {
     }
     let suite = "#include <stdio.h>\nint one(void);\nstatic int report(const char* n, int ok) { printf(\"[ RUN      ] Lexer.%s\\n\", n); printf(ok ? \"[       OK ] Lexer.%s (0 ms)\\n\" : \"[  FAILED  ] Lexer.%s (0 ms)\\n\", n); return ok; }\nint main(void) { int a = report(\"one\", one() == 1); int b = report(\"two\", 0); return a && b ? 0 : 1; }\n";
     let Some(dir) = plain_repo(&[
-        ("Makefile", "all: suite\nsuite: suite.c lib.c\n\tcc -o suite suite.c lib.c\ntest: suite\n\t./suite\n"),
+        (
+            "Makefile",
+            "all: suite\nsuite: suite.c lib.c\n\tcc -o suite suite.c lib.c\ntest: suite\n\t./suite\n",
+        ),
         ("suite.c", suite),
         ("lib.c", "int one(void) { return 1; }\n"),
         (".gitignore", ""),
@@ -459,9 +506,15 @@ async fn a_new_failing_case_inside_an_already_failing_suite_is_caught() {
     let outcome = gate_on(root, &snapshot, &mut base, true).await;
     assert_eq!(kinds(&outcome), vec![ProblemKind::Tests], "{outcome:#?}");
     let text = &outcome.problems[0].text;
-    assert!(text.contains("TEST CASES THAT PASS ON THE UNMODIFIED TREE NOW FAIL"), "{text}");
+    assert!(
+        text.contains("TEST CASES THAT PASS ON THE UNMODIFIED TREE NOW FAIL"),
+        "{text}"
+    );
     assert!(text.contains("Lexer.one"), "{text}");
-    assert!(!text.contains("Lexer.two"), "pre-existing failure reported: {text}");
+    assert!(
+        !text.contains("Lexer.two"),
+        "pre-existing failure reported: {text}"
+    );
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
 }
 
@@ -482,13 +535,31 @@ async fn an_unchanged_change_set_is_not_built_or_tested_twice() {
         "#include \"calc.h\"\nint add(int a, int b) { return a + b + 1; }\nint sub(int a, int b) { return a - b; }\n",
     )
     .unwrap();
-    let first = gate_with(&snapshot, &mut base, &mut memo, &mut advisories, None, &settings(), true).await;
+    let first = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        None,
+        &settings(),
+        true,
+    )
+    .await;
     assert_eq!(kinds(&first), vec![ProblemKind::Tests], "{first:#?}");
     let tree = snapshot.scratch.join("cur-build");
     assert!(tree.is_dir());
     std::fs::remove_dir_all(&tree).unwrap();
     // Same change set (the model only answered): the same result, from the memo.
-    let second = gate_with(&snapshot, &mut base, &mut memo, &mut advisories, None, &settings(), true).await;
+    let second = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        None,
+        &settings(),
+        true,
+    )
+    .await;
     assert_eq!(kinds(&second), kinds(&first), "{second:#?}");
     assert_eq!(second.problems[0].text, first.problems[0].text);
     assert!(!tree.exists(), "the gate rebuilt an unchanged change set");
@@ -497,7 +568,16 @@ async fn an_unchanged_change_set_is_not_built_or_tested_twice() {
     if let Some(m) = memo.as_mut() {
         m.delivered = true;
     }
-    let repeat = gate_with(&snapshot, &mut base, &mut memo, &mut advisories, None, &settings(), true).await;
+    let repeat = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        None,
+        &settings(),
+        true,
+    )
+    .await;
     assert!(repeat.problems.is_empty(), "{repeat:#?}");
     assert_eq!(repeat.still_open.len(), 1, "{repeat:#?}");
     assert_eq!(repeat.still_open[0].kind, ProblemKind::Tests);
@@ -507,7 +587,16 @@ async fn an_unchanged_change_set_is_not_built_or_tested_twice() {
         "#include \"calc.h\"\n// sum\nint add(int a, int b) { return a + b; }\nint sub(int a, int b) { return a - b; }\n",
     )
     .unwrap();
-    let third = gate_with(&snapshot, &mut base, &mut memo, &mut advisories, None, &settings(), true).await;
+    let third = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        None,
+        &settings(),
+        true,
+    )
+    .await;
     assert!(third.problems.is_empty(), "{third:#?}");
     assert!(tree.is_dir());
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
@@ -526,17 +615,45 @@ async fn what_the_gate_cannot_check_never_blocks_finishing() {
     let snapshot = take_snapshot(root).await.expect("snapshot");
     let (mut base, mut memo, mut advisories) = (BaseCache::default(), None, Advisories::default());
     std::fs::write(root.join("src/tool.c"), "int answer(void) { return 2; }\n").unwrap();
-    let first = gate_with(&snapshot, &mut base, &mut memo, &mut advisories, None, &settings(), true).await;
-    assert_eq!(kinds(&first), vec![ProblemKind::SuiteNotChecked], "{first:#?}");
+    let first = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        None,
+        &settings(),
+        true,
+    )
+    .await;
+    assert_eq!(
+        kinds(&first),
+        vec![ProblemKind::SuiteNotChecked],
+        "{first:#?}"
+    );
     assert!(!needs_feedback(&first), "advisory only: {first:#?}");
     let text = &first.problems[0].text;
-    assert!(text.starts_with("COULD NOT CHECK (this does not block finishing)"), "{text}");
+    assert!(
+        text.starts_with("COULD NOT CHECK (this does not block finishing)"),
+        "{text}"
+    );
     assert!(text.contains("no configured build"), "{text}");
-    assert!(text.contains("cpp_test_select") && text.contains("timeout 10m"), "{text}");
+    assert!(
+        text.contains("cpp_test_select") && text.contains("timeout 10m"),
+        "{text}"
+    );
     assert!(!text.contains("yourself once now"), "{text}");
     // Delivered once (with other feedback): not repeated.
     advisories.not_checked_shown = true;
-    let second = gate_with(&snapshot, &mut base, &mut memo, &mut advisories, None, &settings(), true).await;
+    let second = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        None,
+        &settings(),
+        true,
+    )
+    .await;
     assert!(second.problems.is_empty(), "{second:#?}");
     // Little session time left: no suggestion to run anything.
     let mut fresh = Advisories::default();
@@ -557,7 +674,10 @@ async fn what_the_gate_cannot_check_never_blocks_finishing() {
         advisory: false,
     })
     .await;
-    assert!(late.problems[0].text.contains("Too little session time"), "{late:#?}");
+    assert!(
+        late.problems[0].text.contains("Too little session time"),
+        "{late:#?}"
+    );
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
 }
 
@@ -588,10 +708,20 @@ async fn a_failure_that_cannot_be_compared_is_only_noted() {
     .unwrap();
     let outcome = gate_on(root, &snapshot, &mut base, true).await;
     assert!(!needs_feedback(&outcome), "{outcome:#?}");
-    assert_eq!(kinds(&outcome), vec![ProblemKind::SuiteNotChecked], "{outcome:#?}");
-    assert!(outcome.problems[0].text.contains("time limit"), "{outcome:#?}");
+    assert_eq!(
+        kinds(&outcome),
+        vec![ProblemKind::SuiteNotChecked],
+        "{outcome:#?}"
+    );
+    assert!(
+        outcome.problems[0].text.contains("time limit"),
+        "{outcome:#?}"
+    );
     assert!(outcome.problems[0].text.contains("slow"), "{outcome:#?}");
-    assert!(!snapshot.scratch.join("base").exists(), "a timed-out test was compared with a base build");
+    assert!(
+        !snapshot.scratch.join("base").exists(),
+        "a timed-out test was compared with a base build"
+    );
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
 }
 
@@ -602,18 +732,33 @@ fn the_projects_own_tree_is_preferred() {
     let own = root.join("build");
     let asan = root.join("asan");
     let fresh = root.join("fresh");
-    for (tree, flags, tests) in [(&own, "-O2", true), (&asan, "-fsanitize=address", false), (&fresh, "", true)] {
+    for (tree, flags, tests) in [
+        (&own, "-O2", true),
+        (&asan, "-fsanitize=address", false),
+        (&fresh, "", true),
+    ] {
         std::fs::create_dir_all(tree).unwrap();
-        std::fs::write(tree.join("CMakeCache.txt"), format!("CMAKE_CXX_FLAGS:STRING={flags}\n")).unwrap();
+        std::fs::write(
+            tree.join("CMakeCache.txt"),
+            format!("CMAKE_CXX_FLAGS:STRING={flags}\n"),
+        )
+        .unwrap();
         if tests {
             std::fs::write(tree.join("CTestTestfile.cmake"), "").unwrap();
         }
     }
     // Most recently used first, as cmake_build_dirs returns them.
-    let ranked = build::rank_cmake_trees(vec![asan.clone(), fresh.clone(), own.clone()], &[own.clone()]);
+    let ranked = build::rank_cmake_trees(
+        vec![asan.clone(), fresh.clone(), own.clone()],
+        &[own.clone()],
+    );
     assert_eq!(ranked, vec![own.clone(), fresh.clone(), asan.clone()]);
     let none_at_start = build::rank_cmake_trees(vec![asan.clone(), own.clone()], &[]);
-    assert_eq!(none_at_start, vec![own.clone(), asan.clone()], "tests registered beat recency");
+    assert_eq!(
+        none_at_start,
+        vec![own.clone(), asan.clone()],
+        "tests registered beat recency"
+    );
 }
 
 #[test]
@@ -625,7 +770,12 @@ fn meson_out_of_tree_make_and_custom_targets_are_found() {
     std::fs::create_dir_all(root.join("build/meson-private")).unwrap();
     // An existing Meson tree wins over configuring a scratch CMake tree.
     let plan = build::plan(root, &root.join("scratch-gate"), &[]).expect("plan");
-    assert_eq!(plan.kind, BuildKind::Meson { dir: root.join("build") });
+    assert_eq!(
+        plan.kind,
+        BuildKind::Meson {
+            dir: root.join("build")
+        }
+    );
 
     let auto = tempfile::tempdir().unwrap();
     let a = auto.path();
@@ -635,7 +785,13 @@ fn meson_out_of_tree_make_and_custom_targets_are_found() {
     std::fs::write(a.join("_obj/config.status"), "").unwrap();
     std::fs::write(a.join("_obj/Makefile"), "all:\ncheck: all\n\t./run\n").unwrap();
     let plan = build::plan(a, &a.join("scratch-gate"), &[]).expect("out-of-tree build found");
-    assert_eq!(plan.kind, BuildKind::Make { autotools: true, dir: a.join("_obj") });
+    assert_eq!(
+        plan.kind,
+        BuildKind::Make {
+            autotools: true,
+            dir: a.join("_obj")
+        }
+    );
 
     let ninja = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -643,10 +799,20 @@ fn meson_out_of_tree_make_and_custom_targets_are_found() {
         "build all: phony lib\nbuild check: phony CMakeFiles/check\nbuild lib.a: CXX_STATIC_LIBRARY_LINKER a.o\n",
     )
     .unwrap();
-    assert_eq!(build::cmake_custom_check_target(ninja.path()).as_deref(), Some("check"));
+    assert_eq!(
+        build::cmake_custom_check_target(ninja.path()).as_deref(),
+        Some("check")
+    );
     let make = tempfile::tempdir().unwrap();
-    std::fs::write(make.path().join("Makefile"), "all: cmake_check_build_system\ntests: all\n\t$(MAKE) -f x\n").unwrap();
-    assert_eq!(build::cmake_custom_check_target(make.path()).as_deref(), Some("tests"));
+    std::fs::write(
+        make.path().join("Makefile"),
+        "all: cmake_check_build_system\ntests: all\n\t$(MAKE) -f x\n",
+    )
+    .unwrap();
+    assert_eq!(
+        build::cmake_custom_check_target(make.path()).as_deref(),
+        Some("tests")
+    );
     let bare = tempfile::tempdir().unwrap();
     std::fs::write(bare.path().join("build.ninja"), "build all: phony lib\n").unwrap();
     assert_eq!(build::cmake_custom_check_target(bare.path()), None);
@@ -681,25 +847,75 @@ async fn a_crash_fix_gets_an_advisory_shape_review_once() {
 
     // Not a crash-fix session: no critic.
     let mut advisories = Advisories::default();
-    let outcome = gate_with(&snapshot, &mut base, &mut memo, &mut advisories, None, &quiet, true).await;
+    let outcome = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        None,
+        &quiet,
+        true,
+    )
+    .await;
     assert!(outcome.problems.is_empty(), "{outcome:#?}");
 
     // A crash-fix session: advisory findings, then not again.
-    let first = gate_with(&snapshot, &mut base, &mut memo, &mut advisories, Some(&crash), &quiet, true).await;
-    assert_eq!(kinds(&first), vec![ProblemKind::ShapeAdvisory], "{first:#?}");
-    assert!(first.problems[0].text.contains("[deleted-free] src/item.c:"), "{first:#?}");
-    let second = gate_with(&snapshot, &mut base, &mut memo, &mut advisories, Some(&crash), &quiet, true).await;
+    let first = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        Some(&crash),
+        &quiet,
+        true,
+    )
+    .await;
+    assert_eq!(
+        kinds(&first),
+        vec![ProblemKind::ShapeAdvisory],
+        "{first:#?}"
+    );
+    assert!(
+        first.problems[0]
+            .text
+            .contains("[deleted-free] src/item.c:"),
+        "{first:#?}"
+    );
+    let second = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        Some(&crash),
+        &quiet,
+        true,
+    )
+    .await;
     assert!(second.problems.is_empty(), "{second:#?}");
 
     // Already shown by a cpp_fix_verify run: not repeated.
     let mut fresh = Advisories::default();
     let verified = CrashContext {
-        shown_elsewhere: "patch-shape review (advisory, static): ...\n- [deleted-free] src/item.c:4 removes".to_string(),
+        shown_elsewhere:
+            "patch-shape review (advisory, static): ...\n- [deleted-free] src/item.c:4 removes"
+                .to_string(),
         ..crash.clone()
     };
-    let outcome = gate_with(&snapshot, &mut base, &mut memo, &mut fresh, Some(&verified), &quiet, true).await;
+    let outcome = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut fresh,
+        Some(&verified),
+        &quiet,
+        true,
+    )
+    .await;
     assert!(
-        !outcome.problems.iter().any(|p| p.text.contains("deleted-free")),
+        !outcome
+            .problems
+            .iter()
+            .any(|p| p.text.contains("deleted-free")),
         "{outcome:#?}"
     );
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
@@ -784,16 +1000,25 @@ async fn a_same_size_edit_to_a_new_file_makes_the_old_result_stale() {
     let first = agent_changes(&snapshot).await;
     std::fs::write(root.join("src/extra.c"), "int extra(void) { return 2; }\n").unwrap();
     let second = agent_changes(&snapshot).await;
-    assert_ne!(first.content_key, second.content_key, "same size, different code");
+    assert_ne!(
+        first.content_key, second.content_key,
+        "same size, different code"
+    );
     assert_ne!(first.fingerprint, second.fingerprint);
     // Nothing changed: the same key (results stay reusable).
-    assert_eq!(agent_changes(&snapshot).await.content_key, second.content_key);
+    assert_eq!(
+        agent_changes(&snapshot).await.content_key,
+        second.content_key
+    );
     // A new directory is keyed by every file's content too.
     std::fs::create_dir_all(root.join("lib")).unwrap();
     std::fs::write(root.join("lib/a.c"), "int a(void) { return 1; }\n").unwrap();
     let with_dir = agent_changes(&snapshot).await;
     std::fs::write(root.join("lib/a.c"), "int a(void) { return 3; }\n").unwrap();
-    assert_ne!(agent_changes(&snapshot).await.content_key, with_dir.content_key);
+    assert_ne!(
+        agent_changes(&snapshot).await.content_key,
+        with_dir.content_key
+    );
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
 }
 
@@ -820,10 +1045,24 @@ async fn work_the_gate_could_not_check_is_never_pass() {
 
     // No build system: the suite could not be checked.
     let (mut base, mut memo, mut advisories) = (BaseCache::default(), None, Advisories::default());
-    let outcome =
-        gate_with(&snapshot, &mut base, &mut memo, &mut advisories, None, &settings(), true).await;
-    assert!(!needs_feedback(&outcome), "NOT RUN never loops: {outcome:#?}");
-    assert_eq!(verdict(&outcome), (Verdict::NotRun, Some(NotRunReason::NoBuildProfile)));
+    let outcome = gate_with(
+        &snapshot,
+        &mut base,
+        &mut memo,
+        &mut advisories,
+        None,
+        &settings(),
+        true,
+    )
+    .await;
+    assert!(
+        !needs_feedback(&outcome),
+        "NOT RUN never loops: {outcome:#?}"
+    );
+    assert_eq!(
+        verdict(&outcome),
+        (Verdict::NotRun, Some(NotRunReason::NoBuildProfile))
+    );
 
     // Switched off, not trusted, out of time: each NOT RUN with its own reason.
     let changes = agent_changes(&snapshot).await;
@@ -833,8 +1072,18 @@ async fn work_the_gate_could_not_check_is_never_pass() {
     };
     for (settings, native_exec, left, reason) in [
         (off, true, Duration::from_secs(3_000), NotRunReason::Skipped),
-        (settings(), false, Duration::from_secs(3_000), NotRunReason::NotTrusted),
-        (settings(), true, Duration::from_secs(60), NotRunReason::TimeLimit),
+        (
+            settings(),
+            false,
+            Duration::from_secs(3_000),
+            NotRunReason::NotTrusted,
+        ),
+        (
+            settings(),
+            true,
+            Duration::from_secs(60),
+            NotRunReason::TimeLimit,
+        ),
     ] {
         let (mut base, mut memo, mut advisories) =
             (BaseCache::default(), None, Advisories::default());
@@ -854,7 +1103,11 @@ async fn work_the_gate_could_not_check_is_never_pass() {
             advisory: false,
         })
         .await;
-        assert_eq!(verdict(&outcome), (Verdict::NotRun, Some(reason)), "{outcome:#?}");
+        assert_eq!(
+            verdict(&outcome),
+            (Verdict::NotRun, Some(reason)),
+            "{outcome:#?}"
+        );
     }
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
 }
@@ -912,12 +1165,18 @@ async fn a_change_that_builds_and_passes_its_tests_is_pass() {
     .unwrap();
     let mut base = BaseCache::default();
     let outcome = gate_on(root, &snapshot, &mut base, true).await;
-    assert_eq!(verdict(&outcome), (check_result::Verdict::Pass, None), "{outcome:#?}");
+    assert_eq!(
+        verdict(&outcome),
+        (check_result::Verdict::Pass, None),
+        "{outcome:#?}"
+    );
     let feedback = render_feedback(&outcome, 1, 2);
-    assert!(feedback.ends_with(&outcome.result().render_line()), "{feedback}");
+    assert!(
+        feedback.ends_with(&outcome.result().render_line()),
+        "{feedback}"
+    );
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
 }
-
 
 /// A background check builds a copy of the code taken when it starts; editing the work
 /// tree afterwards changes nothing the check sees, and the copy has the same content key.
@@ -938,9 +1197,18 @@ async fn the_snapshot_copy_is_the_code_as_it_was_when_the_check_started() {
     let mirror = mirror_snapshot(&snapshot).await.expect("copy");
     assert_ne!(mirror.root, snapshot.root);
     let mirror_changes = agent_changes(&mirror).await;
-    assert_eq!(mirror_changes.content_key, changes.content_key, "the copy is the same code");
-    assert_eq!(std::fs::read_to_string(mirror.root.join("src/calc.cpp")).unwrap(), edited);
-    assert!(mirror.root.join("src/extra.h").is_file(), "new files are part of the copy");
+    assert_eq!(
+        mirror_changes.content_key, changes.content_key,
+        "the copy is the same code"
+    );
+    assert_eq!(
+        std::fs::read_to_string(mirror.root.join("src/calc.cpp")).unwrap(),
+        edited
+    );
+    assert!(
+        mirror.root.join("src/extra.h").is_file(),
+        "new files are part of the copy"
+    );
 
     // The agent breaks the work tree while the check runs: the copy's check still passes.
     std::fs::write(root.join("src/calc.cpp"), "this does not compile\n").unwrap();
@@ -962,7 +1230,11 @@ async fn the_snapshot_copy_is_the_code_as_it_was_when_the_check_started() {
     })
     .await;
     outcome.map_paths(&mirror.root, &snapshot.root);
-    assert_eq!(outcome.result().verdict, check_result::Verdict::Pass, "{outcome:#?}");
+    assert_eq!(
+        outcome.result().verdict,
+        check_result::Verdict::Pass,
+        "{outcome:#?}"
+    );
 
     // A second copy is refreshed in place: the deletion and the new content arrive.
     std::fs::remove_file(root.join("src/extra.h")).unwrap();
@@ -996,10 +1268,20 @@ async fn a_docs_only_change_starts_no_build() {
     std::fs::write(root.join("docs/img/arch.png"), [0x89, b'P', b'N', b'G']).unwrap();
     let mut base = BaseCache::default();
     let outcome = gate_on(root, &snapshot, &mut base, false).await;
-    assert_eq!(verdict(&outcome), (Verdict::NotRun, Some(NotRunReason::NoCodeChange)), "{outcome:#?}");
+    assert_eq!(
+        verdict(&outcome),
+        (Verdict::NotRun, Some(NotRunReason::NoCodeChange)),
+        "{outcome:#?}"
+    );
     assert!(!needs_feedback(&outcome));
-    assert!(!snapshot.scratch.join("cur-build").exists(), "no build tree was configured");
-    assert!(!snapshot.scratch.join("logs/build.log").exists(), "no build ran");
+    assert!(
+        !snapshot.scratch.join("cur-build").exists(),
+        "no build tree was configured"
+    );
+    assert!(
+        !snapshot.scratch.join("logs/build.log").exists(),
+        "no build ran"
+    );
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
 }
 
@@ -1051,13 +1333,25 @@ async fn the_non_code_list_comes_from_the_session_start_commit() {
     )
     .unwrap();
     let snapshot = take_snapshot(root).await.expect("snapshot");
-    std::fs::write(root.join("notes.txt"), "the committed profile says .txt is not code\n").unwrap();
+    std::fs::write(
+        root.join("notes.txt"),
+        "the committed profile says .txt is not code\n",
+    )
+    .unwrap();
     let mut base = BaseCache::default();
     let outcome = gate_on(root, &snapshot, &mut base, false).await;
-    assert_eq!(verdict(&outcome), (Verdict::NotRun, Some(NotRunReason::NoCodeChange)), "{outcome:#?}");
+    assert_eq!(
+        verdict(&outcome),
+        (Verdict::NotRun, Some(NotRunReason::NoCodeChange)),
+        "{outcome:#?}"
+    );
     std::fs::write(root.join("src/calc.cpp"), "#include \"calc.h\"\nint add(int a, int b) { return b + a; }\nint sub(int a, int b) { return a - b; }\n").unwrap();
     let outcome = gate_on(root, &snapshot, &mut base, false).await;
-    assert_eq!(outcome.suite, SuiteState::Ran, "the .cpp edit is code: {outcome:#?}");
+    assert_eq!(
+        outcome.suite,
+        SuiteState::Ran,
+        "the .cpp edit is code: {outcome:#?}"
+    );
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
 }
 
@@ -1098,9 +1392,13 @@ async fn the_gates_builds_and_tests_run_niced_on_spare_cores() {
     let text = std::fs::read_to_string(&probe).expect("the probe test ran");
     let mut lines = text.lines();
     let nice: i32 = lines.next().unwrap().trim().parse().unwrap();
-    let cpus = crate::priority::parse_cpu_list(lines.next().unwrap().split(':').nth(1).unwrap()).unwrap();
+    let cpus =
+        crate::priority::parse_cpu_list(lines.next().unwrap().split(':').nth(1).unwrap()).unwrap();
     let own = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
-    assert!(nice >= crate::priority::DEFAULT_NICE && nice >= own, "nice {nice}");
+    assert!(
+        nice >= crate::priority::DEFAULT_NICE && nice >= own,
+        "nice {nice}"
+    );
     let allowed = crate::priority::allowed_cpus();
     assert_eq!(cpus, crate::priority::spare(&allowed), "{text}");
     if allowed.len() >= 2 {
@@ -1115,7 +1413,9 @@ async fn the_gates_builds_and_tests_run_niced_on_spare_cores() {
 #[tokio::test]
 async fn a_second_checkout_compiles_from_the_shared_compiler_cache() {
     let Some(sccache) = std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).map(|d| d.join("sccache")).find(|p| p.is_file())
+        std::env::split_paths(&paths)
+            .map(|d| d.join("sccache"))
+            .find(|p| p.is_file())
     }) else {
         eprintln!("skipped: sccache not available");
         return;
@@ -1126,7 +1426,15 @@ async fn a_second_checkout_compiles_from_the_shared_compiler_cache() {
     };
     let second = tempfile::tempdir().unwrap();
     let clone = second.path().join("calc");
-    assert!(git(second.path(), &["clone", "-q", &first.path().to_string_lossy(), &clone.to_string_lossy()]));
+    assert!(git(
+        second.path(),
+        &[
+            "clone",
+            "-q",
+            &first.path().to_string_lossy(),
+            &clone.to_string_lossy()
+        ]
+    ));
     let mut builds = Vec::new();
     for root in [first.path().to_path_buf(), clone.clone()] {
         let snapshot = take_snapshot(&root).await.expect("snapshot");
@@ -1139,8 +1447,12 @@ async fn a_second_checkout_compiles_from_the_shared_compiler_cache() {
         let mut base = BaseCache::default();
         let outcome = gate_on(&root, &snapshot, &mut base, false).await;
         assert_eq!(outcome.suite, SuiteState::Ran, "{outcome:#?}");
-        let cache = std::fs::read_to_string(snapshot.scratch.join("cur-build/CMakeCache.txt")).unwrap();
-        assert!(cache.contains("CMAKE_CXX_COMPILER_LAUNCHER") && cache.contains("sccache"), "launcher set");
+        let cache =
+            std::fs::read_to_string(snapshot.scratch.join("cur-build/CMakeCache.txt")).unwrap();
+        assert!(
+            cache.contains("CMAKE_CXX_COMPILER_LAUNCHER") && cache.contains("sccache"),
+            "launcher set"
+        );
         let socket = std::fs::canonicalize(snapshot.scratch.join("cur-build"))
             .unwrap()
             .join(".byteask-sccache.sock");
@@ -1162,22 +1474,33 @@ async fn a_second_checkout_compiles_from_the_shared_compiler_cache() {
             .output();
         let _ = std::fs::remove_dir_all(&snapshot.scratch);
     }
-    assert!(builds[1] > 0, "the second checkout compiled nothing from the cache: {builds:?}");
+    assert!(
+        builds[1] > 0,
+        "the second checkout compiled nothing from the cache: {builds:?}"
+    );
 }
 
 #[test]
 fn the_compiler_cache_can_be_switched_off_and_never_breaks_the_cmake_list() {
     let dir = tempfile::tempdir().unwrap();
     let off = |key: &str| (key == build::ENV_COMPILER_CACHE).then(|| "off".to_string());
-    assert_eq!(build::compiler_cache_launcher(dir.path(), dir.path(), off), None);
+    assert_eq!(
+        build::compiler_cache_launcher(dir.path(), dir.path(), off),
+        None
+    );
     let fake = dir.path().join("sccache");
     std::fs::write(&fake, "#!/bin/sh\n").unwrap();
-    let named = |key: &str| (key == build::ENV_COMPILER_CACHE).then(|| fake.to_string_lossy().into_owned());
-    let launcher = build::compiler_cache_launcher(&dir.path().join("src"), dir.path(), named).expect("launcher");
+    let named =
+        |key: &str| (key == build::ENV_COMPILER_CACHE).then(|| fake.to_string_lossy().into_owned());
+    let launcher = build::compiler_cache_launcher(&dir.path().join("src"), dir.path(), named)
+        .expect("launcher");
     assert!(launcher.starts_with("env;SCCACHE_BASEDIRS="), "{launcher}");
     assert!(launcher.ends_with(&*fake.to_string_lossy()), "{launcher}");
     let colon = dir.path().join("a:b");
-    assert_eq!(build::compiler_cache_launcher(&colon, dir.path(), named), None);
+    assert_eq!(
+        build::compiler_cache_launcher(&colon, dir.path(), named),
+        None
+    );
 }
 
 /// Security (0.2.0): a CMake tree in a shared temp directory that names this repository as its
@@ -1198,8 +1521,15 @@ fn build_trees_in_shared_temp_directories_are_never_used() {
     // The same tree inside the repository is the project's own and is found.
     let own = repo.path().join("build");
     std::fs::create_dir_all(&own).unwrap();
-    std::fs::copy(planted.path().join("CMakeCache.txt"), own.join("CMakeCache.txt")).unwrap();
-    assert_eq!(build::cmake_build_dirs(repo.path(), Path::new("/nonexistent")).len(), 1);
+    std::fs::copy(
+        planted.path().join("CMakeCache.txt"),
+        own.join("CMakeCache.txt"),
+    )
+    .unwrap();
+    assert_eq!(
+        build::cmake_build_dirs(repo.path(), Path::new("/nonexistent")).len(),
+        1
+    );
 }
 
 /// /tmp growth (0.2.0): the gate's scratch lives in this user's private directory, not under a
@@ -1209,7 +1539,11 @@ fn scratch_is_private_and_bounded() {
     let root = Path::new("/some/repo");
     let scratch = scratch_for(root);
     assert!(scratch.starts_with(scratch_root()), "{}", scratch.display());
-    assert!(!scratch.starts_with("/tmp/byteask-gate-"), "{}", scratch.display());
+    assert!(
+        !scratch.starts_with("/tmp/byteask-gate-"),
+        "{}",
+        scratch.display()
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
@@ -1219,7 +1553,13 @@ fn scratch_is_private_and_bounded() {
     }
     let dir = tempfile::tempdir().unwrap();
     let keep = dir.path().join("gate-keep");
-    for name in ["gate-keep", "gate-old", "testsel-old", "unrelated", "gate-fresh"] {
+    for name in [
+        "gate-keep",
+        "gate-old",
+        "testsel-old",
+        "unrelated",
+        "gate-fresh",
+    ] {
         std::fs::create_dir_all(dir.path().join(name)).unwrap();
     }
     touch_scratch(&dir.path().join("gate-fresh"));
@@ -1227,14 +1567,25 @@ fn scratch_is_private_and_bounded() {
     for name in ["gate-keep", "gate-old", "testsel-old", "unrelated"] {
         let stamp = dir.path().join(name).join(".last-used");
         std::fs::write(&stamp, b"").unwrap();
-        std::fs::File::options().write(true).open(&stamp).unwrap().set_modified(old).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&stamp)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
     }
     evict_scratch(dir.path(), &keep);
     assert!(keep.is_dir(), "the tree in use is kept");
     assert!(!dir.path().join("gate-old").exists());
     assert!(!dir.path().join("testsel-old").exists());
-    assert!(dir.path().join("unrelated").is_dir(), "only our own names are touched");
-    assert!(dir.path().join("gate-fresh").is_dir(), "a tree in use is never evicted");
+    assert!(
+        dir.path().join("unrelated").is_dir(),
+        "only our own names are touched"
+    );
+    assert!(
+        dir.path().join("gate-fresh").is_dir(),
+        "a tree in use is never evicted"
+    );
 }
 
 /// A base tree on disk is reused only when it was made from the same session-start state.
@@ -1263,9 +1614,11 @@ async fn a_base_tree_from_another_start_is_made_again() {
 fn the_automatic_gate_and_checklist_are_off_by_default() {
     let defaults = GateSettings::default();
     assert!(!defaults.gate && !defaults.impact, "{defaults:?}");
-    let on = GateSettings::resolve(|_| None, |_| None, |name| {
-        matches!(name, ENV_GATE | ENV_IMPACT).then(|| "1".to_string())
-    });
+    let on = GateSettings::resolve(
+        |_| None,
+        |_| None,
+        |name| matches!(name, ENV_GATE | ENV_IMPACT).then(|| "1".to_string()),
+    );
     assert!(on.gate && on.impact);
 }
 
@@ -1278,7 +1631,10 @@ async fn an_unrecognised_build_failure_fails_the_automatic_gate() {
         return;
     }
     let Some(dir) = plain_repo(&[
-        ("Makefile", "all:\n\t@echo 'CMake Error at odd.cmake:3'; exit 1\ncheck:\n\t@echo 'PASS: stale'\n"),
+        (
+            "Makefile",
+            "all:\n\t@echo 'CMake Error at odd.cmake:3'; exit 1\ncheck:\n\t@echo 'PASS: stale'\n",
+        ),
         ("lib.c", "int f;\n"),
         (".gitignore", ""),
     ]) else {
@@ -1290,7 +1646,12 @@ async fn an_unrecognised_build_failure_fails_the_automatic_gate() {
     let mut base = BaseCache::default();
     let outcome = gate_on(root, &snapshot, &mut base, false).await;
     assert_eq!(kinds(&outcome), vec![ProblemKind::Build], "{outcome:#?}");
-    assert!(outcome.problems[0].text.contains("CMake Error at odd.cmake"), "{outcome:#?}");
+    assert!(
+        outcome.problems[0]
+            .text
+            .contains("CMake Error at odd.cmake"),
+        "{outcome:#?}"
+    );
     assert_eq!(outcome.result().verdict, check_result::Verdict::Fail);
     let _ = std::fs::remove_dir_all(&snapshot.scratch);
 }

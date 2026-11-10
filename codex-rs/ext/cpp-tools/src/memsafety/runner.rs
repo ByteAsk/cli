@@ -133,7 +133,10 @@ pub(crate) fn write_temp(prefix: &str, bytes: &[u8]) -> Result<PathBuf, Function
         fastrand_hex()
     ));
     std::fs::write(&path, bytes).map_err(|err| {
-        FunctionCallError::RespondToModel(format!("cannot write temp input {}: {err}", path.display()))
+        FunctionCallError::RespondToModel(format!(
+            "cannot write temp input {}: {err}",
+            path.display()
+        ))
     })?;
     Ok(path)
 }
@@ -166,7 +169,11 @@ mod tests {
         let stderr = "==1==ERROR: AddressSanitizer: heap-use-after-free on address 0x1\n    #0 0x2 in f /a.c:1\n";
         let outcome = classify(finished(false, None, stderr));
         match outcome {
-            Outcome::Crashed { signal, evidence, bug } => {
+            Outcome::Crashed {
+                signal,
+                evidence,
+                bug,
+            } => {
                 assert!(!signal);
                 assert!(evidence.is_some());
                 assert_eq!(bug, "heap-use-after-free");

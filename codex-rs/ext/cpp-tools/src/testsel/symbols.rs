@@ -108,7 +108,10 @@ pub(crate) async fn changes(
         }
     }
     if let Some(explicit) = files {
-        paths = explicit.iter().map(|f| super::normalize(root, Path::new(f))).collect();
+        paths = explicit
+            .iter()
+            .map(|f| super::normalize(root, Path::new(f)))
+            .collect();
         new_files.retain(|f| paths.contains(f));
     } else {
         paths.extend(new_files.iter().cloned());
@@ -122,7 +125,11 @@ pub(crate) async fn changes(
         .files
         .iter()
         .filter(|f| is_cpp_file(f) && !new_files.contains(f))
-        .filter_map(|f| f.strip_prefix(root).ok().map(|p| p.to_string_lossy().to_string()))
+        .filter_map(|f| {
+            f.strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        })
         .collect();
     let mut found = Found::default();
     if !cpp_rel.is_empty() {
@@ -151,8 +158,14 @@ pub(crate) async fn changes(
         let Ok(text) = std::fs::read_to_string(file) else {
             continue;
         };
-        let count = u32::try_from(text.lines().count()).unwrap_or(u32::MAX).max(1);
-        found.lines.entry(file.clone()).or_default().push((1, count));
+        let count = u32::try_from(text.lines().count())
+            .unwrap_or(u32::MAX)
+            .max(1);
+        found
+            .lines
+            .entry(file.clone())
+            .or_default()
+            .push((1, count));
         for line in text.lines() {
             found.declared(line);
             found.literals(line);
@@ -187,7 +200,10 @@ fn last_component(symbol: &str) -> String {
 pub(crate) fn attributes_file() -> PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
-        let path = std::env::temp_dir().join(format!("byteask-cpp-diff-{}.attributes", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "byteask-cpp-diff-{}.attributes",
+            std::process::id()
+        ));
         let mut text = String::new();
         for ext in super::SOURCE_EXTS.iter().chain(super::HEADER_EXTS) {
             text.push_str(&format!("*.{ext} diff=cpp\n"));
@@ -237,7 +253,10 @@ impl Found {
             return;
         }
         for lit in string_literals(line) {
-            if lit.len() >= 6 && !self.literal_list.contains(&lit) && self.literal_list.len() < LITERAL_CAP {
+            if lit.len() >= 6
+                && !self.literal_list.contains(&lit)
+                && self.literal_list.len() < LITERAL_CAP
+            {
                 self.literal_list.push(lit);
             }
         }
@@ -252,7 +271,8 @@ fn parse_diff(diff: &str, root: &Path, found: &mut Found) {
             file = rest.strip_prefix("b/").map(|p| root.join(p));
             continue;
         }
-        if line.starts_with("--- ") || line.starts_with("diff --git") || line.starts_with("index ") {
+        if line.starts_with("--- ") || line.starts_with("diff --git") || line.starts_with("index ")
+        {
             continue;
         }
         if let Some(rest) = line.strip_prefix("@@ ") {
@@ -441,7 +461,10 @@ pub(crate) fn string_literals(line: &str) -> Vec<String> {
 
 fn plausible_symbol(name: &str) -> bool {
     name.len() >= 3
-        && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && name.chars().all(ident_char)
         && !is_keyword(name)
         && !matches!(name, "main" | "operator" | "std" | "SECTION")
@@ -450,15 +473,34 @@ fn plausible_symbol(name: &str) -> bool {
 
 /// A test-framework macro name (never a changed entity).
 fn is_test_macro(name: &str) -> bool {
-    gtest_re().is_match(&format!("{name}(a, b)")) || named_case_re().is_match(&format!("{name}(")) && name.contains("CASE")
+    gtest_re().is_match(&format!("{name}(a, b)"))
+        || named_case_re().is_match(&format!("{name}(")) && name.contains("CASE")
 }
 
 fn is_statement_keyword(word: &str) -> bool {
     matches!(
         word,
-        "return" | "if" | "for" | "while" | "switch" | "else" | "case" | "do" | "sizeof" | "delete"
-            | "new" | "throw" | "co_await" | "co_yield" | "goto" | "static_assert"
-            | "assert" | "catch" | "decltype" | "alignof" | "typeid"
+        "return"
+            | "if"
+            | "for"
+            | "while"
+            | "switch"
+            | "else"
+            | "case"
+            | "do"
+            | "sizeof"
+            | "delete"
+            | "new"
+            | "throw"
+            | "co_await"
+            | "co_yield"
+            | "goto"
+            | "static_assert"
+            | "assert"
+            | "catch"
+            | "decltype"
+            | "alignof"
+            | "typeid"
     )
 }
 
@@ -466,16 +508,76 @@ fn is_keyword(word: &str) -> bool {
     is_statement_keyword(word)
         || matches!(
             word,
-            "int" | "char" | "void" | "bool" | "float" | "double" | "long" | "short" | "unsigned"
-                | "signed" | "const" | "constexpr" | "consteval" | "constinit" | "static" | "inline"
-                | "virtual" | "explicit" | "extern" | "volatile" | "mutable" | "auto" | "register"
-                | "struct" | "class" | "union" | "enum" | "typedef" | "typename" | "template"
-                | "namespace" | "using" | "public" | "private" | "protected" | "friend" | "this"
-                | "true" | "false" | "nullptr" | "NULL" | "noexcept" | "override" | "final"
-                | "try" | "break" | "continue" | "default" | "size_t" | "uint8_t" | "uint16_t"
-                | "uint32_t" | "uint64_t" | "int8_t" | "int16_t" | "int32_t" | "int64_t"
-                | "string" | "vector" | "defined" | "include" | "define" | "endif" | "ifdef"
-                | "ifndef" | "elif" | "undef" | "pragma" | "requires" | "concept"
+            "int"
+                | "char"
+                | "void"
+                | "bool"
+                | "float"
+                | "double"
+                | "long"
+                | "short"
+                | "unsigned"
+                | "signed"
+                | "const"
+                | "constexpr"
+                | "consteval"
+                | "constinit"
+                | "static"
+                | "inline"
+                | "virtual"
+                | "explicit"
+                | "extern"
+                | "volatile"
+                | "mutable"
+                | "auto"
+                | "register"
+                | "struct"
+                | "class"
+                | "union"
+                | "enum"
+                | "typedef"
+                | "typename"
+                | "template"
+                | "namespace"
+                | "using"
+                | "public"
+                | "private"
+                | "protected"
+                | "friend"
+                | "this"
+                | "true"
+                | "false"
+                | "nullptr"
+                | "NULL"
+                | "noexcept"
+                | "override"
+                | "final"
+                | "try"
+                | "break"
+                | "continue"
+                | "default"
+                | "size_t"
+                | "uint8_t"
+                | "uint16_t"
+                | "uint32_t"
+                | "uint64_t"
+                | "int8_t"
+                | "int16_t"
+                | "int32_t"
+                | "int64_t"
+                | "string"
+                | "vector"
+                | "defined"
+                | "include"
+                | "define"
+                | "endif"
+                | "ifdef"
+                | "ifndef"
+                | "elif"
+                | "undef"
+                | "pragma"
+                | "requires"
+                | "concept"
         )
 }
 
@@ -501,7 +603,9 @@ impl Framework {
             Some(Framework::Doctest)
         } else if text.contains("--run_test") {
             Some(Framework::Boost)
-        } else if text.contains("Catch") || (text.contains("--reporter") && text.contains("test spec")) {
+        } else if text.contains("Catch")
+            || (text.contains("--reporter") && text.contains("test spec"))
+        {
             Some(Framework::Catch)
         } else {
             None
@@ -534,8 +638,10 @@ fn gtest_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         // GoogleTest's test macros (longest names first).
-        Regex::new(r"^\s*(TYPED_TEST_P|TYPED_TEST|TEST_F|TEST_P|TEST)\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)")
-            .unwrap_or_else(|_| unreachable_regex())
+        Regex::new(
+            r"^\s*(TYPED_TEST_P|TYPED_TEST|TEST_F|TEST_P|TEST)\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)",
+        )
+        .unwrap_or_else(|_| unreachable_regex())
     })
 }
 
@@ -570,8 +676,11 @@ fn named_case_re() -> &'static Regex {
         // with their method/fixture/template forms and CATCH_/DOCTEST_ prefixes.
         let mut names = NAMED_CASE_MACROS.to_vec();
         names.sort_by_key(|name| std::cmp::Reverse(name.len()));
-        Regex::new(&format!(r"^\s*((?:CATCH_|DOCTEST_)?(?:{}))\s*\(", names.join("|")))
-            .unwrap_or_else(|_| unreachable_regex())
+        Regex::new(&format!(
+            r"^\s*((?:CATCH_|DOCTEST_)?(?:{}))\s*\(",
+            names.join("|")
+        ))
+        .unwrap_or_else(|_| unreachable_regex())
     })
 }
 
@@ -737,9 +846,7 @@ fn case_end(text: &str, from: usize, offsets: &[usize]) -> Option<u32> {
 
 /// Which case (index into `cases`) contains 1-based `line`, if any.
 pub(crate) fn case_at(cases: &[TestCase], line: u32) -> Option<usize> {
-    cases
-        .iter()
-        .position(|c| c.start <= line && line <= c.end)
+    cases.iter().position(|c| c.start <= line && line <= c.end)
 }
 
 /// Lines (1-based) of `text` mentioning any of `words` as a whole identifier.
@@ -825,12 +932,18 @@ mod tests {
 
     #[test]
     fn finds_declared_names() {
-        assert_eq!(declarations("inline std::tm gmtime(std::time_t time) {"), vec!["gmtime"]);
+        assert_eq!(
+            declarations("inline std::tm gmtime(std::time_t time) {"),
+            vec!["gmtime"]
+        );
         assert_eq!(
             declarations("auto Widget::size() const -> std::size_t {"),
             vec!["size", "Widget"]
         );
-        assert_eq!(declarations("template <typename T> struct formatter<T> {"), vec!["formatter"]);
+        assert_eq!(
+            declarations("template <typename T> struct formatter<T> {"),
+            vec!["formatter"]
+        );
         assert_eq!(declarations("#define FMT_THING 1"), vec!["FMT_THING"]);
         assert_eq!(declarations("using handle_t = int;"), vec!["handle_t"]);
         assert!(declarations("  return twice(x);").is_empty());
@@ -841,7 +954,10 @@ mod tests {
 
     #[test]
     fn names_the_enclosing_entity() {
-        assert_eq!(enclosing_name("int twice(int x) {").as_deref(), Some("twice"));
+        assert_eq!(
+            enclosing_name("int twice(int x) {").as_deref(),
+            Some("twice")
+        );
         assert_eq!(enclosing_name("class parser {").as_deref(), Some("parser"));
         assert_eq!(enclosing_name("namespace detail {"), None);
         assert_eq!(enclosing_name(""), None);
@@ -878,15 +994,19 @@ mod tests {
 
     #[test]
     fn indexes_test_cases_of_each_framework() {
-        let gtest = concat!("#include \"gtest/gtest.h\"\n\
+        let gtest = concat!(
+            "#include \"gtest/gtest.h\"\n\
 TEST(Core, Twice) {\n  EXPECT_EQ(twice(2), 4);\n}\n\
 static int helper() { return 1; }\n\
 TEST_P(Param, Works) {\n  // {\n  EXPECT_EQ(1, 1);\n}\n\
-TYPED_TEST(Typed, Size) { }\n")
+TYPED_TEST(Typed, Size) { }\n"
+        )
         .to_string();
         let cases = index_cases(&gtest, "t.cc");
-        let summary: Vec<(String, u32, u32)> =
-            cases.iter().map(|c| (c.filter.clone(), c.start, c.end)).collect();
+        let summary: Vec<(String, u32, u32)> = cases
+            .iter()
+            .map(|c| (c.filter.clone(), c.start, c.end))
+            .collect();
         assert_eq!(
             summary,
             vec![
@@ -905,7 +1025,10 @@ TYPED_TEST(Typed, Size) { }\n")
         assert_eq!(cases[1].filter, "Scenario: s");
 
         let doctest = "#include \"doctest.h\"\nTEST_CASE(\"dt\") {\n}\n";
-        assert_eq!(index_cases(doctest, "d.cc")[0].framework, Framework::Doctest);
+        assert_eq!(
+            index_cases(doctest, "d.cc")[0].framework,
+            Framework::Doctest
+        );
 
         let boost = "BOOST_AUTO_TEST_CASE(my_case) {\n}\n";
         assert_eq!(index_cases(boost, "b.cc")[0].framework, Framework::Boost);
@@ -924,9 +1047,18 @@ TYPED_TEST(Typed, Size) { }\n")
 
     #[test]
     fn detects_frameworks_from_help() {
-        assert_eq!(Framework::from_help("  --gtest_filter=POSITIVE"), Some(Framework::GTest));
-        assert_eq!(Framework::from_help("[doctest] ..."), Some(Framework::Doctest));
-        assert_eq!(Framework::from_help("Catch v2.13.1\nusage:"), Some(Framework::Catch));
+        assert_eq!(
+            Framework::from_help("  --gtest_filter=POSITIVE"),
+            Some(Framework::GTest)
+        );
+        assert_eq!(
+            Framework::from_help("[doctest] ..."),
+            Some(Framework::Doctest)
+        );
+        assert_eq!(
+            Framework::from_help("Catch v2.13.1\nusage:"),
+            Some(Framework::Catch)
+        );
         assert_eq!(Framework::from_help("usage: prog"), None);
     }
 
@@ -936,13 +1068,27 @@ TYPED_TEST(Typed, Size) { }\n")
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/core.cpp"), "int twice(int x) {\n  return x * 2;\n}\n").unwrap();
+        std::fs::write(
+            root.join("src/core.cpp"),
+            "int twice(int x) {\n  return x * 2;\n}\n",
+        )
+        .unwrap();
         std::fs::write(root.join("README.md"), "hi\n").unwrap();
         let base = test_repo::init_and_commit(root);
-        std::fs::write(root.join("src/core.cpp"), "int twice(int x) {\n  return x + x;\n}\n").unwrap();
-        std::fs::write(root.join("src/extra.cpp"), "int extra_fn(int y) { return y; }\n").unwrap();
+        std::fs::write(
+            root.join("src/core.cpp"),
+            "int twice(int x) {\n  return x + x;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/extra.cpp"),
+            "int extra_fn(int y) { return y; }\n",
+        )
+        .unwrap();
         std::fs::write(root.join("notes.txt"), "untracked, not code\n").unwrap();
-        let changes = changes(root, &base, "base".to_string(), None, None).await.unwrap();
+        let changes = changes(root, &base, "base".to_string(), None, None)
+            .await
+            .unwrap();
         let rel: Vec<String> = changes
             .files
             .iter()
@@ -950,6 +1096,9 @@ TYPED_TEST(Typed, Size) { }\n")
             .collect();
         assert_eq!(rel, vec!["src/core.cpp", "src/extra.cpp"]);
         assert_eq!(changes.symbols, vec!["extra_fn", "twice"]);
-        assert_eq!(changes.lines.get(&root.join("src/core.cpp")), Some(&vec![(2, 2)]));
+        assert_eq!(
+            changes.lines.get(&root.join("src/core.cpp")),
+            Some(&vec![(2, 2)])
+        );
     }
 }

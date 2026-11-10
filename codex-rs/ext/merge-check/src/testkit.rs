@@ -91,13 +91,25 @@ impl Fixture {
         testing::init(&repo);
         if let Some(profile) = profile {
             testing::write(&repo, ".byteask/checks.toml", profile);
-            testing::write(&repo, ".byteask/required-tests.txt", "# required tests\nbook_add\nbook_cross\n");
+            testing::write(
+                &repo,
+                ".byteask/required-tests.txt",
+                "# required tests\nbook_add\nbook_cross\n",
+            );
         }
         let build_calls = dir.path().join("build-calls.log");
         testing::write(&repo, "build.sh", &build_sh(&build_calls));
         testing::write(&repo, "test.sh", TEST_SH);
-        testing::write(&repo, "tests.txt", "book_add pass\nbook_cross pass\nextra pass\n");
-        testing::write(&repo, "src/book.cpp", "int add(int a, int b) { return a + b; }\n");
+        testing::write(
+            &repo,
+            "tests.txt",
+            "book_add pass\nbook_cross pass\nextra pass\n",
+        );
+        testing::write(
+            &repo,
+            "src/book.cpp",
+            "int add(int a, int b) { return a + b; }\n",
+        );
         testing::write(&repo, "src/hot/feed.cpp", "int feed() { return 1; }\n");
         testing::write(&repo, "README.md", "# book\n");
         testing::write(&repo, "old_api", "an API a later base commit removes\n");
@@ -160,7 +172,8 @@ impl FakeServer {
         let raw = base64::engine::general_purpose::STANDARD
             .decode(key.public_b64())
             .expect("b64");
-        let public = ed25519_dalek::VerifyingKey::from_bytes(&raw.try_into().expect("32")).expect("key");
+        let public =
+            ed25519_dalek::VerifyingKey::from_bytes(&raw.try_into().expect("32")).expect("key");
         self.keys.lock().expect("lock").insert(
             key.key_id(),
             Enrolled {
@@ -181,7 +194,11 @@ impl FakeServer {
     pub(crate) fn record(&self, envelope: &Envelope) {
         let now = self.tick();
         self.recorded.lock().expect("lock").insert(
-            (envelope.key_id.clone(), envelope.digest(), envelope.signed_ms),
+            (
+                envelope.key_id.clone(),
+                envelope.digest(),
+                envelope.signed_ms,
+            ),
             now,
         );
     }
@@ -228,7 +245,11 @@ impl FakeServer {
         }
         let now = self.tick();
         self.recorded.lock().expect("lock").insert(
-            (envelope.key_id.clone(), digest.to_string(), envelope.signed_ms),
+            (
+                envelope.key_id.clone(),
+                digest.to_string(),
+                envelope.signed_ms,
+            ),
             now,
         );
         Ok(())
@@ -256,12 +277,19 @@ impl FakeServer {
         if entry.revoked {
             return answer(false, "the runner key was revoked as compromised");
         }
-        let id = (envelope.key_id.clone(), digest.to_string(), envelope.signed_ms);
+        let id = (
+            envelope.key_id.clone(),
+            digest.to_string(),
+            envelope.signed_ms,
+        );
         let recorded = self.recorded.lock().expect("lock").get(&id).copied();
         if let Some(retired) = entry.retired_at {
             return match recorded {
                 Some(at) if at < retired => answer(true, "recorded before the runner was retired"),
-                _ => answer(false, "the runner was retired and this result was not recorded before that"),
+                _ => answer(
+                    false,
+                    "the runner was retired and this result was not recorded before that",
+                ),
             };
         }
         drop(keys);

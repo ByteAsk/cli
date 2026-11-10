@@ -71,8 +71,7 @@ impl SessionHead {
     /// HEAD is resolved now and said to be such by the caller's wording.
     pub(crate) async fn get(&self) -> Option<Head> {
         let mut rx = self.rx.clone();
-        if let Ok(Ok(value)) = tokio::time::timeout(HEAD_WAIT, rx.wait_for(Option::is_some)).await
-        {
+        if let Ok(Ok(value)) = tokio::time::timeout(HEAD_WAIT, rx.wait_for(Option::is_some)).await {
             return value.clone().flatten();
         }
         resolve(&self.cwd).await
@@ -82,8 +81,14 @@ impl SessionHead {
 /// `git rev-parse` for the work-tree root and the HEAD commit. A workspace that is a parent
 /// of the repository uses the repository below it ([`gitx::primary_root`]).
 pub(crate) async fn resolve(cwd: &Path) -> Option<Head> {
-    let top = gitx::git_str("session", None, cwd, &["rev-parse", "--show-toplevel"], PROBE_TIMEOUT)
-        .await;
+    let top = gitx::git_str(
+        "session",
+        None,
+        cwd,
+        &["rev-parse", "--show-toplevel"],
+        PROBE_TIMEOUT,
+    )
+    .await;
     let root = if top.ok {
         PathBuf::from(top.stdout.trim())
     } else {

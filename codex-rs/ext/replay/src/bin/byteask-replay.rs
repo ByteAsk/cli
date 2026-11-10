@@ -12,8 +12,8 @@ use std::process::ExitCode;
 use byteask_replay::Rules;
 use byteask_replay::compare_streams;
 use byteask_replay::report;
-use byteask_replay::run::OutputFormat;
 use byteask_replay::run::Outcome;
+use byteask_replay::run::OutputFormat;
 use byteask_replay::run::ReplaySpec;
 use byteask_replay::run::read_output;
 use byteask_replay::run::replay_and_compare;
@@ -22,7 +22,10 @@ use serde_json::json;
 const USAGE: &str = "usage:\n  byteask-replay compare [--rules RULES.json] [--lines] A B\n  byteask-replay run SPEC.json [--workdir DIR]\nPrints a JSON report. Exit status: 0 same, 1 different, 2 could not compare.";
 
 fn emit(value: &serde_json::Value, outcome: Outcome) -> ExitCode {
-    println!("{}", serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+    );
     ExitCode::from(match outcome {
         Outcome::Same => 0,
         Outcome::Different => 1,
@@ -76,7 +79,11 @@ fn compare(args: &[String]) -> ExitCode {
     match compare_streams(sa, sb, &rules) {
         Err(e) => not_run(e.to_string()),
         Ok(c) => {
-            let outcome = if c.same { Outcome::Same } else { Outcome::Different };
+            let outcome = if c.same {
+                Outcome::Same
+            } else {
+                Outcome::Different
+            };
             let sentence = report::sentence(&c, "A", "B");
             emit(
                 &json!({"outcome": outcome, "sentence": sentence, "comparison": c}),

@@ -30,10 +30,18 @@ pub(crate) fn choose_backend(
     have_lldb: bool,
     macos: bool,
 ) -> Result<(Backend, Option<&'static str>), String> {
-    let missing = |tool: &str| format!("{tool} not installed ({})", crate::probe::install_hint(tool));
+    let missing = |tool: &str| {
+        format!(
+            "{tool} not installed ({})",
+            crate::probe::install_hint(tool)
+        )
+    };
     match requested {
         Some(Backend::Gdb) if !have_gdb => Err(if have_lldb {
-            format!("{}. lldb is installed: pass backend=\"lldb\" (lldb command syntax)", missing("gdb"))
+            format!(
+                "{}. lldb is installed: pass backend=\"lldb\" (lldb command syntax)",
+                missing("gdb")
+            )
         } else {
             missing("gdb")
         }),
@@ -48,7 +56,11 @@ pub(crate) fn choose_backend(
             Backend::Lldb,
             Some("gdb is not installed here, so this ran under lldb; commands use lldb syntax"),
         )),
-        None => Err(format!("no debugger found: {}; {}", missing("gdb"), missing("lldb"))),
+        None => Err(format!(
+            "no debugger found: {}; {}",
+            missing("gdb"),
+            missing("lldb")
+        )),
     }
 }
 
@@ -126,9 +138,11 @@ pub(crate) fn inferior_args(args: &[String]) -> Result<InferiorArgs, String> {
         });
     }
     if args.iter().any(|arg| arg.contains(['\n', '\r'])) {
-        return Err("gdb cannot pass an argument that contains a line break: its command line \
+        return Err(
+            "gdb cannot pass an argument that contains a line break: its command line \
                     ends there. Write the value to a file and pass the file's path instead."
-            .to_string());
+                .to_string(),
+        );
     }
     let needs_shell = args
         .iter()
@@ -139,7 +153,10 @@ pub(crate) fn inferior_args(args: &[String]) -> Result<InferiorArgs, String> {
             needs_shell,
         });
     }
-    let quoted: Vec<String> = args.iter().map(|arg| crate::program_args::sh_quote(arg)).collect();
+    let quoted: Vec<String> = args
+        .iter()
+        .map(|arg| crate::program_args::sh_quote(arg))
+        .collect();
     let mut commands = vec![
         "set startup-with-shell on".to_string(),
         format!("set args {}", quoted.join(" ")),
@@ -236,7 +253,9 @@ pub(crate) fn classify(command: &str) -> Verdict {
     let mut rest_words = cmd.split_whitespace();
     let _ = rest_words.next();
     if (base == "thread" || base == "frame")
-        && rest_words.next().is_some_and(|word| "apply".starts_with(word))
+        && rest_words
+            .next()
+            .is_some_and(|word| "apply".starts_with(word))
     {
         return Verdict::Propose(format!("`{base} apply` runs a sub-command"));
     }
@@ -278,7 +297,9 @@ pub(crate) fn classify(command: &str) -> Verdict {
 /// array slice, cast-to-aggregate, or multiple statements.
 fn expr_is_simple(rest: &str) -> bool {
     // `++`/`--` write to the live process just as `=` does: `print x++`.
-    !rest.contains(['(', ')', '=', '@', ';', '{', '}', '`']) && !rest.contains("++") && !rest.contains("--")
+    !rest.contains(['(', ')', '=', '@', ';', '{', '}', '`'])
+        && !rest.contains("++")
+        && !rest.contains("--")
 }
 
 #[cfg(test)]
@@ -290,11 +311,20 @@ mod tests {
         use super::choose_backend;
         // (requested, have_gdb, have_lldb, macos) -> backend, explained?
         assert_eq!(choose_backend(None, true, true, false), Ok((Gdb, None)));
-        assert_eq!(choose_backend(None, true, true, true).map(|c| (c.0, c.1.is_some())), Ok((Lldb, true)));
-        assert_eq!(choose_backend(None, false, true, false).map(|c| (c.0, c.1.is_some())), Ok((Lldb, true)));
+        assert_eq!(
+            choose_backend(None, true, true, true).map(|c| (c.0, c.1.is_some())),
+            Ok((Lldb, true))
+        );
+        assert_eq!(
+            choose_backend(None, false, true, false).map(|c| (c.0, c.1.is_some())),
+            Ok((Lldb, true))
+        );
         assert_eq!(choose_backend(None, true, false, true), Ok((Gdb, None)));
         assert_eq!(choose_backend(Some(Gdb), true, true, true), Ok((Gdb, None)));
-        assert_eq!(choose_backend(Some(Lldb), true, true, false), Ok((Lldb, None)));
+        assert_eq!(
+            choose_backend(Some(Lldb), true, true, false),
+            Ok((Lldb, None))
+        );
         let no_gdb = choose_backend(Some(Gdb), false, true, true).expect_err("gdb missing");
         assert!(no_gdb.contains("backend=\"lldb\""), "{no_gdb}");
         assert!(choose_backend(None, false, false, false).is_err());
@@ -432,9 +462,25 @@ mod tests {
         }
         // Ordinary navigation still runs by itself.
         for cmd in [
-            "bt", "bt full", "bt 10", "backtrace -full", "where", "frame 2", "frame function main",
-            "up", "down 2", "info locals", "info frame", "info line foo.c:20", "info symbol 0x401000",
-            "list foo.c:20", "list main", "disassemble main", "thread 2", "thread", "whatis x",
+            "bt",
+            "bt full",
+            "bt 10",
+            "backtrace -full",
+            "where",
+            "frame 2",
+            "frame function main",
+            "up",
+            "down 2",
+            "info locals",
+            "info frame",
+            "info line foo.c:20",
+            "info symbol 0x401000",
+            "list foo.c:20",
+            "list main",
+            "disassemble main",
+            "thread 2",
+            "thread",
+            "whatis x",
             "ptype struct node",
         ] {
             assert_eq!(classify(cmd), Verdict::Auto, "should auto-run: {cmd}");
@@ -443,7 +489,13 @@ mod tests {
 
     #[test]
     fn classify_proposes_increments_and_decrements() {
-        for cmd in ["print x++", "p ++x", "print counter--", "output --n", "x/x p++"] {
+        for cmd in [
+            "print x++",
+            "p ++x",
+            "print counter--",
+            "output --n",
+            "x/x p++",
+        ] {
             assert!(
                 matches!(classify(cmd), Verdict::Propose(_)),
                 "should propose: {cmd}"

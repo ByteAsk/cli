@@ -306,8 +306,14 @@ mod tests {
             serde_json::json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}})
                 .to_string()
         };
-        assert_eq!(card_text(&out(" Ring::push ")), Some("Ring::push".to_string()));
-        assert_eq!(card_text(&out("(ByteAsk locator card unavailable: no index)")), None);
+        assert_eq!(
+            card_text(&out(" Ring::push ")),
+            Some("Ring::push".to_string())
+        );
+        assert_eq!(
+            card_text(&out("(ByteAsk locator card unavailable: no index)")),
+            None
+        );
         assert_eq!(card_text(&out("")), None);
         assert_eq!(card_text(""), None);
     }
@@ -357,7 +363,11 @@ mod tests {
         );
         assert_eq!(launch.program, PathBuf::from("/usr/bin/python3"));
         // hook-card reads the worktree from its event
-        assert!(!cli.launch("hook-card").args.contains(&"--workspace".to_string()));
+        assert!(
+            !cli.launch("hook-card")
+                .args
+                .contains(&"--workspace".to_string())
+        );
     }
 
     #[test]
@@ -408,11 +418,22 @@ mod tests {
         let cli = EngineCli::from_mcp_server("py", &short, &[], Path::new("/w")).expect("cli");
         assert_eq!(
             cli.launch("hook-card").args,
-            strings(&["-m", "bctx.cli", "hook-card", "--user", "u", "--partition", "p"])
+            strings(&[
+                "-m",
+                "bctx.cli",
+                "hook-card",
+                "--user",
+                "u",
+                "--partition",
+                "p"
+            ])
         );
         assert_eq!(cli.workspace, PathBuf::from("/w"));
         let no_partition = strings(&["-m", "bctx.cli", "mcp", "--user", "u"]);
-        assert_eq!(EngineCli::from_mcp_server("py", &no_partition, &[], Path::new("/w")), None);
+        assert_eq!(
+            EngineCli::from_mcp_server("py", &no_partition, &[], Path::new("/w")),
+            None
+        );
     }
 
     /// A fake engine: "python" is a shell script that sees the subcommand as `$1` (the prefix
@@ -424,7 +445,15 @@ mod tests {
         let program = dir.path().join("py");
         std::fs::write(&program, format!("#!/bin/sh\n{script}")).expect("script");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let args = strings(&["mcp", "--user", "u", "--partition", "p", "--workspace", "/src/feed"]);
+        let args = strings(&[
+            "mcp",
+            "--user",
+            "u",
+            "--partition",
+            "p",
+            "--workspace",
+            "/src/feed",
+        ]);
         let cli = EngineCli::from_mcp_server(
             &program.to_string_lossy(),
             &args,

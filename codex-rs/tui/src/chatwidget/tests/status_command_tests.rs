@@ -52,6 +52,15 @@ async fn status_command_refresh_updates_cached_limits_for_future_status_outputs(
     chat.finish_status_rate_limit_refresh(first_request_id, vec![snapshot(/*percent*/ 92.0)]);
     drain_insert_history(&mut rx);
 
+    chat.dispatch_command(SlashCommand::Copy);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::CopySelection { text, label, .. })
+            if label == "Whole status" && text.contains("8% left")
+    );
+    assert_matches!(rx.try_recv(), Ok(AppEvent::SettingsSelectionClosed));
+
     chat.dispatch_command(SlashCommand::Status);
     let refreshed = match rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => {
@@ -81,7 +90,7 @@ async fn status_command_renders_immediately_without_rate_limit_refresh() {
 
 #[tokio::test]
 async fn status_command_uses_catalog_default_reasoning_when_config_empty() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.5")).await;
     chat.config.model_reasoning_effort = None;
 
     chat.dispatch_command(SlashCommand::Status);
@@ -93,7 +102,7 @@ async fn status_command_uses_catalog_default_reasoning_when_config_empty() {
         other => panic!("expected status output, got {other:?}"),
     };
     assert!(
-        rendered.contains("gpt-5.4 (reasoning medium, summaries auto)"),
+        rendered.contains("GPT-5.5 (reasoning medium, summaries auto)"),
         "expected /status to render the catalog default reasoning effort, got: {rendered}"
     );
 }
@@ -234,6 +243,7 @@ async fn status_command_renders_immediately_and_updates_first_card_without_statu
         thread_id,
         request_id,
         Ok(ThreadUsageOutcome::Available(ThreadUsage {
+            native_usage_usd_micros: None,
             thread_id: thread_id.to_string(),
             estimated_usage_credits_micros: 50_000_000,
             estimated_usage_usd_micros: Some(1_820_000),
@@ -293,10 +303,9 @@ async fn status_command_renders_immediately_and_updates_first_card_without_statu
 }
 
 #[tokio::test]
-async fn status_command_omits_thread_usage_for_non_cbp_enterprise_plans() {
+async fn status_command_omits_thread_usage_for_unsupported_plans() {
     for plan_type in [
         Some(PlanType::Enterprise),
-        Some(PlanType::Ent26),
         Some(PlanType::Pro),
         Some(PlanType::Edu),
         Some(PlanType::SelfServeBusinessUsageBased),
@@ -364,6 +373,7 @@ async fn status_command_stays_visible_and_updates_after_thread_usage_retry() {
         thread_id,
         retry_request_id,
         Ok(ThreadUsageOutcome::Available(ThreadUsage {
+            native_usage_usd_micros: None,
             thread_id: thread_id.to_string(),
             estimated_usage_credits_micros: 50_000_000,
             estimated_usage_usd_micros: Some(1_820_000),
@@ -401,6 +411,7 @@ async fn status_command_renders_credits_and_breakdowns_without_usd_estimate() {
         thread_id,
         request_id,
         Ok(ThreadUsageOutcome::Available(ThreadUsage {
+            native_usage_usd_micros: None,
             thread_id: thread_id.to_string(),
             estimated_usage_credits_micros: 50_000_000,
             estimated_usage_usd_micros: None,
@@ -466,6 +477,7 @@ async fn status_command_drops_stale_usd_when_updated_usage_has_only_credits() {
         thread_id,
         request_id,
         Ok(ThreadUsageOutcome::Available(ThreadUsage {
+            native_usage_usd_micros: None,
             thread_id: thread_id.to_string(),
             estimated_usage_credits_micros: 40_000_000,
             estimated_usage_usd_micros: Some(1_820_000),
@@ -491,6 +503,7 @@ async fn status_command_drops_stale_usd_when_updated_usage_has_only_credits() {
         thread_id,
         request_id,
         Ok(ThreadUsageOutcome::Available(ThreadUsage {
+            native_usage_usd_micros: None,
             thread_id: thread_id.to_string(),
             estimated_usage_credits_micros: 50_000_000,
             estimated_usage_usd_micros: None,
@@ -523,6 +536,8 @@ async fn status_command_requests_thread_usage_for_remote_connection_metadata() {
     chat.remote_connection = Some(crate::status::remote_connection::RemoteConnectionStatus {
         address: "wss://remote.example.com".to_string(),
         version: "v1.0.0".to_string(),
+        is_local_daemon: false,
+        is_managed_daemon: false,
     });
 
     chat.dispatch_command(SlashCommand::Status);
@@ -574,6 +589,7 @@ async fn status_command_remains_visible_when_account_changes_during_usage_refres
         thread_id,
         request_id,
         Ok(ThreadUsageOutcome::Available(ThreadUsage {
+            native_usage_usd_micros: None,
             thread_id: thread_id.to_string(),
             estimated_usage_credits_micros: 50_000_000,
             estimated_usage_usd_micros: Some(1_820_000),
@@ -606,6 +622,7 @@ async fn status_command_remains_visible_when_thread_changes_during_usage_refresh
         thread_id,
         request_id,
         Ok(ThreadUsageOutcome::Available(ThreadUsage {
+            native_usage_usd_micros: None,
             thread_id: thread_id.to_string(),
             estimated_usage_credits_micros: 50_000_000,
             estimated_usage_usd_micros: Some(1_820_000),

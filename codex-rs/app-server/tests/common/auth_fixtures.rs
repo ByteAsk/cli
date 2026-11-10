@@ -15,11 +15,32 @@ use codex_login::token_data::parse_chatgpt_jwt_claims;
 use codex_protocol::auth::AuthMode;
 use serde_json::json;
 
+pub async fn mount_workspace_routing(server: &wiremock::MockServer) {
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path_regex(
+            "^/(backend-api/wham|api/codex)/accounts/check$",
+        ))
+        .respond_with(|request: &wiremock::Request| {
+            let account_id = request
+                .headers
+                .get("chatgpt-account-id")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("account-123");
+            wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "accounts": [{"id": account_id, "workspace_backend_origin": "https://chatgpt.com",
+                    "account_routing_override": "NO_CONSTRAINT"}],
+            }))
+        })
+        .mount(server)
+        .await;
+}
+
 /// Builder for writing a fake ChatGPT auth.json in tests.
 #[derive(Debug, Clone)]
 pub struct ChatGptAuthFixture {
     access_token: String,
     refresh_token: String,
+    login_owner_id: Option<String>,
     account_id: Option<String>,
     claims: ChatGptIdTokenClaims,
     last_refresh: Option<Option<DateTime<Utc>>>,
@@ -30,6 +51,7 @@ impl ChatGptAuthFixture {
         Self {
             access_token: access_token.into(),
             refresh_token: "refresh-token".to_string(),
+            login_owner_id: None,
             account_id: None,
             claims: ChatGptIdTokenClaims::default(),
             last_refresh: None,
@@ -38,6 +60,11 @@ impl ChatGptAuthFixture {
 
     pub fn refresh_token(mut self, refresh_token: impl Into<String>) -> Self {
         self.refresh_token = refresh_token.into();
+        self
+    }
+
+    pub fn login_owner_id(mut self, login_owner_id: impl Into<String>) -> Self {
+        self.login_owner_id = Some(login_owner_id.into());
         self
     }
 
@@ -158,6 +185,8 @@ pub fn write_chatgpt_auth(
         id_token,
         access_token: fixture.access_token,
         refresh_token: fixture.refresh_token,
+        oauth_provenance: None,
+        login_owner_id: fixture.login_owner_id,
         account_id: fixture.account_id,
     };
 

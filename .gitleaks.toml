@@ -23,6 +23,9 @@ paths = [
   '''codex-rs/login/src/auth/auth_tests\.rs''',
   '''codex-rs/secrets/src/sanitizer\.rs''',
   '''codex-rs/tui/src/byteask_settings/store\.rs''',
+  '''codex-rs/cli/src/doctor/output\.rs''',
+  '''codex-rs/cli/tests/exec_server_websocket_auth\.rs''',
+  '''codex-rs/ext/guardian-v2/src/async_scorer/sampler_routing_tests\.rs''',
 ]
 regexTarget = "line"
 regexes = [

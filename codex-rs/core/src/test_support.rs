@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_exec_server::EnvironmentManager;
-use codex_extension_api::LoadUserInstructionsFuture;
+use codex_extension_api::LoadInstructionsFuture;
 use codex_extension_api::LoadedUserInstructions;
 use codex_extension_api::UserInstructionsProvider;
 use codex_http_client::HttpClientFactory;
@@ -32,6 +32,7 @@ use codex_protocol::protocol::SessionSource;
 use once_cell::sync::Lazy;
 
 use crate::ThreadManager;
+pub use crate::code_mode_host::ProcessOwnedGrpcCodeModeSessionProvider;
 use crate::config::Config;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
@@ -49,12 +50,91 @@ static TEST_MODEL_PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
     presets
 });
 
+/// Inspect the same resolved environment configurations used to construct sampling steps.
+pub async fn environment_windows_sandbox_types(
+    thread: &crate::CodexThread,
+) -> Vec<(String, codex_sandboxing::SandboxType)> {
+    thread
+        .session
+        .services
+        .turn_environments
+        .snapshot()
+        .await
+        .turn_environments()
+        .map(|environment| {
+            (
+                environment.selection.environment_id.clone(),
+                environment.config().windows_sandbox_type,
+            )
+        })
+        .collect()
+}
+
+/// Reattaches request-only observations to a completed turn's history for capture assertions.
+/// Tests inspect this separately from the destination-filtered HTTP/WS request.
+pub async fn history_with_tool_call_metadata(
+    thread: &crate::CodexThread,
+) -> Vec<codex_protocol::models::ResponseItem> {
+    let history = thread.conversation_history_snapshot().await;
+    let mut items = history.items().cloned().collect::<Vec<_>>();
+    thread
+        .session
+        .services
+        .executed_tool_calls
+        .attach_to_prompt(&mut items, &mut Default::default());
+    items
+}
+
+/// Returns the recorder state used by the next session metadata snapshot.
+/// This does not change destination filtering or issue a request.
+pub fn mcp_attribution_snapshot(
+    thread: &crate::CodexThread,
+) -> codex_protocol::mcp::McpAttribution {
+    thread
+        .session
+        .services
+        .executed_tool_calls
+        .mcp_attribution_snapshot()
+}
+
+/// Retains the active turn's timing after completion without exporting telemetry.
+/// Returns `None` when there is no running task. The observer reports exclusive
+/// durations for the caller's interval in inference, automatic review, local
+/// tools, overhead, and unknown order.
+pub async fn observe_turn_timing(
+    thread: &crate::CodexThread,
+) -> Option<
+    impl Fn(std::time::Instant, std::time::Instant) -> Option<[std::time::Duration; 5]> + use<>,
+> {
+    let active = thread.session.active_turn.lock().await;
+    let timing = Arc::clone(
+        &active
+            .as_ref()?
+            .task
+            .as_ref()?
+            .turn_context
+            .turn_timing_state,
+    );
+    Some(move |start, end| {
+        timing.snapshot_path(end).map(|path| {
+            let totals = path.durations(start, end);
+            [
+                totals.inference,
+                totals.auto_review,
+                totals.tools,
+                totals.overhead,
+                totals.unknown,
+            ]
+        })
+    })
+}
+
 /// Test-only provider that supplies no user instructions.
 #[derive(Debug, Default)]
 pub struct EmptyUserInstructionsProvider;
 
 impl UserInstructionsProvider for EmptyUserInstructionsProvider {
-    fn load_user_instructions(&self) -> LoadUserInstructionsFuture<'_> {
+    fn load_user_instructions(&self) -> LoadInstructionsFuture<'_> {
         Box::pin(async { LoadedUserInstructions::default() })
     }
 }
@@ -122,7 +202,7 @@ pub async fn start_thread_with_user_shell_override(
         .await
 }
 
-pub async fn resume_thread_from_rollout_with_user_shell_override(
+pub async fn resume_legacy_thread_from_rollout_with_user_shell_override(
     thread_manager: &ThreadManager,
     config: Config,
     rollout_path: PathBuf,
@@ -131,7 +211,7 @@ pub async fn resume_thread_from_rollout_with_user_shell_override(
     supports_openai_form_elicitation: bool,
 ) -> codex_protocol::error::Result<crate::NewThread> {
     thread_manager
-        .resume_thread_from_rollout_with_user_shell_override_for_tests(
+        .resume_legacy_thread_from_rollout_with_user_shell_override_for_tests(
             config,
             rollout_path,
             auth_manager,
@@ -162,7 +242,9 @@ pub fn get_model_offline(model: Option<&str>) -> String {
 }
 
 pub fn construct_model_info_offline(model: &str, config: &Config) -> ModelInfo {
-    construct_model_info_offline_for_tests(model, &config.to_models_manager_config())
+    Arc::unwrap_or_clone(
+        construct_model_info_offline_for_tests(model, &config.to_models_manager_config()).model,
+    )
 }
 
 #[derive(Clone, Copy)]

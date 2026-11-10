@@ -58,9 +58,14 @@ pub(crate) fn memory_limit() -> Option<u64> {
 
 /// [`memory_limit`] over an explicit cgroup mount and file contents.
 pub(crate) fn memory_limit_in(cgroup_root: &Path, self_cgroup: &str, meminfo: &str) -> Option<u64> {
-    let read = |path: PathBuf| -> Option<u64> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
+    let read =
+        |path: PathBuf| -> Option<u64> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
     let mut limits = Vec::new();
-    if let Some(rel) = self_cgroup.lines().find_map(|line| line.strip_prefix("0::")).map(str::trim) {
+    if let Some(rel) = self_cgroup
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map(str::trim)
+    {
         let mut dir = cgroup_root.join(rel.trim_start_matches('/'));
         loop {
             limits.extend(read(dir.join("memory.max"))); // "max" = no limit at this level
@@ -73,7 +78,9 @@ pub(crate) fn memory_limit_in(cgroup_root: &Path, self_cgroup: &str, meminfo: &s
             }
         }
     }
-    limits.extend(read(cgroup_root.join("memory/memory.limit_in_bytes")).filter(|limit| *limit < 1 << 50));
+    limits.extend(
+        read(cgroup_root.join("memory/memory.limit_in_bytes")).filter(|limit| *limit < 1 << 50),
+    );
     let total = meminfo
         .lines()
         .find(|line| line.starts_with("MemTotal:"))
@@ -129,7 +136,11 @@ pub(crate) fn available_memory() -> Option<Available> {
 }
 
 /// [`available_memory`] over an explicit cgroup mount and file contents (for tests).
-pub(crate) fn available_memory_in(cgroup_root: &Path, self_cgroup: &str, meminfo: &str) -> Option<Available> {
+pub(crate) fn available_memory_in(
+    cgroup_root: &Path,
+    self_cgroup: &str,
+    meminfo: &str,
+) -> Option<Available> {
     let mut best: Option<Available> = None;
     let mut consider = |bytes: u64, source: String| {
         if best.as_ref().is_none_or(|b| bytes < b.bytes) {
@@ -249,7 +260,9 @@ pub type BuildSlot = tokio::sync::OwnedMutexGuard<()>;
 impl BuildLock {
     /// Wait up to `wait` for the slot; `None` when it is still taken after that.
     pub(crate) async fn acquire(&self, wait: Duration) -> Option<BuildSlot> {
-        tokio::time::timeout(wait, self.0.clone().lock_owned()).await.ok()
+        tokio::time::timeout(wait, self.0.clone().lock_owned())
+            .await
+            .ok()
     }
 
     #[cfg(test)]
@@ -310,10 +323,19 @@ mod tests {
         let root = dir.path();
         write(&root.join("memory.max"), "max\n");
         write(&root.join("slice/memory.max"), &format!("{}\n", 4 * GIB));
-        write(&root.join("slice/memory.current"), &format!("{}\n", 3 * GIB));
-        write(&root.join("slice/memory.stat"), &format!("anon 1\ninactive_file {}\nactive_file 5\n", GIB / 2));
+        write(
+            &root.join("slice/memory.current"),
+            &format!("{}\n", 3 * GIB),
+        );
+        write(
+            &root.join("slice/memory.stat"),
+            &format!("anon 1\ninactive_file {}\nactive_file 5\n", GIB / 2),
+        );
         write(&root.join("slice/job/memory.max"), "max\n");
-        let meminfo = format!("MemTotal: 16000000 kB\nMemAvailable: {} kB\n", 10 * GIB / 1024);
+        let meminfo = format!(
+            "MemTotal: 16000000 kB\nMemAvailable: {} kB\n",
+            10 * GIB / 1024
+        );
         let avail = available_memory_in(root, "0::/slice/job\n", &meminfo).expect("reading");
         assert_eq!(avail.bytes, 4 * GIB - (3 * GIB - GIB / 2));
         assert!(avail.source.contains("slice"), "{avail:?}");
@@ -330,9 +352,18 @@ mod tests {
         let meminfo = format!("MemAvailable: {} kB\n", 6 * GIB / 1024);
         let avail = available_memory_in(dir.path(), "", &meminfo).expect("reading");
         assert_eq!((avail.bytes, avail.source.as_str()), (6 * GIB, "meminfo"));
-        write(&dir.path().join("memory/memory.limit_in_bytes"), &format!("{}\n", 2 * GIB));
-        write(&dir.path().join("memory/memory.usage_in_bytes"), &format!("{GIB}\n"));
-        write(&dir.path().join("memory/memory.stat"), "total_inactive_file 0\n");
+        write(
+            &dir.path().join("memory/memory.limit_in_bytes"),
+            &format!("{}\n", 2 * GIB),
+        );
+        write(
+            &dir.path().join("memory/memory.usage_in_bytes"),
+            &format!("{GIB}\n"),
+        );
+        write(
+            &dir.path().join("memory/memory.stat"),
+            "total_inactive_file 0\n",
+        );
         let avail = available_memory_in(dir.path(), "", &meminfo).expect("reading");
         assert_eq!(avail.bytes, GIB);
         assert!(available_memory_in(dir.path(), "", "").is_some());
@@ -350,9 +381,15 @@ mod tests {
     async fn one_build_at_a_time() {
         // A private lock: other tests in this process use the session lock concurrently.
         let lock = BuildLock::default();
-        let first = lock.acquire(Duration::from_secs(1)).await.expect("free slot");
+        let first = lock
+            .acquire(Duration::from_secs(1))
+            .await
+            .expect("free slot");
         assert!(lock.busy());
-        assert!(lock.acquire(Duration::from_millis(50)).await.is_none(), "second build waits");
+        assert!(
+            lock.acquire(Duration::from_millis(50)).await.is_none(),
+            "second build waits"
+        );
         drop(first);
         assert!(!lock.busy());
         assert!(lock.acquire(Duration::from_millis(50)).await.is_some());

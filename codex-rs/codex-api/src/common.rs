@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 pub const WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY: &str = "ws_request_header_traceparent";
 pub const WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY: &str = "ws_request_header_tracestate";
@@ -41,28 +42,6 @@ impl From<CyberAccessProgram> for AccessPrograms {
             },
         }
     }
-}
-
-/// Canonical input payload for the compaction endpoint.
-#[derive(Debug, Clone, Serialize)]
-pub struct CompactionInput<'a> {
-    pub model: &'a str,
-    pub input: &'a [ResponseItem],
-    #[serde(skip_serializing_if = "str::is_empty")]
-    pub instructions: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<ResponsesApiTools>,
-    pub parallel_tool_calls: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<Reasoning>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_cache_key: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<TextControls>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub access_programs: Option<AccessPrograms>,
 }
 
 /// Canonical input payload for the memory summarize endpoint.
@@ -94,9 +73,16 @@ pub struct MemorySummarizeOutput {
     pub memory_summary: String,
 }
 
+/// The latest server response ID received in this turn, shared with tool-review extensions.
+#[derive(Clone, Debug)]
+pub struct ResponseId(pub String);
+
 #[derive(Debug)]
 pub enum ResponseEvent {
-    Created,
+    Created {
+        /// Existing server response ID, when supplied by the stream.
+        response_id: Option<String>,
+    },
     SafetyBuffering(SafetyBuffering),
     OutputItemDone(ResponseItem),
     OutputItemAdded(ResponseItem),
@@ -107,6 +93,8 @@ pub enum ResponseEvent {
     ModelVerifications(Vec<ModelVerification>),
     /// Emitted when the server includes moderation metadata for first-party turn presentation.
     TurnModerationMetadata(TurnModerationMetadataEvent),
+    /// Action-bound Guardian evidence for request-scoped consumers, not model history.
+    GuardianAssessment(crate::guardian_assessment::GuardianAssessment),
     /// Emitted when `X-Reasoning-Included: true` is present on the response,
     /// meaning the server already accounted for past reasoning tokens and the
     /// client should not re-estimate them.
@@ -170,12 +158,30 @@ pub enum ReasoningContext {
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct Reasoning {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_reasoning_effort"
+    )]
     pub effort: Option<ReasoningEffortConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<ReasoningSummaryConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<ReasoningContext>,
+}
+
+fn serialize_reasoning_effort<S>(
+    effort: &Option<ReasoningEffortConfig>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if let Some(ReasoningEffortConfig::Custom(value)) = effort
+        && let Ok(value) = value.parse::<u64>()
+    {
+        return serializer.serialize_u64(value);
+    }
+    effort.serialize(serializer)
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -273,9 +279,12 @@ impl Serialize for ResponsesApiTools {
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct ResponsesApiRequest {
+    // Keep routing fields first: serde serializes struct fields in declaration order, and
+    // gateways may inspect request bodies incrementally before potentially multi-megabyte input.
     pub model: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub instructions: String,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     pub input: Vec<ResponseItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<ResponsesApiTools>,
@@ -283,12 +292,9 @@ pub struct ResponsesApiRequest {
     pub parallel_tool_calls: bool,
     pub reasoning: Option<Reasoning>,
     pub store: bool,
-    pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
     pub include: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,7 +309,6 @@ impl<'a> From<&'a ResponsesApiRequest> for ResponseCreateWsRequest<'a> {
     fn from(request: &'a ResponsesApiRequest) -> Self {
         Self {
             model: &request.model,
-            instructions: &request.instructions,
             previous_response_id: None,
             input: &request.input,
             tools: request.tools.as_ref().map(ResponsesApiTools::as_raw_value),
@@ -326,9 +331,12 @@ impl<'a> From<&'a ResponsesApiRequest> for ResponseCreateWsRequest<'a> {
 
 #[derive(Debug, Serialize)]
 pub struct ResponseCreateWsRequest<'a> {
+    // Keep routing fields first: serde serializes struct fields in declaration order, and
+    // gateways may inspect request bodies incrementally before potentially multi-megabyte input.
     pub model: &'a str,
-    #[serde(skip_serializing_if = "str::is_empty")]
-    pub instructions: &'a str,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
     pub input: &'a [ResponseItem],
@@ -338,12 +346,9 @@ pub struct ResponseCreateWsRequest<'a> {
     pub parallel_tool_calls: bool,
     pub reasoning: Option<&'a Reasoning>,
     pub store: bool,
-    pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<&'a StreamOptions>,
     pub include: &'a [String],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -406,10 +411,25 @@ pub fn create_text_param_for_request(
     })
 }
 
+/// Distinguishes draining a live response from abandoning obsolete work.
+#[derive(Clone, Copy)]
+pub enum ResponseInterrupt {
+    /// Drain normally, without validating or waiting for interruption acknowledgements.
+    Drain,
+    /// Skip undispatched work or retire its transport at the cleanup deadline.
+    /// Undispatched work ends without a completion event and leaves the socket reusable.
+    Cancel { deadline: tokio::time::Instant },
+}
+
 pub struct ResponseStream {
+    /// Routing pin from the connection that produced these responses. Never model metadata.
+    pub routing_affinity: Option<codex_http_client::ChatGptRoutingAffinity>,
     pub rx_event: mpsc::Receiver<Result<ResponseEvent, ApiError>>,
     /// Server-assigned `x-request-id` response header, when present.
     pub upstream_request_id: Option<String>,
+    /// Requests a graceful interrupt. Keep consuming events through completion.
+    /// Only `Cancel` validates and waits for an interruption acknowledgement.
+    pub interrupt: Option<oneshot::Sender<ResponseInterrupt>>,
 }
 
 impl Stream for ResponseStream {

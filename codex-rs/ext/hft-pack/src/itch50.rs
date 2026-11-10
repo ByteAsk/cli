@@ -134,10 +134,14 @@ impl Rd<'_> {
         u32::from_be_bytes([self.0[at], self.0[at + 1], self.0[at + 2], self.0[at + 3]])
     }
     fn u48(&self, at: usize) -> u64 {
-        self.0[at..at + 6].iter().fold(0u64, |acc, b| (acc << 8) | u64::from(*b))
+        self.0[at..at + 6]
+            .iter()
+            .fold(0u64, |acc, b| (acc << 8) | u64::from(*b))
     }
     fn u64(&self, at: usize) -> u64 {
-        self.0[at..at + 8].iter().fold(0u64, |acc, b| (acc << 8) | u64::from(*b))
+        self.0[at..at + 8]
+            .iter()
+            .fold(0u64, |acc, b| (acc << 8) | u64::from(*b))
     }
     fn arr<const N: usize>(&self, at: usize) -> [u8; N] {
         let mut out = [0u8; N];
@@ -311,7 +315,15 @@ pub fn encode(m: &Message) -> Option<Vec<u8>> {
                 .u8(*etp_flag)
                 .u32(*etp_leverage)
                 .u8(*inverse),
-            Message::AddOrder { h, order_ref, side, shares, stock, price, attribution } => {
+            Message::AddOrder {
+                h,
+                order_ref,
+                side,
+                shares,
+                stock,
+                price,
+                attribution,
+            } => {
                 let w = Wr::new(if attribution.is_some() { b'F' } else { b'A' }, h)
                     .u64(*order_ref)
                     .u8(*side)
@@ -323,23 +335,54 @@ pub fn encode(m: &Message) -> Option<Vec<u8>> {
                     None => w,
                 }
             }
-            Message::OrderExecuted { h, order_ref, shares, match_number } => {
-                Wr::new(b'E', h).u64(*order_ref).u32(*shares).u64(*match_number)
-            }
-            Message::OrderExecutedWithPrice { h, order_ref, shares, match_number, printable, price } => {
-                Wr::new(b'C', h)
-                    .u64(*order_ref)
-                    .u32(*shares)
-                    .u64(*match_number)
-                    .u8(*printable)
-                    .u32(*price)
-            }
-            Message::OrderCancel { h, order_ref, shares } => Wr::new(b'X', h).u64(*order_ref).u32(*shares),
+            Message::OrderExecuted {
+                h,
+                order_ref,
+                shares,
+                match_number,
+            } => Wr::new(b'E', h)
+                .u64(*order_ref)
+                .u32(*shares)
+                .u64(*match_number),
+            Message::OrderExecutedWithPrice {
+                h,
+                order_ref,
+                shares,
+                match_number,
+                printable,
+                price,
+            } => Wr::new(b'C', h)
+                .u64(*order_ref)
+                .u32(*shares)
+                .u64(*match_number)
+                .u8(*printable)
+                .u32(*price),
+            Message::OrderCancel {
+                h,
+                order_ref,
+                shares,
+            } => Wr::new(b'X', h).u64(*order_ref).u32(*shares),
             Message::OrderDelete { h, order_ref } => Wr::new(b'D', h).u64(*order_ref),
-            Message::OrderReplace { h, original_ref, new_ref, shares, price } => {
-                Wr::new(b'U', h).u64(*original_ref).u64(*new_ref).u32(*shares).u32(*price)
-            }
-            Message::Trade { h, order_ref, side, shares, stock, price, match_number } => Wr::new(b'P', h)
+            Message::OrderReplace {
+                h,
+                original_ref,
+                new_ref,
+                shares,
+                price,
+            } => Wr::new(b'U', h)
+                .u64(*original_ref)
+                .u64(*new_ref)
+                .u32(*shares)
+                .u32(*price),
+            Message::Trade {
+                h,
+                order_ref,
+                side,
+                shares,
+                stock,
+                price,
+                match_number,
+            } => Wr::new(b'P', h)
                 .u64(*order_ref)
                 .u8(*side)
                 .u32(*shares)
@@ -354,7 +397,9 @@ pub fn encode(m: &Message) -> Option<Vec<u8>> {
 
 /// A symbol field without its right padding.
 pub fn stock_text(stock: &[u8; 8]) -> String {
-    String::from_utf8_lossy(stock).trim_end_matches(' ').to_string()
+    String::from_utf8_lossy(stock)
+        .trim_end_matches(' ')
+        .to_string()
 }
 
 /// An 8-byte, space-padded symbol field.
@@ -379,7 +424,14 @@ pub fn to_json(m: &Message) -> Value {
             v["event_code"] = json!(ch(*code));
             v
         }
-        Message::StockDirectory { h, stock, market_category, round_lot_size, etp_leverage, .. } => {
+        Message::StockDirectory {
+            h,
+            stock,
+            market_category,
+            round_lot_size,
+            etp_leverage,
+            ..
+        } => {
             let mut v = head("R", h);
             v["stock"] = json!(stock_text(stock));
             v["market_category"] = json!(ch(*market_category));
@@ -387,7 +439,15 @@ pub fn to_json(m: &Message) -> Value {
             v["etp_leverage"] = json!(etp_leverage);
             v
         }
-        Message::AddOrder { h, order_ref, side, shares, stock, price, attribution } => {
+        Message::AddOrder {
+            h,
+            order_ref,
+            side,
+            shares,
+            stock,
+            price,
+            attribution,
+        } => {
             let mut v = head(if attribution.is_some() { "F" } else { "A" }, h);
             v["order_ref"] = json!(order_ref);
             v["side"] = json!(ch(*side));
@@ -399,14 +459,26 @@ pub fn to_json(m: &Message) -> Value {
             }
             v
         }
-        Message::OrderExecuted { h, order_ref, shares, match_number } => {
+        Message::OrderExecuted {
+            h,
+            order_ref,
+            shares,
+            match_number,
+        } => {
             let mut v = head("E", h);
             v["order_ref"] = json!(order_ref);
             v["shares"] = json!(shares);
             v["match_number"] = json!(match_number);
             v
         }
-        Message::OrderExecutedWithPrice { h, order_ref, shares, match_number, printable, price } => {
+        Message::OrderExecutedWithPrice {
+            h,
+            order_ref,
+            shares,
+            match_number,
+            printable,
+            price,
+        } => {
             let mut v = head("C", h);
             v["order_ref"] = json!(order_ref);
             v["shares"] = json!(shares);
@@ -415,7 +487,11 @@ pub fn to_json(m: &Message) -> Value {
             v["price"] = json!(price);
             v
         }
-        Message::OrderCancel { h, order_ref, shares } => {
+        Message::OrderCancel {
+            h,
+            order_ref,
+            shares,
+        } => {
             let mut v = head("X", h);
             v["order_ref"] = json!(order_ref);
             v["shares"] = json!(shares);
@@ -426,7 +502,13 @@ pub fn to_json(m: &Message) -> Value {
             v["order_ref"] = json!(order_ref);
             v
         }
-        Message::OrderReplace { h, original_ref, new_ref, shares, price } => {
+        Message::OrderReplace {
+            h,
+            original_ref,
+            new_ref,
+            shares,
+            price,
+        } => {
             let mut v = head("U", h);
             v["original_ref"] = json!(original_ref);
             v["new_ref"] = json!(new_ref);
@@ -434,7 +516,15 @@ pub fn to_json(m: &Message) -> Value {
             v["price"] = json!(price);
             v
         }
-        Message::Trade { h, order_ref, side, shares, stock, price, match_number } => {
+        Message::Trade {
+            h,
+            order_ref,
+            side,
+            shares,
+            stock,
+            price,
+            match_number,
+        } => {
             let mut v = head("P", h);
             v["order_ref"] = json!(order_ref);
             v["side"] = json!(ch(*side));

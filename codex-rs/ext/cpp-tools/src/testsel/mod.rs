@@ -28,8 +28,8 @@
 
 pub(crate) mod base;
 pub(crate) mod check;
-pub(crate) mod context;
 pub(crate) mod cmake;
+pub(crate) mod context;
 pub(crate) mod exec;
 pub(crate) mod graph;
 pub(crate) mod jobs;
@@ -143,7 +143,8 @@ impl Model {
 }
 
 /// C/C++ source and header extensions.
-pub(crate) const SOURCE_EXTS: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "cp", "C", "m", "mm", "cu"];
+pub(crate) const SOURCE_EXTS: &[&str] =
+    &["c", "cc", "cpp", "cxx", "c++", "cp", "C", "m", "mm", "cu"];
 pub(crate) const HEADER_EXTS: &[&str] = &[
     "h", "hh", "hpp", "hxx", "h++", "H", "inl", "ipp", "tpp", "tcc", "inc", "cuh",
 ];
@@ -214,7 +215,14 @@ pub(crate) fn skip_dir(path: &Path) -> bool {
         .unwrap_or_default();
     matches!(
         name.as_str(),
-        ".git" | ".hg" | ".svn" | "node_modules" | ".cache" | ".ccls-cache" | ".clangd" | "CMakeFiles"
+        ".git"
+            | ".hg"
+            | ".svn"
+            | "node_modules"
+            | ".cache"
+            | ".ccls-cache"
+            | ".clangd"
+            | "CMakeFiles"
     ) || path.join("CMakeCache.txt").is_file()
         || path.join("build.ninja").is_file()
         || path.join("meson-private").is_dir()
@@ -235,7 +243,10 @@ mod tests {
             normalize(Path::new("/b/sub"), Path::new("../src/./a.cc")),
             PathBuf::from("/b/src/a.cc")
         );
-        assert_eq!(normalize(Path::new("/b"), Path::new("/x/y")), PathBuf::from("/x/y"));
+        assert_eq!(
+            normalize(Path::new("/b"), Path::new("/x/y")),
+            PathBuf::from("/x/y")
+        );
     }
 
     #[test]

@@ -59,7 +59,10 @@ pub fn run_slots(permits: usize) -> Arc<Semaphore> {
 }
 
 /// Wait for a build/test slot, or give up at `deadline`.
-pub async fn acquire_slot(slots: &Arc<Semaphore>, deadline: Instant) -> Option<OwnedSemaphorePermit> {
+pub async fn acquire_slot(
+    slots: &Arc<Semaphore>,
+    deadline: Instant,
+) -> Option<OwnedSemaphorePermit> {
     let wait = deadline.saturating_duration_since(Instant::now());
     tokio::time::timeout(wait, slots.clone().acquire_owned())
         .await
@@ -261,7 +264,13 @@ mod tests {
     async fn timeout_kills_the_group() {
         let dir = tempfile::tempdir().expect("tempdir");
         let started = Instant::now();
-        let out = run_shell("sleep 30 & sleep 30", dir.path(), &[], Duration::from_millis(300)).await;
+        let out = run_shell(
+            "sleep 30 & sleep 30",
+            dir.path(),
+            &[],
+            Duration::from_millis(300),
+        )
+        .await;
         assert!(out.timed_out);
         assert!(started.elapsed() < Duration::from_secs(10));
     }

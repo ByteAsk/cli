@@ -4,7 +4,8 @@
 //! configuration, authentication, terminal, state paths, and bounded reachability
 //! probes without attempting repair or starting long-lived services. Each check
 //! returns a redacted, serializable row so the same data can back the human
-//! summary and `--json` support report.
+//! summary and `--json` support report. PATH entries are untrusted data: checks
+//! may inspect them, but must not execute the programs they select.
 //!
 //! A failing check should describe the problem and remediation, but it should not
 //! mutate user state. That keeps the command safe to run before filing a support
@@ -21,7 +22,6 @@ use std::io::Read;
 use std::net::IpAddr;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -30,13 +30,15 @@ use anyhow::Context;
 use clap::Parser;
 use codex_api::ApiError;
 use codex_api::ResponsesWebsocketClient;
+use codex_api::TransportError;
 use codex_api::is_azure_responses_provider;
 use codex_arg0::Arg0DispatchPaths;
+use codex_config::ConfigLoadError;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_core::config::Config;
-use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+use codex_core::config::LoaderOverrides;
 use codex_core::config::find_codex_home;
 use codex_features::FEATURES;
 use codex_http_client::ClientRouteClass;
@@ -74,6 +76,7 @@ use supports_color::Stream;
 mod background;
 mod desktop;
 mod disk;
+mod filesystem_paths;
 mod git;
 mod network;
 mod output;
@@ -133,10 +136,6 @@ const COLOR_ENV_VARS: &[&str] = &[
 const TERMINAL_DIMENSION_ENV_VARS: &[&str] = &["COLUMNS", "LINES"];
 const TERMINFO_ENV_VARS: &[&str] = &["TERMINFO", "TERMINFO_DIRS"];
 const LOCALE_ENV_VARS: &[&str] = &["LC_ALL", "LC_CTYPE", "LANG"];
-#[cfg(windows)]
-const NPM_COMMAND: &str = "npm.cmd";
-#[cfg(not(windows))]
-const NPM_COMMAND: &str = "npm";
 const REMOTE_TERMINAL_ENV_VARS: &[&str] = &[
     "SSH_TTY",
     "SSH_CONNECTION",
@@ -150,25 +149,27 @@ const REMOTE_TERMINAL_ENV_VARS: &[&str] = &[
     "DISPLAY",
     "WT_SESSION",
 ];
-const TMUX_OPTION_NAMES: &[&str] = &[
-    "extended-keys",
-    "xterm-keys",
-    "allow-passthrough",
-    "set-clipboard",
-    "focus-events",
-];
 const NARROW_TERMINAL_COLUMNS: u16 = 80;
 const NARROW_TERMINAL_ROWS: u16 = 24;
 
 /// Options for building a local ByteAsk diagnostic report.
 ///
-/// The command always runs the full diagnostic set. Human output includes
-/// detailed diagnostics by default; --summary keeps the terminal output compact.
+/// The command runs the full diagnostic set unless `--network-only` is selected.
+/// Human output includes detailed diagnostics by default; --summary keeps the terminal output
+/// compact.
 #[derive(Debug, Parser)]
 pub struct DoctorCommand {
+    /// Internal isolated filesystem probe; exits before loading configuration.
+    #[arg(long, hide = true)]
+    probe_filesystem_path: Option<PathBuf>,
+
     /// Emit a redacted machine-readable report.
     #[arg(long, default_value_t = false)]
     json: bool,
+
+    /// Run config, network environment, provider HTTP, and Responses WebSocket checks.
+    #[arg(long, default_value_t = false)]
+    network_only: bool,
 
     /// Limit database integrity scans when collecting a feedback attachment.
     #[arg(long, hide = true, default_value_t = false)]
@@ -331,6 +332,9 @@ pub async fn run_doctor(
     interactive: &TuiCli,
     arg0_paths: &Arg0DispatchPaths,
 ) -> anyhow::Result<()> {
+    if let Some(path) = &command.probe_filesystem_path {
+        std::process::exit(filesystem_paths::probe_exit_code(path));
+    }
     let report = build_report(&command, root_config_overrides, interactive, arg0_paths).await;
 
     if command.json {
@@ -359,6 +363,12 @@ async fn build_report(
     arg0_paths: &Arg0DispatchPaths,
 ) -> DoctorReport {
     let progress = doctor_progress(command.json);
+    if command.network_only {
+        let checks =
+            network::checks(root_config_overrides, interactive, arg0_paths, &progress).await;
+        progress.settle();
+        return report_from_checks(checks);
+    }
     let mut checks = Vec::new();
     checks.push(run_sync_check("system", progress.clone(), system_check));
     checks.push(run_async_check("endpoint protection", progress.clone(), security::check()).await);
@@ -369,7 +379,9 @@ async fn build_report(
     checks.push(run_sync_check("search", progress.clone(), search_check));
 
     progress.begin("config");
+    let config_started = Instant::now();
     let config_result = load_config(root_config_overrides, interactive, arg0_paths).await;
+    let config_duration = config_started.elapsed();
     let cwd = config_result
         .as_ref()
         .map(|config| config.cwd.as_path().to_path_buf())
@@ -389,6 +401,14 @@ async fn build_report(
     }));
     match &config_result {
         Ok(config) => {
+            // Other checks below do synchronous work inside join!. Keep the
+            // probe deadlines independent of those checks' scheduler delays.
+            let filesystem_paths_check = run_async_check(
+                "filesystem paths",
+                progress.clone(),
+                filesystem_paths::check(config),
+            )
+            .await;
             let auth_manager_result =
                 AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ true).await;
             let auth_manager = auth_manager_result.as_ref().ok().cloned();
@@ -414,7 +434,14 @@ async fn build_report(
                 background_server_check,
                 reachability_check,
             ) = tokio::join!(
-                async { run_sync_check("config", progress.clone(), || config_check(config)) },
+                async {
+                    run_sync_check("config", progress.clone(), || {
+                        config_check(config).detail(format!(
+                            "configuration load ms: {}",
+                            config_duration.as_millis()
+                        ))
+                    })
+                },
                 async {
                     run_sync_check("auth", progress.clone(), || match &auth_manager_result {
                         Ok(_) => auth_check(config),
@@ -430,7 +457,7 @@ async fn build_report(
                         ),
                     })
                 },
-                async { run_sync_check("updates", progress.clone(), || updates_check(config)) },
+                run_async_check("updates", progress.clone(), updates_check(config)),
                 async {
                     run_sync_check("network", progress.clone(), || network::check(Some(config)))
                 },
@@ -450,7 +477,9 @@ async fn build_report(
                         terminal_check(command.no_color)
                     })
                 },
-                run_async_check("git", progress.clone(), git_check(config.cwd.as_path())),
+                async {
+                    run_sync_check("git", progress.clone(), || git_check(config.cwd.as_path()))
+                },
                 async {
                     run_sync_check("terminal title", progress.clone(), || {
                         terminal_title_check(config)
@@ -487,6 +516,7 @@ async fn build_report(
                 websocket_check,
                 mcp_check,
                 sandbox_check,
+                filesystem_paths_check,
                 terminal_check,
                 git_check,
                 terminal_title_check,
@@ -506,18 +536,7 @@ async fn build_report(
                 state_check,
                 reachability_check,
             ) = tokio::join!(
-                async {
-                    run_sync_check("config", progress.clone(), || {
-                        DoctorCheck::new(
-                            "config.load",
-                            "config",
-                            CheckStatus::Fail,
-                            "config could not be loaded",
-                        )
-                        .detail(err.to_string())
-                        .remediation("Fix the reported config error, then rerun byteask doctor.")
-                    })
-                },
+                async { run_sync_check("config", progress.clone(), || config_load_failure(err)) },
                 async {
                     run_sync_check("network", progress.clone(), || {
                         network::check(/*config*/ None)
@@ -528,7 +547,7 @@ async fn build_report(
                         terminal_check(command.no_color)
                     })
                 },
-                run_async_check("git", progress.clone(), git_check(&cwd)),
+                async { run_sync_check("git", progress.clone(), || git_check(&cwd)) },
                 async { run_sync_check("state", progress.clone(), fallback_state_check) },
                 run_async_check(
                     "provider reachability",
@@ -560,6 +579,10 @@ async fn build_report(
 
     progress.settle();
 
+    report_from_checks(checks)
+}
+
+fn report_from_checks(checks: Vec<DoctorCheck>) -> DoctorReport {
     let overall_status = overall_status(&checks);
     DoctorReport {
         schema_version: 1,
@@ -570,19 +593,50 @@ async fn build_report(
     }
 }
 
+fn config_load_failure(err: &anyhow::Error) -> DoctorCheck {
+    let check = DoctorCheck::new(
+        "config.load",
+        "config",
+        CheckStatus::Fail,
+        "config could not be loaded",
+    )
+    .remediation("Fix the reported config error, then rerun byteask doctor.");
+    // Error messages can echo config values. Report only typed metadata,
+    // including errors wrapped by io::Error, whose source skips the wrapper.
+    let config_error = err.chain().find_map(|cause| {
+        cause.downcast_ref::<ConfigLoadError>().or_else(|| {
+            cause
+                .downcast_ref::<std::io::Error>()?
+                .get_ref()?
+                .downcast_ref::<ConfigLoadError>()
+        })
+    });
+    if let Some(error) = config_error {
+        let error = error.config_error();
+        return check
+            .detail("error: invalid configuration")
+            .detail(format!("file: {}", error.path.display()))
+            .detail(format!("line: {}", error.range.start.line))
+            .detail(format!("column: {}", error.range.start.column));
+    }
+    let io_error = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>());
+    match io_error {
+        Some(error) => check.detail(format!("error: {}", error.kind())),
+        None => check.detail("error: configuration load failed"),
+    }
+}
+
 async fn load_config(
-    root_config_overrides: CliConfigOverrides,
+    mut root_config_overrides: CliConfigOverrides,
     interactive: &TuiCli,
     arg0_paths: &Arg0DispatchPaths,
 ) -> anyhow::Result<Config> {
-    let mut cli_kv_overrides = root_config_overrides
-        .parse_overrides()
-        .map_err(anyhow::Error::msg)?;
     if interactive.web_search {
-        cli_kv_overrides.push((
-            "web_search".to_string(),
-            toml::Value::String("live".to_string()),
-        ));
+        root_config_overrides
+            .raw_overrides
+            .push("web_search=\"live\"".to_string());
     }
 
     let overrides = ConfigOverrides {
@@ -590,12 +644,17 @@ async fn load_config(
         ..config_overrides_from_interactive(interactive, arg0_paths)
     };
 
-    ConfigBuilder::default()
-        .cli_overrides(cli_kv_overrides)
-        .harness_overrides(overrides)
-        .build()
-        .await
-        .context("failed to load ByteAsk config")
+    let config = crate::cloud_config::config_builder(
+        &root_config_overrides,
+        LoaderOverrides::default(),
+        overrides,
+    )
+    .await?
+    .build()
+    .await
+    .context("failed to load ByteAsk config")?;
+    config.config_layer_stack.ensure_config_server_applied()?;
+    Ok(config)
 }
 
 fn config_overrides_from_interactive(
@@ -623,7 +682,6 @@ fn config_overrides_from_interactive(
             .flatten(),
         codex_self_exe: arg0_paths.codex_self_exe.clone(),
         codex_linux_sandbox_exe: arg0_paths.codex_linux_sandbox_exe.clone(),
-        main_execve_wrapper_exe: arg0_paths.main_execve_wrapper_exe.clone(),
         show_raw_agent_reasoning: interactive.oss.then_some(true),
         additional_writable_roots: interactive.add_dir.clone(),
         ..Default::default()
@@ -907,40 +965,15 @@ fn installation_check(show_details: bool) -> DoctorCheck {
     }
 
     if doctor_managed_by_npm(current_exe.as_deref()) {
-        match npm_global_root_check() {
-            NpmRootCheck::Match { package_root } => {
-                details.push(format!("npm update target: {}", package_root.display()));
-            }
-            NpmRootCheck::Mismatch {
-                running_package_root,
-                npm_package_root,
-            } => {
-                status = CheckStatus::Fail;
-                summary = "`byteask --update` would update a different install".to_string();
-                remediation = Some(format!(
-                    "Fix PATH or npm prefix so the running package root ({}) matches the npm global package root ({}).",
-                    running_package_root.display(),
-                    npm_package_root.display()
-                ));
-                details.push(format!(
-                    "running package root: {}",
-                    running_package_root.display()
-                ));
-                details.push(format!("npm package root: {}", npm_package_root.display()));
-            }
-            NpmRootCheck::MissingPackageRoot => {
-                status = status.max(CheckStatus::Warning);
-                summary = "npm-managed launch is missing package-root provenance".to_string();
-                remediation = Some(
-                    "Reinstall or update Codex so the JS shim provides CODEX_MANAGED_PACKAGE_ROOT."
-                        .to_string(),
-                );
-            }
-            NpmRootCheck::NpmUnavailable(error) => {
-                status = status.max(CheckStatus::Warning);
-                summary = "npm-managed launch could not inspect npm global root".to_string();
-                details.push(format!("npm root -g failed: {error}"));
-            }
+        details
+            .push("npm update target: not inspected (PATH helpers are not executed)".to_string());
+        if env::var_os("CODEX_MANAGED_PACKAGE_ROOT").is_none() {
+            status = status.max(CheckStatus::Warning);
+            summary = "npm-managed launch is missing package-root provenance".to_string();
+            remediation = Some(
+                "Reinstall or update Codex so the JS shim provides CODEX_MANAGED_PACKAGE_ROOT."
+                    .to_string(),
+            );
         }
     }
 
@@ -1062,62 +1095,6 @@ fn display_optional_path(path: Option<&Path>) -> String {
         .unwrap_or_else(|| "none".to_string())
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum NpmRootCheck {
-    Match {
-        package_root: PathBuf,
-    },
-    Mismatch {
-        running_package_root: PathBuf,
-        npm_package_root: PathBuf,
-    },
-    MissingPackageRoot,
-    NpmUnavailable(String),
-}
-
-fn npm_global_root_check() -> NpmRootCheck {
-    let Some(running_package_root) = env::var_os("CODEX_MANAGED_PACKAGE_ROOT").map(PathBuf::from)
-    else {
-        return NpmRootCheck::MissingPackageRoot;
-    };
-
-    let output = match run_command(NPM_COMMAND, ["root", "-g"]) {
-        Ok(output) => output,
-        Err(err) => return NpmRootCheck::NpmUnavailable(err),
-    };
-    let Some(npm_root) = output.lines().map(str::trim).find(|line| !line.is_empty()) else {
-        return NpmRootCheck::NpmUnavailable("empty output from npm root -g".to_string());
-    };
-
-    compare_npm_package_roots(&running_package_root, &PathBuf::from(npm_root))
-}
-
-fn compare_npm_package_roots(running_package_root: &Path, npm_root: &Path) -> NpmRootCheck {
-    let npm_package_root = npm_root.join("@openai").join("codex");
-    let running = normalize_path_for_compare(running_package_root);
-    let target = normalize_path_for_compare(&npm_package_root);
-    if running == target {
-        NpmRootCheck::Match {
-            package_root: npm_package_root,
-        }
-    } else {
-        NpmRootCheck::Mismatch {
-            running_package_root: running_package_root.to_path_buf(),
-            npm_package_root,
-        }
-    }
-}
-
-fn normalize_path_for_compare(path: &Path) -> String {
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let raw = canonical.to_string_lossy().replace('\\', "/");
-    if cfg!(windows) {
-        raw.to_ascii_lowercase()
-    } else {
-        raw
-    }
-}
-
 fn display_list<T: AsRef<str>>(items: &[T]) -> String {
     if items.is_empty() {
         "none".to_string()
@@ -1131,41 +1108,21 @@ fn display_list<T: AsRef<str>>(items: &[T]) -> String {
 }
 
 fn codex_path_entries() -> Vec<String> {
-    #[cfg(windows)]
-    let result = run_command("where", ["codex"]);
-    #[cfg(not(windows))]
-    let result = run_command("which", ["-a", "codex"]);
-
-    result
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
+    let Ok(candidates) = which::which_all("codex") else {
+        return Vec::new();
+    };
+    let mut seen = BTreeSet::new();
+    candidates
+        .filter(|candidate| seen.insert(candidate.clone()))
+        .map(|path| path.display().to_string())
         .collect()
-}
-
-fn run_command<I, S>(program: &str, args: I) -> Result<String, String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|err| err.to_string())?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
-            return Err(format!("exited with status {}", output.status));
-        }
-        return Err(stderr);
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn config_check(config: &Config) -> DoctorCheck {
     let mut details = Vec::new();
+    details
+        .push("configuration scope: invocation config, including cloud-managed policy".to_string());
+    details.push("active thread overrides: not inspected".to_string());
     details.push(format!("BYTEASK_HOME: {}", config.codex_home.display()));
     details.push(format!("cwd: {}", config.cwd.display()));
     details.push(format!(
@@ -1173,6 +1130,14 @@ fn config_check(config: &Config) -> DoctorCheck {
         config.model.as_deref().unwrap_or("<default>")
     ));
     details.push(format!("model provider: {}", config.model_provider_id));
+    details.push(format!(
+        "configured TUI mode: {}",
+        if config.tui_fullscreen_transcript {
+            "fullscreen"
+        } else {
+            "scrollback"
+        }
+    ));
     details.push(format!("log dir: {}", config.log_dir.display()));
     details.push(format!(
         "sqlite home: {}",
@@ -1332,8 +1297,8 @@ fn auth_check(config: &Config) -> DoctorCheck {
             let mut check =
                 DoctorCheck::new("auth.credentials", "auth", status, summary).details(details);
             if status == CheckStatus::Fail {
-                check =
-                    check.remediation("Run byteask login again or provide a supported auth env var.");
+                check = check
+                    .remediation("Run byteask login again or provide a supported auth env var.");
             }
             check
         }
@@ -1747,7 +1712,7 @@ impl TerminalCheckInputs {
         let terminal_size = crossterm::terminal::size().map_err(|err| err.to_string());
         let info = terminal_info();
         let tmux_details = if matches!(info.multiplexer, Some(Multiplexer::Tmux { .. })) {
-            tmux_diagnostic_details()
+            vec!["tmux options: not inspected (PATH helpers are not executed)".to_string()]
         } else {
             Vec::new()
         };
@@ -1782,6 +1747,7 @@ fn terminal_check(no_color_flag: bool) -> DoctorCheck {
 
 #[cfg(windows)]
 fn windows_console_details() -> Vec<String> {
+    use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::System::Console::ENABLE_VIRTUAL_TERMINAL_PROCESSING;
     use windows_sys::Win32::System::Console::GetConsoleCP;
@@ -1805,8 +1771,8 @@ fn windows_console_details() -> Vec<String> {
         GetStdHandle(STD_ERROR_HANDLE)
     }));
 
-    fn console_mode_detail(label: &str, handle: isize) -> String {
-        if handle == 0 || handle == INVALID_HANDLE_VALUE {
+    fn console_mode_detail(label: &str, handle: HANDLE) -> String {
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             return format!("{label}: unavailable");
         }
         let mut mode = 0_u32;
@@ -1863,16 +1829,20 @@ fn terminal_check_from_inputs(inputs: TerminalCheckInputs) -> DoctorCheck {
     let locale_warning = locale.as_deref().is_some_and(is_non_utf8_locale);
     let mut issues = Vec::new();
     if matches!(name, TerminalName::Dumb) {
-        issues.push(
+        let issue = if inputs.stdin_is_terminal || inputs.stdout_is_terminal {
             DoctorIssue::new(
                 CheckStatus::Fail,
                 "TERM=dumb - colors and cursor control are disabled",
             )
-            .measured("TERM=dumb")
             .expected("TERM=xterm-256color or another real terminal type")
             .remedy("set TERM to a real value, for example xterm-256color")
-            .field("TERM"),
-        );
+        } else {
+            DoctorIssue::new(
+                CheckStatus::Warning,
+                "TERM=dumb - colors and cursor control are disabled in this non-interactive run",
+            )
+        };
+        issues.push(issue.measured("TERM=dumb").field("TERM"));
     }
     if locale_warning {
         let measured = locale.unwrap_or_else(|| "unknown".to_string());
@@ -1900,6 +1870,7 @@ fn terminal_check_from_inputs(inputs: TerminalCheckInputs) -> DoctorCheck {
         );
     }
     issues.extend(terminal_size_issues(&inputs));
+    issues.sort_by_key(|issue| std::cmp::Reverse(issue.severity));
 
     let status = issues
         .iter()
@@ -1921,6 +1892,7 @@ fn terminal_name(info: &TerminalInfo) -> &'static str {
     match info.name {
         TerminalName::AppleTerminal => "Apple Terminal",
         TerminalName::Ghostty => "Ghostty",
+        TerminalName::Rex => "Rex",
         TerminalName::Iterm2 => "iTerm2",
         TerminalName::WarpTerminal => "Warp",
         TerminalName::VsCode => "VS Code",
@@ -2146,85 +2118,61 @@ fn terminal_size_issues(inputs: &TerminalCheckInputs) -> Vec<DoctorIssue> {
     issues
 }
 
-fn tmux_diagnostic_details() -> Vec<String> {
-    let mut details = Vec::new();
-    push_tmux_display_detail(&mut details, "tmux client termtype", "#{client_termtype}");
-    push_tmux_display_detail(&mut details, "tmux client termname", "#{client_termname}");
-    for option in TMUX_OPTION_NAMES {
-        let value = tmux_option_value(option).unwrap_or_else(|| "unavailable".to_string());
-        details.push(format!("tmux {option}: {value}"));
-    }
-    details
-}
-
-fn push_tmux_display_detail(details: &mut Vec<String>, label: &str, format: &str) {
-    if let Some(value) = tmux_display_message(format) {
-        details.push(format!("{label}: {value}"));
-    }
-}
-
-fn tmux_option_value(option: &str) -> Option<String> {
-    let output = Command::new("tmux")
-        .args(["show-options", "-gqv", option])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    non_empty_trimmed(String::from_utf8(output.stdout).ok()?)
-}
-
-fn tmux_display_message(format: &str) -> Option<String> {
-    let output = Command::new("tmux")
-        .args(["display-message", "-p", format])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    non_empty_trimmed(String::from_utf8(output.stdout).ok()?)
-}
-
-fn non_empty_trimmed(value: String) -> Option<String> {
-    let value = value.trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
-}
-
 async fn state_check(config: &Config, command: &DoctorCommand) -> DoctorCheck {
     let mut details = Vec::new();
     path_readiness(&mut details, "BYTEASK_HOME", &config.codex_home);
     path_readiness(&mut details, "log dir", &config.log_dir);
     path_readiness(&mut details, "sqlite home", config.sqlite_config().home());
+
     let mut status = CheckStatus::Ok;
+    let mut failed_databases = Vec::new();
     for db in config.sqlite_config().runtime_db_paths() {
         path_readiness(&mut details, db.label, &db.path);
         // Feedback collection gives each database its own budget; direct runs scan fully.
         let deadline = command
             .feedback
             .then(|| Instant::now() + Duration::from_secs(1));
-        status = status.max(
-            sqlite_integrity_detail(
-                config.sqlite_config(),
-                &mut details,
-                db.label,
-                &db.path,
-                deadline,
-            )
-            .await,
-        );
+        let db_status = sqlite_integrity_detail(
+            config.sqlite_config(),
+            &mut details,
+            db.label,
+            &db.path,
+            deadline,
+        )
+        .await;
+        if db_status == CheckStatus::Fail {
+            failed_databases.push(db.path.display().to_string());
+        }
+        status = status.max(db_status);
     }
     rollout_stats_details(&mut details, &config.codex_home);
     standalone_release_cache_details(&mut details);
 
     let summary = match status {
-        CheckStatus::Ok => "state paths and databases are inspectable",
-        CheckStatus::Warning => "some database integrity checks exceeded their time limit",
-        CheckStatus::Fail => "state database integrity check failed",
+        CheckStatus::Ok => "state paths and databases are inspectable".to_string(),
+        CheckStatus::Warning => {
+            "some database integrity checks exceeded their time limit".to_string()
+        }
+        CheckStatus::Fail => "state database integrity check failed".to_string(),
     };
     let mut check = DoctorCheck::new("state.paths", "state", status, summary).details(details);
     if status == CheckStatus::Fail {
-        check = check.remediation(
-            "Move the damaged SQLite database aside, then restart the interactive CLI or app server so it can rebuild that runtime database from saved data. Other entry points may not rebuild automatically.",
+        let noun = if failed_databases.len() == 1 {
+            "database"
+        } else {
+            "databases"
+        };
+        check = check.issue(
+            DoctorIssue::new(
+                CheckStatus::Fail,
+                format!(
+                    "{} {noun} failed integrity check",
+                    failed_databases.join(", ")
+                ),
+            )
+            .remedy(
+                "Move the damaged SQLite database aside, then restart the interactive CLI or app server so it can rebuild that runtime database from saved data. Other entry points may not rebuild automatically.",
+            ),
         );
     }
     check
@@ -2344,6 +2292,7 @@ fn collect_rollout_stats_inner(path: &Path, stats: &mut RolloutStats) {
 }
 
 fn is_rollout_file(path: &Path) -> bool {
+    let path = codex_rollout::plain_rollout_path(path);
     path.extension() == Some(OsStr::new("jsonl"))
         && path
             .file_name()
@@ -2386,8 +2335,8 @@ async fn websocket_reachability_check(
         auth.as_ref().map(auth_mode_name).unwrap_or("none")
     ));
 
-    let api_provider = match runtime_provider.api_provider().await {
-        Ok(api_provider) => api_provider,
+    let (api_provider, api_auth) = match runtime_provider.api_provider_and_auth().await {
+        Ok(setup) => setup,
         Err(err) => {
             return websocket_probe_warning(
                 "Responses WebSocket provider setup failed",
@@ -2413,17 +2362,6 @@ async fn websocket_reachability_check(
             );
         }
     }
-
-    let api_auth = match runtime_provider.api_auth().await {
-        Ok(api_auth) => api_auth,
-        Err(err) => {
-            return websocket_probe_warning(
-                "Responses WebSocket auth could not be resolved",
-                details,
-                format!("auth resolution failed: {err}"),
-            );
-        }
-    };
 
     let mut extra_headers = HeaderMap::new();
     extra_headers.insert(
@@ -2452,7 +2390,10 @@ async fn websocket_reachability_check(
             ));
             if let Some(close) = probe.immediate_close {
                 details.push(format!("immediate close code: {}", close.code));
-                details.push(format!("immediate close reason: {}", close.reason));
+                details.push(format!(
+                    "immediate close reason: {}",
+                    close_reason_detail(&close.reason)
+                ));
                 return DoctorCheck::new(
                     "network.websocket_reachability",
                     "websocket",
@@ -2475,7 +2416,7 @@ async fn websocket_reachability_check(
         Ok(Err(err)) => websocket_probe_warning(
             "Responses WebSocket failed; HTTPS fallback may still work",
             details,
-            websocket_error_detail(&err),
+            websocket_error_detail(&err.error),
         ),
         Err(_) => websocket_probe_warning(
             "Responses WebSocket timed out; HTTPS fallback may still work",
@@ -2503,21 +2444,63 @@ fn websocket_probe_warning(
 
 fn websocket_error_detail(err: &ApiError) -> String {
     match err {
-        ApiError::Transport(transport) => format!("handshake transport error: {transport}"),
-        ApiError::Api { status, message } => {
-            format!("handshake API error: {status} {message}")
+        ApiError::Transport(transport) => {
+            let detail = match transport {
+                // Policy denials contain only fixed descriptions, without wire values.
+                TransportError::Policy(denied) => denied.to_string(),
+                TransportError::Http { status, .. } => format!("http {status}: [redacted]"),
+                TransportError::RetryLimit => "retry limit reached".to_string(),
+                TransportError::Timeout => "timeout".to_string(),
+                TransportError::Connection(_) => "connection failed: [redacted]".to_string(),
+                TransportError::Network(_) => "network error: [redacted]".to_string(),
+                TransportError::Build(_) => "request build error: [redacted]".to_string(),
+                TransportError::ResponseTooLarge { max_bytes } => {
+                    format!("response body exceeds the {max_bytes} byte limit")
+                }
+            };
+            format!("handshake transport error: {detail}")
         }
-        ApiError::Stream(message) => format!("handshake stream error: {message}"),
-        ApiError::ContextWindowExceeded
+        ApiError::Api { status, .. } => format!("handshake API error: {status} [redacted]"),
+        ApiError::Stream(_) => "handshake stream error: [redacted]".to_string(),
+        ApiError::ResponseIncomplete(_) => {
+            "handshake error: incomplete response: [redacted]".to_string()
+        }
+        // These variants format fixed text; retry metadata is typed and never printed.
+        ApiError::ContentFilter
+        | ApiError::ContextWindowExceeded
         | ApiError::QuotaExceeded
         | ApiError::UsageNotIncluded
-        | ApiError::Retryable { .. }
-        | ApiError::RateLimitExceeded { .. }
-        | ApiError::RateLimit(_)
-        | ApiError::InvalidRequest { .. }
-        | ApiError::CyberPolicy { .. }
-        | ApiError::MisalignmentPolicyViolation { .. }
-        | ApiError::ServerOverloaded => format!("handshake error: {err}"),
+        | ApiError::FlexUnavailable
+        | ApiError::ServerOverloaded { .. }
+        | ApiError::PolicyCapacityUnavailable { .. } => format!("handshake error: {err}"),
+        ApiError::Retryable { .. } => "handshake error: retryable error: [redacted]".to_string(),
+        ApiError::RateLimitExceeded { .. } => {
+            "handshake error: rate limit exceeded: [redacted]".to_string()
+        }
+        ApiError::RateLimit(_) => "handshake error: rate limit: [redacted]".to_string(),
+        ApiError::InvalidRequest { .. } => {
+            "handshake error: invalid request: [redacted]".to_string()
+        }
+        ApiError::InvalidAudioInput { .. } => {
+            "handshake error: invalid audio input: [redacted]".to_string()
+        }
+        ApiError::ModelNotFound { .. } => {
+            "handshake error: model not found: [redacted]".to_string()
+        }
+        ApiError::InvalidPrompt { .. } => "handshake error: invalid prompt: [redacted]".to_string(),
+        ApiError::CyberPolicy { .. } => "handshake error: cyber policy: [redacted]".to_string(),
+        ApiError::BioPolicy { .. } => "handshake error: bio policy: [redacted]".to_string(),
+        ApiError::MisalignmentPolicyViolation { .. } => {
+            "handshake error: misalignment policy violation: [redacted]".to_string()
+        }
+    }
+}
+
+fn close_reason_detail(reason: &str) -> &'static str {
+    if reason.is_empty() {
+        "empty"
+    } else {
+        "present (redacted)"
     }
 }
 
@@ -3217,6 +3200,166 @@ mod tests {
     }
 
     #[test]
+    fn websocket_probe_human_output() {
+        let report = |websocket: DoctorCheck| DoctorReport {
+            schema_version: 1,
+            generated_at: "0s since unix epoch".to_string(),
+            overall_status: websocket.status,
+            codex_version: "0.0.0".to_string(),
+            checks: vec![
+                DoctorCheck::new(
+                    "network.environment",
+                    "network",
+                    CheckStatus::Ok,
+                    "network environment is readable",
+                )
+                .detail("HTTPS proxy: not set"),
+                websocket,
+                DoctorCheck::new(
+                    "network.provider_reachability",
+                    "reachability",
+                    CheckStatus::Ok,
+                    "active provider endpoints are reachable over HTTP",
+                )
+                .detail("OpenAI endpoint: HTTP 200"),
+            ],
+        };
+        let options = HumanOutputOptions {
+            show_details: true,
+            show_all: true,
+            ascii: true,
+            color_enabled: false,
+        };
+        let success = render_human_report(
+            &report(
+                DoctorCheck::new(
+                    "network.websocket_reachability",
+                    "websocket",
+                    CheckStatus::Ok,
+                    "Responses WebSocket handshake succeeded",
+                )
+                .detail("handshake result: HTTP 101")
+                .detail("reasoning header: true")
+                .detail("server model present: true"),
+            ),
+            options,
+        );
+        let immediate_close = render_human_report(
+            &report(
+                DoctorCheck::new(
+                    "network.websocket_reachability",
+                    "websocket",
+                    CheckStatus::Warning,
+                    "Responses WebSocket closed immediately after handshake",
+                )
+                .detail("handshake result: HTTP 101")
+                .detail("immediate close code: 1008")
+                .detail(format!(
+                    "immediate close reason: {}",
+                    close_reason_detail("private-close-reason")
+                ))
+                .remediation(
+                    "Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.",
+                ),
+            ),
+            options,
+        );
+        let generic_failure = render_human_report(
+            &report(websocket_probe_warning(
+                "Responses WebSocket failed; HTTPS fallback may still work",
+                vec!["endpoint: wss://example.com/responses".to_string()],
+                websocket_error_detail(&ApiError::Stream("private-stream-error".to_string())),
+            )),
+            options,
+        );
+        let rendered = format!(
+            "successful handshake\n{success}\nimmediate close\n{immediate_close}\nstream failure\n{generic_failure}"
+        );
+
+        assert!(!rendered.contains("private-close-reason"));
+        assert!(!rendered.contains("private-stream-error"));
+        insta::assert_snapshot!("websocket_probe_human_output", rendered);
+    }
+
+    #[test]
+    fn websocket_error_detail_preserves_categories_without_wire_values() {
+        let secret = "private-wire-value";
+        let message = || secret.to_string();
+        let cases = [
+            ApiError::Transport(TransportError::Http {
+                status: http::StatusCode::FORBIDDEN,
+                url: Some(format!("https://example.com/?token={secret}")),
+                headers: Some(HeaderMap::from_iter([(
+                    http::header::SET_COOKIE,
+                    HeaderValue::from_static(secret),
+                )])),
+                body: Some(message()),
+                retry_after: None,
+            }),
+            ApiError::Transport(TransportError::Network(message())),
+            ApiError::Transport(TransportError::Build(message())),
+            ApiError::Api {
+                status: http::StatusCode::UNAUTHORIZED,
+                message: message(),
+            },
+            ApiError::Stream(message()),
+            ApiError::ResponseIncomplete(Box::new(
+                codex_protocol::error::ResponseIncompleteError {
+                    partial_output: vec![],
+                    reason: message(),
+                    response_id: Some(message()),
+                    token_usage: None,
+                },
+            )),
+            ApiError::Retryable {
+                message: message(),
+                retry_after: None,
+            },
+            ApiError::RateLimitExceeded {
+                message: message(),
+                retry_after: None,
+            },
+            ApiError::RateLimit(message()),
+            ApiError::InvalidRequest { message: message() },
+            ApiError::InvalidAudioInput { message: message() },
+            ApiError::ModelNotFound {
+                message: message(),
+                status: Some(http::StatusCode::NOT_FOUND),
+            },
+            ApiError::InvalidPrompt { message: message() },
+            ApiError::CyberPolicy { message: message() },
+            ApiError::BioPolicy { message: message() },
+            ApiError::MisalignmentPolicyViolation {
+                message: message(),
+                misalignment: None,
+            },
+        ];
+        let details = cases.iter().map(websocket_error_detail).collect::<Vec<_>>();
+        assert!(!details.join("\n").contains(secret));
+        assert_eq!(
+            details,
+            [
+                "handshake transport error: http 403 Forbidden: [redacted]",
+                "handshake transport error: network error: [redacted]",
+                "handshake transport error: request build error: [redacted]",
+                "handshake API error: 401 Unauthorized [redacted]",
+                "handshake stream error: [redacted]",
+                "handshake error: incomplete response: [redacted]",
+                "handshake error: retryable error: [redacted]",
+                "handshake error: rate limit exceeded: [redacted]",
+                "handshake error: rate limit: [redacted]",
+                "handshake error: invalid request: [redacted]",
+                "handshake error: invalid audio input: [redacted]",
+                "handshake error: model not found: [redacted]",
+                "handshake error: invalid prompt: [redacted]",
+                "handshake error: cyber policy: [redacted]",
+                "handshake error: bio policy: [redacted]",
+                "handshake error: misalignment policy violation: [redacted]",
+            ]
+        );
+    }
+
+    #[test]
     fn run_sync_check_notifies_progress() {
         let progress_impl = Arc::new(RecordingProgress::default());
         let progress: Arc<dyn DoctorProgress> = progress_impl.clone();
@@ -3246,31 +3389,6 @@ mod tests {
         assert_eq!(
             progress_impl.events(),
             vec!["begin test".to_string(), "finish test Warning".to_string()]
-        );
-    }
-
-    #[test]
-    fn compare_npm_package_roots_detects_match() {
-        let running = PathBuf::from("/prefix/lib/node_modules/@openai/codex");
-        let npm_root = PathBuf::from("/prefix/lib/node_modules");
-        assert_eq!(
-            compare_npm_package_roots(&running, &npm_root),
-            NpmRootCheck::Match {
-                package_root: npm_root.join("@openai").join("codex")
-            }
-        );
-    }
-
-    #[test]
-    fn compare_npm_package_roots_detects_mismatch() {
-        let running = PathBuf::from("/old/lib/node_modules/@openai/codex");
-        let npm_root = PathBuf::from("/new/lib/node_modules");
-        assert_eq!(
-            compare_npm_package_roots(&running, &npm_root),
-            NpmRootCheck::Mismatch {
-                running_package_root: running,
-                npm_package_root: npm_root.join("@openai").join("codex"),
-            }
         );
     }
 
@@ -3320,7 +3438,7 @@ mod tests {
         let arg0_paths = Arg0DispatchPaths {
             codex_self_exe: Some(PathBuf::from("/bin/codex")),
             codex_linux_sandbox_exe: Some(PathBuf::from("/bin/codex-linux-sandbox")),
-            main_execve_wrapper_exe: Some(PathBuf::from("/bin/codex-execve-wrapper")),
+            ..Default::default()
         };
 
         let overrides = config_overrides_from_interactive(&interactive, &arg0_paths);
@@ -3339,10 +3457,6 @@ mod tests {
         assert_eq!(
             overrides.codex_linux_sandbox_exe,
             arg0_paths.codex_linux_sandbox_exe
-        );
-        assert_eq!(
-            overrides.main_execve_wrapper_exe,
-            arg0_paths.main_execve_wrapper_exe
         );
     }
 
@@ -3941,7 +4055,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_rollout_stats_counts_nested_rollout_files() {
+    fn rollout_stats_details_count_plain_and_compressed_files() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let nested = temp
             .path()
@@ -3955,14 +4069,40 @@ mod tests {
             "12345",
         )
         .expect("write rollout file");
+        // Storage totals include both physical files if both representations exist.
+        std::fs::write(
+            nested.join("rollout-2026-05-13T00-00-00-test.jsonl.zst"),
+            "1234567",
+        )
+        .expect("write compressed sibling");
+        std::fs::write(
+            nested.join("rollout-2026-05-13T01-00-00-compressed.jsonl.zst"),
+            "123",
+        )
+        .expect("write compressed rollout");
         std::fs::write(nested.join("not-a-rollout.jsonl"), "ignored").expect("write ignored jsonl");
+        std::fs::write(nested.join("not-a-rollout.jsonl.zst"), "ignored")
+            .expect("write ignored compressed file");
+        std::fs::write(
+            nested.join("rollout-2026-05-13T01-00-00-compressed.jsonl.zst.tmp"),
+            "ignored",
+        )
+        .expect("write compression temp file");
 
-        let stats = collect_rollout_stats(&temp.path().join("sessions"));
+        let archived = temp.path().join("archived_sessions");
+        std::fs::create_dir(&archived).expect("create archived rollout dir");
+        std::fs::write(
+            archived.join("rollout-2026-05-13T02-00-00-archived.jsonl.zst"),
+            "1234",
+        )
+        .expect("write archived compressed rollout");
 
-        assert_eq!(stats.files, 1);
-        assert_eq!(stats.total_bytes, 5);
-        assert_eq!(stats.average_bytes(), 5);
-        assert_eq!(stats.error, None);
+        let mut details = Vec::new();
+        rollout_stats_details(&mut details, temp.path());
+        insta::assert_snapshot!(details.join("\n"), @r"
+        active rollout files: 3 files, 15 total bytes, 5 average bytes
+        archived rollout files: 1 files, 4 total bytes, 4 average bytes
+        ");
     }
 
     #[tokio::test]
@@ -3988,35 +4128,51 @@ mod tests {
         assert_eq!(status, Ok("HTTP 405".to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn mcp_http_probe_falls_back_to_get_when_head_times_out() {
+        use std::io::BufRead as _;
+
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
         let addr = listener.local_addr().expect("listener address");
-        let server = std::thread::spawn(move || {
+        let (head_received_tx, head_received_rx) = tokio::sync::oneshot::channel();
+        let (probe_done_tx, probe_done_rx) = std::sync::mpsc::channel::<()>();
+        // A blocking task inhibits Tokio's automatic clock advancement while real socket I/O
+        // is pending. Keep it alive until the client has consumed the GET response, too.
+        let server = tokio::task::spawn_blocking(move || {
             let (mut head_stream, _) = listener.accept().expect("accept HEAD probe request");
-            let head = std::thread::spawn(move || {
-                let mut request = [0; 1024];
-                let _ = head_stream.read(&mut request);
-                std::thread::sleep(Duration::from_millis(50));
-            });
+            let mut head_request = String::new();
+            std::io::BufReader::new(&mut head_stream)
+                .read_line(&mut head_request)
+                .expect("read HEAD request line");
+            assert_eq!(head_request, "HEAD /mcp HTTP/1.1\r\n");
+            head_received_tx.send(()).expect("signal HEAD receipt");
 
             let (mut get_stream, _) = listener.accept().expect("accept GET probe request");
-            let mut request = [0; 1024];
-            let _ = get_stream.read(&mut request);
+            let mut get_request = String::new();
+            std::io::BufReader::new(&mut get_stream)
+                .read_line(&mut get_request)
+                .expect("read GET request line");
+            assert_eq!(get_request, "GET /mcp HTTP/1.1\r\n");
             get_stream
                 .write_all(
                     b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 )
                 .expect("write response");
-            head.join().expect("HEAD holder should finish");
+            // Dropping the sender also releases this wait if the probe panics.
+            let _ = probe_done_rx.recv();
+            drop(head_stream);
         });
 
-        let status = mcp_http_probe_url_with_timeout(
-            &format!("http://{addr}/mcp"),
-            Duration::from_millis(10),
-        )
-        .await;
-        server.join().expect("probe server thread should finish");
+        let url = format!("http://{addr}/mcp");
+        let probe = mcp_http_probe_url_with_timeout(&url, Duration::from_millis(10));
+        let expire_head = async {
+            head_received_rx.await.expect("server should receive HEAD");
+            // Cross the unchanged 10 ms deadline only after HEAD is waiting for a response.
+            tokio::time::advance(Duration::from_millis(11)).await;
+        };
+        let (status, ()) = tokio::join!(probe, expire_head);
+        drop(probe_done_tx);
+        server.await.expect("probe server task should finish");
 
         assert_eq!(status, Ok("HTTP 405".to_string()));
     }
@@ -4199,6 +4355,7 @@ mod tests {
     fn terminal_inputs() -> TerminalCheckInputs {
         TerminalCheckInputs {
             info: TerminalInfo {
+                backend: None,
                 name: TerminalName::Unknown,
                 term_program: None,
                 version: None,
@@ -4228,24 +4385,57 @@ mod tests {
     }
 
     #[test]
-    fn terminal_check_warns_for_dumb_terminal() {
-        let mut inputs = terminal_inputs();
-        inputs.info.name = TerminalName::Dumb;
-        inputs.info.term = Some("dumb".to_string());
-        set_terminal_env(&mut inputs, "TERM", "dumb");
+    fn terminal_check_dumb_requires_interactive_stream() {
+        for (stdin, stdout, stderr, expected) in [
+            (false, false, false, CheckStatus::Warning),
+            (false, false, true, CheckStatus::Warning),
+            (false, true, false, CheckStatus::Fail),
+            (true, false, false, CheckStatus::Fail),
+        ] {
+            let mut inputs = terminal_inputs();
+            inputs.info.name = TerminalName::Dumb;
+            inputs.info.term = Some("dumb".to_string());
+            set_terminal_env(&mut inputs, "TERM", "dumb");
+            inputs.stdin_is_terminal = stdin;
+            inputs.stdout_is_terminal = stdout;
+            inputs.stderr_is_terminal = stderr;
 
-        let check = terminal_check_from_inputs(inputs);
+            let check = terminal_check_from_inputs(inputs);
 
-        assert_eq!(check.status, CheckStatus::Fail);
-        assert_eq!(
-            check.summary,
-            "TERM=dumb - colors and cursor control are disabled"
-        );
-        assert_eq!(check.issues.len(), 1);
-        assert_eq!(
-            check.issues[0].remedy.as_deref(),
-            Some("set TERM to a real value, for example xterm-256color")
-        );
+            assert_eq!(check.status, expected);
+            assert_eq!(check.issues.len(), 1);
+            assert_eq!(
+                check.issues[0].remedy.as_deref(),
+                (expected == CheckStatus::Fail)
+                    .then_some("set TERM to a real value, for example xterm-256color")
+            );
+            assert_eq!(
+                check.issues[0].expected.as_deref(),
+                (expected == CheckStatus::Fail)
+                    .then_some("TERM=xterm-256color or another real terminal type")
+            );
+            if !stdin && !stdout && !stderr {
+                let report = DoctorReport {
+                    schema_version: 1,
+                    generated_at: "0s since unix epoch".to_string(),
+                    overall_status: overall_status(std::slice::from_ref(&check)),
+                    codex_version: "0.0.0".to_string(),
+                    checks: vec![check],
+                };
+                insta::assert_snapshot!(
+                    "doctor_dumb_non_interactive_human",
+                    render_human_report(
+                        &report,
+                        HumanOutputOptions {
+                            show_details: true,
+                            show_all: true,
+                            ascii: true,
+                            color_enabled: false,
+                        }
+                    )
+                );
+            }
+        }
     }
 
     #[test]
@@ -4303,10 +4493,15 @@ mod tests {
     }
 
     #[test]
-    fn terminal_check_warns_for_unreadable_terminfo_path() {
+    fn terminal_check_prioritizes_unreadable_terminfo_over_warnings() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let missing = tempdir.path().join("missing-terminfo");
         let mut inputs = terminal_inputs();
+        inputs.info.name = TerminalName::Dumb;
+        inputs.stdin_is_terminal = false;
+        inputs.stdout_is_terminal = false;
+        set_terminal_env(&mut inputs, "TERM", "dumb");
+        set_terminal_env(&mut inputs, "LANG", "C");
         set_terminal_env(&mut inputs, "TERMINFO", &missing.to_string_lossy());
 
         let check = terminal_check_from_inputs(inputs);
@@ -4326,6 +4521,21 @@ mod tests {
             check.issues[0].remedy.as_deref(),
             Some("check that $TERMINFO points to a readable directory")
         );
+        insta::assert_snapshot!(render_human_report(
+            &DoctorReport {
+                schema_version: 1,
+                generated_at: "0s since unix epoch".to_string(),
+                overall_status: check.status,
+                codex_version: "0.0.0".to_string(),
+                checks: vec![check],
+            },
+            HumanOutputOptions {
+                show_details: false,
+                show_all: false,
+                ascii: true,
+                color_enabled: false,
+            }
+        ));
     }
 
     #[test]
@@ -4365,7 +4575,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_check_keeps_tmux_probe_failures_non_fatal() {
+    fn terminal_check_allows_missing_tmux_details() {
         let mut inputs = terminal_inputs();
         inputs.info.multiplexer = Some(Multiplexer::Tmux { version: None });
 

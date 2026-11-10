@@ -66,7 +66,8 @@ pub(crate) fn existing_build_dirs(root: &Path) -> Vec<PathBuf> {
 pub(crate) async fn model(root: &Path, build: &Path) -> Result<Model, String> {
     let read = |name: &str| -> Result<Value, String> {
         let path = build.join("meson-info").join(name);
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         serde_json::from_str(&text).map_err(|e| format!("cannot parse {}: {e}", path.display()))
     };
     let targets_json = read("intro-targets.json")?;
@@ -76,7 +77,8 @@ pub(crate) async fn model(root: &Path, build: &Path) -> Result<Model, String> {
     if crate::tools::binary_on_path("ninja") {
         add_link_deps(build, &mut targets).await;
     }
-    let options = std::fs::read_to_string(build.join("meson-info/intro-buildoptions.json")).unwrap_or_default();
+    let options = std::fs::read_to_string(build.join("meson-info/intro-buildoptions.json"))
+        .unwrap_or_default();
     Ok(Model {
         system: System::Meson,
         root: root.to_path_buf(),
@@ -90,7 +92,10 @@ pub(crate) async fn model(root: &Path, build: &Path) -> Result<Model, String> {
         make_rebuilds: None,
         mapping_note: "targets and tests from meson-info (introspection files)".to_string(),
         notes: Vec::new(),
-        config: format!("meson|{:016x}", crate::base_run_cache::fnv(options.as_bytes())),
+        config: format!(
+            "meson|{:016x}",
+            crate::base_run_cache::fnv(options.as_bytes())
+        ),
     })
 }
 
@@ -111,18 +116,32 @@ pub(crate) fn parse_targets(value: &Value) -> Vec<Target> {
         };
         let id = t["id"].as_str().unwrap_or(name);
         // Target names need not be unique across subdirectories; ids are.
-        let name = if names.get(name).copied().unwrap_or(0) > 1 { id.to_string() } else { name.to_string() };
+        let name = if names.get(name).copied().unwrap_or(0) > 1 {
+            id.to_string()
+        } else {
+            name.to_string()
+        };
         let kind = t["type"].as_str().unwrap_or("");
         let artifacts: Vec<PathBuf> = t["filename"]
             .as_array()
-            .map(|a| a.iter().filter_map(|f| f.as_str()).map(PathBuf::from).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str())
+                    .map(PathBuf::from)
+                    .collect()
+            })
             .unwrap_or_default();
         let mut sources: Vec<PathBuf> = Vec::new();
         if let Some(groups) = t["target_sources"].as_array() {
             for group in groups {
                 for key in ["sources", "generated_sources"] {
                     if let Some(files) = group[key].as_array() {
-                        sources.extend(files.iter().filter_map(|f| f.as_str()).map(|f| canonical(Path::new(f))));
+                        sources.extend(
+                            files
+                                .iter()
+                                .filter_map(|f| f.as_str())
+                                .map(|f| canonical(Path::new(f))),
+                        );
                     }
                 }
             }
@@ -150,7 +169,11 @@ pub(crate) fn parse_tests(value: &Value, targets: &[Target]) -> Vec<TestEntry> {
         let name = t["name"].as_str().unwrap_or_default().to_string();
         let command: Vec<String> = t["cmd"]
             .as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let env: Vec<(String, String)> = t["env"]
             .as_object()
@@ -210,7 +233,10 @@ async fn add_link_deps(build: &Path, targets: &mut [Target]) {
         for output in query_outputs(&stdout) {
             let output = build.join(output);
             for target in targets.iter_mut() {
-                if target.name != lib && target.artifacts.contains(&output) && !target.deps.contains(&lib) {
+                if target.name != lib
+                    && target.artifacts.contains(&output)
+                    && !target.deps.contains(&lib)
+                {
                     target.deps.push(lib.clone());
                 }
             }
@@ -260,7 +286,10 @@ mod tests {
         let targets = parse_targets(&targets);
         assert_eq!(targets.len(), 2);
         assert!(targets[1].is_exe);
-        assert_eq!(targets[0].sources, vec![PathBuf::from("/nonexistent/src/core.cpp")]);
+        assert_eq!(
+            targets[0].sources,
+            vec![PathBuf::from("/nonexistent/src/core.cpp")]
+        );
         let tests = parse_tests(&tests, &targets);
         assert_eq!(tests[0].target.as_deref(), Some("core_test"));
         assert_eq!(tests[0].env, vec![("K".to_string(), "V".to_string())]);
@@ -271,6 +300,9 @@ mod tests {
     #[test]
     fn reads_ninja_query_outputs() {
         let text = "libcore.a:\n  input: STATIC_LINKER\n    core.p/core.cpp.o\n  outputs:\n    core_test\n    api_test\n";
-        assert_eq!(query_outputs(text), vec!["core_test".to_string(), "api_test".to_string()]);
+        assert_eq!(
+            query_outputs(text),
+            vec!["core_test".to_string(), "api_test".to_string()]
+        );
     }
 }

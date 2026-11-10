@@ -230,7 +230,10 @@ fn description_snapshot_is_byte_identical() {
     );
     let now = format!(
         "{}\n",
-        serde_json::to_string_pretty(&crate::test_support::sorted_keys(serde_json::to_value(spec()).unwrap())).unwrap()
+        serde_json::to_string_pretty(&crate::test_support::sorted_keys(
+            serde_json::to_value(spec()).unwrap()
+        ))
+        .unwrap()
     );
     if std::env::var_os("BYTEASK_UPDATE_TOOL_SNAPSHOT").is_some() {
         std::fs::write(SNAPSHOT, &now).expect("write snapshot");

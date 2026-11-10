@@ -41,10 +41,17 @@ pub fn session(seed: u64, events: usize) -> Vec<Message> {
     let mut tracking: u16 = 0;
     let mut hdr = |locate: u16, ts: u64| {
         tracking = tracking.wrapping_add(1);
-        Header { locate, tracking, ts }
+        Header {
+            locate,
+            tracking,
+            ts,
+        }
     };
     for code in [b'O', b'S'] {
-        out.push(Message::SystemEvent { h: hdr(0, ts - 30_000_000_000), code });
+        out.push(Message::SystemEvent {
+            h: hdr(0, ts - 30_000_000_000),
+            code,
+        });
     }
     let stocks = ["AAA", "BBB"];
     for (i, s) in stocks.iter().enumerate() {
@@ -66,7 +73,10 @@ pub fn session(seed: u64, events: usize) -> Vec<Message> {
             inverse: b'N',
         });
     }
-    out.push(Message::SystemEvent { h: hdr(0, ts - 1), code: b'Q' });
+    out.push(Message::SystemEvent {
+        h: hdr(0, ts - 1),
+        code: b'Q',
+    });
     let mut books: Vec<BTreeMap<u64, Live>> = vec![BTreeMap::new(), BTreeMap::new()];
     let mut next_ref: u64 = 1;
     let mut match_number: u64 = 1;
@@ -82,7 +92,11 @@ pub fn session(seed: u64, events: usize) -> Vec<Message> {
         let locate = s as u16 + 1;
         let book = &mut books[s];
         let refs: Vec<u64> = book.keys().copied().collect();
-        let op = if book.len() < 8 || i < 16 { 0 } else { rng.below(100) };
+        let op = if book.len() < 8 || i < 16 {
+            0
+        } else {
+            rng.below(100)
+        };
         let pick = |rng: &mut Rng| refs[rng.below(refs.len() as u64) as usize];
         if op < 40 {
             let buy = rng.below(2) == 0;
@@ -110,21 +124,35 @@ pub fn session(seed: u64, events: usize) -> Vec<Message> {
             });
         } else if op < 52 {
             let r = pick(&mut rng);
-            let o = book.get(&r).cloned().unwrap_or(Live { buy: true, price: MID, shares: 0 });
+            let o = book.get(&r).cloned().unwrap_or(Live {
+                buy: true,
+                price: MID,
+                shares: 0,
+            });
             if o.shares > 100 {
                 let cut = 100 * (1 + rng.below(u64::from(o.shares / 100 - 1)) as u32);
                 if let Some(x) = book.get_mut(&r) {
                     x.shares -= cut;
                 }
-                out.push(Message::OrderCancel { h: hdr(locate, ts), order_ref: r, shares: cut });
+                out.push(Message::OrderCancel {
+                    h: hdr(locate, ts),
+                    order_ref: r,
+                    shares: cut,
+                });
             } else {
                 book.remove(&r);
-                out.push(Message::OrderDelete { h: hdr(locate, ts), order_ref: r });
+                out.push(Message::OrderDelete {
+                    h: hdr(locate, ts),
+                    order_ref: r,
+                });
             }
         } else if op < 64 {
             let r = pick(&mut rng);
             book.remove(&r);
-            out.push(Message::OrderDelete { h: hdr(locate, ts), order_ref: r });
+            out.push(Message::OrderDelete {
+                h: hdr(locate, ts),
+                order_ref: r,
+            });
         } else if op < 82 {
             // Execute against the best order of one side, sometimes at a price improvement.
             let buy = rng.below(2) == 0;
@@ -156,11 +184,18 @@ pub fn session(seed: u64, events: usize) -> Vec<Message> {
                     price,
                 });
             } else {
-                out.push(Message::OrderExecuted { h: hdr(locate, ts), order_ref: r, shares, match_number: m });
+                out.push(Message::OrderExecuted {
+                    h: hdr(locate, ts),
+                    order_ref: r,
+                    shares,
+                    match_number: m,
+                });
             }
         } else if op < 94 {
             let r = pick(&mut rng);
-            let Some(mut o) = book.remove(&r) else { continue };
+            let Some(mut o) = book.remove(&r) else {
+                continue;
+            };
             let mut price = (o.price + TICK).saturating_sub(rng.below(3) as u32 * TICK);
             if o.buy {
                 if let Some(a) = best(book, false) {
@@ -197,7 +232,10 @@ pub fn session(seed: u64, events: usize) -> Vec<Message> {
     }
     for code in [b'M', b'E', b'C'] {
         ts += 1_000_000;
-        out.push(Message::SystemEvent { h: hdr(0, ts), code });
+        out.push(Message::SystemEvent {
+            h: hdr(0, ts),
+            code,
+        });
     }
     out
 }

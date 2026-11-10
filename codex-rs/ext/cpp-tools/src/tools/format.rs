@@ -130,7 +130,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for FormatTool {
 }
 
 impl FormatTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: FormatArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -156,7 +159,11 @@ impl FormatTool {
         // A regular file only: reading a FIFO (or a device) to take the
         // "before" copy would block the tool forever.
         if !target.is_file() {
-            let what = if target.exists() { "not a regular file" } else { "no such file" };
+            let what = if target.exists() {
+                "not a regular file"
+            } else {
+                "no such file"
+            };
             return Err(FunctionCallError::RespondToModel(format!(
                 "{what}: {} (pass a C/C++ source file). Nothing was formatted.",
                 target.display()
@@ -201,7 +208,11 @@ impl FormatTool {
             LineScope::Whole(_) => Vec::new(),
         };
         let mut argv = style;
-        argv.extend(ranges.iter().map(|(first, last)| format!("--lines={first}:{last}")));
+        argv.extend(
+            ranges
+                .iter()
+                .map(|(first, last)| format!("--lines={first}:{last}")),
+        );
         let scope = describe_line_scope(&lines, style_file.as_deref(), &self.cwd);
         if args.in_place {
             format_in_place(&target, path, &argv, &scope).await
@@ -300,7 +311,11 @@ fn describe_line_scope(lines: &LineScope, style_file: Option<&Path>, cwd: &Path)
             "lines changed since git HEAD ({})",
             ranges
                 .iter()
-                .map(|(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") })
+                .map(|(a, b)| if a == b {
+                    a.to_string()
+                } else {
+                    format!("{a}-{b}")
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -475,9 +490,15 @@ async fn format_diff(
     let formatted = output.stdout;
     // A preview is a format check: changes to make means "not formatted".
     let result = if original == formatted {
-        check_result::CheckResult::pass(TOOL_NAME, "Already formatted; clang-format would change nothing.")
+        check_result::CheckResult::pass(
+            TOOL_NAME,
+            "Already formatted; clang-format would change nothing.",
+        )
     } else {
-        check_result::CheckResult::fail(TOOL_NAME, "Not formatted; clang-format would change it (diff above).")
+        check_result::CheckResult::fail(
+            TOOL_NAME,
+            "Not formatted; clang-format would change it (diff above).",
+        )
     };
     Ok(crate::report::report(
         TOOL_NAME,
@@ -565,7 +586,10 @@ fn render_diff(original: &str, formatted: &str) -> String {
         diff.push('\n');
     }
     if rows.len() > DIFF_LINE_CAP {
-        diff.push_str(&format!("… {} more diff line(s) omitted\n", rows.len() - DIFF_LINE_CAP));
+        diff.push_str(&format!(
+            "… {} more diff line(s) omitted\n",
+            rows.len() - DIFF_LINE_CAP
+        ));
     }
     format!(
         "{changed} line(s) would change ({} → {} lines), from line {}.\n\n--- diff ---\n{diff}",
@@ -621,7 +645,10 @@ mod tests {
         .await
         .expect("must not block on a FIFO");
         let err = out.expect_err("a FIFO is not a source file");
-        assert!(matches!(err, FunctionCallError::RespondToModel(_)), "{err:?}");
+        assert!(
+            matches!(err, FunctionCallError::RespondToModel(_)),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
@@ -655,7 +682,10 @@ mod tests {
         let file = ws.join("src/a.cpp");
         assert_eq!(project_style_file_within(&file, &ws), None);
         std::fs::write(ws.join(".clang-format"), "BasedOnStyle: LLVM\n").unwrap();
-        assert_eq!(project_style_file_within(&file, &ws), Some(ws.join(".clang-format")));
+        assert_eq!(
+            project_style_file_within(&file, &ws),
+            Some(ws.join(".clang-format"))
+        );
     }
 
     #[test]
@@ -669,7 +699,10 @@ mod tests {
             Some(Path::new("/w/.clang-format")),
             Path::new("/w"),
         );
-        assert_eq!(line, "scope: lines changed since git HEAD (1-3, 11); style: .clang-format\n");
+        assert_eq!(
+            line,
+            "scope: lines changed since git HEAD (1-3, 11); style: .clang-format\n"
+        );
     }
 
     #[test]
@@ -677,7 +710,10 @@ mod tests {
         let original = "a;\nb;\nint  x;\nc;\nd;\n";
         let formatted = "a;\nb;\nint x;\nc;\nd;\n";
         let out = render_diff(original, formatted);
-        assert!(out.contains("1 line(s) would change (5 → 5 lines), from line 3."), "{out}");
+        assert!(
+            out.contains("1 line(s) would change (5 → 5 lines), from line 3."),
+            "{out}"
+        );
         assert!(out.contains("-int  x;\n+int x;\n"), "{out}");
         assert!(!out.contains("-a;") && !out.contains("+d;"), "{out}");
     }
@@ -708,22 +744,34 @@ mod tests {
         };
         std::fs::write(root.join(".clang-format"), "BasedOnStyle: LLVM\n").unwrap();
         // Hand-formatted code the project keeps as it is.
-        std::fs::write(root.join("a.cpp"), "int  keep( ){return 1;}\nint g() { return 2; }\n")
-            .unwrap();
+        std::fs::write(
+            root.join("a.cpp"),
+            "int  keep( ){return 1;}\nint g() { return 2; }\n",
+        )
+        .unwrap();
         git(&["init", "-q"]);
         git(&["add", "."]);
         git(&["commit", "-q", "-m", "base"]);
-        std::fs::write(root.join("a.cpp"), "int  keep( ){return 1;}\nint g( ){return  3;}\n")
-            .unwrap();
+        std::fs::write(
+            root.join("a.cpp"),
+            "int  keep( ){return 1;}\nint g( ){return  3;}\n",
+        )
+        .unwrap();
         let tool = FormatTool {
             cwd: root.to_path_buf(),
         };
         let out = crate::test_support::call(&tool, serde_json::json!({"path": "a.cpp"}))
             .await
             .expect("a preview");
-        assert!(out.contains("scope: lines changed since git HEAD (2)"), "{out}");
+        assert!(
+            out.contains("scope: lines changed since git HEAD (2)"),
+            "{out}"
+        );
         assert!(out.contains("+int g() { return 3; }"), "{out}");
-        assert!(!out.contains("-int  keep"), "an untouched line was reformatted: {out}");
+        assert!(
+            !out.contains("-int  keep"),
+            "an untouched line was reformatted: {out}"
+        );
     }
 
     fn opt(s: &str) -> Option<String> {
@@ -759,7 +807,10 @@ mod tests {
 
     #[test]
     fn style_args_known_styles_build_flag() {
-        assert_eq!(style_args(Some("Google")), vec!["--style=Google".to_string()]);
+        assert_eq!(
+            style_args(Some("Google")),
+            vec!["--style=Google".to_string()]
+        );
         assert_eq!(style_args(Some("LLVM")), vec!["--style=LLVM".to_string()]);
         assert_eq!(style_args(Some("file")), vec!["--style=file".to_string()]);
     }
@@ -767,14 +818,23 @@ mod tests {
     #[test]
     fn style_args_trims_and_passes_unknown_through() {
         // Unknown styles are forwarded verbatim; clang-format validates them.
-        assert_eq!(style_args(Some("  Mozilla ")), vec!["--style=Mozilla".to_string()]);
-        assert_eq!(style_args(Some("Frobnicate")), vec!["--style=Frobnicate".to_string()]);
+        assert_eq!(
+            style_args(Some("  Mozilla ")),
+            vec!["--style=Mozilla".to_string()]
+        );
+        assert_eq!(
+            style_args(Some("Frobnicate")),
+            vec!["--style=Frobnicate".to_string()]
+        );
     }
 
     #[test]
     fn resolves_relative_and_absolute_paths() {
         let cwd = Path::new("/work");
-        assert_eq!(resolve_path(cwd, "src/a.cpp"), PathBuf::from("/work/src/a.cpp"));
+        assert_eq!(
+            resolve_path(cwd, "src/a.cpp"),
+            PathBuf::from("/work/src/a.cpp")
+        );
         assert_eq!(resolve_path(cwd, "/abs/b.cpp"), PathBuf::from("/abs/b.cpp"));
     }
 
@@ -790,7 +850,10 @@ mod tests {
 
     #[test]
     fn render_diff_reports_no_change_when_equal() {
-        assert_eq!(render_diff("int x;\n", "int x;\n"), "No changes — already formatted.");
+        assert_eq!(
+            render_diff("int x;\n", "int x;\n"),
+            "No changes — already formatted."
+        );
     }
 
     #[test]

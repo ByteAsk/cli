@@ -108,11 +108,7 @@ pub fn timeout_from(timeout_sec: Option<u64>) -> Duration {
 /// Like [`timeout_from`] but for a compile step: an explicit `timeout_sec`
 /// still wins, otherwise [`DEFAULT_COMPILE_TIMEOUT_SECS`].
 pub fn compile_timeout_from(timeout_sec: Option<u64>) -> Duration {
-    Duration::from_secs(
-        timeout_sec
-            .unwrap_or(DEFAULT_COMPILE_TIMEOUT_SECS)
-            .max(1),
-    )
+    Duration::from_secs(timeout_sec.unwrap_or(DEFAULT_COMPILE_TIMEOUT_SECS).max(1))
 }
 
 /// Spawn `program args…` in `cwd`, capture stdout/stderr, and enforce `timeout`.
@@ -150,7 +146,16 @@ pub(crate) async fn run_capped_env_stdin(
     envs: &[(String, String)],
     stdin_file: Option<&Path>,
 ) -> Result<RunOutcome, FunctionCallError> {
-    run(program, args, cwd, timeout, envs, Cores::Allowed, stdin_file).await
+    run(
+        program,
+        args,
+        cwd,
+        timeout,
+        envs,
+        Cores::Allowed,
+        stdin_file,
+    )
+    .await
 }
 
 /// [`run_capped`] for a child that must never write a core file.
@@ -587,7 +592,10 @@ mod tests {
 
     #[test]
     fn timeout_from_defaults_and_floors() {
-        assert_eq!(timeout_from(None), Duration::from_secs(DEFAULT_TIMEOUT_SECS));
+        assert_eq!(
+            timeout_from(None),
+            Duration::from_secs(DEFAULT_TIMEOUT_SECS)
+        );
         assert_eq!(timeout_from(Some(0)), Duration::from_secs(1));
         assert_eq!(timeout_from(Some(42)), Duration::from_secs(42));
     }
@@ -607,22 +615,26 @@ mod tests {
 
     #[test]
     fn ok_only_for_finished_success() {
-        assert!(RunOutcome::Finished {
-            success: true,
-            code: Some(0),
-            stdout: String::new(),
-            stderr: String::new(),
-            truncated: false,
-        }
-        .ok());
-        assert!(!RunOutcome::Finished {
-            success: false,
-            code: Some(3),
-            stdout: String::new(),
-            stderr: String::new(),
-            truncated: false,
-        }
-        .ok());
+        assert!(
+            RunOutcome::Finished {
+                success: true,
+                code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+                truncated: false,
+            }
+            .ok()
+        );
+        assert!(
+            !RunOutcome::Finished {
+                success: false,
+                code: Some(3),
+                stdout: String::new(),
+                stderr: String::new(),
+                truncated: false,
+            }
+            .ok()
+        );
         assert!(!RunOutcome::TimedOut { secs: 1 }.ok());
     }
 
@@ -650,7 +662,9 @@ mod tests {
             std::io::Error::from(std::io::ErrorKind::NotFound),
         );
         match err {
-            FunctionCallError::RespondToModel(msg) => assert!(msg.contains("'perf' is not installed")),
+            FunctionCallError::RespondToModel(msg) => {
+                assert!(msg.contains("'perf' is not installed"))
+            }
             other => panic!("expected RespondToModel, got {other:?}"),
         }
     }
@@ -999,7 +1013,10 @@ mod tests {
     #[test]
     fn only_a_signal_death_is_a_crash() {
         assert!(crash_note("r2", false, None).is_some());
-        assert!(crash_note("r2", false, Some(1)).is_none(), "a failing exit is not a crash");
+        assert!(
+            crash_note("r2", false, Some(1)).is_none(),
+            "a failing exit is not a crash"
+        );
         assert!(crash_note("r2", true, Some(0)).is_none());
     }
 
@@ -1018,6 +1035,9 @@ mod tests {
         .await
         .expect("run");
         assert!(matches!(out, RunOutcome::TimedOut { secs: 1 }));
-        assert!(start.elapsed() < Duration::from_secs(10), "kill should be prompt");
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "kill should be prompt"
+        );
     }
 }

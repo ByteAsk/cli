@@ -9,8 +9,7 @@ use std::path::Path;
 const DEFINITIVE_MARKERS: [&str; 2] = ["CMakeLists.txt", "compile_commands.json"];
 
 /// File extensions that indicate C/C++ source or headers.
-const SOURCE_EXTENSIONS: [&str; 9] =
-    ["c", "cc", "cpp", "cxx", "c++", "h", "hpp", "hxx", "hh"];
+const SOURCE_EXTENSIONS: [&str; 9] = ["c", "cc", "cpp", "cxx", "c++", "h", "hpp", "hxx", "hh"];
 
 /// Directories that never hold a project's own sources and are often enormous.
 const SKIP_DIRS: [&str; 13] = [

@@ -37,11 +37,14 @@ use codex_app_server_protocol::ConfiguredHookHandler;
 use codex_app_server_protocol::ForcedChatgptWorkspaceIds;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::MergeStrategy;
+use codex_app_server_protocol::NetworkDomainPermission;
+use codex_app_server_protocol::NetworkRequirements;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::ToolsV2;
 use codex_app_server_protocol::WriteStatus;
 use codex_core::config::set_project_trust_level;
+use codex_protocol::config_types::ToolExposureSurface;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchLocation;
@@ -63,6 +66,92 @@ fn write_config(codex_home: &TempDir, contents: &str) -> Result<()> {
         codex_home.path().join("config.toml"),
         contents,
     )?)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_requirements_read_exposes_independent_speed_policy() -> Result<()> {
+    for (fast_enabled, ultrafast_enabled) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        let codex_home = TempDir::new()?;
+        std::fs::write(
+            codex_home.path().join("requirements.toml"),
+            format!(
+                "[features]\nfast_mode = {fast_enabled}\nultrafast_mode = {ultrafast_enabled}\n"
+            ),
+        )?;
+        let mut app_server = TestAppServer::builder()
+            .with_codex_home(codex_home.path())
+            .without_auto_env()
+            .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+            .await?;
+        let request_id = app_server.send_config_requirements_read_request().await?;
+        let response: ConfigRequirementsReadResponse =
+            timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(request_id)).await??;
+        assert_eq!(
+            (
+                response.supports_independent_speed_modes,
+                response
+                    .requirements
+                    .expect("speed requirements")
+                    .feature_requirements
+            ),
+            (
+                Some(true),
+                Some(std::collections::BTreeMap::from([
+                    ("fast_mode".to_string(), fast_enabled),
+                    ("ultrafast_mode".to_string(), ultrafast_enabled),
+                ]))
+            ),
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_requirements_read_includes_network_review_domains() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("requirements.toml"),
+        r#"[experimental_network]
+enabled = true
+allowed_domains = ["**.example.com"]
+review_domains = ["review.example.com"]
+"#,
+    )?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+
+    let request_id = app_server.send_config_requirements_read_request().await?;
+    let response: ConfigRequirementsReadResponse = app_server.read_response(request_id).await?;
+    assert_eq!(
+        response
+            .requirements
+            .expect("managed requirements should be returned")
+            .network,
+        Some(NetworkRequirements {
+            enabled: Some(true),
+            http_port: None,
+            socks_port: None,
+            allow_upstream_proxy: None,
+            dangerously_allow_non_loopback_proxy: None,
+            dangerously_allow_all_unix_sockets: None,
+            domains: Some(BTreeMap::from([(
+                "**.example.com".to_string(),
+                NetworkDomainPermission::Allow,
+            )])),
+            review_domains: Some(vec!["review.example.com".to_string()]),
+            managed_allowed_domains_only: None,
+            allowed_domains: Some(vec!["**.example.com".to_string()]),
+            denied_domains: None,
+            unix_sockets: None,
+            allow_unix_sockets: None,
+            allow_local_binding: None,
+        }),
+    );
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -244,6 +333,9 @@ allow_history_access = false
 disable_auto_review = true
 allow_global_persistent_approval = false
 
+[browser_use.extension]
+request_headers = [{ name = "x-browser-agent", value = "ChatGPT/{{session_id}}" }]
+
 [browser_use.default_origin_policy]
 access = "deny"
 downloads = "allow"
@@ -297,6 +389,13 @@ access = "deny"
     assert_eq!(
         requirements.browser_use,
         Some(BrowserUseRequirements {
+            extension: Some(codex_app_server_protocol::BrowserUseExtensionRequirements {
+                request_headers: Some(vec![codex_app_server_protocol::RequestHeader {
+                    name: "x-browser-agent".to_string(),
+                    value: "ChatGPT/{{session_id}}".to_string(),
+                }]),
+            }),
+            allow_webmcp: None,
             allow_history_access: Some(false),
             disable_auto_review: Some(true),
             allow_global_persistent_approval: Some(false),
@@ -496,6 +595,261 @@ async fn config_read_disables_guardian_v2_when_managed_config_requires_guardian_
             .and_then(|features| features.get("guardianv2")),
         Some(&json!(false))
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_otel_tracestate_merges_fields_and_protects_only_required_fields() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_config(
+        &codex_home,
+        r#"[otel.tracestate.vendor]
+tenant = "user"
+region = "us"
+"#,
+    )?;
+    std::fs::write(
+        codex_home.path().join("requirements.toml"),
+        "[otel.tracestate.vendor]\ntenant = \"enterprise\"\n",
+    )?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    let read_id = app_server
+        .send_config_read_request(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await?;
+    let response: ConfigReadResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(read_id)).await??;
+    assert_eq!(
+        response.config.additional["otel"]["tracestate"],
+        json!({ "vendor": { "tenant": "enterprise", "region": "us" } }),
+    );
+    assert!(
+        !response
+            .origins
+            .contains_key("otel.tracestate.vendor.tenant")
+    );
+    assert!(
+        response
+            .origins
+            .contains_key("otel.tracestate.vendor.region")
+    );
+
+    let write_id = app_server
+        .send_config_value_write_request(ConfigValueWriteParams {
+            file_path: None,
+            key_path: "otel.tracestate.vendor.region".to_string(),
+            value: json!("eu"),
+            merge_strategy: MergeStrategy::Replace,
+            expected_version: None,
+        })
+        .await?;
+    let _: ConfigWriteResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(write_id)).await??;
+
+    for key_path in [
+        "otel.tracestate.vendor.tenant",
+        "otel.tracestate.vendor",
+        "otel.tracestate",
+    ] {
+        let write_id = app_server
+            .send_config_value_write_request(ConfigValueWriteParams {
+                file_path: None,
+                key_path: key_path.to_string(),
+                value: json!("user"),
+                merge_strategy: MergeStrategy::Replace,
+                expected_version: None,
+            })
+            .await?;
+        let error: JSONRPCError = timeout(
+            DEFAULT_READ_TIMEOUT,
+            app_server.read_stream_until_error_message(RequestId::Integer(write_id)),
+        )
+        .await??;
+        assert_eq!(
+            error
+                .error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("config_write_error_code")),
+            Some(&json!("configRequirementReadonly")),
+            "{key_path}",
+        );
+    }
+    let read_id = app_server
+        .send_config_read_request(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await?;
+    let response: ConfigReadResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(read_id)).await??;
+    assert_eq!(
+        response.config.additional["otel"]["tracestate"],
+        json!({ "vendor": { "tenant": "enterprise", "region": "eu" } }),
+    );
+    Ok(())
+}
+
+#[test_case::test_case("json", "none"; "json_and_disabled_metrics")]
+#[test_case::test_case("binary", "statsig"; "binary_and_statsig_metrics")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_requirements_read_redacts_otel_exporter_headers(
+    protocol: &str,
+    metrics_exporter: &str,
+) -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    // Read policy without starting exporters or opening the example TLS files.
+    std::fs::write(
+        codex_home.path().join("requirements.toml"),
+        r#"[otel]
+tool_result = { max_bytes = 1024 }
+log_user_prompt = false
+log_sse_deltas = false
+log_agent_responses = true
+log_guardian_assessments = false
+environment = "managed"
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:1/v1/logs", protocol = "$PROTOCOL", headers = { Authorization = "Bearer managed-token" }, tls = { ca-certificate = "ca.pem", client-certificate = "client.pem", client-private-key = "client-key.pem" } } }
+trace_exporter = { otlp-grpc = { endpoint = "http://127.0.0.1:4317", headers = { "x-api-key" = "managed-grpc-secret" }, tls = { ca-certificate = "ca.pem" } } }
+metrics_exporter = "$METRICS_EXPORTER"
+span_attributes = { "service.name" = "managed-service" }
+tracestate = { managed = { tenant = "enterprise" } }"#
+            .replace("$PROTOCOL", protocol)
+            .replace("$METRICS_EXPORTER", metrics_exporter),
+    )?;
+    let request_id = mcp.send_config_requirements_read_request().await?;
+    let response: serde_json::Value =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    assert_eq!(
+        response["requirements"]["otel"],
+        json!({
+            "tool_result": { "max_bytes": 1024 },
+            "log_user_prompt": false,
+            "log_sse_deltas": false,
+            "log_agent_responses": true,
+            "log_guardian_assessments": false,
+            "environment": "managed",
+            "exporter": {
+                "otlp-http": {
+                    "endpoint": "http://127.0.0.1:1/v1/logs",
+                    "headers": { "Authorization": "[redacted]" },
+                    "protocol": protocol,
+                    "tls": {
+                        "ca-certificate": codex_home.path().join("ca.pem"),
+                        "client-certificate": codex_home.path().join("client.pem"),
+                        "client-private-key": codex_home.path().join("client-key.pem"),
+                    },
+                },
+            },
+            "trace_exporter": {
+                "otlp-grpc": {
+                    "endpoint": "http://127.0.0.1:4317",
+                    "headers": { "x-api-key": "[redacted]" },
+                    "tls": {
+                        "ca-certificate": codex_home.path().join("ca.pem"),
+                        "client-certificate": null,
+                        "client-private-key": null,
+                    },
+                },
+            },
+            "metrics_exporter": metrics_exporter,
+            "span_attributes": { "service.name": "managed-service" },
+            "tracestate": { "managed": { "tenant": "enterprise" } },
+        })
+    );
+    // API clients must preserve certificate paths from servers on either OS.
+    let mut response = response;
+    response["requirements"]["otel"]["exporter"]["otlp-http"]["tls"]["ca-certificate"] =
+        json!(r"C:\certs\ca.pem");
+    response["requirements"]["otel"]["trace_exporter"]["otlp-grpc"]["tls"]["ca-certificate"] =
+        json!("/etc/certs/ca.pem");
+    let typed: ConfigRequirementsReadResponse = serde_json::from_value(response.clone())?;
+    assert_eq!(
+        serde_json::to_value(
+            typed
+                .requirements
+                .and_then(|requirements| requirements.otel)
+        )?,
+        response["requirements"]["otel"]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_read_redacts_otel_exporter_headers_from_effective_config_and_layers() -> Result<()>
+{
+    let codex_home = TempDir::new()?;
+    write_config(
+        &codex_home,
+        r#"[otel]
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:1/v1/logs", protocol = "json", headers = { Authorization = "logs-secret" } } }
+trace_exporter = { otlp-grpc = { endpoint = "http://127.0.0.1:1", headers = { Authorization = "traces-secret" } } }
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:1/v1/metrics", protocol = "binary", headers = { Authorization = "metrics-secret" } } }"#,
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_args(&[
+            "-c",
+            "otel.exporter.otlp-http.headers.Authorization='session-secret'",
+        ])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let request_id = mcp
+        .send_config_read_request(ConfigReadParams {
+            include_layers: true,
+            cwd: None,
+        })
+        .await?;
+    let response: ConfigReadResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    let serialized = serde_json::to_string(&response)?;
+    let effective_otel = response
+        .config
+        .additional
+        .get("otel")
+        .expect("effective OTEL config");
+    let layers = response.layers.as_ref().expect("included config layers");
+    let user_otel = layers
+        .iter()
+        .find(|layer| matches!(&layer.name, ConfigLayerSource::User { .. }))
+        .and_then(|layer| layer.config.get("otel"))
+        .expect("user OTEL config layer");
+
+    let flags = layers
+        .iter()
+        .find(|layer| matches!(layer.name, ConfigLayerSource::SessionFlags))
+        .expect("session flags");
+    assert_eq!(
+        flags.config["otel"],
+        json!({
+            "exporter": { "otlp-http": { "headers": { "Authorization": "[redacted]" } } }
+        })
+    );
+    assert!(!serialized.contains("session-secret"));
+
+    for (field, transport, secret) in [
+        ("exporter", "otlp-http", "logs-secret"),
+        ("trace_exporter", "otlp-grpc", "traces-secret"),
+        ("metrics_exporter", "otlp-http", "metrics-secret"),
+    ] {
+        let expected = json!({ "Authorization": "[redacted]" });
+        assert_eq!(effective_otel[field][transport]["headers"], expected);
+        assert_eq!(user_otel[field][transport]["headers"], expected);
+        assert!(!serialized.contains(secret), "response leaked {field}");
+    }
 
     Ok(())
 }
@@ -822,6 +1176,8 @@ access = "deny"
     assert_eq!(
         requirements.browser_use,
         Some(BrowserUseRequirements {
+            extension: None,
+            allow_webmcp: None,
             allow_history_access: Some(false),
             disable_auto_review: None,
             allow_global_persistent_approval: Some(false),
@@ -1019,6 +1375,7 @@ default_tools_approval_mode = "writes"
 
 [apps.app1]
 enabled = false
+omit_tools_from = ["deferred"]
 approvals_reviewer = "user"
 destructive_enabled = false
 default_tools_approval_mode = "prompt"
@@ -1033,7 +1390,15 @@ default_tools_approval_mode = "writes"
 [apps.app_without_links]
 enabled = true
 
+[apps.app_with_empty_links]
+omit_tools_from = []
+
 [apps.app_with_empty_links.links]
+
+[plugins."sample@test".apps.app1]
+enabled = true
+[plugins."sample@test".apps.app1.tools.list]
+enabled = false
 "#,
     )?;
     let codex_home_path = codex_home.path().canonicalize()?;
@@ -1082,12 +1447,13 @@ enabled = true
                     "app1".to_string(),
                     AppConfig {
                         enabled: false,
+                        omit_tools_from: Some(vec![ToolExposureSurface::Deferred]),
                         approvals_reviewer: Some(ApprovalsReviewer::User),
                         destructive_enabled: Some(false),
                         open_world_enabled: None,
                         default_tools_approval_mode: Some(AppToolApproval::Prompt),
                         default_tools_enabled: None,
-                        tools: None,
+                        tools: Some(serde_json::from_value(json!({"list": {"enabled": false}}))?),
                         links: Some(AppLinksConfig {
                             links: std::collections::HashMap::from([
                                 (
@@ -1112,6 +1478,7 @@ enabled = true
                     "app_without_links".to_string(),
                     AppConfig {
                         enabled: true,
+                        omit_tools_from: None,
                         approvals_reviewer: None,
                         destructive_enabled: None,
                         open_world_enabled: None,
@@ -1125,6 +1492,7 @@ enabled = true
                     "app_with_empty_links".to_string(),
                     AppConfig {
                         enabled: true,
+                        omit_tools_from: Some(vec![]),
                         approvals_reviewer: None,
                         destructive_enabled: None,
                         open_world_enabled: None,
@@ -1198,6 +1566,10 @@ enabled = true
     );
 
     let layers = layers.expect("layers present");
+    assert_eq!(
+        origins["apps.app1.tools.list.enabled"],
+        origins["plugins.sample@test.apps.app1.tools.list.enabled"],
+    );
     assert_layers_user_then_optional_system(&layers, user_file)?;
 
     Ok(())
@@ -1541,6 +1913,423 @@ model = "gpt-old"
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(verify_id)).await??;
     assert_eq!(verify.config.model.as_deref(), Some("gpt-new"));
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_provider_write_reports_source_displacement() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_config(&codex_home, "")?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .with_args(&[
+            "-c",
+            "features.network_proxy.credentials.enforced.env=['VENDOR_PASSWORD']",
+            "-c",
+            "features.network_proxy.credentials.enforced.patterns=['^pin_[a-z]{8}$']",
+            "-c",
+            "features.network_proxy.credentials.enforced.url_prefixes=['https://fixed.example']",
+        ])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+
+    let mut provider = json!({
+        "env": ["VENDOR_PASSWORD"],
+        "patterns": ["^pin_[a-z]{8}$"],
+        "url_prefixes": ["https://user.example"],
+        "auth": ["bearer"],
+    });
+    for (suffix, value, overridden) in [
+        ("", provider.clone(), true),
+        (".url_prefixes", json!(["https://updated.example"]), true),
+        (".env", json!(["OTHER_PASSWORD"]), false),
+    ] {
+        let write_id = app_server
+            .send_config_value_write_request(ConfigValueWriteParams {
+                file_path: None,
+                key_path: format!("features.network_proxy.credentials.user_provider{suffix}"),
+                value: value.clone(),
+                merge_strategy: MergeStrategy::Upsert,
+                expected_version: None,
+            })
+            .await?;
+        let write: ConfigWriteResponse =
+            timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(write_id)).await??;
+        let expected = overridden.then_some((ConfigLayerSource::SessionFlags, json!(null)));
+        assert_eq!(
+            (
+                write.status,
+                write
+                    .overridden_metadata
+                    .map(|meta| { (meta.overriding_layer.name, meta.effective_value) })
+            ),
+            (
+                if overridden {
+                    WriteStatus::OkOverridden
+                } else {
+                    WriteStatus::Ok
+                },
+                expected,
+            ),
+        );
+
+        if let Some(field) = suffix.strip_prefix('.') {
+            provider[field] = value;
+        }
+        let saved: toml::Value = toml::from_str(&std::fs::read_to_string(
+            codex_home.path().join("config.toml"),
+        )?)?;
+        assert_eq!(
+            serde_json::to_value(
+                &saved["features"]["network_proxy"]["credentials"]["user_provider"]
+            )?,
+            provider,
+        );
+        let read_id = app_server
+            .send_config_read_request(ConfigReadParams {
+                include_layers: false,
+                cwd: None,
+            })
+            .await?;
+        let read: ConfigReadResponse =
+            timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(read_id)).await??;
+        assert_eq!(
+            read.config.additional["features"]["network_proxy"]["credentials"].get("user_provider"),
+            (!overridden).then_some(&provider),
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_provider_field_removal_uses_higher_same_id_definition() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_config(
+        &codex_home,
+        r#"[features.network_proxy.credentials.vendor]
+env = ["VENDOR_PASSWORD"]
+patterns = ["^pin_[a-z]{8}$"]
+url_prefixes = ["https://fixed.example"]
+"#,
+    )?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_args(&[
+            "-c",
+            "features.network_proxy.credentials.vendor.url_prefixes=['https://fixed.example']",
+        ])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let id = app_server
+        .send_config_value_write_request(ConfigValueWriteParams {
+            file_path: None,
+            key_path: "features.network_proxy.credentials.vendor.url_prefixes".to_string(),
+            value: json!(null),
+            merge_strategy: MergeStrategy::Replace,
+            expected_version: None,
+        })
+        .await?;
+    let write: ConfigWriteResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(id)).await??;
+    assert_eq!(write.status, WriteStatus::OkOverridden);
+
+    let saved: toml::Value = toml::from_str(&std::fs::read_to_string(
+        codex_home.path().join("config.toml"),
+    )?)?;
+    assert_eq!(
+        serde_json::to_value(&saved["features"]["network_proxy"]["credentials"]["vendor"])?,
+        json!({ "env": ["VENDOR_PASSWORD"], "patterns": ["^pin_[a-z]{8}$"] }),
+    );
+    let id = app_server
+        .send_config_read_request(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await?;
+    let read: ConfigReadResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(id)).await??;
+    assert_eq!(
+        read.config.additional["features"]["network_proxy"]["credentials"]["vendor"],
+        json!({
+            "env": ["VENDOR_PASSWORD"], "patterns": ["^pin_[a-z]{8}$"],
+            "url_prefixes": ["https://fixed.example"], "auth": [],
+        }),
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_provider_remapping_rejects_invalid_replacements_atomically() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let initial = r#"[features.network_proxy]
+enabled = true
+credential_broker = true
+[features.network_proxy.credentials.a_working]
+env = ["VENDOR_PASSWORD"]
+patterns = ["^pin_[a-z]{8}$"]
+url_prefixes = ["https://api.vendor.example"]
+"#;
+    write_config(&codex_home, initial)?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    for (key_path, merge_strategy, replacement) in [
+        json!({ "env": ["VENDOR_PASSWORD"] }),
+        json!({ "env": ["VENDOR_PASSWORD"], "patterns": ["["], "url_prefixes": ["https://api.vendor.example"] }),
+        json!({ "env": ["VENDOR_PASSWORD"], "patterns": ["^pin_[a-z]{8}$"], "url_prefixes": ["http://api.vendor.example"] }),
+        json!({ "env": ["VENDOR_PASSWORD"], "patterns": ["^pin_[a-z]{8}$"], "url_prefixes": ["https://api.vendor.example"], "auth": ["header"] }),
+    ]
+    .into_iter()
+    .flat_map(|replacement| [
+        ("features.network_proxy.credentials.z_new", MergeStrategy::Upsert, replacement.clone()),
+        ("features.network_proxy.credentials.a_working", MergeStrategy::Replace, replacement.clone()),
+        ("features.network_proxy.credentials", MergeStrategy::Replace, json!({ "a_working": replacement })),
+    ])
+    .chain([
+        ("features.network_proxy.credentials.a_working.patterns", MergeStrategy::Upsert, json!(["["])),
+        ("features.network_proxy.credentials.a_working.patterns", MergeStrategy::Replace, json!(["["])),
+        ("features.network_proxy.credentials.a_working.patterns", MergeStrategy::Replace, json!(null)),
+        ("features.network_proxy.credentials.a_working.url_prefixes", MergeStrategy::Upsert, json!(["http://api.vendor.example"])),
+    ]) {
+        let id = app_server
+            .send_config_value_write_request(ConfigValueWriteParams {
+                file_path: None,
+                key_path: key_path.to_string(),
+                value: replacement,
+                merge_strategy,
+                expected_version: None,
+            })
+            .await?;
+        let error: JSONRPCError = timeout(
+            DEFAULT_READ_TIMEOUT,
+            app_server.read_stream_until_error_message(RequestId::Integer(id)),
+        )
+        .await??;
+        assert_eq!(
+            error
+                .error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("config_write_error_code")),
+            Some(&json!("configValidationError"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(codex_home.path().join("config.toml"))?,
+            initial
+        );
+    }
+    let id = app_server
+        .send_config_batch_write_request(ConfigBatchWriteParams {
+            file_path: None,
+            edits: [
+                ("a_working", "OTHER_PASSWORD"),
+                ("b_incomplete", "VENDOR_PASSWORD"),
+            ]
+            .into_iter()
+            .map(|(provider, source)| ConfigEdit {
+                key_path: format!("features.network_proxy.credentials.{provider}.env"),
+                value: json!([source]),
+                merge_strategy: MergeStrategy::Upsert,
+            })
+            .collect(),
+            expected_version: None,
+            reload_user_config: false,
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        app_server.read_stream_until_error_message(RequestId::Integer(id)),
+    )
+    .await??;
+    assert_eq!(
+        error
+            .error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("config_write_error_code")),
+        Some(&json!("configValidationError"))
+    );
+    assert_eq!(
+        std::fs::read_to_string(codex_home.path().join("config.toml"))?,
+        initial
+    );
+    let id = app_server
+        .send_config_batch_write_request(ConfigBatchWriteParams {
+            file_path: None,
+            edits: [
+                ("env", json!(["VENDOR_PASSWORD"])),
+                ("patterns", json!(["^pin_[a-z]{8}$"])),
+                ("url_prefix_from_env", json!("VENDOR_ENDPOINT")),
+            ]
+            .into_iter()
+            .map(|(field, value)| ConfigEdit {
+                key_path: format!("features.network_proxy.credentials.z_new.{field}"),
+                value,
+                merge_strategy: MergeStrategy::Upsert,
+            })
+            .collect(),
+            expected_version: None,
+            reload_user_config: false,
+        })
+        .await?;
+    let written: ConfigWriteResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(id)).await??;
+    assert_eq!(written.status, WriteStatus::Ok);
+    let id = app_server
+        .send_config_read_request(ConfigReadParams {
+            include_layers: false,
+            cwd: None,
+        })
+        .await?;
+    let read: ConfigReadResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(id)).await??;
+    assert_eq!(
+        read.config.additional["features"]["network_proxy"]["credentials"],
+        json!({
+            "z_new": { "env": ["VENDOR_PASSWORD"], "patterns": ["^pin_[a-z]{8}$"], "url_prefix_from_env": "VENDOR_ENDPOINT", "url_prefixes": [], "auth": [] },
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn config_provider_upsert_persists_displaced_siblings() -> Result<()> {
+    let upsert = |path: &str, value| ConfigEdit {
+        key_path: format!("features.network_proxy.credentials{path}"),
+        value,
+        merge_strategy: MergeStrategy::Upsert,
+    };
+    for (mut edits, remapped_source) in [
+        (
+            vec![upsert(".z_new", json!({ "env": ["VENDOR_PASSWORD"] }))],
+            None,
+        ),
+        (vec![upsert(".z_new.env", json!(["VENDOR_PASSWORD"]))], None),
+        (
+            vec![upsert(
+                "",
+                json!({ "z_new": { "env": ["VENDOR_PASSWORD"] } }),
+            )],
+            None,
+        ),
+        (
+            vec![upsert(
+                "",
+                json!({
+                    "a_old": { "env": ["NEW_PASSWORD"] },
+                    "z_new": { "env": ["VENDOR_PASSWORD"] },
+                }),
+            )],
+            Some("NEW_PASSWORD"),
+        ),
+        (
+            vec![
+                upsert(".z_new.env", json!(["VENDOR_PASSWORD"])),
+                upsert(".a_old.env", json!(["OTHER_PASSWORD"])),
+            ],
+            Some("OTHER_PASSWORD"),
+        ),
+        (
+            vec![
+                upsert(".z_new", json!({ "env": ["VENDOR_PASSWORD"] })),
+                ConfigEdit {
+                    key_path: "model".to_string(),
+                    value: json!("gpt-test"),
+                    merge_strategy: MergeStrategy::Replace,
+                },
+                upsert("", json!({ "a_old": { "env": ["OTHER_PASSWORD"] } })),
+            ],
+            Some("OTHER_PASSWORD"),
+        ),
+    ] {
+        let codex_home = TempDir::new()?;
+        write_config(
+            &codex_home,
+            r#"[features.network_proxy]
+enabled = true
+credential_broker = true
+
+[features.network_proxy.credentials.a_old]
+env = ["VENDOR_PASSWORD"]
+patterns = ["^old_[a-z]{8}$"]
+url_prefixes = ["https://old.example"]
+auth = ["token"]
+
+[features.network_proxy.credentials.z_new]
+env = ["OTHER_PASSWORD"]
+patterns = ["^new_[a-z]{8}$"]
+url_prefixes = ["https://new.example"]
+auth = ["bearer"]
+"#,
+        )?;
+        let mut app_server = TestAppServer::builder()
+            .with_codex_home(codex_home.path())
+            .without_auto_env()
+            .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+            .await?;
+
+        let mut expected = json!({
+            "z_new": {
+                "auth": ["bearer"],
+                "env": ["VENDOR_PASSWORD"],
+                "patterns": ["^new_[a-z]{8}$"],
+                "url_prefixes": ["https://new.example"],
+            }
+        });
+        if let Some(source) = remapped_source {
+            expected["a_old"] = json!({
+                "auth": ["token"],
+                "env": [source],
+                "patterns": ["^old_[a-z]{8}$"],
+                "url_prefixes": ["https://old.example"],
+            });
+        }
+
+        let write_id = if edits.len() == 1 {
+            let edit = edits.pop().unwrap();
+            app_server
+                .send_config_value_write_request(ConfigValueWriteParams {
+                    file_path: None,
+                    key_path: edit.key_path,
+                    value: edit.value,
+                    merge_strategy: edit.merge_strategy,
+                    expected_version: None,
+                })
+                .await?
+        } else {
+            app_server
+                .send_config_batch_write_request(ConfigBatchWriteParams {
+                    file_path: None,
+                    edits,
+                    expected_version: None,
+                    reload_user_config: false,
+                })
+                .await?
+        };
+        let write: ConfigWriteResponse =
+            timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(write_id)).await??;
+        assert_eq!(write.status, WriteStatus::Ok);
+
+        let read_id = app_server
+            .send_config_read_request(ConfigReadParams {
+                include_layers: false,
+                cwd: None,
+            })
+            .await?;
+        let read: ConfigReadResponse =
+            timeout(DEFAULT_READ_TIMEOUT, app_server.read_response(read_id)).await??;
+        assert_eq!(
+            read.config.additional["features"]["network_proxy"]["credentials"],
+            expected
+        );
+        assert_eq!(
+            read.origins["features.network_proxy.credentials.z_new.env.0"].version,
+            write.version
+        );
+    }
     Ok(())
 }
 

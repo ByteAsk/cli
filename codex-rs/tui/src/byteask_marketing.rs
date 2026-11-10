@@ -64,7 +64,9 @@ mod tests {
 
     #[test]
     fn each_command_hint_present_exactly_once() {
-        let all: Vec<String> = (0..hint_count() as u64).map(|t| hint_for(t, None)).collect();
+        let all: Vec<String> = (0..hint_count() as u64)
+            .map(|t| hint_for(t, None))
+            .collect();
         for needle in [
             "/voucher",
             "/referral-code",

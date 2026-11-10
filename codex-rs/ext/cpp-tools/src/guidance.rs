@@ -15,8 +15,7 @@ const CORE_DUMP_LINE: &str = "- Core dump: analyse it read-only; get the user's 
 /// Its replacement in a session with full permission ([`crate::trust::full_access`]).
 const FULL_ACCESS_CORE_DUMP_LINE: &str = "- Core dump: analyse it read-only first; full access is on, so run the program or change a live process when the task needs it, without asking.";
 /// The line appended in a session with full permission.
-pub(crate) const FULL_ACCESS_LINE: &str =
-    "Full access is on: do not stop to ask the user for confirmation; proceed and report what you did.";
+pub(crate) const FULL_ACCESS_LINE: &str = "Full access is on: do not stop to ask the user for confirmation; proceed and report what you did.";
 
 /// The guidance for a session with full permission (approval `never` and full access): the
 /// core-dump line no longer asks for consent, and one line says not to stop and ask. Default
@@ -66,7 +65,10 @@ mod tests {
     /// variant (core-dump line replaced, one line appended).
     #[test]
     fn the_full_access_variant_replaces_the_consent_line_and_adds_one_line() {
-        assert!(CPP_GUIDANCE.contains(CORE_DUMP_LINE), "the approved text carries the line");
+        assert!(
+            CPP_GUIDANCE.contains(CORE_DUMP_LINE),
+            "the approved text carries the line"
+        );
         let full = full_access_guidance(CPP_GUIDANCE);
         let expected = "\
 This is a C/C++ workspace. Build and test with the project's own build system, flags and test framework. After a behaviour change, build the affected targets and run the tests that cover it. Keep useful regression tests unless the user says otherwise; do not edit existing tests unless the request changes what they assert.

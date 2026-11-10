@@ -148,7 +148,10 @@ async fn rpc(
 
     let mut request = create_client()
         .post(endpoint())
-        .header(reqwest::header::ACCEPT, "application/json, text/event-stream")
+        .header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        )
         .header(reqwest::header::USER_AGENT, USER_AGENT)
         .timeout(REQUEST_TIMEOUT)
         .json(&body);
@@ -314,7 +317,8 @@ mod tests {
 
     #[test]
     fn parse_rpc_body_reads_sse_data_line() {
-        let raw = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n";
+        let raw =
+            "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n";
         let value = parse_rpc_body(raw).unwrap();
         assert_eq!(value["result"]["ok"], json!(true));
     }

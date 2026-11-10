@@ -27,7 +27,8 @@ pub fn resume_hint(thread_name: Option<&str>, thread_id: Option<ThreadId>) -> Op
     let thread_id = thread_id?;
     match thread_name.filter(|name| !name.is_empty()) {
         Some(thread_name) => Some(format!(
-            "{} resume, then select {thread_name} ({thread_id})", cmd()
+            "{} resume, then select {thread_name} ({thread_id})",
+            cmd()
         )),
         None => resume_command(/*thread_name*/ None, Some(thread_id)),
     }

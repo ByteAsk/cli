@@ -275,7 +275,11 @@ pub fn codex_hooks_path() -> Option<PathBuf> {
 
 /// Put our hook entries into `doc` (`{"hooks": {...}}`), replacing any earlier ones of ours and
 /// keeping everything else as it was.
-pub fn merge_hooks(doc: &mut serde_json::Value, command: &ServerCommand, client: &str) -> anyhow::Result<()> {
+pub fn merge_hooks(
+    doc: &mut serde_json::Value,
+    command: &ServerCommand,
+    client: &str,
+) -> anyhow::Result<()> {
     let Some(root) = doc.as_object_mut() else {
         bail!("not a JSON object");
     };
@@ -291,7 +295,9 @@ pub fn merge_hooks(doc: &mut serde_json::Value, command: &ServerCommand, client:
         groups.retain(|group| {
             !group["hooks"].as_array().is_some_and(|handlers| {
                 handlers.iter().any(|handler| {
-                    handler["command"].as_str().is_some_and(|c| c.contains(HOOK_MARKER))
+                    handler["command"]
+                        .as_str()
+                        .is_some_and(|c| c.contains(HOOK_MARKER))
                 })
             })
         });
@@ -309,8 +315,12 @@ pub fn merge_hooks(doc: &mut serde_json::Value, command: &ServerCommand, client:
 fn read_json_object(path: &Path) -> anyhow::Result<serde_json::Value> {
     match std::fs::read_to_string(path) {
         Ok(text) if text.trim().is_empty() => Ok(serde_json::json!({})),
-        Ok(text) => serde_json::from_str::<serde_json::Value>(&text)
-            .with_context(|| format!("{} is not valid JSON, so it was left untouched", path.display())),
+        Ok(text) => serde_json::from_str::<serde_json::Value>(&text).with_context(|| {
+            format!(
+                "{} is not valid JSON, so it was left untouched",
+                path.display()
+            )
+        }),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
         Err(err) => Err(err).context(format!("could not read {}", path.display())),
     }
@@ -545,13 +555,25 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|group| group["hooks"][0]["command"].as_str().unwrap().contains(HOOK_MARKER))
+                .filter(|group| {
+                    group["hooks"][0]["command"]
+                        .as_str()
+                        .unwrap()
+                        .contains(HOOK_MARKER)
+                })
                 .collect();
-            assert_eq!(ours.len(), 1, "{event}: installed twice must leave one entry");
+            assert_eq!(
+                ours.len(),
+                1,
+                "{event}: installed twice must leave one entry"
+            );
             let handler = &ours[0]["hooks"][0];
             assert_eq!(handler["timeout"], timeout);
             let cmd = handler["command"].as_str().unwrap();
-            assert!(cmd.contains(&format!("toolbox hook {verb} --client claude-code")), "{cmd}");
+            assert!(
+                cmd.contains(&format!("toolbox hook {verb} --client claude-code")),
+                "{cmd}"
+            );
             assert!(cmd.starts_with("BYTEASK_HOME='"), "{cmd}");
         }
         assert_eq!(
@@ -562,10 +584,22 @@ mod tests {
 
     #[test]
     fn the_stop_hook_waits_longer_than_the_fast_tier() {
-        let stop = HOOK_EVENTS.iter().find(|(event, _, _)| *event == "Stop").unwrap();
-        assert!(stop.2 > codex_cpp_tools::hooks::FAST_TIER.as_secs(), "the Stop hook outlasts the fast tier");
-        let prompt = HOOK_EVENTS.iter().find(|(event, _, _)| *event == "UserPromptSubmit").unwrap();
-        assert!(prompt.2 > codex_cpp_tools::hooks::PROMPT_BUDGET.as_secs(), "the prompt hook outlasts its budget");
+        let stop = HOOK_EVENTS
+            .iter()
+            .find(|(event, _, _)| *event == "Stop")
+            .unwrap();
+        assert!(
+            stop.2 > codex_cpp_tools::hooks::FAST_TIER.as_secs(),
+            "the Stop hook outlasts the fast tier"
+        );
+        let prompt = HOOK_EVENTS
+            .iter()
+            .find(|(event, _, _)| *event == "UserPromptSubmit")
+            .unwrap();
+        assert!(
+            prompt.2 > codex_cpp_tools::hooks::PROMPT_BUDGET.as_secs(),
+            "the prompt hook outlasts its budget"
+        );
     }
 
     #[test]

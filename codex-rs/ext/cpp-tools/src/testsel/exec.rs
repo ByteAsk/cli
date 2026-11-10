@@ -97,7 +97,11 @@ pub(crate) async fn run_logged(
     if let Some(parent) = ctx.log.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let mut file = match std::fs::OpenOptions::new().create(true).append(true).open(&ctx.log) {
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&ctx.log)
+    {
         Ok(f) => f,
         Err(e) => return fail(format!("cannot open log {}: {e}", ctx.log.display())),
     };
@@ -121,7 +125,10 @@ pub(crate) async fn run_logged(
         }
     };
     let Some(_slot) = slot else {
-        let _ = writeln!(file, "timed out waiting for another ByteAsk build or test run to finish");
+        let _ = writeln!(
+            file,
+            "timed out waiting for another ByteAsk build or test run to finish"
+        );
         return CmdResult {
             timed_out: true,
             ..fail("timed out waiting for another ByteAsk build or test run to finish".to_string())
@@ -206,7 +213,12 @@ pub(crate) struct BuildResult {
     pub waited: Option<String>,
 }
 
-fn build_command(model: &Model, dir: &Path, targets: &[String], jobs: usize) -> (String, Vec<String>) {
+fn build_command(
+    model: &Model,
+    dir: &Path,
+    targets: &[String],
+    jobs: usize,
+) -> (String, Vec<String>) {
     let jobs_s = jobs.to_string();
     match model.system {
         System::CMake => {
@@ -223,12 +235,21 @@ fn build_command(model: &Model, dir: &Path, targets: &[String], jobs: usize) -> 
             ("cmake".to_string(), args)
         }
         System::Meson => {
-            let mut args = vec!["-C".to_string(), dir.display().to_string(), "-j".to_string(), jobs_s];
+            let mut args = vec![
+                "-C".to_string(),
+                dir.display().to_string(),
+                "-j".to_string(),
+                jobs_s,
+            ];
             args.extend(targets.iter().cloned());
             ("ninja".to_string(), args)
         }
         System::Make => {
-            let mut args = vec!["-C".to_string(), dir.display().to_string(), format!("-j{jobs}")];
+            let mut args = vec![
+                "-C".to_string(),
+                dir.display().to_string(),
+                format!("-j{jobs}"),
+            ];
             args.extend(targets.iter().cloned());
             ("make".to_string(), args)
         }
@@ -262,14 +283,22 @@ pub(crate) fn tool_targets(model: &Model, targets: &[String]) -> Vec<String> {
 pub(crate) async fn build(ctx: &Ctx, model: &Model, dir: &Path, targets: &[String]) -> BuildResult {
     let started = Instant::now();
     let names = tool_targets(model, targets);
-    let together = names.len() <= 1 || model.system != System::CMake || crate::toolver::at_least(model.version, (3, 15));
+    let together = names.len() <= 1
+        || model.system != System::CMake
+        || crate::toolver::at_least(model.version, (3, 15));
     let mut result = BuildResult {
         ok: true,
         ..BuildResult::default()
     };
     result.waited = wait_for_foreign(ctx, dir).await;
     let mut outputs = String::new();
-    let label = |group: &[String]| if group.is_empty() { "everything".to_string() } else { group.join(" ") };
+    let label = |group: &[String]| {
+        if group.is_empty() {
+            "everything".to_string()
+        } else {
+            group.join(" ")
+        }
+    };
     if together {
         ctx.progress(format!("building {}", label(&names)));
         let (program, args) = build_command(model, dir, &names, ctx.jobs);
@@ -282,7 +311,8 @@ pub(crate) async fn build(ctx: &Ctx, model: &Model, dir: &Path, targets: &[Strin
             if names.len() > 1 && !res.cancelled && !res.timed_out {
                 for (name, tool_name) in targets.iter().zip(names.iter()) {
                     ctx.progress(format!("building {tool_name} alone to locate the failure"));
-                    let (program, args) = build_command(model, dir, std::slice::from_ref(tool_name), ctx.jobs);
+                    let (program, args) =
+                        build_command(model, dir, std::slice::from_ref(tool_name), ctx.jobs);
                     let one = run_logged(ctx, &program, &args, dir, &[], BUILD_TIMEOUT).await;
                     if one.cancelled {
                         result.cancelled = true;
@@ -299,7 +329,8 @@ pub(crate) async fn build(ctx: &Ctx, model: &Model, dir: &Path, targets: &[Strin
     } else {
         for (name, tool_name) in targets.iter().zip(names.iter()) {
             ctx.progress(format!("building {tool_name}"));
-            let (program, args) = build_command(model, dir, std::slice::from_ref(tool_name), ctx.jobs);
+            let (program, args) =
+                build_command(model, dir, std::slice::from_ref(tool_name), ctx.jobs);
             let res = run_logged(ctx, &program, &args, dir, &[], BUILD_TIMEOUT).await;
             outputs.push_str(&res.output);
             result.timed_out |= res.timed_out;
@@ -342,7 +373,10 @@ async fn wait_for_foreign(ctx: &Ctx, dir: &Path) -> Option<String> {
             break;
         };
         if seen.is_none() {
-            ctx.progress(format!("waiting for a build already running in {}", dir.display()));
+            ctx.progress(format!(
+                "waiting for a build already running in {}",
+                dir.display()
+            ));
             seen = Some(found);
         }
     }
@@ -445,14 +479,21 @@ fn narrowed(item: &RunItem, failed: &[String]) -> Option<RunItem> {
             cases,
         } => {
             let prefix = format!("{test}::");
-            let failed_cases: Vec<String> = failed.iter().filter_map(|f| f.strip_prefix(&prefix).map(str::to_string)).collect();
+            let failed_cases: Vec<String> = failed
+                .iter()
+                .filter_map(|f| f.strip_prefix(&prefix).map(str::to_string))
+                .collect();
             Some(RunItem::Direct {
                 test: test.clone(),
                 argv: argv.clone(),
                 workdir: workdir.clone(),
                 env: env.clone(),
                 framework: *framework,
-                cases: if cases.is_empty() || failed_cases.is_empty() { cases.clone() } else { failed_cases },
+                cases: if cases.is_empty() || failed_cases.is_empty() {
+                    cases.clone()
+                } else {
+                    failed_cases
+                },
             })
         }
         RunItem::MakeCheck { .. } => None,
@@ -476,7 +517,11 @@ async fn run_item(ctx: &Ctx, item: &RunItem) -> RunResult {
 
 async fn run_ctest(ctx: &Ctx, dir: &Path, names: &[String]) -> RunResult {
     let mut out = RunResult::default();
-    let chunks: Vec<&[String]> = if names.is_empty() { vec![&[][..]] } else { names.chunks(CTEST_CHUNK).collect() };
+    let chunks: Vec<&[String]> = if names.is_empty() {
+        vec![&[][..]]
+    } else {
+        names.chunks(CTEST_CHUNK).collect()
+    };
     for chunk in chunks {
         let mut args = vec![
             "--output-on-failure".to_string(),
@@ -489,18 +534,32 @@ async fn run_ctest(ctx: &Ctx, dir: &Path, names: &[String]) -> RunResult {
             args.push("-R".to_string());
             args.push(format!(
                 "^({})$",
-                chunk.iter().map(|n| regex_escape(n)).collect::<Vec<_>>().join("|")
+                chunk
+                    .iter()
+                    .map(|n| regex_escape(n))
+                    .collect::<Vec<_>>()
+                    .join("|")
             ));
         }
         let count = if chunk.is_empty() { 1000 } else { chunk.len() };
-        ctx.progress(format!("running {} test(s) with ctest", if chunk.is_empty() { "all".to_string() } else { count.to_string() }));
+        ctx.progress(format!(
+            "running {} test(s) with ctest",
+            if chunk.is_empty() {
+                "all".to_string()
+            } else {
+                count.to_string()
+            }
+        ));
         let rounds = u32::try_from(count.div_ceil(ctx.jobs.max(1))).unwrap_or(u32::MAX);
-        let timeout = (ctx.test_timeout * rounds.max(1) + Duration::from_secs(60)).min(Duration::from_secs(6 * 3600));
+        let timeout = (ctx.test_timeout * rounds.max(1) + Duration::from_secs(60))
+            .min(Duration::from_secs(6 * 3600));
         let res = run_logged(ctx, "ctest", &args, dir, &[], timeout).await;
         let parsed = parse::ctest(&res.output);
         absorb(&mut out, parsed, None);
         for name in chunk {
-            out.results.entry(name.clone()).or_insert(TestStatus::NotRun);
+            out.results
+                .entry(name.clone())
+                .or_insert(TestStatus::NotRun);
         }
         if res.cancelled {
             out.cancelled = true;
@@ -539,7 +598,11 @@ pub(crate) fn regex_escape(name: &str) -> String {
 }
 
 /// The argv for running `argv` with only `cases` selected.
-pub(crate) fn filtered_argv(argv: &[String], framework: Option<Framework>, cases: &[String]) -> Vec<String> {
+pub(crate) fn filtered_argv(
+    argv: &[String],
+    framework: Option<Framework>,
+    cases: &[String],
+) -> Vec<String> {
     let mut out = argv.to_vec();
     match framework {
         Some(Framework::GTest) => {
@@ -549,7 +612,13 @@ pub(crate) fn filtered_argv(argv: &[String], framework: Option<Framework>, cases
         }
         Some(Framework::Catch) => {
             if !cases.is_empty() {
-                out.push(cases.iter().map(|c| catch_escape(c)).collect::<Vec<_>>().join(","));
+                out.push(
+                    cases
+                        .iter()
+                        .map(|c| catch_escape(c))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
             }
             out.extend(["-r".to_string(), "xml".to_string()]);
         }
@@ -557,7 +626,11 @@ pub(crate) fn filtered_argv(argv: &[String], framework: Option<Framework>, cases
             if !cases.is_empty() {
                 out.push(format!(
                     "--test-case={}",
-                    cases.iter().map(|c| c.replace(',', "\\,")).collect::<Vec<_>>().join(",")
+                    cases
+                        .iter()
+                        .map(|c| c.replace(',', "\\,"))
+                        .collect::<Vec<_>>()
+                        .join(",")
                 ));
             }
         }
@@ -593,12 +666,17 @@ async fn run_direct(
     };
     if !Path::new(program).exists() && program.contains('/') {
         out.results.insert(test.to_string(), TestStatus::NotBuilt);
-        out.details.insert(test.to_string(), vec![format!("{program} does not exist")]);
+        out.details
+            .insert(test.to_string(), vec![format!("{program} does not exist")]);
         return out;
     }
     ctx.progress(format!(
         "running {test}{}",
-        if cases.is_empty() { String::new() } else { format!(" ({} case(s))", cases.len()) }
+        if cases.is_empty() {
+            String::new()
+        } else {
+            format!(" ({} case(s))", cases.len())
+        }
     ));
     let full = filtered_argv(argv, framework, cases);
     let n = u32::try_from(cases.len().max(1).div_ceil(8)).unwrap_or(1);
@@ -618,18 +696,26 @@ async fn run_direct(
     if !cases.is_empty() && framework.is_some() {
         if parsed.results.is_empty() {
             // The filter matched nothing, or the program died first.
-            let status = if res.ok() { TestStatus::NotRun } else if res.timed_out { TestStatus::Timeout } else { TestStatus::Fail };
+            let status = if res.ok() {
+                TestStatus::NotRun
+            } else if res.timed_out {
+                TestStatus::Timeout
+            } else {
+                TestStatus::Fail
+            };
             out.results.insert(test.to_string(), status);
             let lines: Vec<&str> = res.output.lines().collect();
             if status != TestStatus::NotRun {
                 out.details.insert(test.to_string(), parse::explain(&lines));
             } else {
-                out.notes.push(format!("{test}: the case filter matched no test case"));
+                out.notes
+                    .push(format!("{test}: the case filter matched no test case"));
             }
         } else {
             absorb(&mut out, parsed, Some(test));
             if res.timed_out {
-                out.results.insert(format!("{test}::(timeout)"), TestStatus::Timeout);
+                out.results
+                    .insert(format!("{test}::(timeout)"), TestStatus::Timeout);
             }
         }
         return out;
@@ -657,7 +743,12 @@ async fn run_direct(
         if !failing.is_empty() {
             details.push(format!(
                 "failing cases: {}",
-                failing.iter().take(5).map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                failing
+                    .iter()
+                    .take(5)
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
             if let Some(first) = failing.first().and_then(|f| parsed.details.get(*f)) {
                 details.extend(first.iter().take(parse::DETAIL_LINES - 1).cloned());
@@ -677,7 +768,12 @@ async fn run_direct(
 async fn run_make_check(ctx: &Ctx, dir: &Path, target: &str) -> RunResult {
     let mut out = RunResult::default();
     ctx.progress(format!("running `make {target}`"));
-    let args = vec!["-C".to_string(), dir.display().to_string(), format!("-j{}", ctx.jobs), target.to_string()];
+    let args = vec![
+        "-C".to_string(),
+        dir.display().to_string(),
+        format!("-j{}", ctx.jobs),
+        target.to_string(),
+    ];
     let res = run_logged(ctx, "make", &args, dir, &[], Duration::from_secs(4 * 3600)).await;
     if res.cancelled {
         out.cancelled = true;
@@ -689,7 +785,14 @@ async fn run_make_check(ctx: &Ctx, dir: &Path, target: &str) -> RunResult {
     }
     let name = format!("make {target}");
     if parsed.results.is_empty() {
-        out.results.insert(name.clone(), if res.ok() { TestStatus::Pass } else { TestStatus::Fail });
+        out.results.insert(
+            name.clone(),
+            if res.ok() {
+                TestStatus::Pass
+            } else {
+                TestStatus::Fail
+            },
+        );
     } else {
         absorb(&mut out, parsed, None);
         if !res.ok() && out.results.values().all(|s| !s.failing()) {
@@ -699,7 +802,11 @@ async fn run_make_check(ctx: &Ctx, dir: &Path, target: &str) -> RunResult {
     if !res.ok() {
         let lines: Vec<&str> = res.output.lines().collect();
         let errors = parse::build_errors(&res.output, &dir.display().to_string(), 2);
-        out.details.entry(name).or_insert(if errors.is_empty() { parse::explain(&lines) } else { errors });
+        out.details.entry(name).or_insert(if errors.is_empty() {
+            parse::explain(&lines)
+        } else {
+            errors
+        });
     }
     out
 }
@@ -729,12 +836,25 @@ mod tests {
         assert_eq!(regex_escape("a.b(c)+"), "a\\.b\\(c\\)\\+");
         let argv = vec!["/b/t".to_string()];
         assert_eq!(
-            filtered_argv(&argv, Some(Framework::GTest), &["A.B".to_string(), "*P.C/*".to_string()]),
+            filtered_argv(
+                &argv,
+                Some(Framework::GTest),
+                &["A.B".to_string(), "*P.C/*".to_string()]
+            ),
             vec!["/b/t".to_string(), "--gtest_filter=A.B:*P.C/*".to_string()]
         );
         assert_eq!(
-            filtered_argv(&argv, Some(Framework::Catch), &["x, y".to_string(), "[z]".to_string()]),
-            vec!["/b/t".to_string(), "x\\, y,\\[z\\]".to_string(), "-r".to_string(), "xml".to_string()]
+            filtered_argv(
+                &argv,
+                Some(Framework::Catch),
+                &["x, y".to_string(), "[z]".to_string()]
+            ),
+            vec![
+                "/b/t".to_string(),
+                "x\\, y,\\[z\\]".to_string(),
+                "-r".to_string(),
+                "xml".to_string()
+            ]
         );
         assert_eq!(
             filtered_argv(&argv, Some(Framework::Doctest), &["a,b".to_string()]),
@@ -747,20 +867,44 @@ mod tests {
     async fn logs_output_times_out_and_cancels() {
         let dir = tempfile::tempdir().unwrap();
         let (ctx, cancel) = ctx(dir.path());
-        let res = run_logged(&ctx, "sh", &["-c".to_string(), "echo hello; exit 3".to_string()], dir.path(), &[], Duration::from_secs(10)).await;
+        let res = run_logged(
+            &ctx,
+            "sh",
+            &["-c".to_string(), "echo hello; exit 3".to_string()],
+            dir.path(),
+            &[],
+            Duration::from_secs(10),
+        )
+        .await;
         assert_eq!(res.code, Some(3));
         assert_eq!(res.output.trim(), "hello");
         let log = std::fs::read_to_string(dir.path().join("run.log")).unwrap();
         assert!(log.contains("$ cd ") && log.contains("hello"), "{log}");
 
         let started = Instant::now();
-        let res = run_logged(&ctx, "sh", &["-c".to_string(), "sleep 30".to_string()], dir.path(), &[], Duration::from_millis(300)).await;
+        let res = run_logged(
+            &ctx,
+            "sh",
+            &["-c".to_string(), "sleep 30".to_string()],
+            dir.path(),
+            &[],
+            Duration::from_millis(300),
+        )
+        .await;
         assert!(res.timed_out);
         assert!(started.elapsed() < Duration::from_secs(10));
 
         let ctx2 = ctx.clone();
         let task = tokio::spawn(async move {
-            run_logged(&ctx2, "sh", &["-c".to_string(), "sleep 30".to_string()], Path::new("/"), &[], Duration::from_secs(60)).await
+            run_logged(
+                &ctx2,
+                "sh",
+                &["-c".to_string(), "sleep 30".to_string()],
+                Path::new("/"),
+                &[],
+                Duration::from_secs(60),
+            )
+            .await
         });
         tokio::time::sleep(Duration::from_millis(200)).await;
         cancel.send(true).unwrap();
@@ -773,7 +917,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (ctx, _cancel) = ctx(dir.path());
         let script = dir.path().join("t.sh");
-        std::fs::write(&script, "#!/bin/sh\necho 'check failed: expected 1 got 2'\nexit 1\n").unwrap();
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'check failed: expected 1 got 2'\nexit 1\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -789,6 +937,9 @@ mod tests {
         };
         let res = run(&ctx, &[item]).await;
         assert_eq!(res.results.get("t"), Some(&TestStatus::Fail));
-        assert_eq!(res.details["t"], vec!["check failed: expected 1 got 2".to_string()]);
+        assert_eq!(
+            res.details["t"],
+            vec!["check failed: expected 1 got 2".to_string()]
+        );
     }
 }

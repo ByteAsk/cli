@@ -203,10 +203,31 @@ pub(crate) fn jobs_per_build(settings: &Settings) -> usize {
 /// Heuristic: does the task read like an issue to resolve (as opposed to a question)?
 pub fn looks_like_issue(task: &str) -> bool {
     const CUES: &[&str] = &[
-        "bug", "issue", "error", "fail", "crash", "incorrect", "wrong", "expected", "should",
-        "doesn't", "does not", "fix", "support", "implement", "feature", "regression",
-        "segfault", "exception", "undefined", "leak", "overflow", "unexpected", "broken",
-        "warning", "add ",
+        "bug",
+        "issue",
+        "error",
+        "fail",
+        "crash",
+        "incorrect",
+        "wrong",
+        "expected",
+        "should",
+        "doesn't",
+        "does not",
+        "fix",
+        "support",
+        "implement",
+        "feature",
+        "regression",
+        "segfault",
+        "exception",
+        "undefined",
+        "leak",
+        "overflow",
+        "unexpected",
+        "broken",
+        "warning",
+        "add ",
     ];
     let words = task.split_whitespace().count();
     let lower = task.to_ascii_lowercase();
@@ -465,17 +486,28 @@ impl Orchestration {
         let ctx = self.eval_ctx();
         let _ = gitops::apply(&dir, &patch, true, false).await;
         let base_build = ctx
-            .logged("repro: base build", &build, &dir, ctx.build_timeout, &mut out.log)
+            .logged(
+                "repro: base build",
+                &build,
+                &dir,
+                ctx.build_timeout,
+                &mut out.log,
+            )
             .await;
         if !base_build.is_some_and(|o| o.ok()) {
-            out.note =
-                "the project does not build at the starting code with the reported command"
-                    .to_string();
+            out.note = "the project does not build at the starting code with the reported command"
+                .to_string();
             return out;
         }
         let _ = gitops::apply(&dir, &patch, false, false).await;
         let why = match ctx
-            .logged("repro: build with tests", &build, &dir, ctx.build_timeout, &mut out.log)
+            .logged(
+                "repro: build with tests",
+                &build,
+                &dir,
+                ctx.build_timeout,
+                &mut out.log,
+            )
             .await
         {
             None => {
@@ -492,9 +524,8 @@ impl Orchestration {
                     return out;
                 }
                 Some(o) if o.ok() => {
-                    out.note =
-                        "the tests pass on the starting code (not discriminating); dropped"
-                            .to_string();
+                    out.note = "the tests pass on the starting code (not discriminating); dropped"
+                        .to_string();
                     return out;
                 }
                 Some(_) => "they fail when run".to_string(),

@@ -232,9 +232,7 @@ fn info_line(text: &str) -> SelectionItem {
 /// see that list before committing — this is the one screen that exists to make
 /// the trade explicit. `esc`/`Back` returns without changing anything; the only
 /// forward action is the single Continue row (the wrapper then owns sign-in).
-pub(crate) fn subscription_consent_params(
-    provider: SubscriptionProvider,
-) -> SelectionViewParams {
+pub(crate) fn subscription_consent_params(provider: SubscriptionProvider) -> SelectionViewParams {
     let mut items = vec![
         row(
             &format!("Continue with your {}", provider.label()),
@@ -250,7 +248,9 @@ pub(crate) fn subscription_consent_params(
         ),
     ];
     // The losses. Kept short and concrete; sentence fragments, no exclamation.
-    items.push(info_line("This runs on your own plan and leaves ByteAsk managed."));
+    items.push(info_line(
+        "This runs on your own plan and leaves ByteAsk managed.",
+    ));
     items.push(info_line("While it is on you lose:"));
     items.push(info_line("  · /usage, billing and your plan limits"));
     items.push(info_line("  · credits, referrals and vouchers"));
@@ -538,7 +538,11 @@ mod tests {
         // "Use ByteAsk managed" row, or the user would be stuck.
         let mut s = state(&[], Vec::new());
         s.provider = ActiveProvider::Other;
-        assert!(names(&root_params(&s)).iter().any(|n| n == "Use ByteAsk managed"));
+        assert!(
+            names(&root_params(&s))
+                .iter()
+                .any(|n| n == "Use ByteAsk managed")
+        );
     }
 
     #[test]
@@ -547,11 +551,16 @@ mod tests {
         let ns = names(&p);
         // Exactly one forward (Continue) + Back are selectable; the rest are the
         // disabled loss lines the user must read first.
-        assert!(ns.iter().any(|n| n.starts_with("Continue with your ChatGPT subscription")));
+        assert!(
+            ns.iter()
+                .any(|n| n.starts_with("Continue with your ChatGPT subscription"))
+        );
         assert!(ns.iter().any(|n| n == "Back"));
         assert!(ns.iter().any(|n| n.contains("/usage")));
-        assert!(ns.iter().any(|n| n.contains("Claude and Gemini")),
-                "chatgpt consent names the model families it loses");
+        assert!(
+            ns.iter().any(|n| n.contains("Claude and Gemini")),
+            "chatgpt consent names the model families it loses"
+        );
         let selectable = p.items.iter().filter(|i| !i.is_disabled).count();
         assert_eq!(selectable, 2, "only Continue + Back are selectable");
     }
@@ -559,11 +568,19 @@ mod tests {
     #[test]
     fn launcher_row_shows_only_when_claude_is_on_path() {
         let mut s = state(&[], Vec::new());
-        assert!(!names(&root_params(&s)).iter().any(|n| n == "Use my Claude Code"),
-                "no launcher row when claude is absent");
+        assert!(
+            !names(&root_params(&s))
+                .iter()
+                .any(|n| n == "Use my Claude Code"),
+            "no launcher row when claude is absent"
+        );
         s.launch_claude_available = true;
-        assert!(names(&root_params(&s)).iter().any(|n| n == "Use my Claude Code"),
-                "launcher row appears when claude is on PATH");
+        assert!(
+            names(&root_params(&s))
+                .iter()
+                .any(|n| n == "Use my Claude Code"),
+            "launcher row appears when claude is on PATH"
+        );
     }
 
     fn sample_presets() -> Vec<ProviderPreset> {

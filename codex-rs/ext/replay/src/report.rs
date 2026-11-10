@@ -107,9 +107,17 @@ fn closest_part(d: &Difference, a: &str, b: &str) -> String {
         None => String::new(),
         Some(fd) => format!(
             " (closest candidate differs at {}: {} in {a}, {} in {b})",
-            if fd.path.is_empty() { "the whole record" } else { &fd.path },
-            fd.a.as_ref().map(short).unwrap_or_else(|| "absent".to_string()),
-            fd.b.as_ref().map(short).unwrap_or_else(|| "absent".to_string()),
+            if fd.path.is_empty() {
+                "the whole record"
+            } else {
+                &fd.path
+            },
+            fd.a.as_ref()
+                .map(short)
+                .unwrap_or_else(|| "absent".to_string()),
+            fd.b.as_ref()
+                .map(short)
+                .unwrap_or_else(|| "absent".to_string()),
         ),
     }
 }
@@ -124,7 +132,11 @@ mod tests {
 
     fn say(a: &[Value], b: &[Value], rules: &str) -> String {
         let r = Rules::from_json(rules).expect("rules");
-        sentence(&compare_records(a, b, &r).expect("compare"), "Python", "C++")
+        sentence(
+            &compare_records(a, b, &r).expect("compare"),
+            "Python",
+            "C++",
+        )
     }
 
     #[test]
@@ -134,7 +146,11 @@ mod tests {
             "Same output: 1 records from each side compared (exact order; all values exact)."
         );
         assert_eq!(
-            say(&[json!({"seq":4,"q":1})], &[json!({"seq":4,"q":2})], r#"{"key":"/seq"}"#),
+            say(
+                &[json!({"seq":4,"q":1})],
+                &[json!({"seq":4,"q":2})],
+                r#"{"key":"/seq"}"#
+            ),
             "First difference at record 0 (key 4): field /q is 1 in Python and 2 in C++ (rule: exact)."
         );
         assert_eq!(

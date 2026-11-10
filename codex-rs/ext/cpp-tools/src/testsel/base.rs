@@ -61,14 +61,18 @@ pub(crate) async fn compare(ctx: &Ctx, c: &Compared<'_>) -> BaseOutcome {
     let mut out = BaseOutcome::default();
     let key = BaseRunKey::new(&c.model.root, &c.head.sha, &c.model.config);
     let names: Vec<String> = c.now.keys().cloned().collect();
-    let missing: BTreeSet<String> = base_run_cache::missing(&key, &names).into_iter().cloned().collect();
+    let missing: BTreeSet<String> = base_run_cache::missing(&key, &names)
+        .into_iter()
+        .cloned()
+        .collect();
     out.cached = names.len() - missing.len();
     if !missing.is_empty() {
         match run_on_base(ctx, c, &missing).await {
             Ok(results) => {
                 out.ran = results.len();
                 if let Err(e) = base_run_cache::record(&key, results) {
-                    out.notes.push(format!("could not write the base-run cache: {e}"));
+                    out.notes
+                        .push(format!("could not write the base-run cache: {e}"));
                 }
             }
             Err(why) => out.notes.push(format!("base run unavailable: {why}")),
@@ -107,7 +111,8 @@ async fn run_on_base(
             let build = c.scratch.join("base-build");
             if !build.join("CMakeCache.txt").is_file() {
                 ctx.progress("configuring the base tree");
-                let like = (model.dir_kind == DirKind::Existing).then_some(model.build_dir.as_path());
+                let like =
+                    (model.dir_kind == DirKind::Existing).then_some(model.build_dir.as_path());
                 let req = cmake::Request {
                     root: &src,
                     build_dir: None,
@@ -116,7 +121,8 @@ async fn run_on_base(
                     cmake_files: &[],
                     commit: None,
                 };
-                cmake::configure(&req, &build, like.or(Some(model.build_dir.as_path())), true).await?;
+                cmake::configure(&req, &build, like.or(Some(model.build_dir.as_path())), true)
+                    .await?;
             }
             (src, build)
         }
@@ -127,7 +133,11 @@ async fn run_on_base(
     base_model.root = src.clone();
     base_model.build_dir = build.clone();
     for target in base_model.targets.iter_mut() {
-        target.artifacts = target.artifacts.iter().map(|a| PathBuf::from(remap(&a.display().to_string()))).collect();
+        target.artifacts = target
+            .artifacts
+            .iter()
+            .map(|a| PathBuf::from(remap(&a.display().to_string())))
+            .collect();
     }
     let mut not_built: BTreeSet<String> = BTreeSet::new();
     if !matches!(c.items.first(), Some(RunItem::MakeCheck { .. })) {
@@ -144,8 +154,15 @@ async fn run_on_base(
         .iter()
         .filter_map(|item| match item {
             RunItem::Ctest { names, .. } => {
-                let keep: Vec<String> = names.iter().filter(|n| missing.contains(*n)).cloned().collect();
-                (!keep.is_empty() || names.is_empty()).then(|| RunItem::Ctest { dir: build.clone(), names: keep })
+                let keep: Vec<String> = names
+                    .iter()
+                    .filter(|n| missing.contains(*n))
+                    .cloned()
+                    .collect();
+                (!keep.is_empty() || names.is_empty()).then(|| RunItem::Ctest {
+                    dir: build.clone(),
+                    names: keep,
+                })
             }
             RunItem::Direct {
                 test,
@@ -155,7 +172,8 @@ async fn run_on_base(
                 framework,
                 cases,
             } => {
-                let wanted = missing.contains(test) || missing.iter().any(|m| m.starts_with(&format!("{test}::")));
+                let wanted = missing.contains(test)
+                    || missing.iter().any(|m| m.starts_with(&format!("{test}::")));
                 wanted.then(|| RunItem::Direct {
                     test: test.clone(),
                     argv: argv.iter().map(|a| remap(a)).collect(),
@@ -165,7 +183,10 @@ async fn run_on_base(
                     cases: cases.clone(),
                 })
             }
-            RunItem::MakeCheck { target, .. } => Some(RunItem::MakeCheck { dir: src.clone(), target: target.clone() }),
+            RunItem::MakeCheck { target, .. } => Some(RunItem::MakeCheck {
+                dir: src.clone(),
+                target: target.clone(),
+            }),
         })
         .collect();
     ctx.progress("running the selection on the base tree");
@@ -188,7 +209,11 @@ async fn run_on_base(
                 Some(status) => *status,
                 // A case the base program does not have (new in this change):
                 // its filter matched nothing on base.
-                None if name.contains("::") && ran.results.get(test) == Some(&TestStatus::NotRun) => TestStatus::NotRun,
+                None if name.contains("::")
+                    && ran.results.get(test) == Some(&TestStatus::NotRun) =>
+                {
+                    TestStatus::NotRun
+                }
                 None => continue,
             }
         };
@@ -207,7 +232,8 @@ async fn base_source(ctx: &Ctx, c: &Compared<'_>) -> Result<PathBuf, String> {
     ctx.progress("unpacking the session-start commit");
     if src.exists() {
         // Ours (inside this tool's scratch directory), from another commit.
-        std::fs::remove_dir_all(&src).map_err(|e| format!("cannot clear {}: {e}", src.display()))?;
+        std::fs::remove_dir_all(&src)
+            .map_err(|e| format!("cannot clear {}: {e}", src.display()))?;
     }
     std::fs::create_dir_all(&src).map_err(|e| format!("cannot create {}: {e}", src.display()))?;
     let tar = c.scratch.join("base.tar");
@@ -215,7 +241,13 @@ async fn base_source(ctx: &Ctx, c: &Compared<'_>) -> Result<PathBuf, String> {
         TOOL,
         None,
         &c.model.root,
-        &["archive", "--format=tar", "-o", &tar.display().to_string(), &c.head.sha],
+        &[
+            "archive",
+            "--format=tar",
+            "-o",
+            &tar.display().to_string(),
+            &c.head.sha,
+        ],
         std::time::Duration::from_secs(300),
     )
     .await;
@@ -225,7 +257,12 @@ async fn base_source(ctx: &Ctx, c: &Compared<'_>) -> Result<PathBuf, String> {
     let untar = exec::run_logged(
         ctx,
         "tar",
-        &["-xf".to_string(), tar.display().to_string(), "-C".to_string(), src.display().to_string()],
+        &[
+            "-xf".to_string(),
+            tar.display().to_string(),
+            "-C".to_string(),
+            src.display().to_string(),
+        ],
         c.scratch,
         &[],
         std::time::Duration::from_secs(300),
@@ -233,7 +270,10 @@ async fn base_source(ctx: &Ctx, c: &Compared<'_>) -> Result<PathBuf, String> {
     .await;
     let _ = std::fs::remove_file(&tar);
     if !untar.ok() {
-        return Err(format!("unpacking the base commit failed: {}", untar.output.trim()));
+        return Err(format!(
+            "unpacking the base commit failed: {}",
+            untar.output.trim()
+        ));
     }
     let _ = std::fs::write(&stamp, &c.head.sha);
     Ok(src)
@@ -266,7 +306,10 @@ fn neighbours(c: &Compared<'_>, name: &str, flips: &[Flip]) -> Vec<String> {
         .collect();
     let mut out = Vec::new();
     for (file, cases) in &c.sel.cases {
-        let Some(me) = cases.iter().find(|k| k.filter == case_filter || k.name == case_filter) else {
+        let Some(me) = cases
+            .iter()
+            .find(|k| k.filter == case_filter || k.name == case_filter)
+        else {
             continue;
         };
         let words: BTreeSet<&str> = c
@@ -286,7 +329,9 @@ fn neighbours(c: &Compared<'_>, name: &str, flips: &[Flip]) -> Vec<String> {
                 .get(other.start.saturating_sub(1) as usize..(other.end as usize).min(lines.len()))
                 .map(|l| l.join("\n"))
                 .unwrap_or_default();
-            let shares_word = words.iter().any(|w| super::symbols::contains_word(&body, w));
+            let shares_word = words
+                .iter()
+                .any(|w| super::symbols::contains_word(&body, w));
             let shares_literal = c.changes.literals.iter().any(|l| body.contains(l.as_str()));
             if shares_word || shares_literal {
                 out.push(format!("{} (line {})", other.name, other.start));
@@ -323,9 +368,18 @@ mod tests {
         };
         let src = Path::new("/s/base-src");
         let build = Path::new("/s/base-build");
-        assert_eq!(remap_path("/r/build/bin/t", &model, src, build), "/s/base-build/bin/t");
-        assert_eq!(remap_path("/r/tests/data", &model, src, build), "/s/base-src/tests/data");
-        assert_eq!(remap_path("--data=/r/tests/x", &model, src, build), "--data=/s/base-src/tests/x");
+        assert_eq!(
+            remap_path("/r/build/bin/t", &model, src, build),
+            "/s/base-build/bin/t"
+        );
+        assert_eq!(
+            remap_path("/r/tests/data", &model, src, build),
+            "/s/base-src/tests/data"
+        );
+        assert_eq!(
+            remap_path("--data=/r/tests/x", &model, src, build),
+            "--data=/s/base-src/tests/x"
+        );
         assert_eq!(remap_path("--flag", &model, src, build), "--flag");
     }
 }

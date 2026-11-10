@@ -1,7 +1,15 @@
+use std::borrow::Cow;
+
+use codex_config::GuardianPolicyLoader;
+use codex_context_fragments::ContextualUserFragment;
+use codex_context_fragments::RenderedFragment;
 use codex_core::config::Config;
 use codex_features::FeatureToml;
 use codex_features::GuardianV2ConfigToml;
 use codex_features::GuardianV2TranscriptConfigToml;
+use codex_prompts::GuardianClassifierInstructions;
+use codex_prompts::ResolvedModelMessages;
+use codex_protocol::openai_models::GuardianModelPolicy;
 use codex_protocol::openai_models::GuardianV2ModelConfig;
 use codex_protocol::openai_models::ReasoningEffort;
 
@@ -12,23 +20,16 @@ use super::transcript::MAX_TOOL_ENTRY_TOKENS;
 use super::transcript::MAX_TOOL_TRANSCRIPT_TOKENS;
 use super::transcript::TranscriptConfig;
 use super::transcript::TranscriptSource;
-use super::transcript::truncate_entry;
 
 pub(crate) const DEFAULT_MODEL_CONTEXT_ITEM_TOKENS: usize = 10_000;
 pub(crate) const DEFAULT_PARENT_COMPACTION_TOKENS: usize = 25_000;
 const MIN_MODEL_CONTEXT_ITEM_TOKENS: usize = 100;
-const MAX_MODEL_CONTEXT_ITEM_TOKENS: usize = 100_000;
+pub(super) const MAX_MODEL_CONTEXT_ITEM_TOKENS: usize = 100_000;
 const DEFAULT_REVIEW_THRESHOLD: f64 = 0.5;
 const LEGACY_REVIEW_THRESHOLD: f64 = 0.8;
 const DEFAULT_MAX_TOOL_CALL_LAG: usize = 2;
-pub(crate) const DEFAULT_CLASSIFIER_INSTRUCTIONS: &str = include_str!("classifier_instructions.md");
+const DEFAULT_ASYNC_CLASSIFIER_CONVERSATION_TOKEN_LIMIT: usize = 100_000;
 pub(crate) const CLASSIFICATION_OUTPUT_INSTRUCTIONS: &str = "Your first output token is the entire classification: `high` for high risk or `low` for low risk. Output that token immediately and nothing else.";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GuardianV2ReviewScope {
-    Standard { sandboxed_exec_commands: bool },
-    ComputerUseOnly,
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GuardianV2Config {
@@ -37,20 +38,24 @@ pub(crate) struct GuardianV2Config {
     pub(crate) classifier_instructions: String,
     pub(crate) review_threshold: f64,
     pub(crate) max_tool_call_lag: usize,
+    pub(crate) async_classifier_conversation_token_limit: usize,
     pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) max_action_tokens: usize,
+    /// Caps the configured prompt, excluding fixed transcript provenance instructions.
     /// No truncation limit is applied unless local or model configuration supplies one.
     pub(crate) max_classifier_instruction_tokens: Option<usize>,
     pub(crate) reuse_parent_compaction: bool,
     pub(crate) max_parent_compaction_tokens: usize,
-    pub(crate) review_scope: GuardianV2ReviewScope,
+    pub(super) policy: GuardianPolicyLoader,
     pub(crate) transcript: TranscriptConfig,
+    pub(crate) review_multi_agent_calls: bool,
+    pub(crate) multi_agent_namespace: Option<String>,
 }
 
 impl GuardianV2Config {
     pub(crate) fn resolve(config: &Config) -> Result<Self, String> {
         let effective_config = config.config_layer_stack.effective_config();
-        let configured = match effective_config
+        let mut configured = match effective_config
             .get("features")
             .and_then(|features| features.get("guardianv2"))
             .cloned()
@@ -67,7 +72,27 @@ impl GuardianV2Config {
             None => GuardianV2ConfigToml::default(),
         };
 
-        Self::from_overrides(configured)
+        configured.transcript_mode = Some(config.guardian_transcript_mode);
+        let mut resolved = Self::from_overrides(configured.clone())?;
+        // Config.features can be changed after loading, including for reviewer threads.
+        let legacy = FeatureToml::Config(GuardianV2ConfigToml {
+            enabled: Some(config.features.enabled(codex_features::Feature::GuardianV2)),
+            ..configured
+        });
+        resolved.policy =
+            GuardianPolicyLoader::new(Some(&legacy), config.config_layer_stack.requirements());
+        resolved.review_multi_agent_calls = config
+            .features
+            .enabled(codex_features::Feature::GuardianNativeMultiAgentHistory);
+        resolved.multi_agent_namespace = config.multi_agent_v2.tool_namespace.clone();
+        Ok(resolved)
+    }
+
+    pub(super) fn policy_for_model(
+        &self,
+        model: Option<&codex_protocol::openai_models::ModelInfo>,
+    ) -> GuardianModelPolicy {
+        self.policy.resolve(model)
     }
 
     pub(crate) fn with_model_defaults(
@@ -87,6 +112,9 @@ impl GuardianV2Config {
             configured.max_tool_call_lag = configured
                 .max_tool_call_lag
                 .or(model_defaults.max_tool_call_lag);
+            configured.async_classifier_conversation_token_limit = configured
+                .async_classifier_conversation_token_limit
+                .or(model_defaults.async_classifier_conversation_token_limit);
             configured.reasoning_effort = configured
                 .reasoning_effort
                 .or_else(|| model_defaults.reasoning_effort.clone());
@@ -147,10 +175,21 @@ impl GuardianV2Config {
 
         let mut resolved = Self::from_overrides(configured)?;
         resolved.local_overrides = self.local_overrides.clone();
+        resolved.policy = self.policy.clone();
+        resolved.review_multi_agent_calls = self.review_multi_agent_calls;
+        resolved.multi_agent_namespace = self.multi_agent_namespace.clone();
         Ok(resolved)
     }
 
     fn from_overrides(configured: GuardianV2ConfigToml) -> Result<Self, String> {
+        let async_classifier_conversation_token_limit = configured
+            .async_classifier_conversation_token_limit
+            .unwrap_or(DEFAULT_ASYNC_CLASSIFIER_CONVERSATION_TOKEN_LIMIT);
+        if async_classifier_conversation_token_limit == 0 {
+            return Err(
+                "Guardian v2 async_classifier_conversation_token_limit must be positive".to_owned(),
+            );
+        }
         // Existing custom and model-owned prompts retain their original calibration
         // unless their owner explicitly supplies a matching threshold.
         let review_threshold = configured.review_threshold.unwrap_or_else(|| {
@@ -228,12 +267,24 @@ impl GuardianV2Config {
             );
         }
 
+        let policy = GuardianPolicyLoader::new(
+            Some(&FeatureToml::Config(GuardianV2ConfigToml {
+                enabled: Some(true),
+                ..configured.clone()
+            })),
+            &codex_config::ConfigRequirements::default(),
+        );
         Ok(Self {
             local_overrides: configured.clone(),
+            review_multi_agent_calls: false,
+            multi_agent_namespace: None,
+            async_classifier_conversation_token_limit,
             persist_scores: configured.persist_scores.unwrap_or(false),
-            classifier_instructions: configured
-                .classifier_instructions
-                .unwrap_or_else(|| DEFAULT_CLASSIFIER_INSTRUCTIONS.to_owned()),
+            classifier_instructions: configured.classifier_instructions.unwrap_or_else(|| {
+                ResolvedModelMessages::bundled()
+                    .guardian_classifier_instructions()
+                    .to_owned()
+            }),
             review_threshold,
             max_tool_call_lag: configured
                 .max_tool_call_lag
@@ -243,23 +294,9 @@ impl GuardianV2Config {
             max_classifier_instruction_tokens,
             reuse_parent_compaction: configured.reuse_parent_compaction.unwrap_or(true),
             max_parent_compaction_tokens,
-            review_scope: if configured
-                .review_scope
-                .as_ref()
-                .and_then(|review_scope| review_scope.computer_use_only)
-                .unwrap_or(true)
-            {
-                GuardianV2ReviewScope::ComputerUseOnly
-            } else {
-                GuardianV2ReviewScope::Standard {
-                    sandboxed_exec_commands: configured
-                        .review_scope
-                        .as_ref()
-                        .and_then(|review_scope| review_scope.sandboxed_exec_commands)
-                        .unwrap_or(false),
-                }
-            },
+            policy,
             transcript: TranscriptConfig {
+                format: configured.transcript_mode.unwrap_or_default(),
                 sources: transcript_config
                     .and_then(|transcript| transcript.sources.clone())
                     .unwrap_or_else(|| {
@@ -277,31 +314,24 @@ impl GuardianV2Config {
         })
     }
 
-    pub(crate) fn render_classifier_instructions(&self, policy: &str) -> String {
-        let instructions = if self
-            .classifier_instructions
-            .contains("{{ tenant_policy_config }}")
-        {
-            self.classifier_instructions
-                .replace("{{ tenant_policy_config }}", policy)
-        } else {
-            format!(
-                "{}\n\n# Security Policy\n{policy}",
-                self.classifier_instructions
-            )
+    pub(crate) fn render_classifier_instructions(
+        &self,
+        policy: &str,
+        extra_policy: &str,
+    ) -> RenderedFragment {
+        // Include both policies before the classifier's existing template substitution and truncation.
+        let policy = match extra_policy.trim() {
+            "" => Cow::Borrowed(policy),
+            extra_policy => Cow::Owned(format!("{policy}\n\n{extra_policy}")),
         };
-        let instructions = if instructions
-            .trim_end()
-            .ends_with(CLASSIFICATION_OUTPUT_INSTRUCTIONS)
-        {
-            instructions
-        } else {
-            format!("{instructions}\n\n{CLASSIFICATION_OUTPUT_INSTRUCTIONS}")
-        };
-        match self.max_classifier_instruction_tokens {
-            Some(max_tokens) => truncate_entry(&instructions, max_tokens),
-            None => instructions,
-        }
+        GuardianClassifierInstructions::new(
+            self.transcript.format,
+            &self.classifier_instructions,
+            &policy,
+            CLASSIFICATION_OUTPUT_INSTRUCTIONS,
+            self.max_classifier_instruction_tokens,
+        )
+        .render_fragment()
     }
 }
 

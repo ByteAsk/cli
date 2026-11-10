@@ -22,14 +22,16 @@ static CTEST_LINE: LazyLock<Regex> = LazyLock::new(|| {
 static BRACKET_OK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\[\s+OK\s+\]\s+(\S+)\s+\(").expect("valid regex"));
 #[allow(clippy::expect_used)] // constant pattern, covered by the unit tests
-static BRACKET_FAILED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\[\s+FAILED\s+\]\s+([A-Za-z_][\w:/.<>-]*\.[\w/<>-]+)").expect("valid regex"));
+static BRACKET_FAILED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\[\s+FAILED\s+\]\s+([A-Za-z_][\w:/.<>-]*\.[\w/<>-]+)").expect("valid regex")
+});
 #[allow(clippy::expect_used)] // constant pattern, covered by the unit tests
 static TAP_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(not ok|ok)\s+\d+\s*(?:-\s*)?(.*)$").expect("valid regex"));
 #[allow(clippy::expect_used)] // constant pattern, covered by the unit tests
 static WARNING_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:In file included from )?([^\s:][^:]*):(\d+):(?:\d+:)?\s+warning:").expect("valid regex")
+    Regex::new(r"^(?:In file included from )?([^\s:][^:]*):(\d+):(?:\d+:)?\s+warning:")
+        .expect("valid regex")
 });
 
 /// Outcome of one run of a test command.
@@ -117,7 +119,10 @@ pub fn warnings_per_file(log: &str, root: &str) -> BTreeMap<String, usize> {
 }
 
 /// Warnings attributed to `changed` files (suffix match: logs print paths in varying forms).
-pub fn warnings_in(counts: &BTreeMap<String, usize>, changed: &[String]) -> BTreeMap<String, usize> {
+pub fn warnings_in(
+    counts: &BTreeMap<String, usize>,
+    changed: &[String],
+) -> BTreeMap<String, usize> {
     let mut out = BTreeMap::new();
     for file in changed {
         let n: usize = counts
@@ -154,13 +159,33 @@ pub fn is_test_path(path: &str) -> bool {
     let comps: Vec<&str> = lower.split('/').collect();
     let (dirs, file) = comps.split_at(comps.len().saturating_sub(1));
     const TEST_DIRS: &[&str] = &[
-        "test", "tests", "testing", "unittest", "unittests", "unit_tests", "unit-tests",
-        "testsuite", "test-suite", "test_suite", "t", "spec", "specs", "regress", "regression",
+        "test",
+        "tests",
+        "testing",
+        "unittest",
+        "unittests",
+        "unit_tests",
+        "unit-tests",
+        "testsuite",
+        "test-suite",
+        "test_suite",
+        "t",
+        "spec",
+        "specs",
+        "regress",
+        "regression",
     ];
-    if dirs
-        .iter()
-        .any(|d| TEST_DIRS.contains(d) || d.starts_with("test_") || d.starts_with("tests_") || d.starts_with("test-") || d.starts_with("tests-") || d.ends_with("_test") || d.ends_with("_tests") || d.ends_with("-test") || d.ends_with("-tests"))
-    {
+    if dirs.iter().any(|d| {
+        TEST_DIRS.contains(d)
+            || d.starts_with("test_")
+            || d.starts_with("tests_")
+            || d.starts_with("test-")
+            || d.starts_with("tests-")
+            || d.ends_with("_test")
+            || d.ends_with("_tests")
+            || d.ends_with("-test")
+            || d.ends_with("-tests")
+    }) {
         return true;
     }
     let Some(file) = file.first() else {
@@ -173,7 +198,10 @@ pub fn is_test_path(path: &str) -> bool {
         || stem.ends_with("-test")
         || stem.ends_with("_tests")
         || stem.ends_with("_unittest")
-        || stem.ends_with("test") && stem.len() > 4 && !stem.ends_with("latest") && !stem.ends_with("contest")
+        || stem.ends_with("test")
+            && stem.len() > 4
+            && !stem.ends_with("latest")
+            && !stem.ends_with("contest")
 }
 
 #[cfg(test)]
@@ -200,7 +228,10 @@ Test project /w/build
                 ("ctest:unit_c".to_string(), false),
             ])
         );
-        assert_eq!(run.failed(), vec!["ctest:unit_b".to_string(), "ctest:unit_c".to_string()]);
+        assert_eq!(
+            run.failed(),
+            vec!["ctest:unit_b".to_string(), "ctest:unit_c".to_string()]
+        );
     }
 
     #[test]
@@ -254,7 +285,9 @@ src/c.cpp:4: warning: old style
             BTreeMap::from([("src/a.c".to_string(), 2)])
         );
         assert_eq!(
-            sanitizer_reports("==1==ERROR: AddressSanitizer: heap-use-after-free\nx.c:3:4: runtime error: signed integer overflow\n"),
+            sanitizer_reports(
+                "==1==ERROR: AddressSanitizer: heap-use-after-free\nx.c:3:4: runtime error: signed integer overflow\n"
+            ),
             2
         );
     }
@@ -272,7 +305,12 @@ src/c.cpp:4: warning: old style
         ] {
             assert!(is_test_path(p), "{p}");
         }
-        for p in ["src/parser.cc", "include/latest.h", "src/contest.c", "docs/testing.md.in/x"] {
+        for p in [
+            "src/parser.cc",
+            "include/latest.h",
+            "src/contest.c",
+            "docs/testing.md.in/x",
+        ] {
             // "docs/testing.md.in/x" has a directory named like a test dir only by prefix.
             if p == "docs/testing.md.in/x" {
                 continue;

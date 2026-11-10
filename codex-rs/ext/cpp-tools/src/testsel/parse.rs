@@ -40,9 +40,27 @@ fn clip(line: &str) -> String {
 /// else the last non-empty lines.
 pub(crate) fn explain(lines: &[&str]) -> Vec<String> {
     const MARKERS: &[&str] = &[
-        "Failure", "FAILED", "failed", "error", "Error", "ERROR", "Assertion", "assert", "Expected",
-        "expected", "Which is", "Segmentation", "Abort", "abort", "exception", "Exception", "REQUIRE",
-        "CHECK", "panic", "Sanitizer", "runtime error",
+        "Failure",
+        "FAILED",
+        "failed",
+        "error",
+        "Error",
+        "ERROR",
+        "Assertion",
+        "assert",
+        "Expected",
+        "expected",
+        "Which is",
+        "Segmentation",
+        "Abort",
+        "abort",
+        "exception",
+        "Exception",
+        "REQUIRE",
+        "CHECK",
+        "panic",
+        "Sanitizer",
+        "runtime error",
     ];
     let mut out: Vec<String> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -59,7 +77,12 @@ pub(crate) fn explain(lines: &[&str]) -> Vec<String> {
         }
     }
     if out.is_empty() {
-        let tail: Vec<&&str> = lines.iter().rev().filter(|l| !l.trim().is_empty()).take(DETAIL_LINES).collect();
+        let tail: Vec<&&str> = lines
+            .iter()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .take(DETAIL_LINES)
+            .collect();
         out = tail.into_iter().rev().map(|l| clip(l)).collect();
     }
     out.truncate(DETAIL_LINES);
@@ -150,9 +173,13 @@ pub(crate) fn gtest(text: &str) -> Parsed {
             current = Some((name, Vec::new()));
             continue;
         }
-        let closing = [("OK", TestStatus::Pass), ("FAILED", TestStatus::Fail), ("SKIPPED", TestStatus::Skip)]
-            .into_iter()
-            .find_map(|(tag, status)| bracket_tag(line, tag).map(|n| (n, status)));
+        let closing = [
+            ("OK", TestStatus::Pass),
+            ("FAILED", TestStatus::Fail),
+            ("SKIPPED", TestStatus::Skip),
+        ]
+        .into_iter()
+        .find_map(|(tag, status)| bracket_tag(line, tag).map(|n| (n, status)));
         if let Some((name, status)) = closing {
             // Summary lines repeat FAILED names and "N tests, listed below".
             if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
@@ -175,7 +202,8 @@ pub(crate) fn gtest(text: &str) -> Parsed {
     if let Some((name, body)) = current {
         // Started, never finished: the program died in this case.
         parsed.set(&name, TestStatus::Fail);
-        let mut details = vec!["(no result line: the program crashed or was killed in this case)".to_string()];
+        let mut details =
+            vec!["(no result line: the program crashed or was killed in this case)".to_string()];
         details.extend(explain(&body).into_iter().take(DETAIL_LINES - 1));
         parsed.details.insert(name, details);
     }
@@ -209,7 +237,9 @@ pub(crate) fn catch_xml(text: &str) -> Parsed {
     let mut rest = text;
     while let Some(start) = rest.find("<TestCase ") {
         let block_start = &rest[start..];
-        let name = attr(block_start, "name").map(|n| xml_unescape(&n)).unwrap_or_default();
+        let name = attr(block_start, "name")
+            .map(|n| xml_unescape(&n))
+            .unwrap_or_default();
         let end = block_start.find("</TestCase>").unwrap_or(block_start.len());
         let block = &block_start[..end];
         let status = match overall_result(block) {
@@ -252,7 +282,11 @@ fn catch_failure(block: &str) -> Vec<String> {
         let original = element_text(expr, "Original").unwrap_or_default();
         let expanded = element_text(expr, "Expanded").unwrap_or_default();
         return vec![
-            clip(&format!("{}:{line}: {kind}( {} ) failed", short_path(&file), original)),
+            clip(&format!(
+                "{}:{line}: {kind}( {} ) failed",
+                short_path(&file),
+                original
+            )),
             clip(&format!("  with expansion: {expanded}")),
         ];
     }
@@ -262,7 +296,10 @@ fn catch_failure(block: &str) -> Vec<String> {
             let file = attr(el, "filename").unwrap_or_default();
             let line = attr(el, "line").unwrap_or_default();
             let text = element_text(el, tag).unwrap_or_default();
-            return vec![clip(&format!("{}:{line}: {tag}: {text}", short_path(&file)))];
+            return vec![clip(&format!(
+                "{}:{line}: {tag}: {text}",
+                short_path(&file)
+            ))];
         }
     }
     vec!["(no assertion recorded: the program may have crashed in this case)".to_string()]
@@ -286,7 +323,12 @@ fn element_text(text: &str, tag: &str) -> Option<String> {
     let after = &text[open..];
     let content_start = after.find('>')? + 1;
     let close = after.find(&format!("</{tag}>"))?;
-    Some(xml_unescape(after[content_start..close].trim()).split_whitespace().collect::<Vec<_>>().join(" "))
+    Some(
+        xml_unescape(after[content_start..close].trim())
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn xml_unescape(text: &str) -> String {
@@ -308,14 +350,18 @@ pub(crate) fn doctest(text: &str, requested: &[String]) -> Parsed {
     let mut current: Option<String> = None;
     let mut body: Vec<&str> = Vec::new();
     let mut failed: Vec<(String, Vec<String>)> = Vec::new();
-    let flush = |name: Option<String>, body: &mut Vec<&str>, failed: &mut Vec<(String, Vec<String>)>| {
-        if let Some(name) = name {
-            if body.iter().any(|l| l.contains("ERROR") || l.contains("crashed") || l.contains("FATAL")) {
-                failed.push((name, explain(body)));
+    let flush =
+        |name: Option<String>, body: &mut Vec<&str>, failed: &mut Vec<(String, Vec<String>)>| {
+            if let Some(name) = name {
+                if body
+                    .iter()
+                    .any(|l| l.contains("ERROR") || l.contains("crashed") || l.contains("FATAL"))
+                {
+                    failed.push((name, explain(body)));
+                }
             }
-        }
-        body.clear();
-    };
+            body.clear();
+        };
     for line in text.lines() {
         if let Some(name) = line.trim_start().strip_prefix("TEST CASE:") {
             flush(current.take(), &mut body, &mut failed);
@@ -343,10 +389,17 @@ pub(crate) fn doctest(text: &str, requested: &[String]) -> Parsed {
         parsed.details.insert(name.clone(), details.clone());
     }
     for name in requested {
-        if !failed.iter().any(|(n, _)| super::symbols::glob_match(name, n)) {
+        if !failed
+            .iter()
+            .any(|(n, _)| super::symbols::glob_match(name, n))
+        {
             parsed.set(
                 name,
-                if summary_passed > 0 { TestStatus::Pass } else { TestStatus::NotRun },
+                if summary_passed > 0 {
+                    TestStatus::Pass
+                } else {
+                    TestStatus::NotRun
+                },
             );
         }
     }
@@ -411,7 +464,13 @@ pub(crate) fn build_errors(text: &str, root: &str, cap: usize) -> Vec<String> {
         seen.push(key.clone());
         let mut block = key;
         for next in lines.iter().skip(i + 1).take(3) {
-            if next.contains(": error:") || next.contains(": warning:") || next.trim().is_empty() || next.starts_with("make") || next.starts_with("ninja") || next.starts_with('[') {
+            if next.contains(": error:")
+                || next.contains(": warning:")
+                || next.trim().is_empty()
+                || next.starts_with("make")
+                || next.starts_with("ninja")
+                || next.starts_with('[')
+            {
                 break;
             }
             block.push('\n');
@@ -466,7 +525,9 @@ Expected equality of these values:\n\
         );
         // CMake 3.5 prints the same shape.
         assert_eq!(
-            ctest_status_line("1/1 Test #1: unit .............................   Passed    0.00 sec"),
+            ctest_status_line(
+                "1/1 Test #1: unit .............................   Passed    0.00 sec"
+            ),
             Some(("unit".to_string(), TestStatus::Pass))
         );
         assert_eq!(ctest_status_line("Test project /b"), None);
@@ -497,9 +558,15 @@ Expected equality of these values:\n\
                 ("P/Param.Works/0".to_string(), TestStatus::Pass),
             ]
         );
-        assert_eq!(parsed.details["Core.Twice"][0], "tests/core_test.cpp:5: Failure");
+        assert_eq!(
+            parsed.details["Core.Twice"][0],
+            "tests/core_test.cpp:5: Failure"
+        );
         let crashed = gtest("[ RUN      ] Core.Crash\nSegmentation fault\n");
-        assert_eq!(crashed.results, vec![("Core.Crash".to_string(), TestStatus::Fail)]);
+        assert_eq!(
+            crashed.results,
+            vec![("Core.Crash".to_string(), TestStatus::Fail)]
+        );
     }
 
     #[test]
@@ -523,7 +590,10 @@ Expected equality of these values:\n\
                 ("dies".to_string(), TestStatus::Fail),
             ]
         );
-        assert_eq!(parsed.details["parses \"x\""][0], "t.cc:3: REQUIRE( f() == 2 ) failed");
+        assert_eq!(
+            parsed.details["parses \"x\""][0],
+            "t.cc:3: REQUIRE( f() == 2 ) failed"
+        );
     }
 
     #[test]
@@ -541,14 +611,18 @@ tests/x.cpp:14: ERROR: CHECK( a == b ) is NOT correct!\n\
         let parsed = doctest(text, &["first".to_string(), "second".to_string()]);
         assert_eq!(
             parsed.results,
-            vec![("second".to_string(), TestStatus::Fail), ("first".to_string(), TestStatus::Pass)]
+            vec![
+                ("second".to_string(), TestStatus::Fail),
+                ("first".to_string(), TestStatus::Pass)
+            ]
         );
         assert!(parsed.details["second"][0].contains("CHECK( a == b ) is NOT correct"));
     }
 
     #[test]
     fn reads_automake_and_build_errors() {
-        let parsed = automake("PASS: tests/a.test\nFAIL: tests/b.test\nSKIP: c - no x\n# TOTAL: 3\n");
+        let parsed =
+            automake("PASS: tests/a.test\nFAIL: tests/b.test\nSKIP: c - no x\n# TOTAL: 3\n");
         assert_eq!(
             parsed.results,
             vec![

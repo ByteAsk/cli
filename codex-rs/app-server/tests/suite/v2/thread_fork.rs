@@ -10,23 +10,34 @@ use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::rollout_path;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
+use app_test_support::write_models_cache;
 use codex_app_server_protocol::ActivePermissionProfile;
 use codex_app_server_protocol::ApprovalsReviewer;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::DeprecationNoticeNotification;
+use codex_app_server_protocol::DynamicToolFunctionSpec;
+use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::SessionSource;
+use codex_app_server_protocol::ThreadAttachmentAddParams;
+use codex_app_server_protocol::ThreadAttachmentAddResponse;
+use codex_app_server_protocol::ThreadAttachmentListParams;
+use codex_app_server_protocol::ThreadAttachmentListResponse;
+use codex_app_server_protocol::ThreadAttachmentRemoveParams;
+use codex_app_server_protocol::ThreadAttachmentRemoveResponse;
+use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadReadParams;
@@ -43,19 +54,28 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
+use codex_app_server_protocol::ThreadUnsubscribeParams;
+use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_core::config::ConfigBuilder;
+use codex_core::test_support::all_model_presets;
+use codex_core::test_support::construct_model_info_offline;
 use codex_features::Feature;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -64,6 +84,7 @@ use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
+use codex_rollout::RolloutRecorder;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::append_thread_name;
 use codex_rollout::read_session_meta_line;
@@ -74,6 +95,7 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use tempfile::TempDir;
+use test_case::test_case;
 use tokio::time::timeout;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -94,6 +116,9 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 async fn list_threads(mcp: &mut TestAppServer) -> Result<ThreadListResponse> {
     let list_id = mcp
         .send_thread_list_request(ThreadListParams {
+            excluded_thread_ids: None,
+            attached_to_thread_id: None,
+            originators: None,
             cursor: None,
             limit: Some(50),
             sort_key: None,
@@ -150,7 +175,11 @@ async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
     );
     let mut session_meta = read_session_meta_line(&original_path).await?;
     session_meta.meta.multi_agent_version = Some(MultiAgentVersion::V1);
-    append_rollout_item_to_path(&original_path, &RolloutItem::SessionMeta(session_meta)).await?;
+    append_rollout_item_to_path(
+        &original_path,
+        &RolloutItem::SessionMeta(Box::new(session_meta)),
+    )
+    .await?;
     let original_contents = std::fs::read_to_string(&original_path)?;
 
     let mut mcp = TestAppServer::builder()
@@ -222,8 +251,8 @@ async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
     let turn = &thread.turns[0];
     assert_eq!(turn.status, TurnStatus::Interrupted);
     assert_eq!(turn.items.len(), 1, "expected user message item");
-    match &turn.items[0] {
-        ThreadItem::UserMessage { content, .. } => {
+    match &turn.items[0].payload {
+        ThreadItemPayload::UserMessage { content, .. } => {
             assert_eq!(
                 content,
                 &vec![UserInput::Text {
@@ -414,7 +443,7 @@ async fn assert_thread_fork_preserves_persisted_approvals_reviewer(
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
-    let (source_thread_id, source_turn_id) = {
+    let (source_thread_id, source_turn_id, rollout_path) = {
         let mut mcp = TestAppServer::builder()
             .with_codex_home(codex_home.path())
             .build_initialized()
@@ -502,8 +531,19 @@ async fn assert_thread_fork_preserves_persisted_approvals_reviewer(
             );
         }
 
-        (thread.id, turn.id)
+        (
+            thread.id,
+            turn.id,
+            thread.path.expect("source rollout path"),
+        )
     };
+
+    // The first turn records its workspace permissions after the source switched to read-only.
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&rollout_path).await?;
+    let frozen_context = items.into_iter().find(|item| {
+        matches!(item, RolloutItem::TurnContext(context) if context.turn_id.as_deref() == Some(&source_turn_id))
+    }).expect("first turn context");
+    append_rollout_item_to_path(&rollout_path, &frozen_context).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -622,6 +662,75 @@ async fn assert_thread_fork_at_named_boundary_keeps_only_terminal_prefix(
     }
 
     let original_contents = std::fs::read_to_string(source_path.as_path())?;
+    // Membership added after the requested history cutoff must still be inherited.
+    let attachment: ThreadAttachmentAddResponse = mcp
+        .request(|request_id| ClientRequest::ThreadAttachmentAdd {
+            request_id,
+            params: ThreadAttachmentAddParams {
+                thread_id: source_thread_id.clone(),
+                attachment_type: "pull_request".to_string(),
+                identity_key: "openai/codex#123".to_string(),
+                payload: json!({"url": "https://github.com/openai/codex/pull/123"}),
+            },
+        })
+        .await?;
+    let sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+    let pool = sqlite.open_read_write_pool(&sqlite.state_db_path()).await?;
+    sqlx::query(
+        "CREATE TRIGGER fail_fork_attachment_copy BEFORE INSERT ON thread_attachments \
+         BEGIN SELECT RAISE(FAIL, 'attachment copy failure'); END",
+    )
+    .execute(&pool)
+    .await?;
+    let fork_without_attachments: ThreadForkResponse = mcp
+        .request(|request_id| ClientRequest::ThreadFork {
+            request_id,
+            params: ThreadForkParams {
+                thread_id: source_thread_id.clone(),
+                last_turn_id: Some(turn_ids[1].clone()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(
+        fork_without_attachments
+            .thread
+            .turns
+            .iter()
+            .map(|turn| turn.id.clone())
+            .collect::<Vec<_>>(),
+        turn_ids[..2]
+    );
+    assert!(
+        fork_without_attachments
+            .thread
+            .path
+            .as_ref()
+            .expect("durable fork path")
+            .exists()
+    );
+    let without_attachments: ThreadAttachmentListResponse = mcp
+        .request(|request_id| ClientRequest::ThreadAttachmentList {
+            request_id,
+            params: ThreadAttachmentListParams {
+                thread_id: fork_without_attachments.thread.id.clone(),
+                cursor: None,
+                limit: None,
+            },
+        })
+        .await?;
+    assert!(without_attachments.data.is_empty());
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT id FROM threads WHERE id = ?")
+            .bind(&fork_without_attachments.thread.id)
+            .fetch_one(&pool)
+            .await?,
+        fork_without_attachments.thread.id
+    );
+    sqlx::query("DROP TRIGGER fail_fork_attachment_copy")
+        .execute(&pool)
+        .await?;
+    pool.close().await;
     let fork_id = mcp
         .send_thread_fork_request(ThreadForkParams {
             thread_id: source_thread_id.clone(),
@@ -633,6 +742,66 @@ async fn assert_thread_fork_at_named_boundary_keeps_only_terminal_prefix(
         thread: forked_thread,
         ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(fork_id)).await??;
+
+    let started = loop {
+        let notification = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_notification_message("thread/started"),
+        )
+        .await??;
+        let started: ThreadStartedNotification =
+            serde_json::from_value(notification.params.expect("params must be present"))?;
+        if started.thread.id == forked_thread.id {
+            break started;
+        }
+    };
+    assert!(started.thread.turns.is_empty());
+    assert_eq!(
+        started.thread.forked_from_id,
+        Some(source_thread_id.clone())
+    );
+
+    let copied: ThreadAttachmentListResponse = mcp
+        .request(|request_id| ClientRequest::ThreadAttachmentList {
+            request_id,
+            params: ThreadAttachmentListParams {
+                thread_id: started.thread.id,
+                cursor: None,
+                limit: None,
+            },
+        })
+        .await?;
+    assert_eq!(copied.data.len(), 1);
+    assert_ne!(copied.data[0].id, attachment.attachment.id);
+    assert_eq!(
+        copied.data[0],
+        codex_app_server_protocol::ThreadAttachment {
+            id: copied.data[0].id.clone(),
+            created_at: copied.data[0].created_at,
+            ..attachment.attachment.clone()
+        }
+    );
+    let _: ThreadAttachmentRemoveResponse = mcp
+        .request(|request_id| ClientRequest::ThreadAttachmentRemove {
+            request_id,
+            params: ThreadAttachmentRemoveParams {
+                thread_id: forked_thread.id.clone(),
+                attachment_type: attachment.attachment.attachment_type.clone(),
+                identity_key: attachment.attachment.identity_key.clone(),
+            },
+        })
+        .await?;
+    let parent_attachments: ThreadAttachmentListResponse = mcp
+        .request(|request_id| ClientRequest::ThreadAttachmentList {
+            request_id,
+            params: ThreadAttachmentListParams {
+                thread_id: source_thread_id.clone(),
+                cursor: None,
+                limit: None,
+            },
+        })
+        .await?;
+    assert_eq!(parent_attachments.data, vec![attachment.attachment]);
 
     assert_eq!(
         forked_thread
@@ -674,20 +843,6 @@ async fn assert_thread_fork_at_named_boundary_keeps_only_terminal_prefix(
     }
     assert!(!forked_contents.contains(turn_ids[2].as_str()));
 
-    let started = loop {
-        let notification = timeout(
-            DEFAULT_READ_TIMEOUT,
-            mcp.read_stream_until_notification_message("thread/started"),
-        )
-        .await??;
-        let started: ThreadStartedNotification =
-            serde_json::from_value(notification.params.expect("params must be present"))?;
-        if started.thread.id == forked_thread.id {
-            break started;
-        }
-    };
-    assert!(started.thread.turns.is_empty());
-
     if history_mode == ThreadHistoryMode::Paginated {
         let before_fork_id = mcp
             .send_thread_fork_request(ThreadForkParams {
@@ -728,7 +883,7 @@ async fn assert_thread_fork_at_named_boundary_keeps_only_terminal_prefix(
             .request(|request_id| ClientRequest::ThreadFork {
                 request_id,
                 params: ThreadForkParams {
-                    thread_id: forked_thread.id,
+                    thread_id: forked_thread.id.clone(),
                     before_turn_id: Some(completed.turn.id),
                     ephemeral: true,
                     exclude_turns: true,
@@ -738,6 +893,33 @@ async fn assert_thread_fork_at_named_boundary_keeps_only_terminal_prefix(
             .await?;
         assert_eq!(ephemeral_fork.preview, "first");
     }
+
+    // Resuming a fork must not copy its parent's attachments again after an explicit removal.
+    mcp.shutdown_gracefully().await?;
+    let mut resumed = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let _: ThreadResumeResponse = resumed
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: forked_thread.id.clone(),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let after_resume: ThreadAttachmentListResponse = resumed
+        .request(|request_id| ClientRequest::ThreadAttachmentList {
+            request_id,
+            params: ThreadAttachmentListParams {
+                thread_id: forked_thread.id,
+                cursor: None,
+                limit: None,
+            },
+        })
+        .await?;
+    assert!(after_resume.data.is_empty());
 
     Ok(())
 }
@@ -1100,7 +1282,9 @@ async fn thread_fork_can_cut_before_unfinished_stored_turn() -> Result<()> {
     append_rollout_item_to_path(
         &source_path,
         &RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
             turn_id: unfinished_turn_id.to_string(),
+            root_turn_id: None,
             trace_id: None,
             started_at: None,
             model_context_window: None,
@@ -1131,6 +1315,7 @@ async fn thread_fork_can_cut_before_unfinished_stored_turn() -> Result<()> {
         .await?;
     let ThreadReadResponse {
         thread: source_thread,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(source_thread.turns.len(), 2);
     assert_eq!(source_thread.turns[1].id, unfinished_turn_id);
@@ -1310,8 +1495,10 @@ async fn thread_fork_tracks_thread_initialized_analytics() -> Result<()> {
     Ok(())
 }
 
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test]
-async fn thread_fork_rejects_unmaterialized_thread() -> Result<()> {
+async fn thread_fork_rejects_unmaterialized_thread(history_mode: ThreadHistoryMode) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
@@ -1324,6 +1511,7 @@ async fn thread_fork_rejects_unmaterialized_thread() -> Result<()> {
     let start_id = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            history_mode: Some(history_mode),
             ..Default::default()
         })
         .await?;
@@ -1374,13 +1562,16 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
     );
     for item in [
         RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
             turn_id: "turn-1".to_string(),
+            root_turn_id: None,
             trace_id: None,
             started_at: Some(10),
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
         })),
         RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            root_turn_id: None,
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
             error: None,
@@ -1401,6 +1592,7 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
     let fork_id = mcp
         .send_thread_fork_request(ThreadForkParams {
             thread_id: conversation_id.clone(),
+            config: Some([("thread_unload_delay_secs".into(), json!(0))].into()),
             ..Default::default()
         })
         .await?;
@@ -1504,6 +1696,40 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
             .expect("nested fork history base")
             .thread_id,
         ThreadId::from_string(forked_thread_id.as_str())?
+    );
+    let _: ThreadUnsubscribeResponse = mcp
+        .request(|request_id| ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: forked_thread_id.clone(),
+            },
+        })
+        .await?;
+    let closed: ThreadClosedNotification =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("thread/closed")).await??;
+    assert_eq!(
+        closed,
+        ThreadClosedNotification {
+            thread_id: forked_thread_id
+        }
+    );
+
+    // The nested fork did not inherit its parent's unload delay.
+    let _: ThreadUnsubscribeResponse = mcp
+        .request(|request_id| ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: nested_thread.id,
+            },
+        })
+        .await?;
+    assert!(
+        timeout(
+            std::time::Duration::from_millis(250),
+            mcp.read_stream_until_notification_message("thread/closed"),
+        )
+        .await
+        .is_err()
     );
     Ok(())
 }
@@ -1634,18 +1860,13 @@ async fn thread_fork_warns_for_paginated_full_history_hydration() -> Result<()> 
     Ok(())
 }
 
+#[test_case::test_case(MultiAgentVersion::V1, false; "ordinary v1")]
+#[test_case::test_case(MultiAgentVersion::V2, false; "ordinary v2")]
+#[test_case::test_case(MultiAgentVersion::V1, true; "attached")]
 #[tokio::test]
-async fn thread_fork_freezes_active_paginated_turn_as_interrupted() -> Result<()> {
-    assert_thread_fork_freezes_active_paginated_turn_as_interrupted(MultiAgentVersion::V1).await
-}
-
-#[tokio::test]
-async fn thread_fork_persists_developer_interruption_marker_for_multi_agent_v2() -> Result<()> {
-    assert_thread_fork_freezes_active_paginated_turn_as_interrupted(MultiAgentVersion::V2).await
-}
-
-async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
+async fn thread_fork_freezes_active_paginated_turn_as_interrupted(
     multi_agent_version: MultiAgentVersion,
+    attach_to_source: bool,
 ) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
@@ -1673,6 +1894,8 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
     let user_response_item = |id: &str| {
         RolloutItem::ResponseItem(
             ResponseItem::Message {
+                status: None,
+                encrypted_content: None,
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
@@ -1703,7 +1926,9 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
     append_rollout_item_to_path(
         source_path.as_path(),
         &RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
             turn_id: "active-turn".to_string(),
+            root_turn_id: Some("causal-root".to_string()),
             trace_id: None,
             started_at: Some(10),
             model_context_window: None,
@@ -1765,6 +1990,7 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
             params: ThreadForkParams {
                 thread_id: source_thread_id.clone(),
                 thread_source,
+                attach_to_source,
                 ..Default::default()
             },
         })
@@ -1778,7 +2004,7 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
         .expect("fork history base");
     let child_rollout = std::fs::read_to_string(forked_path.as_path())?
         .lines()
-        .map(serde_json::from_str::<RolloutLine>)
+        .map(codex_rollout::parse_rollout_line)
         .collect::<Result<Vec<_>, _>>()?;
     assert!(matches!(
         child_rollout.as_slice(),
@@ -1812,6 +2038,7 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
     append_rollout_item_to_path(
         source_path.as_path(),
         &RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+            root_turn_id: None,
             turn_id: "active-turn".to_string(),
             last_agent_message: None,
             error: None,
@@ -1877,13 +2104,33 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
             },
         })
         .await?;
+    if attach_to_source {
+        assert!(turns.is_empty());
+        for (method, field) in [
+            ("thread/revert", "beforeTurnId"),
+            ("thread/fork", "lastTurnId"),
+        ] {
+            let id = mcp
+                .send_raw_request(
+                    method,
+                    Some(json!({"threadId": forked_thread_id, (field): "active-turn"})),
+                )
+                .await?;
+            let error = mcp
+                .read_stream_until_error_message(RequestId::Integer(id))
+                .await?;
+            assert!(error.error.message.contains("turn not found: active-turn"));
+        }
+        return Ok(());
+    }
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].id, "active-turn");
+    assert_eq!(turns[0].root_turn_id.as_deref(), Some("causal-root"));
     assert_eq!(turns[0].status, TurnStatus::Interrupted);
     assert_eq!(turns[0].items.len(), 1);
     assert!(matches!(
-        &turns[0].items[0],
-        ThreadItem::UserMessage { id, .. } if id == "before-fork"
+        &turns[0].items[0].payload,
+        ThreadItemPayload::UserMessage { id, .. } if id == "before-fork"
     ));
 
     let search: ThreadSearchOccurrencesResponse = mcp
@@ -2266,8 +2513,8 @@ async fn assert_thread_fork_ephemeral_remains_pathless_and_omits_listing(
         let turn = &thread.turns[0];
         assert_eq!(turn.status, TurnStatus::Completed);
         assert_eq!(turn.items.len(), 1, "expected user message item");
-        match &turn.items[0] {
-            ThreadItem::UserMessage { content, .. } => {
+        match &turn.items[0].payload {
+            ThreadItemPayload::UserMessage { content, .. } => {
                 assert_eq!(
                     content,
                     &vec![UserInput::Text {
@@ -2538,5 +2785,525 @@ async fn pathless_ephemeral_thread_rejects_codex_home_path_after_reload() -> Res
         fork_err.error.message
     );
 
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
+#[tokio::test]
+async fn inheriting_fork_preserves_parent_config(history_mode: ThreadHistoryMode) -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_reasoning_item("reasoning", &["A summary"], &["Private reasoning"]),
+                responses::ev_assistant_message("answer", "Done"),
+                responses::ev_completed("initial"),
+            ]),
+            responses::sse(vec![responses::ev_completed("child")]),
+            responses::sse(vec![responses::ev_completed("parent")]),
+        ],
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let model = all_model_presets()
+        .iter()
+        .find(|model| model.show_in_picker && !model.service_tiers.is_empty())
+        .expect("a bundled model supports service tiers");
+    let tier = &model.service_tiers[0].id;
+    let parent = mcp
+        .start_thread(ThreadStartParams {
+            history_mode: Some(history_mode),
+            base_instructions: Some("Retain these base instructions.".into()),
+            developer_instructions: Some("Retain this system policy context.".into()),
+            dynamic_tools: Some(vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                name: "parent_tool".into(),
+                description: "The parent's client-provided tool description.".into(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                defer_loading: false,
+            })]),
+            ..Default::default()
+        })
+        .await?;
+    mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: parent.thread.id.clone(),
+        input: vec![UserInput::Text {
+            text: "Initial turn".into(),
+            text_elements: vec![],
+        }],
+        service_tier: Some(Some(tier.clone())),
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Plan,
+            settings: Settings {
+                model: model.id.clone(),
+                reasoning_effort: Some(ReasoningEffort::High),
+                developer_instructions: Some("Keep the parent's planning instructions.".into()),
+            },
+        }),
+        disabled_plugin_ids: Some(vec!["unused@plugin".into()]),
+        ..Default::default()
+    })
+    .await?;
+
+    for (delay, message) in [
+        (
+            json!(-1),
+            "`thread_unload_delay_secs` must be a non-negative integer",
+        ),
+        (json!(u64::MAX), "`thread_unload_delay_secs` is too large"),
+    ] {
+        let request_id = mcp
+            .send_thread_fork_request(ThreadForkParams {
+                thread_id: parent.thread.id.clone(),
+                experimental_prediction_mode: true,
+                ephemeral: true,
+                config: Some([("thread_unload_delay_secs".into(), delay)].into()),
+                ..Default::default()
+            })
+            .await?;
+        let error = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+        )
+        .await??;
+        assert_eq!(error.error.message, message);
+    }
+
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: parent.thread.id.clone(),
+            experimental_prediction_mode: true,
+            ephemeral: true,
+            exclude_turns: true,
+            config: Some([("thread_unload_delay_secs".into(), json!(0))].into()),
+            ..Default::default()
+        })
+        .await?;
+    let child: ThreadForkResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(fork_id)).await??;
+    assert_eq!(
+        (
+            &child.model,
+            &child.reasoning_effort,
+            &child.service_tier,
+            &child.disabled_plugin_ids
+        ),
+        (
+            &model.id,
+            &Some(ReasoningEffort::High),
+            &Some(tier.clone()),
+            &vec!["unused@plugin".to_string()]
+        ),
+    );
+    assert!(child.thread.path.is_none());
+    for id in [&child.thread.id, &parent.thread.id] {
+        mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: id.clone(),
+            input: vec![UserInput::Text {
+                text: "Continue identically".into(),
+                text_elements: vec![],
+            }],
+            ..Default::default()
+        })
+        .await?;
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    let comparable = |index: usize| {
+        let body = requests[index].body_json();
+        responses::strip_response_item_ids_from_json(json!({
+            "input": body["input"],
+            "instructions": body["instructions"],
+            "tools": body["tools"],
+            "model": body["model"],
+            "reasoning": body["reasoning"],
+            "service_tier": body["service_tier"],
+
+        }))
+    };
+    assert_eq!(comparable(1), comparable(2));
+    assert_eq!(
+        requests[1].body_json()["prompt_cache_key"],
+        requests[2].body_json()["prompt_cache_key"]
+    );
+    assert!(
+        requests[1].body_json()["tools"]
+            .to_string()
+            .contains("parent_tool")
+    );
+    let _: ThreadUnsubscribeResponse = mcp
+        .request(|request_id| ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: child.thread.id.clone(),
+            },
+        })
+        .await?;
+    let closed: ThreadClosedNotification =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("thread/closed")).await??;
+    assert_eq!(
+        closed,
+        ThreadClosedNotification {
+            thread_id: child.thread.id
+        }
+    );
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy, false, true, true; "prediction fork retains MCPs")]
+#[test_case(ThreadHistoryMode::Legacy, true, true, true; "disable MCPs in prediction fork")]
+#[test_case(ThreadHistoryMode::Paginated, true, true, true; "disable MCPs in paginated fork")]
+#[test_case(ThreadHistoryMode::Legacy, true, false, true; "retain MCPs without incremental tools")]
+#[test_case(ThreadHistoryMode::Legacy, true, true, false; "retain MCPs without Responses Lite")]
+#[tokio::test]
+async fn fork_option_disables_mcp_servers(
+    history_mode: ThreadHistoryMode,
+    disable_mcp: bool,
+    incremental_tools: bool,
+    responses_lite: bool,
+) -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        ["parent", "prediction", "continued-parent"]
+            .into_iter()
+            .map(|id| responses::sse(vec![responses::ev_completed(id)]))
+            .collect(),
+    )
+    .await;
+    let mcp_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(|request: &wiremock::Request| {
+            let request: Value =
+                serde_json::from_slice(&request.body).expect("MCP request must be valid JSON");
+            let result = match request["method"].as_str() {
+                Some("initialize") => json!({
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "fixture", "version": "1.0.0" }
+                }),
+                Some("tools/list") => json!({ "tools": [{
+                    "name": "prediction_mcp_lookup",
+                    "description": "Look up a test value.",
+                    "inputSchema": { "type": "object", "properties": {} }
+                }] }),
+                Some("resources/list") => json!({ "resources": [] }),
+                Some("resources/templates/list") => json!({ "resourceTemplates": [] }),
+                _ => return ResponseTemplate::new(202),
+            };
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0", "id": request["id"], "result": result
+            }))
+        })
+        .mount(&mcp_server)
+        .await;
+    let codex_home = TempDir::new()?;
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .loader_overrides(codex_config::LoaderOverrides::without_managed_config_for_tests())
+        .build()
+        .await?;
+    let mut model = construct_model_info_offline("gpt-5.4", &config);
+    model.use_responses_lite = responses_lite;
+    model.supports_search_tool = false;
+    model.tool_mode = Some(codex_protocol::openai_models::ToolMode::CodeMode);
+    let catalog = codex_home.path().join("catalog.json");
+    std::fs::write(
+        &catalog,
+        serde_json::to_string(&json!({"models": [model]}))?,
+    )?;
+    MockResponsesConfig::new(&server.uri())
+        .with_model("gpt-5.4")
+        .with_root_config(&format!(
+            "model_catalog_json = {}\nfeatures.incremental_tools = {incremental_tools}",
+            serde_json::to_string(&catalog)?
+        ))
+        .with_extra_config(&format!(
+            "[mcp_servers.fixture]\nurl = \"{}/mcp\"\nrequired = true\n",
+            mcp_server.uri()
+        ))
+        .write(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let parent = app
+        .start_thread(ThreadStartParams {
+            history_mode: Some(history_mode),
+            ..Default::default()
+        })
+        .await?;
+    app.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: parent.thread.id.clone(),
+        input: vec![UserInput::Text {
+            text: "Initial turn".into(),
+            text_elements: vec![],
+        }],
+        ..Default::default()
+    })
+    .await?;
+    let child: ThreadForkResponse = app
+        .request(|request_id| ClientRequest::ThreadFork {
+            request_id,
+            params: ThreadForkParams {
+                thread_id: parent.thread.id.clone(),
+                experimental_prediction_mode: true,
+                experimental_disable_prediction_mcp: disable_mcp,
+                ephemeral: true,
+                exclude_turns: true,
+                ..Default::default()
+            },
+        })
+        .await?;
+    let disables_mcp = disable_mcp && incremental_tools && responses_lite;
+    if disables_mcp {
+        let initializations = mcp_server
+            .received_requests()
+            .await
+            .expect("MCP request recording must be enabled")
+            .iter()
+            .filter(|request| request.method.as_str() == "POST")
+            .filter(|request| {
+                serde_json::from_slice::<Value>(&request.body)
+                    .expect("MCP request must be valid JSON")["method"]
+                    == "initialize"
+            })
+            .count();
+        assert_eq!(initializations, 1, "disabled fork must not connect MCPs");
+    }
+    let _: McpServerRefreshResponse = app
+        .request(|request_id| ClientRequest::McpServerRefresh {
+            request_id,
+            params: None,
+        })
+        .await?;
+    for (thread_id, text) in [
+        (&child.thread.id, "Predict the next message."),
+        (&parent.thread.id, "Continue"),
+    ] {
+        app.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread_id.clone(),
+            input: vec![UserInput::Text {
+                text: text.into(),
+                text_elements: vec![],
+            }],
+            ..Default::default()
+        })
+        .await?;
+    }
+    let requests = mock.requests();
+    assert!(
+        requests[0]
+            .body_json()
+            .to_string()
+            .contains("prediction_mcp_lookup")
+    );
+    let declarations = requests[0].inputs_of_type("additional_tools");
+    if disables_mcp {
+        assert!(
+            declarations
+                .iter()
+                .any(|item| responses::namespace_child_tool(item, "functions", "exec").is_some())
+        );
+    }
+    let notice_counts: Vec<_> = requests
+        .iter()
+        .map(|request| {
+            request
+                .message_input_texts("developer")
+                .iter()
+                .filter(|text| text.contains("MCP tools are unavailable for this request."))
+                .count()
+        })
+        .collect();
+    assert_eq!(notice_counts, [0, usize::from(disables_mcp), 0]);
+    for request in &requests[1..] {
+        if disables_mcp {
+            assert_eq!(request.inputs_of_type("additional_tools"), declarations);
+        }
+        assert!(
+            !request
+                .input()
+                .iter()
+                .any(|item| item.to_string().contains("no longer available"))
+        );
+    }
+    Ok(())
+}
+
+#[test_case(ThreadHistoryMode::Legacy, false; "fresh persistent legacy")]
+#[test_case(ThreadHistoryMode::Legacy, true; "ephemeral legacy")]
+#[test_case(ThreadHistoryMode::Paginated, false; "fresh persistent paginated")]
+#[test_case(ThreadHistoryMode::Paginated, true; "ephemeral paginated")]
+#[tokio::test]
+async fn inheriting_fork_requires_persisted_parent(
+    history_mode: ThreadHistoryMode,
+    ephemeral: bool,
+) -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let parent = mcp
+        .start_thread(ThreadStartParams {
+            history_mode: Some(history_mode),
+            ephemeral: Some(ephemeral),
+            ..Default::default()
+        })
+        .await?;
+    if ephemeral {
+        mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: parent.thread.id.clone(),
+            input: vec![UserInput::Text {
+                text: "Complete an ephemeral turn".into(),
+                text_elements: vec![],
+            }],
+            ..Default::default()
+        })
+        .await?;
+    }
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: parent.thread.id.clone(),
+            experimental_prediction_mode: true,
+            ephemeral: true,
+            exclude_turns: true,
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    assert!(
+        error
+            .error
+            .message
+            .contains("no rollout found for thread id"),
+        "unexpected fork error: {}",
+        error.error.message
+    );
+    if let Some(path) = parent.thread.path {
+        assert!(!path.exists(), "forking should not materialize the parent");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn inheriting_fork_requires_loaded_parent() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let thread_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "Saved user message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id,
+            experimental_prediction_mode: true,
+            ephemeral: true,
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    assert_eq!(
+        error.error.message,
+        "`experimentalPredictionMode` requires a loaded parent",
+    );
+    Ok(())
+}
+
+#[test_case(true, false, "`experimentalPredictionMode` requires `ephemeral: true`"; "ephemeral child")]
+#[test_case(false, true, "`experimentalDisablePredictionMcp` requires `experimentalPredictionMode: true`"; "MCP disablement requires prediction mode")]
+#[tokio::test]
+async fn inheriting_fork_rejects_invalid_prediction_flags(
+    prediction_mode: bool,
+    disable_mcp: bool,
+    expected_error: &str,
+) -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: "not-loaded".into(),
+            experimental_prediction_mode: prediction_mode,
+            experimental_disable_prediction_mcp: disable_mcp,
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    assert_eq!(error.error.message, expected_error);
+    Ok(())
+}
+
+#[tokio::test]
+async fn inheriting_fork_rejects_configuration_overrides() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    for (key, value) in [
+        ("model", json!("other-model")),
+        ("modelProvider", json!("other-provider")),
+        ("serviceTier", Value::Null),
+        ("cwd", json!(codex_home.path())),
+        ("runtimeWorkspaceRoots", json!([])),
+        ("approvalPolicy", json!("never")),
+        ("approvalsReviewer", json!("user")),
+        ("sandbox", json!("read-only")),
+        ("permissions", json!(":read-only")),
+        ("baseInstructions", json!("override")),
+        ("developerInstructions", json!("override")),
+        ("config", json!({"model": "other-model"})),
+        ("config", json!({"model_reasoning_effort": "low"})),
+    ] {
+        let mut params = json!({
+            "threadId": "not-loaded", "experimentalPredictionMode": true, "ephemeral": true,
+        });
+        params[key] = value;
+        let request = mcp.send_raw_request("thread/fork", Some(params)).await?;
+        let error = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(request)),
+        )
+        .await??;
+        assert_eq!(
+            error.error.message,
+            "`experimentalPredictionMode` cannot be combined with configuration overrides",
+            "override: {key}"
+        );
+    }
     Ok(())
 }

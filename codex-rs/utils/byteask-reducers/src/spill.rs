@@ -41,10 +41,23 @@ pub fn dir() -> Option<&'static Path> {
 fn file_name(call_id: &str) -> String {
     let safe: String = call_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(96)
         .collect();
-    format!("{}.txt", if safe.is_empty() { "call".to_string() } else { safe })
+    format!(
+        "{}.txt",
+        if safe.is_empty() {
+            "call".to_string()
+        } else {
+            safe
+        }
+    )
 }
 
 /// Write `bytes` as the original for `call_id` and return its path. Idempotent: if the
@@ -130,7 +143,12 @@ impl Tee {
         let path = dir.join(format!(".tee-{}-{seq}.part", std::process::id()));
         let file = std::fs::File::create(&path).ok()?;
         restrict_file(&path);
-        let mut tee = Self { path, file: Some(file), written: 0, lost: 0 };
+        let mut tee = Self {
+            path,
+            file: Some(file),
+            written: 0,
+            lost: 0,
+        };
         tee.append(initial);
         Some(tee)
     }
@@ -199,7 +217,9 @@ impl Drop for Tee {
 }
 
 fn sweep_old(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let now = std::time::SystemTime::now();
     for e in entries.flatten() {
         let Ok(meta) = e.metadata() else { continue };
@@ -252,11 +272,19 @@ mod tests {
     #[test]
     fn spill_roundtrip_idempotence_and_permissions() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        assert_eq!(write("before_init", b"x"), None, "no directory yet -> cannot spill");
+        assert_eq!(
+            write("before_init", b"x"),
+            None,
+            "no directory yet -> cannot spill"
+        );
         init(tmp.path());
         let p = write("call_1", b"the whole original\n").expect("spill");
         assert_eq!(std::fs::read(&p).expect("read"), b"the whole original\n");
-        assert_eq!(write("call_1", b"the whole original\n"), Some(p.clone()), "idempotent");
+        assert_eq!(
+            write("call_1", b"the whole original\n"),
+            Some(p.clone()),
+            "idempotent"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

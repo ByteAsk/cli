@@ -93,11 +93,15 @@ impl BaseRunKey {
 
     /// The cache file for this key.
     pub(crate) fn path(&self) -> PathBuf {
-        let repo = std::fs::canonicalize(&self.repo_root).unwrap_or_else(|_| self.repo_root.clone());
+        let repo =
+            std::fs::canonicalize(&self.repo_root).unwrap_or_else(|_| self.repo_root.clone());
         let commit: String = self.commit.chars().take(16).collect();
         cache_root()
             .join(format!("{:016x}", fnv(repo.to_string_lossy().as_bytes())))
-            .join(format!("{commit}-{:016x}.json", fnv(self.config.as_bytes())))
+            .join(format!(
+                "{commit}-{:016x}.json",
+                fnv(self.config.as_bytes())
+            ))
     }
 }
 
@@ -178,7 +182,10 @@ pub(crate) fn record(
         std::fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension(format!("json.tmp{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&run).map_err(std::io::Error::other)?)?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_vec_pretty(&run).map_err(std::io::Error::other)?,
+    )?;
     std::fs::rename(&tmp, &path)?;
     Ok(run)
 }
@@ -186,7 +193,10 @@ pub(crate) fn record(
 /// The names in `names` that have no cached base result for `key`.
 pub(crate) fn missing<'a>(key: &BaseRunKey, names: &'a [String]) -> Vec<&'a String> {
     let cached = load(key).map(|run| run.results).unwrap_or_default();
-    names.iter().filter(|name| !cached.contains_key(*name)).collect()
+    names
+        .iter()
+        .filter(|name| !cached.contains_key(*name))
+        .collect()
 }
 
 /// Tests whose pass/fail class differs between `base` and `now`. Tests with no
@@ -281,7 +291,8 @@ mod tests {
 pub(crate) fn use_test_cache_dir() {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("byteask-base-runs-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("byteask-base-runs-test-{}", std::process::id()));
         // SAFETY: set once per process, before any reader in these tests.
         unsafe { std::env::set_var("BYTEASK_BASE_RUN_CACHE", &dir) };
         dir

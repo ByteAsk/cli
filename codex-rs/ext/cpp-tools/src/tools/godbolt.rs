@@ -180,7 +180,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GodboltTool {
 }
 
 impl GodboltTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: GodboltArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -219,8 +222,8 @@ impl GodboltTool {
         if lib_specs.iter().any(|s| !s.trim().is_empty()) {
             let catalogue = fetch_libraries(lang_id).await?;
             for spec in lib_specs.iter().filter(|s| !s.trim().is_empty()) {
-                let pair = resolve_library(spec, &catalogue)
-                    .map_err(FunctionCallError::RespondToModel)?;
+                let pair =
+                    resolve_library(spec, &catalogue).map_err(FunctionCallError::RespondToModel)?;
                 libraries.push(pair);
             }
         }
@@ -228,8 +231,9 @@ impl GodboltTool {
         // "link" short-circuits the compile path: build a shareable, fully
         // configured Compiler Explorer URL instead of inline asm/run output.
         if action == "link" {
-            let link = create_shortlink(lang_id, &args.source, &compiler.id, std, flags, &libraries)
-                .await?;
+            let link =
+                create_shortlink(lang_id, &args.source, &compiler.id, std, flags, &libraries)
+                    .await?;
             let lib_note = if libraries.is_empty() {
                 String::new()
             } else {
@@ -243,7 +247,10 @@ impl GodboltTool {
                      your flags preloaded):\n{link}",
                     compiler.name
                 ),
-                check_result::CheckResult::pass(TOOL_NAME, "Made a shareable Compiler Explorer link."),
+                check_result::CheckResult::pass(
+                    TOOL_NAME,
+                    "Made a shareable Compiler Explorer link.",
+                ),
             ));
         }
 
@@ -283,7 +290,12 @@ impl GodboltTool {
         };
         let result = godbolt_result(&value, &compiler.name);
 
-        Ok(crate::report::report(TOOL_NAME, &compiler.name, rendered, result))
+        Ok(crate::report::report(
+            TOOL_NAME,
+            &compiler.name,
+            rendered,
+            result,
+        ))
     }
 }
 
@@ -291,7 +303,7 @@ impl GodboltTool {
 /// proxy, TLS). Not `Fatal`: core turns a tool's `Fatal` into the end of the
 /// user's WHOLE turn, and "godbolt.org is unreachable" is a fact the
 /// model can report and work around (e.g. compile locally with cpp_sanitize).
-fn unreachable(what: &str, err: &reqwest::Error) -> FunctionCallError {
+fn unreachable(what: &str, err: &dyn std::fmt::Display) -> FunctionCallError {
     FunctionCallError::RespondToModel(format!(
         "Compiler Explorer (godbolt.org) is unavailable: the {what} request failed ({err}). \
          Nothing was compiled — this is a network problem, not a problem with the code."
@@ -299,7 +311,11 @@ fn unreachable(what: &str, err: &reqwest::Error) -> FunctionCallError {
 }
 
 fn default_std(language: &str) -> &'static str {
-    if language == "c" { DEFAULT_STD_C } else { DEFAULT_STD }
+    if language == "c" {
+        DEFAULT_STD_C
+    } else {
+        DEFAULT_STD
+    }
 }
 
 /// Public Compiler Explorer origin: `BYTEASK_GODBOLT_URL` if set (tests),
@@ -425,7 +441,13 @@ async fn create_shortlink(
     flags: &str,
     libraries: &[(String, String)],
 ) -> Result<String, FunctionCallError> {
-    let config = shortlink_config(lang, source, compiler_id, &user_arguments(std, flags), libraries);
+    let config = shortlink_config(
+        lang,
+        source,
+        compiler_id,
+        &user_arguments(std, flags),
+        libraries,
+    );
     let url = format!("{}/api/shortener", godbolt_origin());
     let response = create_client()
         .post(&url)
@@ -507,7 +529,9 @@ async fn fetch_compilers(lang: &str) -> Result<Arc<Vec<CompilerInfo>>, FunctionC
         .json()
         .await
         .map_err(|e| {
-            FunctionCallError::RespondToModel(format!("invalid compilers JSON from godbolt.org: {e}"))
+            FunctionCallError::RespondToModel(format!(
+                "invalid compilers JSON from godbolt.org: {e}"
+            ))
         })?;
     let arc = Arc::new(list);
     compiler_cache()
@@ -534,7 +558,9 @@ async fn fetch_libraries(lang: &str) -> Result<Arc<Vec<LibraryInfo>>, FunctionCa
         .json()
         .await
         .map_err(|e| {
-            FunctionCallError::RespondToModel(format!("invalid libraries JSON from godbolt.org: {e}"))
+            FunctionCallError::RespondToModel(format!(
+                "invalid libraries JSON from godbolt.org: {e}"
+            ))
         })?;
     let arc = Arc::new(list);
     library_cache()
@@ -610,7 +636,11 @@ fn resolve_compiler(query: &str, compilers: &[CompilerInfo]) -> Result<CompilerI
         return Ok(c.clone());
     }
     // 2. All lowercased tokens must appear in the compiler's display name.
-    let tokens: Vec<String> = q.to_lowercase().split_whitespace().map(String::from).collect();
+    let tokens: Vec<String> = q
+        .to_lowercase()
+        .split_whitespace()
+        .map(String::from)
+        .collect();
     let mut matches: Vec<&CompilerInfo> = compilers
         .iter()
         .filter(|c| {
@@ -619,7 +649,11 @@ fn resolve_compiler(query: &str, compilers: &[CompilerInfo]) -> Result<CompilerI
         })
         .collect();
     if matches.is_empty() {
-        let key = tokens.iter().max_by_key(|t| t.len()).cloned().unwrap_or_default();
+        let key = tokens
+            .iter()
+            .max_by_key(|t| t.len())
+            .cloned()
+            .unwrap_or_default();
         let mut cands: Vec<&CompilerInfo> = compilers
             .iter()
             .filter(|c| c.name.to_lowercase().contains(key.as_str()))
@@ -740,7 +774,10 @@ fn resolve_library(spec: &str, libs: &[LibraryInfo]) -> Result<(String, String),
         }
     };
     if lib.versions.is_empty() {
-        return Err(format!("library {:?} has no versions on Compiler Explorer", lib.id));
+        return Err(format!(
+            "library {:?} has no versions on Compiler Explorer",
+            lib.id
+        ));
     }
     let chosen = if ver_part.is_empty() {
         lib.versions
@@ -768,7 +805,10 @@ fn resolve_library(spec: &str, libs: &[LibraryInfo]) -> Result<(String, String),
                     .map(|v| v.version.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("library {:?} has no version matching {ver_part:?}. Available: {avail}", lib.id)
+                format!(
+                    "library {:?} has no version matching {ver_part:?}. Available: {avail}",
+                    lib.id
+                )
             })?
     };
     Ok((lib.id.clone(), chosen.id.clone()))
@@ -1006,7 +1046,9 @@ mod tests {
 
     #[allow(clippy::await_holding_lock)] // the env lock must span the call
     async fn run_against(base: &str, action: &str) -> Result<String, FunctionCallError> {
-        let _env = GODBOLT_URL_ENV.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _env = GODBOLT_URL_ENV
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: every test that sets this variable holds GODBOLT_URL_ENV.
         unsafe { std::env::set_var("BYTEASK_GODBOLT_URL", base) };
         compiler_cache().lock().unwrap().clear();
@@ -1125,7 +1167,9 @@ mod tests {
 
     #[test]
     fn shape_asm_output_truncates_long_assembly() {
-        let asm: Vec<Value> = (0..200).map(|i| json!({ "text": format!("line{i}") })).collect();
+        let asm: Vec<Value> = (0..200)
+            .map(|i| json!({ "text": format!("line{i}") }))
+            .collect();
         let sample = json!({ "code": 0, "asm": asm });
         let out = shape_asm_output(&sample, None);
         assert!(out.starts_with("compile exit code: 0\nasm:\nline0\n"));
@@ -1232,7 +1276,10 @@ mod tests {
                 { "text": "real message" }
             ]
         });
-        assert_eq!(render_diagnostics(&sample), vec!["real message".to_string()]);
+        assert_eq!(
+            render_diagnostics(&sample),
+            vec!["real message".to_string()]
+        );
         // No stderr key at all -> no diagnostics.
         assert!(render_diagnostics(&json!({ "code": 0 })).is_empty());
     }
@@ -1338,7 +1385,10 @@ mod tests {
     // ---- resolution helpers ----
 
     fn compiler(id: &str, name: &str) -> CompilerInfo {
-        CompilerInfo { id: id.to_string(), name: name.to_string() }
+        CompilerInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+        }
     }
 
     fn sample_compilers() -> Vec<CompilerInfo> {
@@ -1359,7 +1409,10 @@ mod tests {
             name: name.to_string(),
             versions: versions
                 .iter()
-                .map(|(vid, ver)| LibVersion { id: vid.to_string(), version: ver.to_string() })
+                .map(|(vid, ver)| LibVersion {
+                    id: vid.to_string(),
+                    version: ver.to_string(),
+                })
                 .collect(),
         }
     }
@@ -1369,9 +1422,18 @@ mod tests {
             lib(
                 "fmt",
                 "{fmt}",
-                &[("1021", "10.2.1"), ("1100", "11.0.0"), ("1200", "12.0.0"), ("trunk", "trunk")],
+                &[
+                    ("1021", "10.2.1"),
+                    ("1100", "11.0.0"),
+                    ("1200", "12.0.0"),
+                    ("trunk", "trunk"),
+                ],
             ),
-            lib("rangesv3", "range-v3", &[("0110", "0.11.0"), ("trunk", "trunk")]),
+            lib(
+                "rangesv3",
+                "range-v3",
+                &[("0110", "0.11.0"), ("trunk", "trunk")],
+            ),
         ]
     }
 
@@ -1416,10 +1478,22 @@ mod tests {
         ];
         assert_eq!(resolve_compiler("gcc", &compilers).unwrap().id, "g142");
         assert_eq!(resolve_compiler("gcc 14", &compilers).unwrap().id, "g142");
-        assert_eq!(resolve_compiler("clang", &compilers).unwrap().id, "clang1810");
-        assert_eq!(resolve_compiler("arm gcc 14", &compilers).unwrap().id, "armg1420");
-        assert_eq!(resolve_compiler("arm64 gcc", &compilers).unwrap().id, "arm64g1420");
-        assert_eq!(resolve_compiler("s390x gcc", &compilers).unwrap().id, "gccs390x1430");
+        assert_eq!(
+            resolve_compiler("clang", &compilers).unwrap().id,
+            "clang1810"
+        );
+        assert_eq!(
+            resolve_compiler("arm gcc 14", &compilers).unwrap().id,
+            "armg1420"
+        );
+        assert_eq!(
+            resolve_compiler("arm64 gcc", &compilers).unwrap().id,
+            "arm64g1420"
+        );
+        assert_eq!(
+            resolve_compiler("s390x gcc", &compilers).unwrap().id,
+            "gccs390x1430"
+        );
     }
 
     #[test]
@@ -1437,7 +1511,10 @@ mod tests {
             compiler("rv64g1320", "RISC-V (64-bits) gcc 13.2.0"),
         ];
         let err = resolve_compiler("gcc 13", &compilers).unwrap_err();
-        assert!(err.contains("mipsg1320") && err.contains("rv64g1320"), "{err}");
+        assert!(
+            err.contains("mipsg1320") && err.contains("rv64g1320"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1459,13 +1536,25 @@ mod tests {
     #[test]
     fn resolve_library_major_prefix_and_exact() {
         // "fmt 11" -> 11.0.0 (version id 1100), the documented gotcha.
-        assert_eq!(resolve_library("fmt 11", &sample_libs()).unwrap(), ("fmt".into(), "1100".into()));
+        assert_eq!(
+            resolve_library("fmt 11", &sample_libs()).unwrap(),
+            ("fmt".into(), "1100".into())
+        );
         // exact display version
-        assert_eq!(resolve_library("fmt 10.2.1", &sample_libs()).unwrap(), ("fmt".into(), "1021".into()));
+        assert_eq!(
+            resolve_library("fmt 10.2.1", &sample_libs()).unwrap(),
+            ("fmt".into(), "1021".into())
+        );
         // colon-separated CE version id
-        assert_eq!(resolve_library("fmt:1100", &sample_libs()).unwrap(), ("fmt".into(), "1100".into()));
+        assert_eq!(
+            resolve_library("fmt:1100", &sample_libs()).unwrap(),
+            ("fmt".into(), "1100".into())
+        );
         // friendly name maps to id (range-v3 -> rangesv3), newest non-trunk
-        assert_eq!(resolve_library("range-v3", &sample_libs()).unwrap(), ("rangesv3".into(), "0110".into()));
+        assert_eq!(
+            resolve_library("range-v3", &sample_libs()).unwrap(),
+            ("rangesv3".into(), "0110".into())
+        );
     }
 
     #[test]
@@ -1480,7 +1569,10 @@ mod tests {
     fn build_request_body_includes_resolved_libraries() {
         let libs = vec![("fmt".to_string(), "1100".to_string())];
         let body = build_request_body("x", "c++23", "-O3", false, &libs);
-        assert_eq!(body["options"]["libraries"], json!([{ "id": "fmt", "version": "1100" }]));
+        assert_eq!(
+            body["options"]["libraries"],
+            json!([{ "id": "fmt", "version": "1100" }])
+        );
     }
 
     #[test]

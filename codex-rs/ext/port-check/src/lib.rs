@@ -36,7 +36,10 @@ pub const CPP_ADAPTER: &str = include_str!("../adapters/port_harness.hpp");
 pub fn write_adapters(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir)?;
     let mut out = Vec::new();
-    for (name, text) in [("port_harness.py", PYTHON_ADAPTER), ("port_harness.hpp", CPP_ADAPTER)] {
+    for (name, text) in [
+        ("port_harness.py", PYTHON_ADAPTER),
+        ("port_harness.hpp", CPP_ADAPTER),
+    ] {
         let p = dir.join(name);
         std::fs::write(&p, text)?;
         out.push(p);

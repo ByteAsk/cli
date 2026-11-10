@@ -1,13 +1,17 @@
+//! Render import choices with shared picker focus while preserving import state.
+
 use super::*;
+use crate::bottom_pane::picker_option_row;
+use crate::bottom_pane::selection_style;
 use crate::key_hint;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::Insets;
 use crate::render::RectExt as _;
-use crate::selection_list::selection_option_row_with_dim;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
@@ -48,8 +52,9 @@ impl ExternalAgentConfigMigrationScreen {
                     cursor.content = "› ".into();
                 }
                 line.spans.iter_mut().for_each(|span| {
-                    span.style = span.style.fg(crate::style::accent_color()).bold();
+                    span.style = selection_style();
                 });
+                line = line.style(selection_style());
             } else if entry.kind != RenderLineKind::Item && !line.spans.is_empty() {
                 line.spans.iter_mut().for_each(|span| {
                     span.style = span.style.dim();
@@ -156,13 +161,12 @@ impl WidgetRef for &ExternalAgentConfigMigrationScreen {
             .wrap(Wrap { trim: false })
             .render(action_areas[0], buf);
         for (idx, action) in actions.iter().enumerate() {
-            selection_option_row_with_dim(
-                idx,
-                action.label().to_string(),
-                self.focus == FocusArea::Actions && self.highlighted_action == *action,
-                /*dim*/ self.focus != FocusArea::Actions,
-            )
-            .render(action_areas[idx + 1], buf);
+            let selected = self.focus == FocusArea::Actions && self.highlighted_action == *action;
+            let line = picker_option_row(idx, action.label().to_string(), selected);
+            line.render(action_areas[idx + 1], buf);
+            if self.focus != FocusArea::Actions {
+                buf.set_style(action_areas[idx + 1], Style::default().dim());
+            }
         }
 
         let footer = match self.view {

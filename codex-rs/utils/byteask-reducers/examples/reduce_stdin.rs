@@ -30,13 +30,22 @@ fn main() {
             policy.enabled.insert((*name).to_string());
         }
     }
-    let exists = |p: &str| std::path::Path::new(p).exists() || !std::path::Path::new(p).is_absolute();
-    let ctx = byteask_output_reducers::Ctx { command: command.as_deref(), path_exists: Some(&exists) };
+    let exists =
+        |p: &str| std::path::Path::new(p).exists() || !std::path::Path::new(p).is_absolute();
+    let ctx = byteask_output_reducers::Ctx {
+        command: command.as_deref(),
+        path_exists: Some(&exists),
+    };
     let out = byteask_output_reducers::reduce(&text, &ctx, &policy);
     let mut body = out.text;
     if !out.fired.is_empty() {
         body.push_str(&format!("\n[byteask: {}]", out.fired.join(" ")));
     }
     let _ = std::io::stdout().write_all(body.as_bytes());
-    eprintln!("family={} fired={} lossy={}", out.family.name(), out.fired.join(","), out.lossy);
+    eprintln!(
+        "family={} fired={} lossy={}",
+        out.family.name(),
+        out.fired.join(","),
+        out.lossy
+    );
 }

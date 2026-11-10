@@ -86,7 +86,7 @@ const parseCurlHeaders = (rawHeaders) => {
   const statusMatch = /^HTTP\/\S+\s+(\d{3})/.exec(statusLine);
   if (!statusMatch) {
     throw new ManualFetchError(
-      `Could not parse HTTP status from curl response: ${statusLine}`
+      `Could not parse HTTP status from curl response: ${statusLine}`,
     );
   }
 
@@ -110,7 +110,7 @@ const tempFilePath = (cacheDir, suffix) =>
     cacheDir,
     `.fetch-byteask-manual-${process.pid}-${Date.now()}-${Math.random()
       .toString(16)
-      .slice(2)}${suffix}`
+      .slice(2)}${suffix}`,
   );
 
 const requestManualWithCurl = async (url, { cacheDir, method, timeoutMs }) => {
@@ -173,19 +173,24 @@ const requestManualWithCurl = async (url, { cacheDir, method, timeoutMs }) => {
 const requestManualWithFetch = async (url, { method, timeoutMs }) => {
   if (typeof fetch !== "function") {
     throw new ManualFetchError(
-      "Native fetch is unavailable in this Node runtime."
+      "Native fetch is unavailable in this Node runtime.",
     );
   }
 
-  return withTimeout(
-    (signal) =>
-      fetch(url, {
-        method,
-        headers: { "User-Agent": USER_AGENT },
-        signal,
-      }),
-    timeoutMs
-  );
+  return withTimeout(async (signal) => {
+    const response = await fetch(url, {
+      method,
+      headers: { "User-Agent": USER_AGENT },
+      signal,
+    });
+    if (!response.ok || method === "HEAD") return response;
+    // Keep body reads inside both the timeout and transport fallback.
+    return makeResponse({
+      body: await response.text(),
+      headers: response.headers,
+      status: response.status,
+    });
+  }, timeoutMs);
 };
 
 const requestManual = async (url, { cacheDir, method, timeoutMs }) => {
@@ -206,7 +211,7 @@ const requestManual = async (url, { cacheDir, method, timeoutMs }) => {
       const response = await transport();
       if (!response.ok) {
         throw new ManualFetchError(
-          `${method} ${url} failed with HTTP ${response.status}.`
+          `${method} ${url} failed with HTTP ${response.status}.`,
         );
       }
       return response;
@@ -247,13 +252,6 @@ const nearestExistingParent = async (target) => {
 const usableCacheDir = async (cacheDir) => {
   if (!cacheDir) return null;
   const resolved = path.resolve(cacheDir);
-
-  try {
-    const info = await stat(resolved);
-    if (!info.isDirectory()) return null;
-  } catch (error) {
-    if (error?.code !== "ENOENT") return null;
-  }
 
   const parent = await nearestExistingParent(resolved);
   if (!parent) return null;
@@ -314,7 +312,10 @@ const manualLines = (manual) => {
 };
 
 const sectionTitle = (rawTitle) =>
-  rawTitle.replace(/\s+#+\s*$/, "").replace(/\s+/g, " ").trim();
+  rawTitle
+    .replace(/\s+#+\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
 const buildOutline = (manual) => {
   const lines = manualLines(manual);
@@ -373,7 +374,8 @@ const buildOutline = (manual) => {
   };
 };
 
-const outlineMarkdown = (outline) => `# ByteAsk Manual Outline\n\n${outline.text}\n`;
+const outlineMarkdown = (outline) =>
+  `# ByteAsk Manual Outline\n\n${outline.text}\n`;
 
 const manualStatusLine = (status) =>
   status.cacheStatus === "hit"
@@ -420,7 +422,7 @@ const fetchByteAskManual = async ({
   const resolvedCacheDir = await resolveCacheDir(cacheDir);
   if (!resolvedCacheDir) {
     throw new ManualFetchError(
-      "Manual cache directory is unavailable; pass --cache-dir to override or use OpenAI Docs MCP fallback."
+      "Manual cache directory is unavailable; pass --cache-dir to override or use OpenAI Docs MCP fallback.",
     );
   }
   await mkdir(resolvedCacheDir, { recursive: true });
@@ -435,52 +437,31 @@ const fetchByteAskManual = async ({
   const outlinePath = outlineFilePath(resolvedCacheDir);
   const checkedAt = new Date().toISOString();
 
-  const cachedManual = await readCachedManual(resolvedCacheDir, expectedSha256);
-  if (cachedManual !== null) {
-    const outline = buildOutline(cachedManual);
-    const outlineText = outlineMarkdown(outline);
-    await writeOutline(resolvedCacheDir, outlineText);
+  let manualText = await readCachedManual(resolvedCacheDir, expectedSha256);
+  const cacheStatus = manualText === null ? "updated" : "hit";
+  if (manualText === null) {
+    const getResponse = await requestManual(manualUrl, {
+      cacheDir: resolvedCacheDir,
+      method: "GET",
+      timeoutMs,
+    });
+    const getHeaderSha256 = readHeaderSha(getResponse);
+    if (getHeaderSha256 !== expectedSha256) {
+      throw new ManualFetchError(
+        `${HASH_HEADER} changed between HEAD and GET for ${manualUrl}.`,
+      );
+    }
 
-    return {
-      outlineText,
-      status: {
-        manualUrl,
-        headerSha256: expectedSha256,
-        fetchedManualSha256: expectedSha256,
-        manualHashMatches: true,
-        cacheStatus: "hit",
-        cacheDir: resolvedCacheDir,
-        manualPath,
-        outlinePath,
-        checkedAt,
-        lineCount: outline.lineCount,
-        headingCount: outline.headingCount,
-      },
-    };
+    manualText = await getResponse.text();
+    if (sha256(manualText) !== expectedSha256) {
+      throw new ManualFetchError(
+        `${HASH_HEADER} did not match the fetched manual body for ${manualUrl}.`,
+      );
+    }
+
+    await writeCachedManual(resolvedCacheDir, manualText);
   }
 
-  const getResponse = await requestManual(manualUrl, {
-    cacheDir: resolvedCacheDir,
-    method: "GET",
-    timeoutMs,
-  });
-  const getHeaderSha256 = readHeaderSha(getResponse);
-  if (getHeaderSha256 !== expectedSha256) {
-    throw new ManualFetchError(
-      `${HASH_HEADER} changed between HEAD and GET for ${manualUrl}.`
-    );
-  }
-
-  const manualText = await getResponse.text();
-  const actualSha256 = sha256(manualText);
-  const manualHashMatches = actualSha256 === expectedSha256;
-  if (!manualHashMatches) {
-    throw new ManualFetchError(
-      `${HASH_HEADER} did not match the fetched manual body for ${manualUrl}.`
-    );
-  }
-
-  await writeCachedManual(resolvedCacheDir, manualText);
   const outline = buildOutline(manualText);
   const outlineText = outlineMarkdown(outline);
   await writeOutline(resolvedCacheDir, outlineText);
@@ -490,9 +471,9 @@ const fetchByteAskManual = async ({
     status: {
       manualUrl,
       headerSha256: expectedSha256,
-      fetchedManualSha256: actualSha256,
-      manualHashMatches,
-      cacheStatus: "updated",
+      fetchedManualSha256: expectedSha256,
+      manualHashMatches: true,
+      cacheStatus,
       cacheDir: resolvedCacheDir,
       manualPath,
       outlinePath,

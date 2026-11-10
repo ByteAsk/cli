@@ -18,12 +18,22 @@ pub(crate) fn not_run(reason: &str, fix: &str) -> String {
 /// from the markers the tools already write. A body holding [`not_run`]'s `RESULT: NOT RUN`
 /// is NOT RUN with that reason and fix; a partial answer (`INCOMPLETE`, `TIMED OUT`, or cut at
 /// the output cap) is APPROXIMATE; anything else answered the question: PASS with `summary`.
-pub(crate) fn verdict(tool: &str, body: &str, cut: bool, summary: &str) -> check_result::CheckResult {
+pub(crate) fn verdict(
+    tool: &str,
+    body: &str,
+    cut: bool,
+    summary: &str,
+) -> check_result::CheckResult {
     use check_result::CheckResult;
     use check_result::NotRunReason;
     if let Some(at) = body.find("RESULT: NOT RUN — ") {
         let rest = &body[at + "RESULT: NOT RUN — ".len()..];
-        let reason_text = rest.lines().next().unwrap_or_default().trim().trim_end_matches('.');
+        let reason_text = rest
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches('.');
         let fix = rest
             .lines()
             .find_map(|line| line.strip_prefix("FIX: "))
@@ -118,7 +128,11 @@ pub(crate) fn signal_name(signo: i32) -> Option<&'static str> {
 /// legacy `~/.rr` that exists, else `$XDG_DATA_HOME/rr`, else
 /// `~/.local/share/rr`.
 pub(crate) fn rr_trace_root() -> Option<PathBuf> {
-    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let env = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
     trace_root_from(env("_RR_TRACE_DIR"), env("HOME"), env("XDG_DATA_HOME"))
 }
 
@@ -272,7 +286,13 @@ mod tests {
         use check_result::Verdict;
         let timed = verdict(
             "debug_reverse",
-            &format!("header\n{}", not_run("the replay did not reach the stop point within 30s", "raise `timeout_sec`")),
+            &format!(
+                "header\n{}",
+                not_run(
+                    "the replay did not reach the stop point within 30s",
+                    "raise `timeout_sec`"
+                )
+            ),
             false,
             "x",
         );
@@ -280,16 +300,40 @@ mod tests {
         assert_eq!(timed.reason, Some(NotRunReason::TimeLimit));
         assert_eq!(timed.fix.as_deref(), Some("raise `timeout_sec`"));
         timed.validate().expect("contract");
-        let missing = verdict("debug_core", &not_run("gdb is not installed here", "install gdb"), false, "x");
+        let missing = verdict(
+            "debug_core",
+            &not_run("gdb is not installed here", "install gdb"),
+            false,
+            "x",
+        );
         assert_eq!(missing.reason, Some(NotRunReason::ToolMissing));
-        let no_pmu = verdict("debug_reverse", "RESULT: NOT RUN — rr cannot replay here.\nno PMU\n", false, "x");
+        let no_pmu = verdict(
+            "debug_reverse",
+            "RESULT: NOT RUN — rr cannot replay here.\nno PMU\n",
+            false,
+            "x",
+        );
         assert_eq!(no_pmu.reason, Some(NotRunReason::Unsupported));
         no_pmu.validate().expect("a NOT RUN always has a fix");
-        for partial in ["writes:\nTIMED OUT after 9s: the answer above is INCOMPLETE", "INCOMPLETE: the replay ended"] {
-            assert_eq!(verdict("debug_reverse", partial, false, "x").verdict, Verdict::Approximate);
+        for partial in [
+            "writes:\nTIMED OUT after 9s: the answer above is INCOMPLETE",
+            "INCOMPLETE: the replay ended",
+        ] {
+            assert_eq!(
+                verdict("debug_reverse", partial, false, "x").verdict,
+                Verdict::Approximate
+            );
         }
-        assert_eq!(verdict("debug_core", "a full answer", true, "x").verdict, Verdict::Approximate);
-        let full = verdict("debug_core", "LIKELY CAUSE: null deref", false, "Triaged the core file.");
+        assert_eq!(
+            verdict("debug_core", "a full answer", true, "x").verdict,
+            Verdict::Approximate
+        );
+        let full = verdict(
+            "debug_core",
+            "LIKELY CAUSE: null deref",
+            false,
+            "Triaged the core file.",
+        );
         assert!(full.is_pass());
         assert_eq!(full.summary, "Triaged the core file.");
     }
@@ -297,7 +341,10 @@ mod tests {
     #[test]
     fn not_run_always_carries_a_fix_line() {
         let text = not_run("no Intel PT here", "run on bare metal");
-        assert!(text.starts_with("RESULT: NOT RUN — no Intel PT here\n"), "{text}");
+        assert!(
+            text.starts_with("RESULT: NOT RUN — no Intel PT here\n"),
+            "{text}"
+        );
         assert!(text.contains("\nFIX: run on bare metal"), "{text}");
     }
 
@@ -313,9 +360,15 @@ mod tests {
             trace_root_from(None, Some(h.clone()), Some("/xdg".into())),
             Some(PathBuf::from("/xdg/rr"))
         );
-        assert_eq!(trace_root_from(None, Some(h.clone()), None), Some(h.join(".local/share/rr")));
+        assert_eq!(
+            trace_root_from(None, Some(h.clone()), None),
+            Some(h.join(".local/share/rr"))
+        );
         std::fs::create_dir(h.join(".rr")).unwrap();
-        assert_eq!(trace_root_from(None, Some(h.clone()), Some("/xdg".into())), Some(h.join(".rr")));
+        assert_eq!(
+            trace_root_from(None, Some(h.clone()), Some("/xdg".into())),
+            Some(h.join(".rr"))
+        );
         assert_eq!(trace_root_from(None, None, None), None);
     }
 
@@ -325,7 +378,14 @@ mod tests {
         let text = "PID\tPPID\tEXIT\tCMD\n4219\t--\t-6\t./book\n4300\t4219\t0\t/bin/sh -c echo hi\n4301\t--\t--\t./cut\n";
         let rows = parse_rr_ps(text);
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], TraceProcess { pid: 4219, exit: Some(-6), command: "./book".into() });
+        assert_eq!(
+            rows[0],
+            TraceProcess {
+                pid: 4219,
+                exit: Some(-6),
+                command: "./book".into()
+            }
+        );
         assert_eq!(rows[1].command, "/bin/sh -c echo hi");
         assert_eq!(rows[2].exit, None);
         assert_eq!(describe_exit(Some(-6)), "ended by SIGABRT");
@@ -364,7 +424,10 @@ mod tests {
         point_latest_trace_at(root.path(), &root.path().join("feed-byteask-1")).unwrap();
         let link = root.path().join("latest-trace");
         // Relative, like rr's own link, so the trace root can be moved.
-        assert_eq!(std::fs::read_link(&link).unwrap(), PathBuf::from("feed-byteask-1"));
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            PathBuf::from("feed-byteask-1")
+        );
         assert_eq!(
             std::fs::canonicalize(&link).unwrap(),
             std::fs::canonicalize(root.path().join("feed-byteask-1")).unwrap()
@@ -398,6 +461,9 @@ mod tests {
         assert_eq!(source_line(&path, 9), None);
         assert_eq!(source_line(&path, 0), None);
         assert_eq!(display_path(&path, dir.path()), "a.cpp");
-        assert_eq!(display_path("/usr/include/x.h", dir.path()), "/usr/include/x.h");
+        assert_eq!(
+            display_path("/usr/include/x.h", dir.path()),
+            "/usr/include/x.h"
+        );
     }
 }

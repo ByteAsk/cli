@@ -73,11 +73,17 @@ mod tests {
     #[test]
     fn an_ordinary_thread_gets_every_runtime_tool() {
         let expected: Vec<ToolName> = if cfg!(target_os = "linux") {
-            vec![ToolName::plain("debug_reverse"), ToolName::plain("debug_core")]
+            vec![
+                ToolName::plain("debug_reverse"),
+                ToolName::plain("debug_core"),
+            ]
         } else {
             vec![ToolName::plain("debug_core")]
         };
-        assert_eq!(names(&crate::extension::test_thread_store(false, false)), expected);
+        assert_eq!(
+            names(&crate::extension::test_thread_store(false, false)),
+            expected
+        );
     }
 
     /// 0.2.0: the unfinished tools are not offered anywhere.
@@ -85,7 +91,10 @@ mod tests {
     fn port_check_and_spike_trace_are_not_registered() {
         let thread_store = crate::extension::test_thread_store(false, true);
         let session_store = ExtensionData::new("session");
-        let mut all: Vec<String> = names(&thread_store).iter().map(|n| n.name.clone()).collect();
+        let mut all: Vec<String> = names(&thread_store)
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
         all.extend(
             codex_extension_api::ToolContributor::tools(
                 &crate::extension::test_extension(),
@@ -95,7 +104,11 @@ mod tests {
             .iter()
             .map(|t| t.tool_name().name),
         );
-        assert!(!all.iter().any(|n| n == "port_check" || n == "cpp_spike_trace"), "{all:?}");
+        assert!(
+            !all.iter()
+                .any(|n| n == "port_check" || n == "cpp_spike_trace"),
+            "{all:?}"
+        );
     }
 
     /// Integration: the runtime tools get the main tools' layers (`wrap_thread_tools`). A
@@ -115,7 +128,8 @@ mod tests {
             .await
             .expect_err("a wrong argument type is refused");
         let text = crate::sandbox::error_text(err);
-        let result = check_result::CheckResult::from_tool_text("debug_core", &text).expect("a result line");
+        let result =
+            check_result::CheckResult::from_tool_text("debug_core", &text).expect("a result line");
         assert_eq!(result.verdict, check_result::Verdict::NotRun, "{text}");
     }
 
@@ -137,8 +151,10 @@ mod tests {
         // The registered runtime tools, plus the two kept but unregistered ones (built
         // directly, so their pinned text stays protected), plus debug_reverse wherever it is
         // not registered (Linux only), so the files are the same on every platform.
-        let mut tools = RuntimeTools
-            .tools(&ExtensionData::new("session"), &crate::extension::test_thread_store(false, false));
+        let mut tools = RuntimeTools.tools(
+            &ExtensionData::new("session"),
+            &crate::extension::test_thread_store(false, false),
+        );
         tools.push(Arc::new(crate::tools::SpikeTraceTool {
             sysfs_root: std::path::PathBuf::from("/sys"),
         }));
@@ -157,19 +173,27 @@ mod tests {
             .map(|tool| {
                 (
                     tool.tool_name().to_string(),
-                    crate::test_support::sorted_keys(serde_json::to_value(tool.spec()).expect("spec serialises")),
+                    crate::test_support::sorted_keys(
+                        serde_json::to_value(tool.spec()).expect("spec serialises"),
+                    ),
                 )
             })
             .collect();
         // Every tool is pinned by exactly one snapshot.
         for (name, _) in &specs {
-            let pinned_by = SNAPSHOTS.iter().filter(|(_, names)| names.contains(&name.as_str())).count();
+            let pinned_by = SNAPSHOTS
+                .iter()
+                .filter(|(_, names)| names.contains(&name.as_str()))
+                .count();
             assert_eq!(pinned_by, 1, "{name} must be in exactly one snapshot file");
         }
         for (file, names) in SNAPSHOTS {
             let path = format!("{}/src/snapshots/{file}", env!("CARGO_MANIFEST_DIR"));
-            let mut tools: Vec<serde_json::Value> =
-                specs.iter().filter(|(n, _)| names.contains(&n.as_str())).map(|(_, v)| v.clone()).collect();
+            let mut tools: Vec<serde_json::Value> = specs
+                .iter()
+                .filter(|(n, _)| names.contains(&n.as_str()))
+                .map(|(_, v)| v.clone())
+                .collect();
             tools.sort_by_key(std::string::ToString::to_string);
             let now = format!(
                 "{}\n",
@@ -179,9 +203,13 @@ mod tests {
                 std::fs::write(&path, &now).expect("write snapshot");
                 continue;
             }
-            let pinned = std::fs::read_to_string(&path)
-                .unwrap_or_else(|_| panic!("snapshot {file} missing: run once with BYTEASK_UPDATE_TOOL_SNAPSHOT=1"));
-            assert_eq!(pinned, now, "model-facing text in {file} changed; see the doc comment");
+            let pinned = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+                panic!("snapshot {file} missing: run once with BYTEASK_UPDATE_TOOL_SNAPSHOT=1")
+            });
+            assert_eq!(
+                pinned, now,
+                "model-facing text in {file} changed; see the doc comment"
+            );
         }
     }
 }

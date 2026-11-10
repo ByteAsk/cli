@@ -21,17 +21,28 @@ fn each_query_names_what_it_is_missing() {
     assert!(err.contains("needs `expr`"), "{err}");
     let err = request(serde_json::json!({"query": "last_reached"})).unwrap_err();
     assert!(err.contains("needs `location`"), "{err}");
-    assert!(request(serde_json::json!({"query": "rewind"})).unwrap_err().contains("unknown query"));
+    assert!(
+        request(serde_json::json!({"query": "rewind"}))
+            .unwrap_err()
+            .contains("unknown query")
+    );
     assert!(request(serde_json::json!({"query": "stop_point"})).is_ok());
     assert!(request(serde_json::json!({"query": "last_lines"})).is_ok());
 }
 
 #[test]
 fn a_misnamed_or_misplaced_field_is_refused_not_ignored() {
-    assert!(serde_json::from_value::<ReverseArgs>(serde_json::json!({"query": "stop_point", "trace_dir": "x"})).is_err());
+    assert!(
+        serde_json::from_value::<ReverseArgs>(
+            serde_json::json!({"query": "stop_point", "trace_dir": "x"})
+        )
+        .is_err()
+    );
     let err = request(serde_json::json!({"query": "last_lines", "expr": "x"})).unwrap_err();
     assert!(err.contains("only used by query \"who_wrote\""), "{err}");
-    let err = request(serde_json::json!({"query": "stop_point", "stop_at": "a.c:3", "stop_event": 9})).unwrap_err();
+    let err =
+        request(serde_json::json!({"query": "stop_point", "stop_at": "a.c:3", "stop_event": 9}))
+            .unwrap_err();
     assert!(err.contains("not both"), "{err}");
     let err = request(serde_json::json!({"query": "stop_point", "stop_hit": 2})).unwrap_err();
     assert!(err.contains("give `stop_at` too"), "{err}");
@@ -39,11 +50,36 @@ fn a_misnamed_or_misplaced_field_is_refused_not_ignored() {
 
 #[test]
 fn counts_default_per_query_and_are_capped() {
-    assert_eq!(request(serde_json::json!({"query": "who_wrote", "expr": "x"})).unwrap().count, 3);
-    assert_eq!(request(serde_json::json!({"query": "last_lines"})).unwrap().count, 20);
-    assert_eq!(request(serde_json::json!({"query": "last_lines", "count": 9999})).unwrap().count, MAX_COUNT);
-    assert_eq!(request(serde_json::json!({"query": "last_lines", "count": 0})).unwrap().count, 1);
-    assert_eq!(request(serde_json::json!({"query": "last_lines", "count": 4.0})).unwrap().count, 4);
+    assert_eq!(
+        request(serde_json::json!({"query": "who_wrote", "expr": "x"}))
+            .unwrap()
+            .count,
+        3
+    );
+    assert_eq!(
+        request(serde_json::json!({"query": "last_lines"}))
+            .unwrap()
+            .count,
+        20
+    );
+    assert_eq!(
+        request(serde_json::json!({"query": "last_lines", "count": 9999}))
+            .unwrap()
+            .count,
+        MAX_COUNT
+    );
+    assert_eq!(
+        request(serde_json::json!({"query": "last_lines", "count": 0}))
+            .unwrap()
+            .count,
+        1
+    );
+    assert_eq!(
+        request(serde_json::json!({"query": "last_lines", "count": 4.0}))
+            .unwrap()
+            .count,
+        4
+    );
 }
 
 #[test]
@@ -61,7 +97,11 @@ fn a_watch_expression_may_read_but_never_change_the_replay() {
         "static_cast<int>(side)",
         "book->bids._M_impl",
     ] {
-        assert!(check_expr(ok).is_ok(), "{ok} should be allowed: {:?}", check_expr(ok));
+        assert!(
+            check_expr(ok).is_ok(),
+            "{ok} should be allowed: {:?}",
+            check_expr(ok)
+        );
     }
     for bad in [
         "x = 5",
@@ -82,10 +122,21 @@ fn a_watch_expression_may_read_but_never_change_the_replay() {
 
 #[test]
 fn a_location_is_a_plain_linespec_without_a_condition() {
-    for ok in ["book.cpp:42", "OrderBook::apply", "*0x401136", "feed", "ns::Book<int>::top"] {
+    for ok in [
+        "book.cpp:42",
+        "OrderBook::apply",
+        "*0x401136",
+        "feed",
+        "ns::Book<int>::top",
+    ] {
         assert!(check_location("location", ok).is_ok(), "{ok}");
     }
-    for bad in ["foo if x=1", "book.cpp:9 thread 2", "-qualified foo", "a\nshell id"] {
+    for bad in [
+        "foo if x=1",
+        "book.cpp:9 thread 2",
+        "-qualified foo",
+        "a\nshell id",
+    ] {
         assert!(check_location("location", bad).is_err(), "{bad:?}");
     }
 }
@@ -95,13 +146,34 @@ fn a_location_is_a_plain_linespec_without_a_condition() {
 #[test]
 fn the_stop_point_follows_the_request_then_how_the_program_ended() {
     let r = |j| request(j).unwrap();
-    assert_eq!(start_for(&r(serde_json::json!({"query": "stop_point", "stop_event": 274})), Some(-6)), Start::Event(274));
-    assert_eq!(start_for(&r(serde_json::json!({"query": "stop_point", "stop_at": "a.c:3"})), Some(0)), Start::Beginning);
+    assert_eq!(
+        start_for(
+            &r(serde_json::json!({"query": "stop_point", "stop_event": 274})),
+            Some(-6)
+        ),
+        Start::Event(274)
+    );
+    assert_eq!(
+        start_for(
+            &r(serde_json::json!({"query": "stop_point", "stop_at": "a.c:3"})),
+            Some(0)
+        ),
+        Start::Beginning
+    );
     // killed by a signal: run forward to its delivery
-    assert_eq!(start_for(&r(serde_json::json!({"query": "stop_point"})), Some(-11)), Start::Beginning);
+    assert_eq!(
+        start_for(&r(serde_json::json!({"query": "stop_point"})), Some(-11)),
+        Start::Beginning
+    );
     // a normal exit, or a recording cut short: start at its end
-    assert_eq!(start_for(&r(serde_json::json!({"query": "stop_point"})), Some(3)), Start::Exit);
-    assert_eq!(start_for(&r(serde_json::json!({"query": "stop_point"})), None), Start::Exit);
+    assert_eq!(
+        start_for(&r(serde_json::json!({"query": "stop_point"})), Some(3)),
+        Start::Exit
+    );
+    assert_eq!(
+        start_for(&r(serde_json::json!({"query": "stop_point"})), None),
+        Start::Exit
+    );
 }
 
 #[test]
@@ -124,29 +196,49 @@ fn replay_argv_puts_rr_options_before_the_trace_and_gdb_options_after_dashdash()
     .map(str::to_string)
     .to_vec();
     let with = |head: &[&str]| -> Vec<String> {
-        head.iter().map(|s| s.to_string()).chain(tail.iter().cloned()).collect()
+        head.iter()
+            .map(|s| s.to_string())
+            .chain(tail.iter().cloned())
+            .collect()
     };
-    assert_eq!(build_replay_argv(trace, Start::Beginning, false, hook), with(&["replay", "-q"]));
-    assert_eq!(build_replay_argv(trace, Start::Exit, false, hook), with(&["replay", "-e", "-q"]));
-    assert_eq!(build_replay_argv(trace, Start::Event(42), true, hook), with(&["replay", "-u", "-g", "42", "-q"]));
+    assert_eq!(
+        build_replay_argv(trace, Start::Beginning, false, hook),
+        with(&["replay", "-q"])
+    );
+    assert_eq!(
+        build_replay_argv(trace, Start::Exit, false, hook),
+        with(&["replay", "-e", "-q"])
+    );
+    assert_eq!(
+        build_replay_argv(trace, Start::Event(42), true, hook),
+        with(&["replay", "-u", "-g", "42", "-q"])
+    );
 }
 
 #[test]
 fn the_driver_runs_from_a_hook_on_rrs_own_connect_command() {
     let hook = hook_script(Path::new("/tmp/s/byteask_rr_driver.py"));
-    assert_eq!(hook, "define target hookpost-extended-remote\nsource /tmp/s/byteask_rr_driver.py\nend\n");
+    assert_eq!(
+        hook,
+        "define target hookpost-extended-remote\nsource /tmp/s/byteask_rr_driver.py\nend\n"
+    );
 }
 
 #[test]
 fn the_fatal_signal_decides_the_stop_only_when_nothing_else_does() {
     let roots = vec![PathBuf::from("/work")];
     let plain = request(serde_json::json!({"query": "who_wrote", "expr": "x"})).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&query_json(&plain, Some("SIGABRT"), &roots)).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&query_json(&plain, Some("SIGABRT"), &roots)).unwrap();
     assert_eq!(v["fatal_signal"], "SIGABRT");
     assert_eq!(v["user_roots"][0], "/work");
     assert_eq!(v["expr"], "x");
-    let at = request(serde_json::json!({"query": "who_wrote", "expr": "x", "stop_at": "a.c:3", "stop_hit": 2})).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&query_json(&at, Some("SIGABRT"), &roots)).unwrap();
+    let at = request(
+        serde_json::json!({"query": "who_wrote", "expr": "x", "stop_at": "a.c:3", "stop_hit": 2}),
+    )
+    .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&query_json(&at, Some("SIGABRT"), &roots)).unwrap();
     assert!(v["fatal_signal"].is_null());
     assert_eq!(v["stop_hit"], 2);
 }
@@ -165,9 +257,19 @@ fn the_driver_never_takes_a_debugger_command_from_the_model() {
     // Every gdb.execute goes through run()/move(), and every string they get
     // is a literal or one of the checked fields. A new gdb.execute elsewhere
     // would bypass that; this pins it.
-    assert_eq!(DRIVER.matches("gdb.execute(").count(), 2, "gdb.execute outside run()/move()");
-    for line in DRIVER.lines().filter(|l| l.contains("run(\"") || l.contains("move(\"")) {
-        assert!(!line.contains("QUERY"), "a query field reaches a command directly: {line}");
+    assert_eq!(
+        DRIVER.matches("gdb.execute(").count(),
+        2,
+        "gdb.execute outside run()/move()"
+    );
+    for line in DRIVER
+        .lines()
+        .filter(|l| l.contains("run(\"") || l.contains("move(\""))
+    {
+        assert!(
+            !line.contains("QUERY"),
+            "a query field reaches a command directly: {line}"
+        );
     }
 }
 
@@ -185,17 +287,30 @@ async fn real_rr_accepts_every_replay_argv_we_build() {
     let run = |argv: Vec<String>| {
         let cwd = dir.path().to_path_buf();
         async move {
-            match crate::run::run_capped("rr", &argv, &cwd, crate::run::timeout_from(Some(30))).await {
-                Ok(crate::run::RunOutcome::Finished { stdout, stderr, .. }) => Some(format!("{stdout}\n{stderr}")),
+            match crate::run::run_capped("rr", &argv, &cwd, crate::run::timeout_from(Some(30)))
+                .await
+            {
+                Ok(crate::run::RunOutcome::Finished { stdout, stderr, .. }) => {
+                    Some(format!("{stdout}\n{stderr}"))
+                }
                 _ => None,
             }
         }
     };
-    let Some(control) = run(vec!["replay".into(), "--byteask-not-a-flag".into(), dir.path().to_string_lossy().into_owned()]).await else {
+    let Some(control) = run(vec![
+        "replay".into(),
+        "--byteask-not-a-flag".into(),
+        dir.path().to_string_lossy().into_owned(),
+    ])
+    .await
+    else {
         eprintln!("skip: rr not installed");
         return;
     };
-    assert!(rejected(&control), "the control was not rejected, so this test proves nothing:\n{control}");
+    assert!(
+        rejected(&control),
+        "the control was not rejected, so this test proves nothing:\n{control}"
+    );
     let not_a_trace = dir.path().join("empty");
     std::fs::create_dir(&not_a_trace).unwrap();
     let hook = dir.path().join("hook.gdb");
@@ -206,7 +321,10 @@ async fn real_rr_accepts_every_replay_argv_we_build() {
     ] {
         let argv = build_replay_argv(&not_a_trace, start, unbound, &hook);
         let out = run(argv.clone()).await.unwrap_or_default();
-        assert!(!rejected(&out), "real rr REJECTED the replay argv {label} ({argv:?}):\n{out}");
+        assert!(
+            !rejected(&out),
+            "real rr REJECTED the replay argv {label} ({argv:?}):\n{out}"
+        );
     }
 }
 
@@ -218,7 +336,10 @@ async fn real_rr_accepts_every_replay_argv_we_build() {
 const BOOK_STOP: &str = r#"{"how": "signal", "event": 293, "frames": [{"level": 0, "pc": "0x761b7a49ec0c", "function": "__pthread_kill_implementation", "file": "./nptl/./nptl/pthread_kill.c", "line": 44, "library": "/lib/x86_64-linux-gnu/libc.so.6", "user": false}, {"level": 4, "pc": "0x761b7a4288ff", "function": "__GI_abort", "file": "./stdlib/./stdlib/abort.c", "line": 79, "library": "/lib/x86_64-linux-gnu/libc.so.6", "user": false}, {"level": 5, "pc": "0x59db08164478", "function": "main", "file": "/lab/exp/book.cpp", "line": 19, "user": true}], "signal": "SIGABRT", "thread": {"num": 1, "tid": 4219, "name": ""}, "kind": "stop"}"#;
 
 fn records(lines: &[&str]) -> Vec<Record> {
-    lines.iter().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}"))).collect()
+    lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+        .collect()
 }
 
 fn who_wrote_book() -> Vec<Record> {
@@ -233,19 +354,49 @@ fn who_wrote_book() -> Vec<Record> {
 }
 
 fn render_ok(req: serde_json::Value, recs: &[Record]) -> String {
-    render(&request(req).unwrap(), "recording: /rr/book-0\n", recs, None, "", Path::new("/lab/exp")).expect("rendered")
+    render(
+        &request(req).unwrap(),
+        "recording: /rr/book-0\n",
+        recs,
+        None,
+        "",
+        Path::new("/lab/exp"),
+    )
+    .expect("rendered")
 }
 
 #[test]
 fn who_wrote_names_the_other_threads_write_with_the_value_it_changed() {
-    let text = render_ok(serde_json::json!({"query": "who_wrote", "expr": "book.ask"}), &who_wrote_book());
+    let text = render_ok(
+        serde_json::json!({"query": "who_wrote", "expr": "book.ask"}),
+        &who_wrote_book(),
+    );
     assert!(text.contains("asked from: SIGABRT at __pthread_kill_implementation (libc.so.6), called from main() at book.cpp:19 (event 293) in thread 4219 (main)"), "{text}");
-    assert!(text.contains("watching `book.ask` — long, 8 bytes at 0x59db08167018; its value at the stop: 99"), "{text}");
-    assert!(text.contains(" 1. event 274 · thread 4221 (risk_reset) — 102 -> 99\n    risk_reset() at book.cpp:14"), "{text}");
-    assert!(text.contains("written by a DIFFERENT thread (4221) than the one that stopped (4219)"), "{text}");
-    assert!(text.contains(" 2. event 242 · thread 4220 (feed) — 101 -> 102"), "{text}");
+    assert!(
+        text.contains(
+            "watching `book.ask` — long, 8 bytes at 0x59db08167018; its value at the stop: 99"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            " 1. event 274 · thread 4221 (risk_reset) — 102 -> 99\n    risk_reset() at book.cpp:14"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("written by a DIFFERENT thread (4221) than the one that stopped (4219)"),
+        "{text}"
+    );
+    assert!(
+        text.contains(" 2. event 242 · thread 4220 (feed) — 101 -> 102"),
+        "{text}"
+    );
     // three found, three asked for: there may be more, and it says so
-    assert!(text.contains("earlier writes exist: raise `count`"), "{text}");
+    assert!(
+        text.contains("earlier writes exist: raise `count`"),
+        "{text}"
+    );
     assert!(!text.contains("INCOMPLETE"), "{text}");
 }
 
@@ -258,11 +409,28 @@ fn a_write_inside_a_library_is_shown_with_the_users_caller_and_the_start_is_name
         r#"{"value": "500", "kind": "start"}"#,
         r#"{"kind": "done"}"#,
     ]);
-    let text = render_ok(serde_json::json!({"query": "who_wrote", "expr": "g.max_qty"}), &recs);
-    assert!(text.contains("asked from: the end of the recording (after the program exited, event 144)"), "{text}");
-    assert!(text.contains("500 -> 4934217\n    __strcpy_evex (libc.so.6), called from set_name() at overflow.c:5"), "{text}");
-    assert!(text.contains("no earlier write in the recording: 500 was already there"), "{text}");
-    assert!(!text.contains("raise `count`"), "the history is complete: {text}");
+    let text = render_ok(
+        serde_json::json!({"query": "who_wrote", "expr": "g.max_qty"}),
+        &recs,
+    );
+    assert!(
+        text.contains("asked from: the end of the recording (after the program exited, event 144)"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "500 -> 4934217\n    __strcpy_evex (libc.so.6), called from set_name() at overflow.c:5"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("no earlier write in the recording: 500 was already there"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("raise `count`"),
+        "the history is complete: {text}"
+    );
 }
 
 #[test]
@@ -273,9 +441,18 @@ fn memory_that_did_not_exist_yet_is_called_an_allocation_not_a_value() {
         r#"{"event": 126, "thread": {"num": 1, "tid": 4241, "name": ""}, "frames": [{"level": 0, "function": "__brk_call", "library": "/lib/x86_64-linux-gnu/libc.so.6", "user": false}, {"level": 3, "function": "main", "file": "/lab/exp/segv.c", "line": 5, "user": true}], "before": "<unreadable: Cannot access memory at address 0x57b7bfa212d0>", "after": "0x0", "kind": "write"}"#,
         r#"{"kind": "done"}"#,
     ]);
-    let text = render_ok(serde_json::json!({"query": "who_wrote", "expr": "b->next", "count": 2}), &recs);
-    assert!(text.contains("0x0 -> 0x10\n    main() at segv.c:7"), "{text}");
-    assert!(text.contains("did not exist before here (it was just allocated or mapped)"), "{text}");
+    let text = render_ok(
+        serde_json::json!({"query": "who_wrote", "expr": "b->next", "count": 2}),
+        &recs,
+    );
+    assert!(
+        text.contains("0x0 -> 0x10\n    main() at segv.c:7"),
+        "{text}"
+    );
+    assert!(
+        text.contains("did not exist before here (it was just allocated or mapped)"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -288,14 +465,26 @@ fn last_lines_are_shown_oldest_first_and_end_at_the_stop() {
         r#"{"function": "__libc_start_call_main", "file": "./csu/../sysdeps/nptl/libc_start_call_main.h", "line": 58, "user": false, "event": 188, "kind": "line"}"#,
         r#"{"kind": "done"}"#,
     ]);
-    let text = render_ok(serde_json::json!({"query": "last_lines", "count": 4}), &recs);
+    let text = render_ok(
+        serde_json::json!({"query": "last_lines", "count": 4}),
+        &recs,
+    );
     let list = &text[text.find("oldest first:").expect("list")..];
     let a = list.find("book.cpp:17").expect("17");
     let b = list.find("book.cpp:18").expect("18");
     let c = list.find("book.cpp:19").expect("19");
     assert!(a < b && b < c, "oldest first: {text}");
-    assert!(list.lines().find(|l| l.contains("book.cpp:19")).unwrap().ends_with("<- the stop"), "{text}");
-    assert!(text.contains("the last 3 line(s) thread 4219 ran"), "{text}");
+    assert!(
+        list.lines()
+            .find(|l| l.contains("book.cpp:19"))
+            .unwrap()
+            .ends_with("<- the stop"),
+        "{text}"
+    );
+    assert!(
+        text.contains("the last 3 line(s) thread 4219 ran"),
+        "{text}"
+    );
     assert!(text.contains("system code"), "{text}");
 }
 
@@ -307,14 +496,23 @@ fn last_reached_shows_arguments_and_says_when_that_was_every_time() {
         r#"{"kind": "start"}"#,
         r#"{"kind": "done"}"#,
     ]);
-    let text = render_ok(serde_json::json!({"query": "last_reached", "location": "total"}), &recs);
+    let text = render_ok(
+        serde_json::json!({"query": "last_reached", "location": "total"}),
+        &recs,
+    );
     assert!(text.contains(" 1. event 128 · thread 4241 (main) — total() at segv.c:3\n    args: o=0x57b7bfa212a0\n    called from main() at segv.c:8"), "{text}");
-    assert!(text.contains("that is every time before the stop (1)"), "{text}");
+    assert!(
+        text.contains("that is every time before the stop (1)"),
+        "{text}"
+    );
 }
 
 #[test]
 fn a_bad_expression_goes_back_to_the_model_with_the_stop_it_was_evaluated_at() {
-    let recs = records(&[BOOK_STOP, r#"{"where": "expr", "message": "No symbol \"bokk\" in current context.", "kind": "error"}"#]);
+    let recs = records(&[
+        BOOK_STOP,
+        r#"{"where": "expr", "message": "No symbol \"bokk\" in current context.", "kind": "error"}"#,
+    ]);
     let err = render(
         &request(serde_json::json!({"query": "who_wrote", "expr": "bokk.ask"})).unwrap(),
         "",
@@ -334,14 +532,50 @@ fn a_bad_expression_goes_back_to_the_model_with_the_stop_it_was_evaluated_at() {
 fn a_replay_that_never_started_is_not_run_with_the_reason() {
     let req = request(serde_json::json!({"query": "stop_point"})).unwrap();
     let cwd = Path::new("/w");
-    let perf = render(&req, "", &[], None, "rr needs /proc/sys/kernel/perf_event_paranoid <= 1, but it is 3.", cwd).unwrap();
-    assert!(perf.contains("RESULT: NOT RUN — rr cannot replay here"), "{perf}");
-    let py = render(&req, "", &[], None, "Python scripting is not supported in this copy of GDB.", cwd).unwrap();
-    assert!(py.contains("RESULT: NOT RUN") && py.contains("without Python") && py.contains("FIX:"), "{py}");
+    let perf = render(
+        &req,
+        "",
+        &[],
+        None,
+        "rr needs /proc/sys/kernel/perf_event_paranoid <= 1, but it is 3.",
+        cwd,
+    )
+    .unwrap();
+    assert!(
+        perf.contains("RESULT: NOT RUN — rr cannot replay here"),
+        "{perf}"
+    );
+    let py = render(
+        &req,
+        "",
+        &[],
+        None,
+        "Python scripting is not supported in this copy of GDB.",
+        cwd,
+    )
+    .unwrap();
+    assert!(
+        py.contains("RESULT: NOT RUN") && py.contains("without Python") && py.contains("FIX:"),
+        "{py}"
+    );
     let slow = render(&req, "", &[], Some(300), "", cwd).unwrap();
-    assert!(slow.contains("RESULT: NOT RUN — the replay did not reach the stop point within 300s"), "{slow}");
-    let other = render(&req, "", &[], None, "[FATAL src/TraceStream.cc:100] Trace version 77 incompatible", cwd).unwrap();
-    assert!(other.contains("RESULT: NOT RUN") && other.contains("Trace version 77"), "{other}");
+    assert!(
+        slow.contains("RESULT: NOT RUN — the replay did not reach the stop point within 300s"),
+        "{slow}"
+    );
+    let other = render(
+        &req,
+        "",
+        &[],
+        None,
+        "[FATAL src/TraceStream.cc:100] Trace version 77 incompatible",
+        cwd,
+    )
+    .unwrap();
+    assert!(
+        other.contains("RESULT: NOT RUN") && other.contains("Trace version 77"),
+        "{other}"
+    );
 }
 
 #[test]
@@ -350,7 +584,8 @@ fn a_timed_out_walk_shows_what_it_found_and_says_it_is_incomplete() {
     recs.retain(|r| !matches!(r, Record::Done));
     recs.truncate(3); // stop, target, one write
     let text = render(
-        &request(serde_json::json!({"query": "who_wrote", "expr": "book.ask", "count": 5})).unwrap(),
+        &request(serde_json::json!({"query": "who_wrote", "expr": "book.ask", "count": 5}))
+            .unwrap(),
         "",
         &recs,
         Some(120),
@@ -359,7 +594,10 @@ fn a_timed_out_walk_shows_what_it_found_and_says_it_is_incomplete() {
     )
     .unwrap();
     assert!(text.contains("102 -> 99"), "{text}");
-    assert!(text.contains("TIMED OUT after 120s: the answer above is INCOMPLETE (1 of the 5 requested"), "{text}");
+    assert!(
+        text.contains("TIMED OUT after 120s: the answer above is INCOMPLETE (1 of the 5 requested"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -375,7 +613,10 @@ fn a_driver_that_died_mid_answer_is_never_read_as_complete() {
         Path::new("/lab/exp"),
     )
     .unwrap();
-    assert!(text.contains("INCOMPLETE: the replay ended before the question was finished"), "{text}");
+    assert!(
+        text.contains("INCOMPLETE: the replay ended before the question was finished"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -439,7 +680,10 @@ async fn record_cxx(name: &str, source: &str, flags: &[&str]) -> Option<Recorded
         return None;
     };
     if !crate::tools::runtime_util::is_rr_trace(&trace) {
-        rr_live_skip(&format!("rr could not record here: {}", String::from_utf8_lossy(&out.stderr)));
+        rr_live_skip(&format!(
+            "rr could not record here: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
         return None;
     }
     Some(Recorded { dir, trace })
@@ -488,27 +732,55 @@ int main() {
 #[tokio::test]
 #[ignore]
 async fn live_who_wrote_finds_the_write_made_by_another_thread() {
-    let Some(rec) = record_cxx("book", BOOK, &[]).await else { return };
-    let text = ask(&rec, serde_json::json!({"query": "who_wrote", "expr": "book.ask", "count": 2})).await;
-    assert!(text.contains("`./book`") || text.contains("/book` ended by SIGABRT"), "{text}");
+    let Some(rec) = record_cxx("book", BOOK, &[]).await else {
+        return;
+    };
+    let text = ask(
+        &rec,
+        serde_json::json!({"query": "who_wrote", "expr": "book.ask", "count": 2}),
+    )
+    .await;
+    assert!(
+        text.contains("`./book`") || text.contains("/book` ended by SIGABRT"),
+        "{text}"
+    );
     assert!(text.contains("asked from: SIGABRT"), "{text}");
-    let first = text.lines().find(|l| l.starts_with(" 1. ")).unwrap_or_else(|| panic!("{text}"));
-    assert!(first.contains("(risk_reset)") && first.ends_with("-> 99"), "{text}");
+    let first = text
+        .lines()
+        .find(|l| l.starts_with(" 1. "))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        first.contains("(risk_reset)") && first.ends_with("-> 99"),
+        "{text}"
+    );
     assert!(text.contains("risk_reset() at book.cpp:14"), "{text}");
     assert!(text.contains("written by a DIFFERENT thread"), "{text}");
-    let second = text.lines().find(|l| l.starts_with(" 2. ")).unwrap_or_else(|| panic!("{text}"));
+    let second = text
+        .lines()
+        .find(|l| l.starts_with(" 2. "))
+        .unwrap_or_else(|| panic!("{text}"));
     assert!(second.contains("(feed)"), "{text}");
 }
 
 #[tokio::test]
 #[ignore]
 async fn live_stop_point_lists_every_thread_and_last_lines_walk_back_from_abort() {
-    let Some(rec) = record_cxx("book", BOOK, &[]).await else { return };
+    let Some(rec) = record_cxx("book", BOOK, &[]).await else {
+        return;
+    };
     let text = ask(&rec, serde_json::json!({"query": "stop_point"})).await;
-    assert!(text.contains("*#") && text.contains("main() at book.cpp:19"), "{text}");
-    assert!(text.contains("threads at the stop (1)"), "only main is left at the abort: {text}");
+    assert!(
+        text.contains("*#") && text.contains("main() at book.cpp:19"),
+        "{text}"
+    );
+    assert!(
+        text.contains("threads at the stop (1)"),
+        "only main is left at the abort: {text}"
+    );
     let text = ask(&rec, serde_json::json!({"query": "last_lines", "count": 3})).await;
-    let list = &text[text.find("oldest first:").unwrap_or_else(|| panic!("{text}"))..];
+    let list = &text[text
+        .find("oldest first:")
+        .unwrap_or_else(|| panic!("{text}"))..];
     let a = list.find("book.cpp:17").unwrap_or_else(|| panic!("{text}"));
     let c = list.find("book.cpp:19").unwrap_or_else(|| panic!("{text}"));
     assert!(a < c, "{text}");
@@ -537,21 +809,51 @@ int main() {
 #[tokio::test]
 #[ignore]
 async fn live_a_crash_is_traced_back_to_the_line_that_corrupted_the_pointer() {
-    let Some(rec) = record_cxx("list", LIST, &[]).await else { return };
-    let text = ask(&rec, serde_json::json!({"query": "who_wrote", "expr": "o", "count": 1})).await;
+    let Some(rec) = record_cxx("list", LIST, &[]).await else {
+        return;
+    };
+    let text = ask(
+        &rec,
+        serde_json::json!({"query": "who_wrote", "expr": "o", "count": 1}),
+    )
+    .await;
     assert!(text.contains("asked from: SIGSEGV"), "{text}");
-    let first = text.lines().find(|l| l.starts_with(" 1. ")).unwrap_or_else(|| panic!("{text}"));
+    let first = text
+        .lines()
+        .find(|l| l.starts_with(" 1. "))
+        .unwrap_or_else(|| panic!("{text}"));
     assert!(first.ends_with("-> 0x10"), "{text}");
-    assert!(text.contains("total() at list.cpp:7"), "o = o->next wrote the bad pointer: {text}");
+    assert!(
+        text.contains("total() at list.cpp:7"),
+        "o = o->next wrote the bad pointer: {text}"
+    );
     // The value `o` had before: the node whose `next` was loaded.
-    let node = first.rsplit(" — ").next().unwrap().split(" -> ").next().unwrap().trim().to_string();
+    let node = first
+        .rsplit(" — ")
+        .next()
+        .unwrap()
+        .split(" -> ")
+        .next()
+        .unwrap()
+        .trim()
+        .to_string();
     assert!(node.starts_with("0x"), "{node}");
     let text = ask(&rec, serde_json::json!({"query": "who_wrote", "expr": format!("((order*){node})->next"), "count": 1})).await;
-    let first = text.lines().find(|l| l.starts_with(" 1. ")).unwrap_or_else(|| panic!("{text}"));
+    let first = text
+        .lines()
+        .find(|l| l.starts_with(" 1. "))
+        .unwrap_or_else(|| panic!("{text}"));
     assert!(first.ends_with("-> 0x10"), "{text}");
-    assert!(text.contains("main() at list.cpp:14"), "b->next = 0x10 is the corruption: {text}");
+    assert!(
+        text.contains("main() at list.cpp:14"),
+        "b->next = 0x10 is the corruption: {text}"
+    );
 
-    let text = ask(&rec, serde_json::json!({"query": "last_reached", "location": "total"})).await;
+    let text = ask(
+        &rec,
+        serde_json::json!({"query": "last_reached", "location": "total"}),
+    )
+    .await;
     assert!(text.contains("args: o=0x"), "{text}");
     assert!(text.contains("called from main() at list.cpp:15"), "{text}");
 }
@@ -559,7 +861,9 @@ async fn live_a_crash_is_traced_back_to_the_line_that_corrupted_the_pointer() {
 #[tokio::test]
 #[ignore]
 async fn live_stop_at_moves_the_question_earlier_in_time() {
-    let Some(rec) = record_cxx("book", BOOK, &[]).await else { return };
+    let Some(rec) = record_cxx("book", BOOK, &[]).await else {
+        return;
+    };
     // Asked from main's check, the ask was written by risk_reset; asked from
     // the moment risk_reset is about to write, the last writer is the feed.
     let text = ask(
@@ -567,11 +871,24 @@ async fn live_stop_at_moves_the_question_earlier_in_time() {
         serde_json::json!({"query": "who_wrote", "expr": "book.ask", "count": 1, "stop_at": "book.cpp:14"}),
     )
     .await;
-    assert!(text.contains("asked from: arrival 1 at `book.cpp:14`"), "{text}");
-    let first = text.lines().find(|l| l.starts_with(" 1. ")).unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        text.contains("asked from: arrival 1 at `book.cpp:14`"),
+        "{text}"
+    );
+    let first = text
+        .lines()
+        .find(|l| l.starts_with(" 1. "))
+        .unwrap_or_else(|| panic!("{text}"));
     assert!(first.contains("(feed)"), "{text}");
-    let text = ask(&rec, serde_json::json!({"query": "stop_point", "stop_at": "no_such_function_xyz"})).await;
-    assert!(text.starts_with("ERROR") && text.contains("Nothing answered"), "{text}");
+    let text = ask(
+        &rec,
+        serde_json::json!({"query": "stop_point", "stop_at": "no_such_function_xyz"}),
+    )
+    .await;
+    assert!(
+        text.starts_with("ERROR") && text.contains("Nothing answered"),
+        "{text}"
+    );
 }
 
 #[tokio::test]
@@ -588,12 +905,25 @@ async fn live_a_clean_exit_is_asked_from_the_end_and_a_static_value_reaches_the_
     else {
         return;
     };
-    let text = ask(&rec, serde_json::json!({"query": "who_wrote", "expr": "g.max_qty", "count": 3})).await;
+    let text = ask(
+        &rec,
+        serde_json::json!({"query": "who_wrote", "expr": "g.max_qty", "count": 3}),
+    )
+    .await;
     assert!(text.contains("exited with status 3"), "{text}");
-    assert!(text.contains("asked from: the end of the recording"), "{text}");
+    assert!(
+        text.contains("asked from: the end of the recording"),
+        "{text}"
+    );
     assert!(text.contains("500 -> "), "{text}");
-    assert!(text.contains("called from set_name() at cfg.cpp:4"), "the overflow inside strcpy: {text}");
-    assert!(text.contains("no earlier write in the recording: 500 was already there"), "{text}");
+    assert!(
+        text.contains("called from set_name() at cfg.cpp:4"),
+        "the overflow inside strcpy: {text}"
+    );
+    assert!(
+        text.contains("no earlier write in the recording: 500 was already there"),
+        "{text}"
+    );
 }
 
 /// Manual check on a trace recorded on a CPU this process may not use:
@@ -614,16 +944,27 @@ async fn live_a_trace_from_an_isolated_cpu_is_replayed_unbound() {
     if !text.contains("replayed unbound (`rr replay -u`)") {
         // Measured: whether rr can bind to the recorded CPU depends on the
         // cpuset at the moment, so the retry cannot always be provoked.
-        eprintln!("skip: rr could bind to the recorded CPU this time; the unbound retry was not needed");
+        eprintln!(
+            "skip: rr could bind to the recorded CPU this time; the unbound retry was not needed"
+        );
     }
 }
 
 #[tokio::test]
 #[ignore]
 async fn live_stop_event_asks_from_before_an_earlier_answer() {
-    let Some(rec) = record_cxx("book", BOOK, &[]).await else { return };
-    let text = ask(&rec, serde_json::json!({"query": "who_wrote", "expr": "book.ask", "count": 1})).await;
-    let first = text.lines().find(|l| l.starts_with(" 1. ")).unwrap_or_else(|| panic!("{text}"));
+    let Some(rec) = record_cxx("book", BOOK, &[]).await else {
+        return;
+    };
+    let text = ask(
+        &rec,
+        serde_json::json!({"query": "who_wrote", "expr": "book.ask", "count": 1}),
+    )
+    .await;
+    let first = text
+        .lines()
+        .find(|l| l.starts_with(" 1. "))
+        .unwrap_or_else(|| panic!("{text}"));
     let event: u64 = first
         .trim_start_matches(" 1. event ")
         .split_whitespace()
@@ -636,7 +977,14 @@ async fn live_stop_event_asks_from_before_an_earlier_answer() {
         serde_json::json!({"query": "who_wrote", "expr": "book.ask", "count": 1, "stop_event": event - 1}),
     )
     .await;
-    assert!(text.contains(&format!("asked from: event {}", event - 1)) || text.contains("rr cannot stop exactly"), "{text}");
-    let first = text.lines().find(|l| l.starts_with(" 1. ")).unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        text.contains(&format!("asked from: event {}", event - 1))
+            || text.contains("rr cannot stop exactly"),
+        "{text}"
+    );
+    let first = text
+        .lines()
+        .find(|l| l.starts_with(" 1. "))
+        .unwrap_or_else(|| panic!("{text}"));
     assert!(first.contains("(feed)"), "{text}");
 }

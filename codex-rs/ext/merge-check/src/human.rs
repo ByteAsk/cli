@@ -142,7 +142,10 @@ mod tests {
 
     #[test]
     fn a_person_at_a_terminal_may_skip() {
-        assert_eq!(skip_refusal(true, |_| None, &["bash".into(), "sshd".into()]), None);
+        assert_eq!(
+            skip_refusal(true, |_| None, &["bash".into(), "sshd".into()]),
+            None
+        );
     }
 
     #[test]

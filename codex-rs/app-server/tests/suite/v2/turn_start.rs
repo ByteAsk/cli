@@ -1,5 +1,6 @@
 use anyhow::Context;
 use anyhow::Result;
+use app_test_support::ChatGptAuthFixture;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_apply_patch_sse_response;
@@ -12,8 +13,10 @@ use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::create_request_user_input_sse_response;
 use app_test_support::format_with_current_shell_display;
+use app_test_support::write_chatgpt_auth;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
 use app_test_support::write_models_cache;
+use app_test_support::write_models_cache_with_models;
 use codex_app_server::INPUT_TOO_LARGE_ERROR_CODE;
 use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::AdditionalContextEntry;
@@ -27,9 +30,11 @@ use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::CyberAccessProgram;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangePatchUpdatedNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
+use codex_app_server_protocol::ImageReference as V2ImageReference;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
@@ -47,9 +52,11 @@ use codex_app_server_protocol::ThreadDeleteResponse;
 use codex_app_server_protocol::ThreadDeletedNotification;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadInjectItemsParams;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadMetadataUpdateParams;
+use codex_app_server_protocol::ThreadMetadataUpdateResponse;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadShellCommandParams;
@@ -70,6 +77,8 @@ use codex_app_server_protocol::WarningNotification;
 use codex_core::test_support::all_model_presets;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_features::Feature;
+use codex_login::AuthCredentialsStoreMode;
+use codex_models_manager::model_info::model_info_from_slug;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::MultiAgentMode;
@@ -82,6 +91,9 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_utils_absolute_path::test_support::PathExt;
+use core_test_support::apps_test_server::AppsTestServer;
+use core_test_support::apps_test_server::SEARCH_CALENDAR_LIST_TOOL;
+use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::skip_if_remote;
@@ -97,7 +109,12 @@ use tempfile::TempDir;
 use test_case::test_case;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+use wiremock::Mock;
+use wiremock::Request;
 use wiremock::ResponseTemplate;
+use wiremock::matchers::body_partial_json;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 use super::analytics::mount_analytics_capture;
 use super::analytics::wait_for_analytics_event;
@@ -135,6 +152,9 @@ async fn run_local_image_turn(detail: Option<ImageDetail>) -> Result<Vec<Value>>
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let mut model = model_info_from_slug("mock-model");
+    model.supports_image_detail_original = true;
+    write_models_cache_with_models(codex_home.path(), vec![model]).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -247,7 +267,15 @@ async fn turn_start_omits_notification_media_without_changing_model_input() -> R
                         text_elements: Vec::new(),
                     },
                     V2UserInput::Image {
-                        url: TINY_PNG_DATA_URL.to_string(),
+                        image: V2ImageReference::Inline {
+                            url: TINY_PNG_DATA_URL.to_string(),
+                        },
+                        detail: None,
+                    },
+                    V2UserInput::Image {
+                        image: V2ImageReference::File {
+                            file_id: "file_123".to_string(),
+                        },
                         detail: None,
                     },
                 ],
@@ -295,6 +323,8 @@ async fn turn_start_omits_notification_media_without_changing_model_input() -> R
                     content[0]["type"].as_str(),
                     Some("text" | "input_text")
                 ));
+                assert!(content[0].get("fileId").is_none());
+                assert!(content[0].get("file_id").is_none());
                 user_message_notifications.push(notification.method);
             }
         }
@@ -312,9 +342,207 @@ async fn turn_start_omits_notification_media_without_changing_model_input() -> R
     );
 
     let model_input_images = received_response_input_images(&server).await?;
-    assert_eq!(model_input_images.len(), 1);
-    assert_eq!(model_input_images[0]["image_url"], TINY_PNG_DATA_URL);
+    assert_eq!(model_input_images.len(), 2);
+    assert!(
+        model_input_images
+            .iter()
+            .any(|image| image["image_url"] == TINY_PNG_DATA_URL)
+    );
+    assert!(
+        model_input_images
+            .iter()
+            .any(|image| image["file_id"] == "file_123")
+    );
 
+    Ok(())
+}
+
+#[test_case(None; "analytics_unset")]
+#[test_case(Some(true); "analytics_enabled")]
+#[test_case(Some(false); "analytics_disabled")]
+#[tokio::test]
+async fn tool_call_metadata_stays_out_of_raw_response_item_notifications(
+    analytics_enabled: Option<bool>,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let arguments = json!({"query": "redaction"});
+    let result_metadata = json!({"provider/private": {"sentinel": "raw-result-metadata"}});
+    let responses = vec![
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_function_call_with_namespace(
+                "mcp-call",
+                SEARCH_CALENDAR_NAMESPACE,
+                SEARCH_CALENDAR_LIST_TOOL,
+                &arguments.to_string(),
+            ),
+            responses::ev_completed("resp-1"),
+        ]),
+        create_final_assistant_message_sse_response("Done")?,
+    ];
+    let server = responses::start_mock_server().await;
+    let model = responses::mount_sse_sequence(&server, responses).await;
+    let apps = AppsTestServer::mount(&server).await?;
+    let tool_result = json!({
+        "content": [{"type": "text", "text": "Calendar result"}],
+        "_meta": result_metadata,
+        "isError": false,
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/codex/ps/mcp"))
+        .and(body_partial_json(json!({
+            "method": "tools/call",
+            "params": {"name": "calendar_list_events", "arguments": arguments},
+        })))
+        .respond_with(move |request: &Request| {
+            let request: Value =
+                serde_json::from_slice(&request.body).expect("valid MCP tool call JSON");
+            ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": tool_result,
+            }))
+        })
+        .with_priority(/*p*/ 1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let codex_home = TempDir::new()?;
+    let mut config = MockResponsesConfig::new(&server.uri())
+        .with_provider_name("OpenAI")
+        .with_provider_config("supports_websockets = false")
+        .with_root_config(&format!(
+            "chatgpt_base_url = \"{}\"\ncli_auth_credentials_store = \"file\"",
+            apps.chatgpt_base_url
+        ))
+        .enable_feature(Feature::Apps)
+        .enable_feature(Feature::ExecutedToolCallMetadata);
+    if let Some(enabled) = analytics_enabled {
+        config = config.with_extra_config(&format!("[analytics]\nenabled = {enabled}"));
+    }
+    config.write(codex_home.path())?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-test-token")
+            .account_id("account-123")
+            .chatgpt_account_id("account-123")
+            .chatgpt_user_id("user-123")
+            .email("employee@openai.com"),
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            experimental_raw_events: true,
+            history_mode: Some(ThreadHistoryMode::Legacy),
+            ..Default::default()
+        })
+        .await?;
+    let rollout_path = thread.path.context("thread rollout path")?;
+    let _: TurnStartResponse = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id,
+                input: vec![V2UserInput::Text {
+                    text: "list calendar events".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let raw_params = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let notification = mcp
+                .read_stream_until_matching_notification("raw output or turn completion", |n| {
+                    matches!(
+                        n.method.as_str(),
+                        "rawResponseItem/completed" | "turn/completed"
+                    )
+                })
+                .await?;
+            if notification.method == "turn/completed" {
+                anyhow::bail!("missing raw tool output notification");
+            }
+            let params = notification.params.context("raw notification params")?;
+            let item = &params["item"];
+            if item["type"] == "function_call_output" && item["call_id"] == "mcp-call" {
+                return Ok::<Value, anyhow::Error>(params);
+            }
+        }
+    })
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    let follow_up = requests[1].body_json();
+    let output = follow_up["input"]
+        .as_array()
+        .context("follow-up model input")?
+        .iter()
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == "mcp-call")
+        .context("follow-up tool output")?;
+    assert!(serde_json::to_string(&output["output"])?.contains("Calendar result"));
+    assert_eq!(
+        output["internal_chat_message_metadata_passthrough"]["executed_tool_calls"],
+        json!([{"name": "mcp__codex_apps__calendar_list_events", "arguments": arguments}]),
+    );
+    assert_eq!(
+        output["internal_chat_message_metadata_passthrough"]["tool_calls_complete"],
+        true,
+    );
+
+    let raw_output = &raw_params["item"];
+    assert_eq!(raw_output["output"], output["output"]);
+    assert!(!serde_json::to_string(&raw_params)?.contains("raw-result-metadata"));
+    let public_metadata = raw_output["internal_chat_message_metadata_passthrough"]
+        .as_object()
+        .context("public passthrough metadata")?;
+    assert_eq!(
+        public_metadata.get("turn_id").context("public turn id")?,
+        &output["internal_chat_message_metadata_passthrough"]["turn_id"],
+    );
+    for field in ["executed_tool_calls", "tool_calls_complete", "cell_id"] {
+        assert!(
+            public_metadata.get(field).is_none(),
+            "notification leaked {field}"
+        );
+    }
+
+    let status = timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+    assert!(status.success());
+    // Read raw JSON: ResponseItem deserialization intentionally discards host-owned metadata.
+    let rollout = std::fs::read_to_string(rollout_path)?;
+    let entries = rollout
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    let captured = entries
+        .iter()
+        .filter(|entry| entry["type"] == "response_item")
+        .map(|entry| &entry["payload"])
+        .find(|item| item["type"] == "function_call_output" && item["call_id"] == "mcp-call")
+        .context("persisted MCP output")?;
+    assert_eq!(captured["output"], raw_output["output"]);
+    // The custom inference endpoint omits raw metadata, so verify capture in the rollout.
+    assert_eq!(
+        captured["internal_chat_message_metadata_passthrough"]["executed_tool_calls"][0]
+            .get("tool_result_metadata"),
+        (analytics_enabled != Some(false)).then_some(&result_metadata),
+    );
     Ok(())
 }
 
@@ -355,11 +583,13 @@ async fn turn_start_with_empty_input_runs_model_request() -> Result<()> {
         })
         .await?;
     assert!(!turn.id.is_empty());
+    assert_eq!(turn.root_turn_id.as_deref(), Some(turn.id.as_str()));
 
     let started: TurnStartedNotification =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("turn/started")).await??;
     assert_eq!(started.thread_id, thread.id);
     assert_eq!(started.turn.id, turn.id);
+    assert_eq!(started.turn.root_turn_id.as_deref(), Some(turn.id.as_str()));
     assert_eq!(started.turn.status, TurnStatus::InProgress);
 
     let completed: TurnCompletedNotification = timeout(
@@ -369,20 +599,24 @@ async fn turn_start_with_empty_input_runs_model_request() -> Result<()> {
     .await??;
     assert_eq!(completed.thread_id, thread.id);
     assert_eq!(completed.turn.id, turn.id);
+    assert_eq!(
+        completed.turn.root_turn_id.as_deref(),
+        Some(turn.id.as_str())
+    );
     assert_eq!(completed.turn.status, TurnStatus::Completed);
     assert_eq!(completed.turn.items_view, TurnItemsView::Summary);
     assert!(matches!(
         &completed.turn.items[..],
-        [ThreadItem::AgentMessage { text, .. }] if text == "Done"
+        [codex_app_server_protocol::ThreadItem { payload: ThreadItemPayload::AgentMessage { text, .. }, .. }] if text == "Done"
     ));
 
     let event = wait_for_analytics_event(&server, DEFAULT_READ_TIMEOUT, "codex_turn_event").await?;
     assert_eq!(
         (
             event["event_params"]["turn_id"].as_str(),
-            event["event_params"].get("root_turn_id"),
+            event["event_params"]["root_turn_id"].as_str(),
         ),
-        (Some(turn.id.as_str()), Some(&Value::Null))
+        (Some(turn.id.as_str()), Some(turn.id.as_str()))
     );
 
     let requests = server
@@ -440,9 +674,21 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
     ])
     .await;
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(server.uri()).write(codex_home.path())?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "model = \"gpt-5.5\"\napproval_policy = \"never\"\nopenai_base_url = \"{}/v1\"\ncli_auth_credentials_store = \"file\"\n[features]\nenable_request_compression = false\n",
+            server.uri()
+        ),
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-test-token").plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
+        .without_managed_config()
         .build_initialized()
         .await?;
 
@@ -462,16 +708,39 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
                     text: "start".to_string(),
                     text_elements: Vec::new(),
                 }],
-                turn_trigger: Some("user".to_string()),
+                turn_trigger: Some("goal".to_string()),
+                parent_turn_id: Some("initiating-turn".to_string()),
+                root_turn_id: Some("causal-root".to_string()),
+                cyber_access_program: Some(CyberAccessProgram::DaybreakBlue),
                 ..Default::default()
             },
         })
         .await?;
+    let started: TurnStartedNotification =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("turn/started")).await??;
+    assert_eq!(active_turn.root_turn_id.as_deref(), Some("causal-root"));
+    assert_eq!(started.turn.root_turn_id.as_deref(), Some("causal-root"));
     timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/started"),
+        server.wait_for_request_count(/*count*/ 1),
     )
-    .await??;
+    .await?;
+
+    let updated: ThreadMetadataUpdateResponse = mcp
+        .request(|request_id| ClientRequest::ThreadMetadataUpdate {
+            request_id,
+            params: ThreadMetadataUpdateParams {
+                thread_id: thread.id.clone(),
+                project_id: None,
+                git_info: None,
+                daybreak_enabled: Some(false),
+            },
+        })
+        .await?;
+    assert_eq!(
+        (updated.thread.id, updated.thread.daybreak_enabled),
+        (thread.id.clone(), Some(false))
+    );
 
     let TurnStartResponse { turn: steered_turn } = mcp
         .request(|request_id| ClientRequest::TurnStart {
@@ -483,38 +752,55 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
                     text: "steer".to_string(),
                     text_elements: Vec::new(),
                 }],
-                turn_trigger: Some("goal".to_string()),
+                turn_trigger: Some("user".to_string()),
+                parent_turn_id: Some("steering-turn".to_string()),
+                root_turn_id: Some("steering-root".to_string()),
+                cyber_access_program: Some(CyberAccessProgram::Standard),
                 ..Default::default()
             },
         })
         .await?;
     assert_eq!(steered_turn.id, active_turn.id);
+    assert_eq!(steered_turn.root_turn_id, active_turn.root_turn_id);
 
     release_response
         .send(())
         .expect("active response gate should remain open");
-    timeout(
+    let completed: TurnCompletedNotification = timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/completed"),
+        mcp.read_notification("turn/completed"),
     )
     .await??;
+    assert_eq!(completed.turn.root_turn_id.as_deref(), Some("causal-root"));
 
     let requests = server.requests().await;
     assert_eq!(requests.len(), 2);
     for request in requests {
         let body: Value = serde_json::from_slice(&request)?;
+        assert_eq!(body["access_programs"], json!({"cyber": "daybreak_blue"}));
         let turn_metadata: Value = serde_json::from_str(
             body["client_metadata"]["x-codex-turn-metadata"]
                 .as_str()
                 .context("expected x-codex-turn-metadata")?,
         )?;
-        assert_eq!(turn_metadata["turn_trigger"].as_str(), Some("user"));
+        assert_eq!(turn_metadata["turn_trigger"].as_str(), Some("goal"));
+        assert_eq!(turn_metadata["parent_turn_id"], "initiating-turn");
+        assert_eq!(turn_metadata["root_turn_id"], "causal-root");
     }
     Ok(())
 }
 
+#[test_case::test_case(false, Some("browser"); "disabled")]
+#[test_case::test_case(true, Some("browser"); "named_output")]
+#[test_case::test_case(true, Some("a"); "minimum_length")]
+#[test_case::test_case(true, Some("browser_2"); "digits_and_underscore")]
+#[test_case::test_case(true, Some(&"a".repeat(64)); "maximum_length")]
+#[test_case::test_case(true, None; "legacy_caller")]
 #[tokio::test]
-async fn turn_start_additional_context_flows_to_model_input() -> Result<()> {
+async fn turn_start_additional_context_flows_to_model_input(
+    tool_outputs: bool,
+    name: Option<&str>,
+) -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
@@ -529,31 +815,101 @@ async fn turn_start_additional_context_flows_to_model_input() -> Result<()> {
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            config: Some(HashMap::from([(
+                "features.untrusted_as_tool_output".to_owned(),
+                json!(tool_outputs),
+            )])),
             ..Default::default()
         })
         .await?;
 
-    let _: TurnStartResponse = mcp
-        .request(|request_id| ClientRequest::TurnStart {
-            request_id,
-            params: TurnStartParams {
-                thread_id: thread.id,
-                client_user_message_id: None,
-                input: vec![V2UserInput::Text {
-                    text: "inspect tab".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                additional_context: Some(HashMap::from([(
-                    "custom_source".to_string(),
-                    AdditionalContextEntry {
-                        value: "source value".to_string(),
-                        kind: AdditionalContextKind::Untrusted,
-                    },
-                )])),
-                ..Default::default()
-            },
+    let rejected_request = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "rejected input".to_owned(),
+                text_elements: Vec::new(),
+            }],
+            additional_context: Some(HashMap::from([(
+                "application".to_owned(),
+                AdditionalContextEntry {
+                    value: "rejected context".to_owned(),
+                    kind: AdditionalContextKind::Application,
+                    name: Some("browser".to_owned()),
+                },
+            )])),
+            ..Default::default()
         })
         .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(rejected_request)),
+    )
+    .await??;
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+
+    let mut params = serde_json::to_value(TurnStartParams {
+        thread_id: thread.id,
+        client_user_message_id: None,
+        input: vec![V2UserInput::Text {
+            text: "inspect tab".to_string(),
+            text_elements: Vec::new(),
+        }],
+        additional_context: Some(HashMap::from([(
+            "custom_source".to_string(),
+            AdditionalContextEntry {
+                value: "source value".to_string(),
+                kind: AdditionalContextKind::Untrusted,
+                name: name.map(str::to_owned),
+            },
+        )])),
+        ..Default::default()
+    })?;
+    let entry = params["additionalContext"]["custom_source"]
+        .as_object_mut()
+        .context("additional context entry")?;
+    if name.is_none() {
+        entry.remove("name");
+    }
+    // Unknown wire fields cannot override the harness-owned namespace.
+    entry.insert("namespace".to_owned(), json!("other"));
+
+    let mut malformed_params = params.clone();
+    malformed_params["additionalContext"]["custom_source"]["name"] = json!("agent.browser");
+    let rejected_request = mcp
+        .send_request("turn/start", Some(malformed_params))
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(rejected_request)),
+    )
+    .await??;
+    assert_eq!(
+        error.error,
+        codex_app_server_protocol::JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message: "additional context name must match [a-z][a-z0-9_]{0,63}".to_owned(),
+            data: None,
+        }
+    );
+
+    let capped_name = "A".repeat(128);
+    let long_key = format!("!{capped_name}z");
+    let unnamed_sources: &[(&str, &str)] = if tool_outputs && name.is_none() {
+        &[
+            ("Browser Tab/\té-_2", "Browser_Tab_2"),
+            ("Browser_Tab_2", "Browser_Tab_2"),
+            (&long_key, &capped_name),
+            ("!?", "untrusted_content"),
+        ]
+    } else {
+        &[]
+    };
+    for &(key, _) in unnamed_sources {
+        params["additionalContext"][key] = json!({"kind": "untrusted", "value": key});
+    }
+    let request_id = mcp.send_request("turn/start", Some(params)).await?;
+    let _: TurnStartResponse = mcp.read_response(request_id).await?;
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
@@ -571,23 +927,61 @@ async fn turn_start_additional_context_flows_to_model_input() -> Result<()> {
     let body = request
         .body_json::<Value>()
         .context("request body should be JSON")?;
-    assert!(
-        body.to_string()
-            .contains("<external_custom_source>source value</external_custom_source>")
-    );
+    let input = body["input"].as_array().context("input array")?;
+    let texts = input
+        .iter()
+        .filter_map(|item| item["content"].as_array())
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>();
+    assert!(!texts.contains(&"rejected input"));
+    assert!(!texts.contains(&"<application>rejected context</application>"));
+    if tool_outputs {
+        let outputs = input
+            .iter()
+            .filter(|item| item["type"] == "function_call_output")
+            .map(|item| {
+                (
+                    item["name"].clone(),
+                    item["namespace"].clone(),
+                    item["output"].clone(),
+                    item.get("call_id").cloned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(outputs.len(), 1 + unnamed_sources.len());
+        for (value, expected_name) in
+            std::iter::once(("source value", name.unwrap_or("custom_source")))
+                .chain(unnamed_sources.iter().copied())
+        {
+            assert!(
+                outputs.contains(&(json!(expected_name), json!("agent"), json!(value), None)),
+                "missing agent.{expected_name} output for {value:?}: {outputs:?}"
+            );
+        }
+        assert!(!body.to_string().contains("<external_custom_source>"));
+    } else {
+        assert!(
+            body.to_string()
+                .contains("<external_custom_source>source value</external_custom_source>")
+        );
+        assert!(!body.to_string().contains("function_call_output"));
+    }
 
     Ok(())
 }
 
+#[test_case::test_case(None, TEST_ORIGINATOR)]
 #[tokio::test]
-async fn turn_start_sends_originator_header() -> Result<()> {
+async fn turn_start_sends_originator_header(
+    service_name: Option<&str>,
+    expected_originator: &str,
+) -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -607,6 +1001,7 @@ async fn turn_start_sends_originator_header() -> Result<()> {
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
             thread_source: Some(ThreadSource::User),
+            service_name: service_name.map(str::to_string),
             ..Default::default()
         })
         .await?;
@@ -642,7 +1037,7 @@ async fn turn_start_sends_originator_header() -> Result<()> {
             .headers
             .get("originator")
             .expect("originator header missing");
-        assert_eq!(originator.to_str()?, TEST_ORIGINATOR);
+        assert_eq!(originator.to_str()?, expected_originator);
     }
 
     Ok(())
@@ -654,9 +1049,7 @@ async fn turn_start_emits_user_message_item_with_text_elements() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -694,15 +1087,15 @@ async fn turn_start_emits_user_message_item_with_text_elements() -> Result<()> {
         loop {
             let item_started: ItemStartedNotification =
                 mcp.read_notification("item/started").await?;
-            if let ThreadItem::UserMessage { .. } = item_started.item {
-                return Ok::<ThreadItem, anyhow::Error>(item_started.item);
+            if let ThreadItemPayload::UserMessage { .. } = item_started.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(item_started.item.payload);
             }
         }
     })
     .await??;
 
     match user_message_item {
-        ThreadItem::UserMessage {
+        ThreadItemPayload::UserMessage {
             client_id, content, ..
         } => {
             assert_eq!(client_id, Some("client-message-1".to_string()));
@@ -732,10 +1125,8 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let cache_path = codex_home.path().join("models_cache.json");
     let mut cache: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
@@ -792,7 +1183,7 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
     assert_eq!(warning.thread_id.as_deref(), Some(thread.id.as_str()));
     assert_eq!(
         warning.message,
-        "Exceeded skills context budget. All skill descriptions were removed and 7 additional skills were not included in the model-visible skills list."
+        "Exceeded skills context budget. All skill descriptions were removed and 6 additional skills were not included in the model-visible skills list."
     );
 
     timeout(
@@ -832,7 +1223,7 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let service_tier_model = all_model_presets()
         .iter()
         .find(|preset| preset.show_in_picker && !preset.service_tiers.is_empty())
@@ -956,7 +1347,7 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage(
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -1156,7 +1547,9 @@ async fn turn_start_tracks_thread_originator_in_analytics() -> Result<()> {
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
                 input: vec![V2UserInput::Image {
-                    url: TINY_PNG_DATA_URL.to_string(),
+                    image: V2ImageReference::Inline {
+                        url: TINY_PNG_DATA_URL.to_string(),
+                    },
                     detail: None,
                 }],
                 turn_trigger: Some("user".to_string()),
@@ -1567,9 +1960,7 @@ async fn turn_start_accepts_text_at_limit_with_mention_item() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -1617,9 +2008,7 @@ async fn turn_start_accepts_text_at_limit_with_mention_item() -> Result<()> {
 #[tokio::test]
 async fn turn_start_rejects_combined_oversized_text_input() -> Result<()> {
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new("http://localhost/unused")
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
+    MockResponsesConfig::new("http://localhost/unused").write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -1710,9 +2099,7 @@ async fn turn_start_rejects_combined_oversized_text_input() -> Result<()> {
 #[tokio::test]
 async fn turn_start_rejects_invalid_permission_selection_before_starting_turn() -> Result<()> {
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new("http://localhost/unused")
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
+    MockResponsesConfig::new("http://localhost/unused").write(codex_home.path())?;
     std::fs::write(
         codex_home.path().join("managed_config.toml"),
         "sandbox_mode = \"read-only\"\n",
@@ -1977,12 +2364,12 @@ allow_upstream_proxy = false
         loop {
             let completed: ItemCompletedNotification =
                 app_server.read_notification("item/completed").await?;
-            if let ThreadItem::CommandExecution {
+            if let ThreadItemPayload::CommandExecution {
                 id,
                 status,
                 exit_code,
                 ..
-            } = completed.item
+            } = completed.item.payload
                 && id == call_id
             {
                 assert_eq!(
@@ -2045,6 +2432,11 @@ fn managed_network_sandbox_probe() -> Result<()> {
         connection,
         "GET http://{target}/sandbox HTTP/1.0\r\nHost: {target}\r\nConnection: close\r\n\r\n"
     )?;
+    if let Some(signal) = std::env::var_os("CODEX_TEST_DISCONNECT_NETWORK_PROBE") {
+        // The parent releases its lock after receiving the approval, or when the test exits.
+        std::fs::File::open(signal)?.lock_shared()?;
+        return Ok(());
+    }
     let mut response = String::new();
     connection
         .take(/*limit*/ 4096)
@@ -2144,9 +2536,7 @@ async fn turn_start_emits_notifications_and_accepts_model_override() -> Result<(
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -2387,73 +2777,6 @@ async fn turn_start_uses_thread_feature_overrides_for_request_user_input_tool_de
 }
 
 #[tokio::test]
-async fn turn_start_accepts_personality_override_v2() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let body = responses::sse(vec![
-        responses::ev_response_created("resp-1"),
-        responses::ev_assistant_message("msg-1", "Done"),
-        responses::ev_completed("resp-1"),
-    ]);
-    let response_mock = responses::mount_sse_once(&server, body).await;
-
-    let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
-
-    let mut mcp = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .build_initialized()
-        .await?;
-
-    let ThreadStartResponse { thread, .. } = mcp
-        .start_thread(ThreadStartParams {
-            model: Some("exp-codex-personality".to_string()),
-            ..Default::default()
-        })
-        .await?;
-
-    let _turn: TurnStartResponse = mcp
-        .request(|request_id| ClientRequest::TurnStart {
-            request_id,
-            params: TurnStartParams {
-                thread_id: thread.id.clone(),
-                client_user_message_id: None,
-                input: vec![V2UserInput::Text {
-                    text: "Hello".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                personality: Some(Personality::Friendly),
-                ..Default::default()
-            },
-        })
-        .await?;
-
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/completed"),
-    )
-    .await??;
-
-    let request = response_mock.single_request();
-    let developer_texts = request.message_input_texts("developer");
-    if developer_texts.is_empty() {
-        eprintln!("request body: {}", request.body_json());
-    }
-
-    assert!(
-        developer_texts
-            .iter()
-            .any(|text| text.contains("<personality_spec>")),
-        "expected personality update message in developer input, got {developer_texts:?}"
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn turn_start_ignores_deprecated_multi_agent_mode() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -2593,8 +2916,14 @@ async fn thread_start_ignores_deprecated_multi_agent_mode() -> Result<()> {
     Ok(())
 }
 
+#[test_case(Personality::Pragmatic, Personality::Friendly; "friendly")]
+#[test_case(Personality::Friendly, Personality::Pragmatic; "pragmatic")]
+#[test_case(Personality::Friendly, Personality::None; "none")]
 #[tokio::test]
-async fn turn_start_change_personality_mid_thread_v2() -> Result<()> {
+async fn turn_start_reports_personality_overrides_v2(
+    first_personality: Personality,
+    next_personality: Personality,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -2611,9 +2940,7 @@ async fn turn_start_change_personality_mid_thread_v2() -> Result<()> {
     let response_mock = responses::mount_sse_sequence(&server, vec![sse1, sse2]).await;
 
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -2637,7 +2964,7 @@ async fn turn_start_change_personality_mid_thread_v2() -> Result<()> {
                     text: "Hello".to_string(),
                     text_elements: Vec::new(),
                 }],
-                personality: None,
+                personality: Some(first_personality),
                 ..Default::default()
             },
         })
@@ -2648,6 +2975,7 @@ async fn turn_start_change_personality_mid_thread_v2() -> Result<()> {
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
+    mcp.clear_message_buffer();
 
     let _turn2: TurnStartResponse = mcp
         .request(|request_id| ClientRequest::TurnStart {
@@ -2659,11 +2987,21 @@ async fn turn_start_change_personality_mid_thread_v2() -> Result<()> {
                     text: "Hello again".to_string(),
                     text_elements: Vec::new(),
                 }],
-                personality: Some(Personality::Friendly),
+                personality: Some(next_personality),
                 ..Default::default()
             },
         })
         .await?;
+
+    let settings_updated: ThreadSettingsUpdatedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("thread/settings/updated"),
+    )
+    .await??;
+    assert_eq!(
+        settings_updated.thread_settings.personality,
+        Some(next_personality)
+    );
 
     timeout(
         DEFAULT_READ_TIMEOUT,
@@ -2674,20 +3012,10 @@ async fn turn_start_change_personality_mid_thread_v2() -> Result<()> {
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2, "expected two requests");
 
-    let first_developer_texts = requests[0].message_input_texts("developer");
-    assert!(
-        first_developer_texts
-            .iter()
-            .all(|text| !text.contains("<personality_spec>")),
-        "expected no personality update message in first request, got {first_developer_texts:?}"
-    );
-
-    let second_developer_texts = requests[1].message_input_texts("developer");
-    assert!(
-        second_developer_texts
-            .iter()
-            .any(|text| text.contains("<personality_spec>")),
-        "expected personality update message in second request, got {second_developer_texts:?}"
+    assert_eq!(
+        requests[1].instructions_text(),
+        requests[0].instructions_text(),
+        "turn updates preserve the original base instructions"
     );
 
     Ok(())
@@ -2822,6 +3150,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
         params.command.as_deref(),
         Some(expected_approval_command.as_str())
     );
+    let approval_started_at_ms = params.started_at_ms;
     let resolved_request_id = request_id.clone();
 
     // Approve and wait for task completion
@@ -2843,14 +3172,15 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
             "item/completed" => {
                 let completed: ItemCompletedNotification =
                     serde_json::from_value(notification.params.expect("item/completed params"))?;
-                match completed.item {
-                    ThreadItem::CommandExecution {
+                match completed.item.payload {
+                    ThreadItemPayload::CommandExecution {
                         id,
                         command,
                         exit_code,
                         aggregated_output,
                         ..
                     } if id == "call1" => {
+                        assert_eq!(completed.item.started_at_ms, Some(approval_started_at_ms));
                         assert_eq!(command, expected_display_command);
                         assert_eq!(exit_code, Some(0));
                         assert!(aggregated_output.is_some_and(|output| output.contains("True")));
@@ -3028,13 +3358,13 @@ async fn run_turn_start_exec_approval_rejection_v2(
     let started_command_execution = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let started: ItemStartedNotification = mcp.read_notification("item/started").await?;
-            if let ThreadItem::CommandExecution { .. } = started.item {
-                return Ok::<ThreadItem, anyhow::Error>(started.item);
+            if let ThreadItemPayload::CommandExecution { .. } = started.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(started.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::CommandExecution {
+    let ThreadItemPayload::CommandExecution {
         id,
         status,
         command,
@@ -3075,13 +3405,13 @@ async fn run_turn_start_exec_approval_rejection_v2(
         loop {
             let completed: ItemCompletedNotification =
                 mcp.read_notification("item/completed").await?;
-            if let ThreadItem::CommandExecution { .. } = completed.item {
-                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+            if let ThreadItemPayload::CommandExecution { .. } = completed.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(completed.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::CommandExecution {
+    let ThreadItemPayload::CommandExecution {
         id,
         status,
         command,
@@ -3185,6 +3515,7 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                disabled_plugin_ids: None,
                 environments: None,
                 thread_id: thread.id.clone(),
                 client_user_message_id: None,
@@ -3193,8 +3524,11 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
                     text_elements: Vec::new(),
                 }],
                 turn_trigger: None,
+                parent_turn_id: None,
+                root_turn_id: None,
                 tool_output: None,
                 responsesapi_client_metadata: None,
+                responsesapi_client_metadata_patch: None,
                 additional_context: None,
                 cwd: Some(first_cwd.clone()),
                 runtime_workspace_roots: None,
@@ -3233,6 +3567,7 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
+                disabled_plugin_ids: None,
                 environments: Some(vec![TurnEnvironmentParams {
                     environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
                     cwd: second_cwd.abs().into(),
@@ -3245,8 +3580,11 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
                     text_elements: Vec::new(),
                 }],
                 turn_trigger: None,
+                parent_turn_id: None,
+                root_turn_id: None,
                 tool_output: None,
                 responsesapi_client_metadata: None,
+                responsesapi_client_metadata_patch: None,
                 additional_context: None,
                 cwd: None,
                 runtime_workspace_roots: None,
@@ -3278,13 +3616,16 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
         loop {
             let item_started: ItemStartedNotification =
                 mcp.read_notification("item/started").await?;
-            if matches!(item_started.item, ThreadItem::CommandExecution { .. }) {
-                return Ok::<ThreadItem, anyhow::Error>(item_started.item);
+            if matches!(
+                item_started.item.payload,
+                ThreadItemPayload::CommandExecution { .. }
+            ) {
+                return Ok::<ThreadItemPayload, anyhow::Error>(item_started.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::CommandExecution {
+    let ThreadItemPayload::CommandExecution {
         cwd,
         command,
         status,
@@ -3652,13 +3993,13 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
     let started_file_change = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let started: ItemStartedNotification = mcp.read_notification("item/started").await?;
-            if let ThreadItem::FileChange { .. } = started.item {
-                return Ok::<ThreadItem, anyhow::Error>(started.item);
+            if let ThreadItemPayload::FileChange { .. } = started.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(started.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::FileChange {
+    let ThreadItemPayload::FileChange {
         ref id,
         status,
         ref changes,
@@ -3701,7 +4042,7 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
     )
     .await?;
     let mut saw_resolved = false;
-    let mut completed_file_change: Option<ThreadItem> = None;
+    let mut completed_file_change: Option<ThreadItemPayload> = None;
     while completed_file_change.is_none() {
         let message = timeout(DEFAULT_READ_TIMEOUT, mcp.read_next_message()).await??;
         let JSONRPCMessage::Notification(notification) = message else {
@@ -3723,9 +4064,9 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
                 let completed: ItemCompletedNotification = serde_json::from_value(
                     notification.params.clone().expect("item/completed params"),
                 )?;
-                if let ThreadItem::FileChange { .. } = completed.item {
+                if let ThreadItemPayload::FileChange { .. } = completed.item.payload {
                     assert!(saw_resolved, "serverRequest/resolved should arrive first");
-                    completed_file_change = Some(completed.item);
+                    completed_file_change = Some(completed.item.payload);
                 }
             }
             _ => {}
@@ -3733,7 +4074,7 @@ async fn turn_start_file_change_approval_v2() -> Result<()> {
     }
     let completed_file_change =
         completed_file_change.expect("file change completion should be observed");
-    let ThreadItem::FileChange { ref id, status, .. } = completed_file_change else {
+    let ThreadItemPayload::FileChange { ref id, status, .. } = completed_file_change else {
         unreachable!("loop ensures we break on file change items");
     };
     assert_eq!(id, "patch-call");
@@ -3936,7 +4277,7 @@ async fn turn_start_streams_apply_patch_change_updates_v2() -> Result<()> {
         .disable_feature(Feature::RemoteModels)
         .disable_feature(Feature::ShellSnapshot)
         .write(&codex_home)?;
-    write_models_cache(&codex_home)?;
+    write_models_cache(&codex_home).await?;
     let cache_path = codex_home.join("models_cache.json");
     let mut cache: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
@@ -4016,7 +4357,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     const PARENT_PROMPT: &str = "spawn a child and continue";
     const SPAWN_CALL_ID: &str = "spawn-call-1";
     const CHILD_PLAN_CALL_ID: &str = "child-plan-call";
-    const REQUESTED_MODEL: &str = "gpt-5.2";
+    const REQUESTED_MODEL: &str = "gpt-5.5";
     const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
 
     let server = responses::start_mock_server().await;
@@ -4117,17 +4458,17 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     let spawn_started = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let started: ItemStartedNotification = mcp.read_notification("item/started").await?;
-            if let ThreadItem::CollabAgentToolCall { id, .. } = &started.item
+            if let ThreadItemPayload::CollabAgentToolCall { id, .. } = &started.item.payload
                 && id == SPAWN_CALL_ID
             {
-                return Ok::<ThreadItem, anyhow::Error>(started.item);
+                return Ok::<ThreadItemPayload, anyhow::Error>(started.item.payload);
             }
         }
     })
     .await??;
     assert_eq!(
         spawn_started,
-        ThreadItem::CollabAgentToolCall {
+        ThreadItemPayload::CollabAgentToolCall {
             id: SPAWN_CALL_ID.to_string(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
@@ -4144,15 +4485,15 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         loop {
             let completed: ItemCompletedNotification =
                 mcp.read_notification("item/completed").await?;
-            if let ThreadItem::CollabAgentToolCall { id, .. } = &completed.item
+            if let ThreadItemPayload::CollabAgentToolCall { id, .. } = &completed.item.payload
                 && id == SPAWN_CALL_ID
             {
-                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+                return Ok::<ThreadItemPayload, anyhow::Error>(completed.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::CollabAgentToolCall {
+    let ThreadItemPayload::CollabAgentToolCall {
         id,
         tool,
         status,
@@ -4324,10 +4665,9 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::MultiAgentV2)
         .enable_feature(Feature::Goals)
-        .enable_feature(Feature::RealtimeConversation)
         .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     mount_analytics_capture(&server, codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()
@@ -4362,15 +4702,15 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
             let completed: ItemCompletedNotification =
                 mcp.read_notification("item/completed").await?;
             assert!(!matches!(
-                &completed.item,
-                ThreadItem::CollabAgentToolCall { .. }
+                &completed.item.payload,
+                ThreadItemPayload::CollabAgentToolCall { .. }
             ));
-            if let ThreadItem::SubAgentActivity {
+            if let ThreadItemPayload::SubAgentActivity {
                 id,
                 kind: SubAgentActivityKind::Started,
                 agent_thread_id,
                 ..
-            } = completed.item
+            } = completed.item.payload
                 && id == SPAWN_CALL_ID
             {
                 return Ok::<String, anyhow::Error>(agent_thread_id);
@@ -4383,6 +4723,9 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
         .request(|request_id| ClientRequest::ThreadList {
             request_id,
             params: codex_app_server_protocol::ThreadListParams {
+                excluded_thread_ids: None,
+                attached_to_thread_id: None,
+                originators: None,
                 cursor: None,
                 limit: Some(10),
                 sort_key: None,
@@ -4467,6 +4810,7 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
                 text_elements: Vec::new(),
             }],
             responsesapi_client_metadata: None,
+            responsesapi_client_metadata_patch: None,
             additional_context: None,
             expected_turn_id: "any-active-turn".to_string(),
         })
@@ -4545,20 +4889,12 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected(
             "turn/settings/update",
             json!({"turnId": "any-child-turn", "model": "gpt-5.4"}),
         ),
-        ("thread/rollback", json!({"numTurns": 1})),
         ("thread/revert", json!({"beforeTurnId": "any-child-turn"})),
         (
             "review/start",
             json!({
                 "target": {"type": "custom", "instructions": "Replace the child's task."},
                 "delivery": "inline",
-            }),
-        ),
-        (
-            "review/start",
-            json!({
-                "target": {"type": "custom", "instructions": "Start a detached task."},
-                "delivery": "detached",
             }),
         ),
         (
@@ -4672,7 +5008,7 @@ async fn turn_start_emits_spawn_agent_item_with_effective_role_model_metadata_v2
     const CHILD_PROMPT: &str = "child: do work";
     const PARENT_PROMPT: &str = "spawn a child and continue";
     const SPAWN_CALL_ID: &str = "spawn-call-1";
-    const REQUESTED_MODEL: &str = "gpt-5.2";
+    const REQUESTED_MODEL: &str = "gpt-5.5";
     const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
     const ROLE_MODEL: &str = "gpt-5.4";
     const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
@@ -4775,15 +5111,15 @@ config_file = "./custom-role.toml"
         loop {
             let completed: ItemCompletedNotification =
                 mcp.read_notification("item/completed").await?;
-            if let ThreadItem::CollabAgentToolCall { id, .. } = &completed.item
+            if let ThreadItemPayload::CollabAgentToolCall { id, .. } = &completed.item.payload
                 && id == SPAWN_CALL_ID
             {
-                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+                return Ok::<ThreadItemPayload, anyhow::Error>(completed.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::CollabAgentToolCall {
+    let ThreadItemPayload::CollabAgentToolCall {
         id,
         tool,
         status,
@@ -4910,13 +5246,13 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
     let started_file_change_1 = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let started: ItemStartedNotification = mcp.read_notification("item/started").await?;
-            if let ThreadItem::FileChange { .. } = started.item {
-                return Ok::<ThreadItem, anyhow::Error>(started.item);
+            if let ThreadItemPayload::FileChange { .. } = started.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(started.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::FileChange { id, status, .. } = started_file_change_1 else {
+    let ThreadItemPayload::FileChange { id, status, .. } = started_file_change_1 else {
         unreachable!("loop ensures we break on file change items");
     };
     assert_eq!(id, "patch-call-1");
@@ -4963,7 +5299,7 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
             "item/completed" => {
                 let completed: ItemCompletedNotification =
                     serde_json::from_value(notification.params.expect("item/completed params"))?;
-                if matches!(completed.item, ThreadItem::FileChange { ref id, .. } if id == "patch-call-1")
+                if matches!(completed.item.payload, ThreadItemPayload::FileChange { ref id, .. } if id == "patch-call-1")
                 {
                     assert_eq!(completed.thread_id, thread.id);
                     assert_eq!(completed.turn_id, turn_1.id);
@@ -5002,13 +5338,13 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
     let started_file_change_2 = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let started: ItemStartedNotification = mcp.read_notification("item/started").await?;
-            if let ThreadItem::FileChange { .. } = started.item {
-                return Ok::<ThreadItem, anyhow::Error>(started.item);
+            if let ThreadItemPayload::FileChange { .. } = started.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(started.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::FileChange { id, status, .. } = started_file_change_2 else {
+    let ThreadItemPayload::FileChange { id, status, .. } = started_file_change_2 else {
         unreachable!("loop ensures we break on file change items");
     };
     assert_eq!(id, "patch-call-2");
@@ -5026,7 +5362,7 @@ async fn turn_start_file_change_approval_accept_for_session_persists_v2() -> Res
                     let completed: ItemCompletedNotification = serde_json::from_value(
                         notification.params.expect("item/completed params"),
                     )?;
-                    if matches!(completed.item, ThreadItem::FileChange { ref id, .. } if id == "patch-call-2")
+                    if matches!(completed.item.payload, ThreadItemPayload::FileChange { ref id, .. } if id == "patch-call-2")
                     {
                         return Ok::<ItemCompletedNotification, anyhow::Error>(completed);
                     }
@@ -5138,13 +5474,13 @@ async fn run_turn_start_file_change_approval_rejection_v2(
     let started_file_change = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let started: ItemStartedNotification = mcp.read_notification("item/started").await?;
-            if let ThreadItem::FileChange { .. } = started.item {
-                return Ok::<ThreadItem, anyhow::Error>(started.item);
+            if let ThreadItemPayload::FileChange { .. } = started.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(started.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::FileChange {
+    let ThreadItemPayload::FileChange {
         ref id,
         status,
         ref changes,
@@ -5184,13 +5520,13 @@ async fn run_turn_start_file_change_approval_rejection_v2(
         loop {
             let completed: ItemCompletedNotification =
                 mcp.read_notification("item/completed").await?;
-            if let ThreadItem::FileChange { .. } = completed.item {
-                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+            if let ThreadItemPayload::FileChange { .. } = completed.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(completed.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::FileChange { ref id, status, .. } = completed_file_change else {
+    let ThreadItemPayload::FileChange { ref id, status, .. } = completed_file_change else {
         unreachable!("loop ensures we break on file change items");
     };
     assert_eq!(id, "patch-call");
@@ -5221,9 +5557,13 @@ async fn run_turn_start_file_change_approval_rejection_v2(
     Ok(())
 }
 
+#[cfg_attr(not(windows), test_case(None; "started"))]
+#[test_case(Some(json!({"cmd": "echo unreachable", "workdir": "missing-work-directory", "tty": false})); "pipe_launch_failure")]
+#[test_case(Some(json!({"cmd": "echo unreachable\u{0}", "tty": true, "login": false})); "pty_launch_failure")]
 #[tokio::test]
-#[cfg_attr(windows, ignore = "process id reporting differs on Windows")]
-async fn command_execution_notifications_include_process_id() -> Result<()> {
+async fn command_execution_notifications_include_process_id(
+    launch_failure_args: Option<Value>,
+) -> Result<()> {
     // TODO(anp): Add target-Windows process-id expectations for remote executors.
     skip_if_wine_exec!(
         Ok(()),
@@ -5231,8 +5571,18 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
     );
     skip_if_no_network!(Ok(()));
 
+    let launch_failed = launch_failure_args.is_some();
+    let command = if let Some(args) = launch_failure_args {
+        responses::sse(vec![
+            responses::ev_response_created("launch"),
+            responses::ev_function_call("uexec-1", "exec_command", &args.to_string()),
+            responses::ev_completed("launch"),
+        ])
+    } else {
+        create_exec_command_sse_response("uexec-1")?
+    };
     let responses = vec![
-        create_exec_command_sse_response("uexec-1")?,
+        command,
         create_final_assistant_message_sse_response("done")?,
     ];
     let server = create_mock_responses_server_sequence(responses).await;
@@ -5240,6 +5590,7 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
     MockResponsesConfig::new(&server.uri())
         .with_sandbox_mode("danger-full-access")
         .enable_feature(Feature::UnifiedExec)
+        .disable_feature(Feature::ShellSnapshot)
         .write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
@@ -5273,13 +5624,13 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
     let started_command = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let started: ItemStartedNotification = mcp.read_notification("item/started").await?;
-            if let ThreadItem::CommandExecution { .. } = started.item {
-                return Ok::<ThreadItem, anyhow::Error>(started.item);
+            if let ThreadItemPayload::CommandExecution { .. } = started.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(started.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::CommandExecution {
+    let ThreadItemPayload::CommandExecution {
         id,
         process_id: started_process_id,
         status,
@@ -5290,23 +5641,25 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
     };
     assert_eq!(id, "uexec-1");
     assert_eq!(status, CommandExecutionStatus::InProgress);
-    let started_process_id = started_process_id.expect("process id should be present");
+    assert_eq!(started_process_id.is_none(), launch_failed);
 
     let completed_command = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let completed: ItemCompletedNotification =
                 mcp.read_notification("item/completed").await?;
-            if let ThreadItem::CommandExecution { .. } = completed.item {
-                return Ok::<ThreadItem, anyhow::Error>(completed.item);
+            if let ThreadItemPayload::CommandExecution { .. } = completed.item.payload {
+                return Ok::<ThreadItemPayload, anyhow::Error>(completed.item.payload);
             }
         }
     })
     .await??;
-    let ThreadItem::CommandExecution {
+    let ThreadItemPayload::CommandExecution {
         id: completed_id,
         process_id: completed_process_id,
         status: completed_status,
         exit_code,
+        duration_ms,
+        aggregated_output,
         ..
     } = completed_command
     else {
@@ -5320,15 +5673,22 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
         ),
         "unexpected command execution status: {completed_status:?}"
     );
-    if completed_status == CommandExecutionStatus::Completed {
+    if launch_failed {
+        assert_eq!(
+            (completed_status, exit_code, duration_ms),
+            (CommandExecutionStatus::Failed, Some(-1), Some(0))
+        );
+        assert!(
+            aggregated_output
+                .context("launch diagnostic")?
+                .starts_with("Failed to create unified exec process:")
+        );
+    } else if completed_status == CommandExecutionStatus::Completed {
         assert_eq!(exit_code, Some(0));
     } else {
         assert!(exit_code.is_some(), "expected exit_code for failed command");
     }
-    assert_eq!(
-        completed_process_id.as_deref(),
-        Some(started_process_id.as_str())
-    );
+    assert_eq!(completed_process_id, started_process_id);
 
     timeout(
         DEFAULT_READ_TIMEOUT,
@@ -5336,16 +5696,30 @@ async fn command_execution_notifications_include_process_id() -> Result<()> {
     )
     .await??;
 
+    for method in mcp.pending_notification_methods() {
+        let notification = mcp.read_stream_until_notification_message(&method).await?;
+        assert_ne!(
+            notification.params.context("notification params")?["item"]["id"],
+            "uexec-1"
+        );
+    }
+
     Ok(())
 }
 
 #[cfg_attr(windows, ignore = "plugin attribution fixture is Unix-only")]
+#[test_case(CommandExecutionStatus::Completed; "completed")]
+#[test_case(CommandExecutionStatus::Failed; "launch_failure")]
 #[tokio::test]
-async fn command_execution_notifications_include_trusted_plugin_id() -> Result<()> {
+async fn command_execution_notifications_include_trusted_plugin_id(
+    expected_status: CommandExecutionStatus,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(Ok(()), "plugin attribution fixture is Unix-only");
 
     let codex_home = TempDir::new()?;
+    let missing_cwd = codex_home.path().join("missing-work-directory");
+    let launch_failed = expected_status == CommandExecutionStatus::Failed;
     let curated_sha = "0123456789abcdef0123456789abcdef01234567";
     let plugin_root = codex_home
         .path()
@@ -5387,7 +5761,7 @@ async fn command_execution_notifications_include_trusted_plugin_id() -> Result<(
                 "/bin/sh".to_string(),
                 script_path.to_string_lossy().into_owned(),
             ],
-            /*workdir*/ None,
+            launch_failed.then_some(missing_cwd.as_path()),
             /*timeout_ms*/ None,
             "plugin-command",
         )?,
@@ -5398,7 +5772,9 @@ async fn command_execution_notifications_include_trusted_plugin_id() -> Result<(
         .with_approval_policy("on-request")
         .with_sandbox_mode("danger-full-access")
         .enable_feature(Feature::Plugins)
+        .enable_feature(Feature::UnifiedExec)
         .disable_feature(Feature::RemotePlugin)
+        .disable_feature(Feature::ShellSnapshot)
         .with_extra_config("[plugins.\"google-calendar@openai-api-curated\"]\nenabled = true")
         .write(codex_home.path())?;
 
@@ -5433,8 +5809,8 @@ async fn command_execution_notifications_include_trusted_plugin_id() -> Result<(
                 let notification = mcp.read_stream_until_notification_message(method).await?;
                 let params = notification.params.expect("item notification params");
                 let item_json = params.get("item").expect("item notification item").clone();
-                let item = serde_json::from_value::<ThreadItem>(item_json.clone())?;
-                if let ThreadItem::CommandExecution { status, .. } = item {
+                let item = serde_json::from_value::<ThreadItemPayload>(item_json.clone())?;
+                if let ThreadItemPayload::CommandExecution { status, .. } = item {
                     let emitted_script_path = item_json
                         .get("scriptPath")
                         .and_then(serde_json::Value::as_str)
@@ -5459,7 +5835,7 @@ async fn command_execution_notifications_include_trusted_plugin_id() -> Result<(
         if method == "item/started" {
             assert_eq!(status, CommandExecutionStatus::InProgress);
         } else {
-            assert_eq!(status, CommandExecutionStatus::Completed);
+            assert_eq!(status, expected_status);
         }
     }
 
@@ -5478,9 +5854,7 @@ async fn turn_start_with_elevated_override_does_not_persist_project_trust() -> R
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri())
-        .enable_feature(Feature::Personality)
-        .write(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
 
     let workspace = TempDir::new()?;
 

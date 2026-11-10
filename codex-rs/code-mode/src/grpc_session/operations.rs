@@ -5,16 +5,20 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_code_mode_protocol::CellId;
+use codex_code_mode_protocol::CodeModeSessionDelegate;
 use codex_code_mode_protocol::DEFAULT_EXEC_YIELD_TIME_MS;
 use codex_code_mode_protocol::ExecuteRequest;
 use codex_code_mode_protocol::RuntimeResponse;
 use codex_code_mode_protocol::StartedCell;
+use codex_code_mode_protocol::TerminateRequest;
 use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::WaitRequest;
 use codex_code_mode_protocol::grpc;
 use codex_protocol::protocol::W3cTraceContext;
 use tokio::sync::OwnedMutexGuard;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::AbortOnDropHandle;
 use tracing::Instrument;
 use tracing::debug;
 use uuid::Uuid;
@@ -45,16 +49,17 @@ impl Drop for ExecutionOwnership {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove_execution(&self.execution_id);
-        let Some(cell_id) = cell else {
+        let Some((cell_id, delegate)) = cell else {
             return;
         };
-        self.session.report_closed_cell(Some(cell_id.clone()));
+        self.session
+            .report_closed_cell(Some((cell_id.clone(), delegate)));
         if self.session.stopped.is_cancelled() {
             return;
         }
         let session = Arc::clone(&self.session);
         self.session.runtime.spawn(async move {
-            if let Err(error) = session.terminate(cell_id).await
+            if let Err(error) = session.terminate(cell_id.into()).await
                 && !session.stopped.is_cancelled()
             {
                 debug!("abandoned code-mode execution termination raced closure: {error}");
@@ -67,6 +72,8 @@ impl SessionInner {
     pub(super) async fn execute(
         self: &Arc<Self>,
         request: ExecuteRequest,
+        delegate: Arc<dyn CodeModeSessionDelegate>,
+        preempt: Option<CancellationToken>,
     ) -> Result<StartedCell, String> {
         self.require_open()?;
         let execution_id = Uuid::new_v4().to_string();
@@ -81,15 +88,21 @@ impl SessionInner {
         self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .begin_execution(&request)?;
+            .begin_execution(&request, delegate)?;
         let ownership = ExecutionOwnership {
             session: Arc::clone(self),
-            execution_id,
+            execution_id: execution_id.clone(),
             armed: true,
         };
         let (started_tx, started_rx) = oneshot::channel();
         let inner = Arc::clone(self);
         self.stream_tasks.spawn(async move {
+            let _watcher = preempt.map(|signal| {
+                inner.watch_yield(
+                    signal,
+                    grpc::yield_observation_request::Observation::ExecutionId(execution_id),
+                )
+            });
             inner
                 .drive_execution(request, ownership, started_tx, trace)
                 .instrument(execute_span)
@@ -112,17 +125,21 @@ impl SessionInner {
                 .saturating_add(Duration::from_secs(1));
         let opening = async {
             let mut client = self.client();
-            let mut request = tonic::Request::new(request);
+            let mut request = self.request(request);
             if let Some(traceparent) = trace.and_then(|trace| trace.traceparent)
                 && let Ok(traceparent) = traceparent.parse()
             {
                 request.metadata_mut().insert("traceparent", traceparent);
             }
-            let mut stream =
-                deadline::request(&self, "execution", Duration::ZERO, client.execute(request))
-                    .await?
-                    .into_inner();
-            let first = deadline::request(
+            let mut stream = deadline::session_request(
+                &self,
+                "execution",
+                Duration::ZERO,
+                client.execute(request),
+            )
+            .await?
+            .into_inner();
+            let first = deadline::session_request(
                 &self,
                 "execution starting event",
                 Duration::ZERO,
@@ -205,7 +222,7 @@ impl SessionInner {
         let outcome = tokio::select! {
             biased;
             _ = response_tx.closed() => return,
-            outcome = deadline::request(
+            outcome = deadline::session_request(
                 &self,
                 "execution outcome",
                 runtime_timeout,
@@ -246,6 +263,7 @@ impl SessionInner {
     pub(super) async fn wait(
         self: &Arc<Self>,
         request: WaitRequest,
+        preempt: Option<CancellationToken>,
     ) -> Result<WaitOutcome, String> {
         self.require_open()?;
         let slot = {
@@ -294,33 +312,76 @@ impl SessionInner {
         let request = grpc::WaitRequest {
             session_id: self.id.clone(),
             cell_id: expected_cell_id.as_str().to_string(),
-            wait_id,
+            wait_id: wait_id.clone(),
             yield_time_ms: request.yield_time_ms,
+            max_output_tokens: conversion::output_budget(
+                self.output_truncation,
+                request.max_output_tokens,
+            )?,
         };
         let mut client = self.client();
-        let response = deadline::request(self, "wait", runtime_timeout, client.wait(request)).await;
+        let watcher = preempt.map(|signal| {
+            self.watch_yield(
+                signal,
+                grpc::yield_observation_request::Observation::WaitId(wait_id),
+            )
+        });
+        let response = deadline::session_request(
+            self,
+            "wait",
+            runtime_timeout,
+            client.wait(self.request(request)),
+        )
+        .await;
+        drop(watcher);
         cancellation.disarm();
         self.prune_wait_slots();
-        let outcome = conversion::wait_outcome(response?.into_inner())?;
+        let outcome = conversion::wait_outcome(response?)?;
         self.validate_wait_cell(&expected_cell_id, outcome).await
     }
 
-    pub(super) async fn terminate(&self, cell_id: CellId) -> Result<WaitOutcome, String> {
+    fn watch_yield(
+        &self,
+        yield_signal: CancellationToken,
+        observation: grpc::yield_observation_request::Observation,
+    ) -> AbortOnDropHandle<()> {
+        let mut client = self.client();
+        let request = self.request(grpc::YieldObservationRequest {
+            session_id: self.id.clone(),
+            observation: Some(observation),
+        });
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            yield_signal.cancelled().await;
+            if let Err(error) = deadline::startup("yield observation", async move {
+                client.yield_observation(request).await.map(|_| ())
+            })
+            .await
+            {
+                // An older host may not implement this RPC; the normal timeout still applies.
+                debug!("could not yield code-mode observation early: {error}");
+            }
+        }))
+    }
+
+    pub(super) async fn terminate(&self, request: TerminateRequest) -> Result<WaitOutcome, String> {
         self.require_open()?;
         let mut client = self.client();
-        let response = deadline::request(
+        let response = deadline::session_request(
             self,
             "termination",
             Duration::ZERO,
-            client.terminate(grpc::TerminateRequest {
+            client.terminate(self.request(grpc::TerminateRequest {
                 session_id: self.id.clone(),
-                cell_id: cell_id.as_str().to_string(),
-            }),
+                cell_id: request.cell_id.as_str().to_string(),
+                max_output_tokens: conversion::output_budget(
+                    self.output_truncation,
+                    request.max_output_tokens,
+                )?,
+            })),
         )
-        .await?
-        .into_inner();
+        .await?;
         let outcome = conversion::wait_outcome(response)?;
-        self.validate_wait_cell(&cell_id, outcome).await
+        self.validate_wait_cell(&request.cell_id, outcome).await
     }
 
     async fn validate_wait_cell(
@@ -419,10 +480,10 @@ impl Drop for WaitCancellation {
                 &session,
                 "wait cancellation",
                 Duration::ZERO,
-                client.cancel_wait(grpc::CancelWaitRequest {
+                client.cancel_wait(session.request(grpc::CancelWaitRequest {
                     session_id: session.id.clone(),
                     wait_id,
-                }),
+                })),
             )
             .await;
             if let Err(error) = result

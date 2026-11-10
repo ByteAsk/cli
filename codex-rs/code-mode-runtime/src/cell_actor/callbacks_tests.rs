@@ -39,9 +39,8 @@ impl CellHost for PanickingCallbackHost {
 
     async fn commit_completion(
         &self,
-        _stored_value_writes: HashMap<String, JsonValue>,
-        _event: CellEvent,
-        _pending_initial_yield_items: Option<Vec<crate::session_runtime::OutputItem>>,
+        _stored_value_writes: HashMap<String, Arc<JsonValue>>,
+        _event: impl FnOnce() -> CellEvent + Send,
         _cell_state: Arc<CellState>,
     ) -> CompletionCommit {
         panic!("unexpected completion commit");

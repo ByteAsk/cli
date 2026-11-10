@@ -136,7 +136,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for CppLayoutTool {
 }
 
 impl CppLayoutTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: LayoutArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -188,20 +191,22 @@ impl CppLayoutTool {
                     return Err(FunctionCallError::RespondToModel(no_match_message(
                         &args,
                         pahole_note.as_deref(),
-                    )))
+                    )));
                 }
                 ClangOutcome::CompileFailed(err) => {
                     return Err(FunctionCallError::RespondToModel(format!(
                         "could not analyze {}: the compiler rejected it: {}",
                         args.file,
                         err.trim()
-                    )))
+                    )));
                 }
             }
         }
 
         // Rung 3: nothing available.
-        Err(FunctionCallError::RespondToModel(unavailable_message(&pahole_probe)))
+        Err(FunctionCallError::RespondToModel(unavailable_message(
+            &pahole_probe,
+        )))
     }
 
     async fn pahole_layout(
@@ -225,7 +230,10 @@ impl CppLayoutTool {
         // header's own types are unused in its own translation unit and would
         // otherwise get no DWARF at all. The file itself is still the only
         // thing compiled (no synthesized wrapper TU).
-        let mut argv: Vec<String> = ["-g", "-x", lang, "-c"].iter().map(|s| s.to_string()).collect();
+        let mut argv: Vec<String> = ["-g", "-x", lang, "-c"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         // For a named lookup only: listing every record without a name would
         // then list every type of every included header (82 records, 81 from
         // system headers, measured), burying the file's own.
@@ -244,7 +252,10 @@ impl CppLayoutTool {
         }
 
         // pahole knows records only by their unqualified name.
-        let wanted = args.name.as_deref().map(|name| name.rsplit("::").next().unwrap_or(name));
+        let wanted = args
+            .name
+            .as_deref()
+            .map(|name| name.rsplit("::").next().unwrap_or(name));
         let mut pahole_args = Vec::new();
         if let Some(wanted) = wanted {
             pahole_args.push("-C".to_string());
@@ -259,7 +270,9 @@ impl CppLayoutTool {
         let mut note = None;
         if let (Some(requested), Some(wanted)) = (&args.name, wanted) {
             if !records.is_empty() {
-                let defs = self.dwarf_records(&obj, |name| name == wanted, timeout).await;
+                let defs = self
+                    .dwarf_records(&obj, |name| name == wanted, timeout)
+                    .await;
                 match qualify(&mut records, requested, &defs) {
                     Qualified::Labelled(label) => note = label,
                     Qualified::NotIt(reason) => {
@@ -273,7 +286,9 @@ impl CppLayoutTool {
                 // the clang fallback cannot see a header's unused types — the
                 // tool answered "no record named like Order". Find the whole
                 // names in DWARF and ask pahole for those.
-                let defs = self.dwarf_records(&obj, |name| name.contains(wanted), timeout).await;
+                let defs = self
+                    .dwarf_records(&obj, |name| name.contains(wanted), timeout)
+                    .await;
                 let mut names: Vec<&str> = defs
                     .iter()
                     .map(|(qualified, _)| qualified.rsplit("::").next().unwrap_or(qualified))
@@ -281,8 +296,14 @@ impl CppLayoutTool {
                 names.sort_unstable();
                 names.dedup();
                 if !names.is_empty() && names.len() <= MAX_SUBSTRING_MATCHES {
-                    let argv = vec!["-C".to_string(), names.join(","), obj.to_string_lossy().to_string()];
-                    if let RunOutcome::Finished { stdout, .. } = run_capped("pahole", &argv, &self.cwd, timeout).await? {
+                    let argv = vec![
+                        "-C".to_string(),
+                        names.join(","),
+                        obj.to_string_lossy().to_string(),
+                    ];
+                    if let RunOutcome::Finished { stdout, .. } =
+                        run_capped("pahole", &argv, &self.cwd, timeout).await?
+                    {
                         records = parse_pahole(&stdout);
                     }
                     let mut notes = Vec::new();
@@ -336,7 +357,13 @@ impl CppLayoutTool {
 
     /// The target's scalar sizes under these flags. Empty (every scalar
     /// unprovable, so hole analysis is partial) if the compiler will not say.
-    async fn data_model(&self, clang: &str, lang: &str, flags: &[String], timeout: std::time::Duration) -> DataModel {
+    async fn data_model(
+        &self,
+        clang: &str,
+        lang: &str,
+        flags: &[String],
+        timeout: std::time::Duration,
+    ) -> DataModel {
         let mut argv = vec!["-x".to_string(), lang.to_string()];
         argv.extend(flags.iter().cloned());
         argv.extend(["-dM".to_string(), "-E".to_string(), "-".to_string()]);
@@ -383,7 +410,10 @@ impl CppLayoutTool {
                 "clang timed out after {secs}s"
             ))),
             RunOutcome::Finished {
-                success, stdout, stderr, ..
+                success,
+                stdout,
+                stderr,
+                ..
             } => {
                 let mut records = parse_clang_layouts(&stdout, &model);
                 // The file goes to clang as an absolute path, so anonymous
@@ -595,7 +625,9 @@ fn parse_dwarf_records_where(dump: &str, keep: impl Fn(&str) -> bool) -> Vec<(St
             }
         }
         if die.scope {
-            let label = die.name.unwrap_or_else(|| "(anonymous namespace)".to_string());
+            let label = die
+                .name
+                .unwrap_or_else(|| "(anonymous namespace)".to_string());
             scope.push((die.level, label));
         }
     }
@@ -625,8 +657,13 @@ fn parse_dwarf_records_where(dump: &str, keep: impl Fn(&str) -> bool) -> Vec<(St
                 finish(die, &keep, &mut scope, &mut found);
             }
             scope.retain(|(l, _)| *l < level);
-            let tag = tail.rsplit_once('(').map_or("", |(_, t)| t.trim_end_matches(')'));
-            let record = matches!(tag, "DW_TAG_structure_type" | "DW_TAG_class_type" | "DW_TAG_union_type");
+            let tag = tail
+                .rsplit_once('(')
+                .map_or("", |(_, t)| t.trim_end_matches(')'));
+            let record = matches!(
+                tag,
+                "DW_TAG_structure_type" | "DW_TAG_class_type" | "DW_TAG_union_type"
+            );
             pending = Some(Die {
                 level,
                 scope: record || tag == "DW_TAG_namespace",
@@ -637,7 +674,9 @@ fn parse_dwarf_records_where(dump: &str, keep: impl Fn(&str) -> bool) -> Vec<(St
             });
             continue;
         }
-        let Some(die) = pending.as_mut() else { continue };
+        let Some(die) = pending.as_mut() else {
+            continue;
+        };
         if let Some(value) = attribute(trimmed, "DW_AT_name") {
             die.name = Some(value);
         } else if let Some(value) = attribute(trimmed, "DW_AT_byte_size") {
@@ -655,7 +694,10 @@ fn parse_dwarf_records_where(dump: &str, keep: impl Fn(&str) -> bool) -> Vec<(St
 /// Prefer `clang++`, fall back to `clang`, whichever runs `--version`.
 async fn clang_binary(cwd: &Path) -> Option<String> {
     for cand in ["clang++", "clang"] {
-        if crate::probe::probe(cand, &["--version"], cwd).await.is_available() {
+        if crate::probe::probe(cand, &["--version"], cwd)
+            .await
+            .is_available()
+        {
             return Some(cand.to_string());
         }
     }
@@ -663,7 +705,9 @@ async fn clang_binary(cwd: &Path) -> Option<String> {
 }
 
 fn no_match_message(args: &LayoutArgs, pahole_note: Option<&str>) -> String {
-    let pahole = pahole_note.map(|note| format!(" ({note}.)")).unwrap_or_default();
+    let pahole = pahole_note
+        .map(|note| format!(" ({note}.)"))
+        .unwrap_or_default();
     match &args.name {
         Some(name) => format!(
             "no record named like \"{name}\" was laid out in {}. clang's layout dump covers only \
@@ -739,7 +783,13 @@ fn raw_clang_records(stdout: &str) -> Vec<RawRecord> {
         let Some(name) = lines.next().and_then(parse_record_header) else {
             continue;
         };
-        let mut record = RawRecord { name, size: 0, dsize: 0, align: None, lines: Vec::new() };
+        let mut record = RawRecord {
+            name,
+            size: 0,
+            dsize: 0,
+            align: None,
+            lines: Vec::new(),
+        };
         while let Some(peek) = lines.peek() {
             if peek.contains("Dumping AST Record Layout") {
                 break;
@@ -751,7 +801,9 @@ fn raw_clang_records(stdout: &str) -> Vec<RawRecord> {
                 record.align = extract_kv(cur, "align=");
                 continue;
             }
-            let Some((offset, decl)) = cur.split_once('|') else { continue };
+            let Some((offset, decl)) = cur.split_once('|') else {
+                continue;
+            };
             // Depth is the indent after the bar: the header has one space, a
             // direct member three, its own members (a base class's, a nested
             // struct's) five or more. Only direct members belong to this
@@ -761,7 +813,9 @@ fn raw_clang_records(stdout: &str) -> Vec<RawRecord> {
             if indent != 3 || offset.trim().is_empty() {
                 continue;
             }
-            record.lines.push((offset.trim().to_string(), decl.trim().to_string()));
+            record
+                .lines
+                .push((offset.trim().to_string(), decl.trim().to_string()));
         }
         records.push(record);
     }
@@ -786,13 +840,19 @@ fn parse_record_header(line: &str) -> Option<String> {
 /// counted their bytes as padding: a class with a vptr and an int read "12 of
 /// 16 bytes are padding (75%)"), and a run of bitfields is one member spanning
 /// the bytes its bits occupy.
-fn clang_members(lines: &[(String, String)], model: &DataModel, records: &HashMap<&str, (u64, u64)>) -> Vec<Member> {
+fn clang_members(
+    lines: &[(String, String)],
+    model: &DataModel,
+    records: &HashMap<&str, (u64, u64)>,
+) -> Vec<Member> {
     let mut members: Vec<Member> = Vec::new();
     // The byte range and names of the bitfield run being accumulated.
     let mut bits: Option<(u64, u64, String)> = None;
     for (offset, decl) in lines {
         if let Some((byte, range)) = offset.split_once(':') {
-            let Ok(byte) = byte.parse::<u64>() else { continue };
+            let Ok(byte) = byte.parse::<u64>() else {
+                continue;
+            };
             let name = member_name(decl);
             // `80:3-9` = bits 3..=9 counted from byte 80. Like pahole, a run
             // of bitfields occupies whole storage units of its declared type
@@ -800,21 +860,30 @@ fn clang_members(lines: &[(String, String)], model: &DataModel, records: &HashMa
             // on the padding. Older clang printed just `80:3`, with no extent,
             // and an unsized type gives no unit: the size is then not provable.
             let unit = type_size(decl_type(decl), model, records).filter(|&unit| unit > 0);
-            let span = range.split_once('-').zip(unit).and_then(|((first, last), unit)| {
-                let (first, last) = (first.parse::<u64>().ok()?, last.parse::<u64>().ok()?);
-                let (first_bit, last_bit) = (byte * 8 + first, byte * 8 + last);
-                let start = first_bit / (unit * 8) * unit;
-                let end = (last_bit / (unit * 8) + 1) * unit;
-                Some((start, end, last + 1 - first))
-            });
+            let span = range
+                .split_once('-')
+                .zip(unit)
+                .and_then(|((first, last), unit)| {
+                    let (first, last) = (first.parse::<u64>().ok()?, last.parse::<u64>().ok()?);
+                    let (first_bit, last_bit) = (byte * 8 + first, byte * 8 + last);
+                    let start = first_bit / (unit * 8) * unit;
+                    let end = (last_bit / (unit * 8) + 1) * unit;
+                    Some((start, end, last + 1 - first))
+                });
             let Some((start, end, width)) = span else {
                 flush_bits(&mut bits, &mut members);
-                members.push(Member { name, offset: byte, size: None });
+                members.push(Member {
+                    name,
+                    offset: byte,
+                    size: None,
+                });
                 continue;
             };
             let label = format!("{name}:{width}");
             bits = match bits.take() {
-                Some((s, e, names)) if start < e => Some((s, e.max(end), format!("{names}, {label}"))),
+                Some((s, e, names)) if start < e => {
+                    Some((s, e.max(end), format!("{names}, {label}")))
+                }
                 previous => {
                     if let Some(previous) = previous {
                         flush_bits(&mut Some(previous), &mut members);
@@ -825,26 +894,47 @@ fn clang_members(lines: &[(String, String)], model: &DataModel, records: &HashMa
             continue;
         }
         flush_bits(&mut bits, &mut members);
-        let Ok(offset) = offset.parse::<u64>() else { continue };
+        let Ok(offset) = offset.parse::<u64>() else {
+            continue;
+        };
         // `struct Empty e (empty)`: a `[[no_unique_address]]` or otherwise
         // empty member. Its sizeof still bounds it, and the next member
         // starting at the same offset shows it takes no space.
         let decl = decl.strip_suffix(" (empty)").unwrap_or(decl);
-        if decl.ends_with("vtable pointer)") || decl.ends_with("vbtable pointer)") || decl.ends_with("vftable pointer)") {
-            members.push(Member { name: "(vptr)".to_string(), offset, size: model.get("POINTER") });
+        if decl.ends_with("vtable pointer)")
+            || decl.ends_with("vbtable pointer)")
+            || decl.ends_with("vftable pointer)")
+        {
+            members.push(Member {
+                name: "(vptr)".to_string(),
+                offset,
+                size: model.get("POINTER"),
+            });
             continue;
         }
-        if let Some(at) = decl.find(" (primary base)").or_else(|| decl.find(" (base)")).or_else(|| decl.find(" (virtual base)")) {
+        if let Some(at) = decl
+            .find(" (primary base)")
+            .or_else(|| decl.find(" (base)"))
+            .or_else(|| decl.find(" (virtual base)"))
+        {
             let base = strip_tag(&decl[..at]);
             // A base occupies its data size (0 for an empty base); the derived
             // class may reuse its tail padding.
             let size = records.get(base).map(|(_, dsize)| *dsize);
-            members.push(Member { name: format!("(base {base})"), offset, size });
+            members.push(Member {
+                name: format!("(base {base})"),
+                offset,
+                size,
+            });
             continue;
         }
         let name = member_name(decl);
         let ty = decl_type(decl);
-        members.push(Member { name, offset, size: type_size(ty, model, records) });
+        members.push(Member {
+            name,
+            offset,
+            size: type_size(ty, model, records),
+        });
     }
     flush_bits(&mut bits, &mut members);
     members
@@ -852,7 +942,11 @@ fn clang_members(lines: &[(String, String)], model: &DataModel, records: &HashMa
 
 fn flush_bits(bits: &mut Option<(u64, u64, String)>, members: &mut Vec<Member>) {
     if let Some((start, end, names)) = bits.take() {
-        members.push(Member { name: names, offset: start, size: Some(end - start) });
+        members.push(Member {
+            name: names,
+            offset: start,
+            size: Some(end - start),
+        });
     }
 }
 
@@ -906,7 +1000,10 @@ fn type_size(ty: &str, model: &DataModel, records: &HashMap<&str, (u64, u64)>) -
     if ty.ends_with(']') {
         let first = ty.find('[')?;
         let mut count = 1u64;
-        for extent in ty[first..].split(['[', ']']).filter(|part| !part.is_empty()) {
+        for extent in ty[first..]
+            .split(['[', ']'])
+            .filter(|part| !part.is_empty())
+        {
             count = count.checked_mul(extent.trim().parse().ok()?)?;
         }
         return type_size(&ty[..first], model, records)?.checked_mul(count);
@@ -954,8 +1051,13 @@ impl DataModel {
             if words.next() != Some("#define") {
                 continue;
             }
-            let (Some(name), Some(value)) = (words.next(), words.next()) else { continue };
-            if let Some(key) = name.strip_prefix("__SIZEOF_").and_then(|k| k.strip_suffix("__")) {
+            let (Some(name), Some(value)) = (words.next(), words.next()) else {
+                continue;
+            };
+            if let Some(key) = name
+                .strip_prefix("__SIZEOF_")
+                .and_then(|k| k.strip_suffix("__"))
+            {
                 if let Ok(size) = value.parse() {
                     sizes.insert(key.to_string(), size);
                 }
@@ -1039,7 +1141,11 @@ fn parse_pahole(stdout: &str) -> Vec<Record> {
                         .unwrap_or("")
                         .trim();
                     rec.members.push(Member {
-                        name: if name.is_empty() { "(anonymous)".to_string() } else { name.to_string() },
+                        name: if name.is_empty() {
+                            "(anonymous)".to_string()
+                        } else {
+                            name.to_string()
+                        },
                         offset,
                         size: Some(size),
                     });
@@ -1148,7 +1254,11 @@ fn pahole_member_name(line: &str) -> Option<String> {
         return Some(format!("(base {})", base.trim()));
     }
     if let Some(at) = decl.find("(*") {
-        let name = decl[at..].trim_start_matches(['(', '*']).split(')').next()?.trim();
+        let name = decl[at..]
+            .trim_start_matches(['(', '*'])
+            .split(')')
+            .next()?
+            .trim();
         return (!name.is_empty()).then(|| name.to_string());
     }
     let (decl, width) = match decl.rsplit_once(':') {
@@ -1199,8 +1309,14 @@ fn render_records(records: &[Record], cacheline: u64) -> String {
 
 fn render_record(rec: &Record, cacheline: u64) -> String {
     let mut out = match rec.align {
-        Some(a) => format!("{}: size {}, align {}  (source: {})\n", rec.name, rec.size, a, rec.source),
-        None => format!("{}: size {}  (source: {})\n", rec.name, rec.size, rec.source),
+        Some(a) => format!(
+            "{}: size {}, align {}  (source: {})\n",
+            rec.name, rec.size, a, rec.source
+        ),
+        None => format!(
+            "{}: size {}  (source: {})\n",
+            rec.name, rec.size, rec.source
+        ),
     };
 
     let mut all_known = true;
@@ -1208,8 +1324,15 @@ fn render_record(rec: &Record, cacheline: u64) -> String {
     let mut straddles = Vec::new();
 
     for (i, m) in rec.members.iter().enumerate() {
-        let size_str = m.size.map(|s| format!("{s} B")).unwrap_or_else(|| "? B".to_string());
-        out.push_str(&format!("  {off:>4}  {name}  ({size_str})\n", off = m.offset, name = m.name));
+        let size_str = m
+            .size
+            .map(|s| format!("{s} B"))
+            .unwrap_or_else(|| "? B".to_string());
+        out.push_str(&format!(
+            "  {off:>4}  {name}  ({size_str})\n",
+            off = m.offset,
+            name = m.name
+        ));
 
         match m.size {
             Some(sz) => {
@@ -1233,7 +1356,10 @@ fn render_record(rec: &Record, cacheline: u64) -> String {
                 if let Some(next) = rec.members.get(i + 1) {
                     let this_end = m.offset + sz;
                     if next.offset > this_end {
-                        out.push_str(&format!("        -- {}-byte hole --\n", next.offset - this_end));
+                        out.push_str(&format!(
+                            "        -- {}-byte hole --\n",
+                            next.offset - this_end
+                        ));
                     }
                 }
             }
@@ -1259,7 +1385,10 @@ fn render_record(rec: &Record, cacheline: u64) -> String {
             Some(sz) => {
                 let end = last.offset + sz;
                 if rec.size > end {
-                    out.push_str(&format!("        -- {} bytes tail padding --\n", rec.size - end));
+                    out.push_str(&format!(
+                        "        -- {} bytes tail padding --\n",
+                        rec.size - end
+                    ));
                 }
                 true
             }
@@ -1276,7 +1405,10 @@ fn render_record(rec: &Record, cacheline: u64) -> String {
         } else {
             0.0
         };
-        out.push_str(&format!("{padding} of {} bytes are padding ({pct:.0}%).", rec.size));
+        out.push_str(&format!(
+            "{padding} of {} bytes are padding ({pct:.0}%).",
+            rec.size
+        ));
     } else {
         out.push_str(
             "hole analysis: partial — some members have types whose size this backend cannot \
@@ -1364,7 +1496,10 @@ fn extract_entry_flags(entry: &Value) -> Vec<String> {
 
     let directory = Path::new(entry.get("directory").and_then(Value::as_str).unwrap_or(""));
     let tokens: Vec<String> = if let Some(args) = entry.get("arguments").and_then(Value::as_array) {
-        args.iter().filter_map(Value::as_str).map(str::to_string).collect()
+        args.iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
     } else if let Some(cmd) = entry.get("command").and_then(Value::as_str) {
         shell_split(cmd)
     } else {
@@ -1380,7 +1515,11 @@ fn extract_entry_flags(entry: &Value) -> Vec<String> {
             // Separate-value form: `-I dir`, `-D NAME`.
             if let Some(value) = tokens.get(i + 1) {
                 flags.push(t.to_string());
-                flags.push(if t == "-D" || t == "-U" { value.clone() } else { path(value) });
+                flags.push(if t == "-D" || t == "-U" {
+                    value.clone()
+                } else {
+                    path(value)
+                });
                 i += 1;
             }
         } else if let Some(dir) = ["-isystem", "-iquote", "-idirafter", "-I"]

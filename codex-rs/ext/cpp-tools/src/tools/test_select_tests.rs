@@ -71,7 +71,8 @@ const CORE_CPP: &str = "#include \"fx/core.h\"\nint twice(int x) { return 2 * x;
 const UTIL_H: &str = "#pragma once\n#include \"fx/core.h\"\ninline int clampi(int x, int lo, int hi) { return x < lo ? lo : (x > hi ? hi : x); }\n";
 const CORE_TEST: &str = "#include \"mini_test.h\"\n#include \"fx/core.h\"\n\nTEST(Core, Twice) {\n  EXPECT_EQ(twice(2), 4);\n}\n\nTEST(Core, Add) {\n  EXPECT_EQ(add(1, 2), 3);\n}\n";
 const API_TEST: &str = "#include \"mini_test.h\"\n#include \"fx/util.h\"\n\nTEST(Api, Clamp) {\n  EXPECT_EQ(clampi(add(5, 5), 0, 8), 8);\n}\n";
-const OTHER_TEST: &str = "#include \"mini_test.h\"\n\nTEST(Other, Truth) {\n  EXPECT_EQ(1, 1);\n}\n";
+const OTHER_TEST: &str =
+    "#include \"mini_test.h\"\n\nTEST(Other, Truth) {\n  EXPECT_EQ(1, 1);\n}\n";
 
 /// The fixture's CMakeLists.txt. `NAME`-style test registration and a static
 /// library; one registered test runs a shell command (no program to map).
@@ -134,7 +135,10 @@ fn setup() {
     unsafe {
         std::env::set_var(
             "BYTEASK_TOOL_LOG",
-            std::env::temp_dir().join(format!("byteask-testsel-tool-log-{}.jsonl", std::process::id())),
+            std::env::temp_dir().join(format!(
+                "byteask-testsel-tool-log-{}.jsonl",
+                std::process::id()
+            )),
         )
     };
 }
@@ -171,13 +175,19 @@ async fn refuses_without_trust_and_answers_status() {
         jobs: Jobs::new(),
         finish_gate_suite: false,
     };
-    let err = call(&t, json!({"action": "plan"})).await.unwrap_err().to_string();
+    let err = call(&t, json!({"action": "plan"}))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("BYTEASK_ALLOW_NATIVE_TOOLS"), "{err}");
     let text = call(&t, json!({"action": "status"})).await.unwrap();
     assert!(text.contains("No runs yet."), "{text}");
     let text = call(&t, json!({"action": "cancel"})).await.unwrap();
     assert!(text.contains("No run in progress."), "{text}");
-    let err = call(&t, json!({"action": "bogus"})).await.unwrap_err().to_string();
+    let err = call(&t, json!({"action": "bogus"}))
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("unknown action"), "{err}");
 }
 
@@ -212,36 +222,58 @@ async fn cmake_fixture_selects_builds_runs_and_compares() {
     // Nothing changed: nothing selected.
     let text = call(&t, json!({"action": "plan"})).await.unwrap();
     assert!(text.contains("CMake"), "{text}");
-    assert!(text.contains("the tool's own tree outside the project"), "{text}");
+    assert!(
+        text.contains("the tool's own tree outside the project"),
+        "{text}"
+    );
     assert!(text.contains("File API"), "{text}");
     assert!(text.contains("tier 3 = 0 of 4"), "{text}");
 
     // A bug in a library function.
-    std::fs::write(root.join("src/core.cpp"), CORE_CPP.replace("return 2 * x;", "return x + x + 1;")).unwrap();
+    std::fs::write(
+        root.join("src/core.cpp"),
+        CORE_CPP.replace("return 2 * x;", "return x + x + 1;"),
+    )
+    .unwrap();
     let text = call(&t, json!({"action": "plan"})).await.unwrap();
     assert!(text.contains("symbols: twice"), "{text}");
-    assert!(text.contains("tier 1 = 1 case(s) in 1 program(s)"), "{text}");
+    assert!(
+        text.contains("tier 1 = 1 case(s) in 1 program(s)"),
+        "{text}"
+    );
     assert!(text.contains("tier 2 = 1 test(s)"), "{text}");
     // core_test and api_test link core; script_check is unmapped.
-    assert!(text.contains("tier 3 = 3 of 4 test(s), 1 of them unmapped"), "{text}");
+    assert!(
+        text.contains("tier 3 = 3 of 4 test(s), 1 of them unmapped"),
+        "{text}"
+    );
     assert!(text.contains("core_test::Core.Twice"), "{text}");
 
     let text = call(&t, json!({"action": "run"})).await.unwrap();
     assert!(text.contains("BUILD core_test: OK"), "{text}");
-    assert!(text.contains("/core_test --gtest_filter=Core.Twice"), "{text}");
+    assert!(
+        text.contains("/core_test --gtest_filter=Core.Twice"),
+        "{text}"
+    );
     assert!(text.contains("DIFF: git diff --check"), "{text}");
     assert!(text.contains("RUN tier 1: 1 result(s)"), "{text}");
     assert!(text.contains("FAIL core_test::Core.Twice"), "{text}");
     assert!(text.contains("tests/core_test.cpp:5: Failure"), "{text}");
     assert!(text.contains("NEXT: tier=2"), "{text}");
-    assert!(text.contains("full_suite=true once before finishing"), "{text}");
+    assert!(
+        text.contains("full_suite=true once before finishing"),
+        "{text}"
+    );
     // Where the finish gate runs the suite, the tool does not ask for a second full run.
     let gated = TestSelectTool {
         finish_gate_suite: true,
         ..tool(&root)
     };
     let plan = call(&gated, json!({"action": "plan"})).await.unwrap();
-    assert!(plan.contains("runs in the finish gate when you finish"), "{plan}");
+    assert!(
+        plan.contains("runs in the finish gate when you finish"),
+        "{plan}"
+    );
     assert!(!plan.contains("full_suite=true"), "{plan}");
     // Only core_test (and its library) were built.
     let build = scratch_dir(&root).join("build");
@@ -250,24 +282,44 @@ async fn cmake_fixture_selects_builds_runs_and_compares() {
     // Tier 3 builds what it runs; the unmapped script test falls back to every executable
     // target (stated), never a silent "everything".
     let text = call(&t, json!({"action": "run", "tier": 3})).await.unwrap();
-    assert!(text.contains("BUILD core_test, api_test, other_test: OK"), "{text}");
-    assert!(text.contains("fallback: the build model does not say which program script_check runs"), "{text}");
-    assert!(text.contains("TESTS: ctest -R '^(core_test|api_test|script_check)$'"), "{text}");
+    assert!(
+        text.contains("BUILD core_test, api_test, other_test: OK"),
+        "{text}"
+    );
+    assert!(
+        text.contains("fallback: the build model does not say which program script_check runs"),
+        "{text}"
+    );
+    assert!(
+        text.contains("TESTS: ctest -R '^(core_test|api_test|script_check)$'"),
+        "{text}"
+    );
     assert!(!text.contains("BUILD everything"), "{text}");
     assert!(text.contains("FAIL core_test"), "{text}");
     assert!(text.contains("2 passed"), "{text}");
 
     // The base comparison flips exactly the broken case.
-    let text = call(&t, json!({"action": "run", "compare_base": true})).await.unwrap();
+    let text = call(&t, json!({"action": "run", "compare_base": true}))
+        .await
+        .unwrap();
     assert!(text.contains("FLIPS vs base"), "{text}");
-    assert!(text.contains("pass->fail 1 (core_test::Core.Twice)"), "{text}");
+    assert!(
+        text.contains("pass->fail 1 (core_test::Core.Twice)"),
+        "{text}"
+    );
     // Cached: the second comparison runs nothing on base.
-    let text = call(&t, json!({"action": "run", "compare_base": true})).await.unwrap();
+    let text = call(&t, json!({"action": "run", "compare_base": true}))
+        .await
+        .unwrap();
     assert!(text.contains("0 run on base now, 1 from cache"), "{text}");
 
     // A header-only change reaches only what includes it.
     std::fs::write(root.join("src/core.cpp"), CORE_CPP).unwrap();
-    std::fs::write(root.join("include/fx/util.h"), UTIL_H.replace("x < lo ? lo", "x <= lo ? lo")).unwrap();
+    std::fs::write(
+        root.join("include/fx/util.h"),
+        UTIL_H.replace("x < lo ? lo", "x <= lo ? lo"),
+    )
+    .unwrap();
     let text = call(&t, json!({"action": "plan"})).await.unwrap();
     assert!(text.contains("symbols: clampi"), "{text}");
     assert!(text.contains("tier 2: api_test"), "{text}");
@@ -304,16 +356,34 @@ async fn existing_makefile_tree_is_read_not_reconfigured() {
         .status
         .success();
     assert!(ok);
-    let cache_before = std::fs::metadata(build.join("CMakeCache.txt")).unwrap().modified().unwrap();
-    std::fs::write(root.join("src/core.cpp"), CORE_CPP.replace("return a + b;", "return a - b;")).unwrap();
+    let cache_before = std::fs::metadata(build.join("CMakeCache.txt"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::fs::write(
+        root.join("src/core.cpp"),
+        CORE_CPP.replace("return a + b;", "return a - b;"),
+    )
+    .unwrap();
     let t = tool(&root);
     // By default the tool builds in its own tree, configured with this tree's options.
     let text = call(&t, json!({"action": "plan"})).await.unwrap();
-    assert!(text.contains("the tool's own tree outside the project"), "{text}");
+    assert!(
+        text.contains("the tool's own tree outside the project"),
+        "{text}"
+    );
     assert!(text.contains("with the options of build"), "{text}");
     // Named, the existing tree is used as it is.
-    let text = call(&t, json!({"action": "run", "tier": 2, "build_dir": "build"})).await.unwrap();
-    assert!(text.contains("build tree build (existing: built incrementally, never reconfigured)"), "{text}");
+    let text = call(
+        &t,
+        json!({"action": "run", "tier": 2, "build_dir": "build"}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        text.contains("build tree build (existing: built incrementally, never reconfigured)"),
+        "{text}"
+    );
     assert!(text.contains("DependInfo.cmake"), "{text}");
     assert!(text.contains("symbols: add"), "{text}");
     // core_test (Core.Add) and api_test (Api.Clamp uses add) both mention it.
@@ -321,12 +391,18 @@ async fn existing_makefile_tree_is_read_not_reconfigured() {
     assert!(text.contains("FAIL core_test"), "{text}");
     assert!(text.contains("FAIL api_test"), "{text}");
     assert!(!build.join(".cmake/api/v1/query/client-byteask").exists());
-    let cache_after = std::fs::metadata(build.join("CMakeCache.txt")).unwrap().modified().unwrap();
+    let cache_after = std::fs::metadata(build.join("CMakeCache.txt"))
+        .unwrap()
+        .modified()
+        .unwrap();
     assert_eq!(cache_before, cache_after);
     // The same tree read as CMake < 3.14 would: CTestTestfile.cmake + DependInfo.
     let tests = cmake::ctest_testfile_tests(&build);
     let names: Vec<&str> = tests.iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(names, vec!["core_test", "api_test", "other_test", "script_check"]);
+    assert_eq!(
+        names,
+        vec!["core_test", "api_test", "other_test", "script_check"]
+    );
     let targets = cmake::dependinfo_targets(&build);
     let core_test = targets.iter().find(|t| t.name == "core_test").unwrap();
     assert!(core_test.is_exe);
@@ -349,11 +425,32 @@ async fn existing_ninja_tree_is_mapped_from_a_scratch_configure() {
     let _scratch = Scratch(scratch_dir(&root));
     let build = root.join("build-ninja");
     std::fs::create_dir_all(&build).unwrap();
-    assert!(Command::new("cmake").args(["-G", "Ninja", ".."]).current_dir(&build).output().unwrap().status.success());
-    assert!(Command::new("ninja").current_dir(&build).output().unwrap().status.success());
-    std::fs::write(root.join("include/fx/core.h"), format!("{CORE_H}// touched\n")).unwrap();
+    assert!(
+        Command::new("cmake")
+            .args(["-G", "Ninja", ".."])
+            .current_dir(&build)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        Command::new("ninja")
+            .current_dir(&build)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::write(
+        root.join("include/fx/core.h"),
+        format!("{CORE_H}// touched\n"),
+    )
+    .unwrap();
     let t = tool(&root);
-    let text = call(&t, json!({"action": "plan", "build_dir": "build-ninja"})).await.unwrap();
+    let text = call(&t, json!({"action": "plan", "build_dir": "build-ninja"}))
+        .await
+        .unwrap();
     assert!(text.contains("configure-only mapping tree"), "{text}");
     // core.h reaches everything that includes it: core, both tests using core.
     assert!(text.contains("tier 3 = 3 of 4"), "{text}");
@@ -373,11 +470,18 @@ async fn make_fixture_selects_and_runs() {
     write_fixture(&root, ("Makefile", MAKEFILE));
     test_repo::init_and_commit(&root);
     let _scratch = Scratch(scratch_dir(&root));
-    std::fs::write(root.join("src/core.cpp"), CORE_CPP.replace("return 2 * x;", "return 3 * x;")).unwrap();
+    std::fs::write(
+        root.join("src/core.cpp"),
+        CORE_CPP.replace("return 2 * x;", "return 3 * x;"),
+    )
+    .unwrap();
     let t = tool(&root);
     let text = call(&t, json!({"action": "run"})).await.unwrap();
     assert!(text.contains("Make, build tree"), "{text}");
-    assert!(text.contains("tier 1 = 1 case(s) in 1 program(s)"), "{text}");
+    assert!(
+        text.contains("tier 1 = 1 case(s) in 1 program(s)"),
+        "{text}"
+    );
     assert!(text.contains("FAIL core_test::Core.Twice"), "{text}");
     let text = call(&t, json!({"action": "run", "tier": 3})).await.unwrap();
     assert!(text.contains("FAIL Core.Twice"), "{text}");
@@ -403,9 +507,19 @@ test('core_test', core_test)\ntest('api_test', api_test)\ntest('other_test', oth
     write_fixture(&root, ("meson.build", meson_build));
     test_repo::init_and_commit(&root);
     let _scratch = Scratch(scratch_dir(&root));
-    let setup_ok = Command::new("meson").args(["setup", "build"]).current_dir(&root).output().unwrap().status.success();
+    let setup_ok = Command::new("meson")
+        .args(["setup", "build"])
+        .current_dir(&root)
+        .output()
+        .unwrap()
+        .status
+        .success();
     assert!(setup_ok);
-    std::fs::write(root.join("src/core.cpp"), CORE_CPP.replace("return 2 * x;", "return 3 * x;")).unwrap();
+    std::fs::write(
+        root.join("src/core.cpp"),
+        CORE_CPP.replace("return 2 * x;", "return 3 * x;"),
+    )
+    .unwrap();
     let t = tool(&root);
     let text = call(&t, json!({"action": "run"})).await.unwrap();
     assert!(text.contains("Meson"), "{text}");
@@ -425,12 +539,23 @@ async fn a_background_run_is_waited_for_and_status_lists_it() {
     write_fixture(&root, ("Makefile", MAKEFILE));
     test_repo::init_and_commit(&root);
     let _scratch = Scratch(scratch_dir(&root));
-    std::fs::write(root.join("src/core.cpp"), CORE_CPP.replace("return 2 * x;", "return 3 * x;")).unwrap();
+    std::fs::write(
+        root.join("src/core.cpp"),
+        CORE_CPP.replace("return 2 * x;", "return 3 * x;"),
+    )
+    .unwrap();
     let t = tool(&root);
-    let text = call(&t, json!({"action": "run", "background": true})).await.unwrap();
-    assert!(text.contains("continues in the") || text.contains("RUN tier 1"), "{text}");
+    let text = call(&t, json!({"action": "run", "background": true}))
+        .await
+        .unwrap();
+    assert!(
+        text.contains("continues in the") || text.contains("RUN tier 1"),
+        "{text}"
+    );
     let text = call(&t, json!({"action": "status"})).await.unwrap();
     assert!(text.contains("run 1: tier 1"), "{text}");
-    let text = call(&t, json!({"action": "wait", "wait_s": 300})).await.unwrap();
+    let text = call(&t, json!({"action": "wait", "wait_s": 300}))
+        .await
+        .unwrap();
     assert!(text.contains("FAIL core_test::Core.Twice"), "{text}");
 }

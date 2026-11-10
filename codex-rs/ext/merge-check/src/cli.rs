@@ -175,12 +175,17 @@ fn read_secret(file: Option<&Path>, env: &str) -> anyhow::Result<String> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt as _;
-            let meta = std::fs::metadata(path).with_context(|| format!("could not read {}", path.display()))?;
+            let meta = std::fs::metadata(path)
+                .with_context(|| format!("could not read {}", path.display()))?;
             if meta.mode() & 0o077 != 0 {
-                bail!("{} is readable by other users; chmod 600 it first", path.display());
+                bail!(
+                    "{} is readable by other users; chmod 600 it first",
+                    path.display()
+                );
             }
         }
-        let text = std::fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("could not read {}", path.display()))?;
         return Ok(text.trim().to_string());
     }
     std::env::var(env)
@@ -200,7 +205,9 @@ pub async fn run_command(command: MergeCommand) -> anyhow::Result<i32> {
                 head: args.refs.head,
                 work_dir: args.work_dir,
             };
-            let report = run::run_checks(&options).await.map_err(anyhow::Error::msg)?;
+            let report = run::run_checks(&options)
+                .await
+                .map_err(anyhow::Error::msg)?;
             let text = serde_json::to_string_pretty(&report)?;
             std::fs::write(&args.out, format!("{text}\n"))
                 .with_context(|| format!("could not write {}", args.out.display()))?;
@@ -226,7 +233,10 @@ pub async fn run_command(command: MergeCommand) -> anyhow::Result<i32> {
                     crate::git::commit_tree(
                         &args.refs.repo,
                         &candidate.binding.merge_tree,
-                        &[&candidate.binding.base_commit, &candidate.binding.head_commit],
+                        &[
+                            &candidate.binding.base_commit,
+                            &candidate.binding.head_commit,
+                        ],
                     )
                     .map_err(anyhow::Error::msg)?,
                 )
@@ -289,7 +299,8 @@ async fn sign_command(args: SignArgs) -> anyhow::Result<i32> {
     let candidate_key = candidate.binding.candidate_key();
     let (kind, payload) = match (&args.report, &args.perf_ut) {
         (Some(path), None) => {
-            let text = std::fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("could not read {}", path.display()))?;
             let report: run::RunReport =
                 serde_json::from_str(&text).context("not a `byteask checks run` report")?;
             // Only a report for exactly this candidate is signed. The build
@@ -313,18 +324,23 @@ async fn sign_command(args: SignArgs) -> anyhow::Result<i32> {
             (RunnerKind::Ci, serde_json::to_string(&report)?)
         }
         (None, Some(path)) => {
-            let text = std::fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("could not read {}", path.display()))?;
             let ut: serde_json::Value = serde_json::from_str(&text).context("not JSON")?;
             let repo = args.refs.repo.clone();
-            let evidence = PerfEvidence::bind(ut, &candidate.binding, |commit| crate::git::tree_of(&repo, commit).ok())
-                .map_err(anyhow::Error::msg)?;
+            let evidence = PerfEvidence::bind(ut, &candidate.binding, |commit| {
+                crate::git::tree_of(&repo, commit).ok()
+            })
+            .map_err(anyhow::Error::msg)?;
             (RunnerKind::Bench, serde_json::to_string(&evidence)?)
         }
         _ => bail!("pass --report (a CI run report) or --perf-ut (a bench report)"),
     };
     let envelope = key.sign(kind, payload, run::now_ms());
     if let Some(base) = &args.enterprise {
-        verify::attest(base, &envelope).await.map_err(anyhow::Error::msg)?;
+        verify::attest(base, &envelope)
+            .await
+            .map_err(anyhow::Error::msg)?;
         eprintln!("Recorded with the enterprise server.");
     } else {
         eprintln!(
@@ -333,14 +349,16 @@ async fn sign_command(args: SignArgs) -> anyhow::Result<i32> {
     }
     let text = serde_json::to_string_pretty(&envelope)?;
     if let Some(out) = &args.out {
-        std::fs::write(out, format!("{text}\n")).with_context(|| format!("could not write {}", out.display()))?;
+        std::fs::write(out, format!("{text}\n"))
+            .with_context(|| format!("could not write {}", out.display()))?;
     }
     if let Some(cache) = &args.cache {
         let path = gate::cache_path(cache, &candidate_key, &envelope);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(&path, format!("{text}\n")).with_context(|| format!("could not write {}", path.display()))?;
+        std::fs::write(&path, format!("{text}\n"))
+            .with_context(|| format!("could not write {}", path.display()))?;
         eprintln!("Filed in the cache as {}.", path.display());
     }
     if args.out.is_none() && args.cache.is_none() {
@@ -355,7 +373,8 @@ async fn gate_command(args: GateArgs) -> anyhow::Result<i32> {
         .map_err(anyhow::Error::msg)?;
     let key = candidate.binding.candidate_key();
     let token = read_secret(args.token_file.as_deref(), "BYTEASK_ENTERPRISE_TOKEN")?;
-    let verifier = verify::EnterpriseVerifier::new(&args.enterprise, &token).map_err(anyhow::Error::msg)?;
+    let verifier =
+        verify::EnterpriseVerifier::new(&args.enterprise, &token).map_err(anyhow::Error::msg)?;
     let mut paths = args.evidence.clone();
     if let Some(cache) = &args.cache {
         paths.push(cache.join(&key));
@@ -364,8 +383,10 @@ async fn gate_command(args: GateArgs) -> anyhow::Result<i32> {
     let evidence = gate::sort_evidence(envelopes, &verifier, &candidate.binding).await;
     let mut approvals = Vec::new();
     if let Some(path) = &args.approvals {
-        let text = std::fs::read_to_string(path).with_context(|| format!("could not read {}", path.display()))?;
-        approvals.extend(serde_json::from_str::<Vec<gate::Approval>>(&text).context("approvals file")?);
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("could not read {}", path.display()))?;
+        approvals
+            .extend(serde_json::from_str::<Vec<gate::Approval>>(&text).context("approvals file")?);
     }
     let github = match &args.github_repo {
         Some(repo) => Some(platform::GitHub {

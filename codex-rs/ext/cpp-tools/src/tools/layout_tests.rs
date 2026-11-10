@@ -47,12 +47,40 @@ fn parses_two_records_with_offsets_and_size() {
     assert_eq!(bad.size, 32);
     assert_eq!(bad.align, Some(8));
     assert_eq!(bad.members.len(), 5);
-    assert_eq!(bad.members[0], Member { name: "a".to_string(), offset: 0, size: Some(1) });
-    assert_eq!(bad.members[1], Member { name: "b".to_string(), offset: 8, size: Some(8) });
+    assert_eq!(
+        bad.members[0],
+        Member {
+            name: "a".to_string(),
+            offset: 0,
+            size: Some(1)
+        }
+    );
+    assert_eq!(
+        bad.members[1],
+        Member {
+            name: "b".to_string(),
+            offset: 8,
+            size: Some(8)
+        }
+    );
     // The array member "char[60] pad" is provably sized.
     let straddle = &recs[1];
-    assert_eq!(straddle.members[0], Member { name: "pad".to_string(), offset: 0, size: Some(60) });
-    assert_eq!(straddle.members[1], Member { name: "v".to_string(), offset: 64, size: Some(8) });
+    assert_eq!(
+        straddle.members[0],
+        Member {
+            name: "pad".to_string(),
+            offset: 0,
+            size: Some(60)
+        }
+    );
+    assert_eq!(
+        straddle.members[1],
+        Member {
+            name: "v".to_string(),
+            offset: 64,
+            size: Some(8)
+        }
+    );
 }
 
 #[test]
@@ -125,9 +153,21 @@ fn unknown_member_size_makes_analysis_partial() {
         size: 24,
         align: Some(8),
         members: vec![
-            Member { name: "a".to_string(), offset: 0, size: Some(4) },
-            Member { name: "w".to_string(), offset: 8, size: None }, // unknown (nested type)
-            Member { name: "z".to_string(), offset: 16, size: Some(8) },
+            Member {
+                name: "a".to_string(),
+                offset: 0,
+                size: Some(4),
+            },
+            Member {
+                name: "w".to_string(),
+                offset: 8,
+                size: None,
+            }, // unknown (nested type)
+            Member {
+                name: "z".to_string(),
+                offset: 16,
+                size: Some(8),
+            },
         ],
         source: "clang record layout",
     };
@@ -145,8 +185,19 @@ fn unknown_member_size_makes_analysis_partial() {
 #[test]
 fn a_bitfield_without_an_extent_is_unknown_size() {
     // Older clang printed `0:0` with no bit range.
-    let members = clang_members(&[("0:0".to_string(), "int x".to_string())], &lp64(), &HashMap::new());
-    assert_eq!(members, vec![Member { name: "x".to_string(), offset: 0, size: None }]);
+    let members = clang_members(
+        &[("0:0".to_string(), "int x".to_string())],
+        &lp64(),
+        &HashMap::new(),
+    );
+    assert_eq!(
+        members,
+        vec![Member {
+            name: "x".to_string(),
+            offset: 0,
+            size: None
+        }]
+    );
 }
 
 /// Verbatim clang 14 `-fdump-record-layouts-canonical` output.
@@ -218,7 +269,10 @@ fn clang_members_are_the_direct_ones_with_exact_sizes() {
     // The vptr is a member; the base occupies its dsize; its own `b` is not
     // Derived's member.
     assert_eq!(members("Base"), vec![own("(vptr)", 0, 8), own("b", 8, 4)]);
-    assert_eq!(members("Derived"), vec![own("(base Base)", 0, 12), own("d", 12, 1), own("e", 16, 8)]);
+    assert_eq!(
+        members("Derived"),
+        vec![own("(base Base)", 0, 12), own("d", 12, 1), own("e", 16, 8)]
+    );
     assert_eq!(
         members("Mix"),
         vec![
@@ -247,13 +301,24 @@ fn detects_cacheline_straddle() {
         size: 72,
         align: Some(8),
         members: vec![
-            Member { name: "pad".to_string(), offset: 0, size: Some(60) },
-            Member { name: "v".to_string(), offset: 60, size: Some(8) },
+            Member {
+                name: "pad".to_string(),
+                offset: 0,
+                size: Some(60),
+            },
+            Member {
+                name: "v".to_string(),
+                offset: 60,
+                size: Some(8),
+            },
         ],
         source: "pahole (exact)",
     };
     let out = render_record(&rec, 64);
-    assert!(out.contains("member 'v' spans cachelines 0-1 (offset 60..68)"), "{out}");
+    assert!(
+        out.contains("member 'v' spans cachelines 0-1 (offset 60..68)"),
+        "{out}"
+    );
 }
 
 // ---------------- pahole ----------------
@@ -288,8 +353,22 @@ fn parses_pahole_members_and_size() {
     assert_eq!(bad.source, "pahole (exact)");
     // 5 members; summary comment lines must NOT be parsed as members.
     assert_eq!(bad.members.len(), 5);
-    assert_eq!(bad.members[0], Member { name: "a".to_string(), offset: 0, size: Some(1) });
-    assert_eq!(bad.members[3], Member { name: "d".to_string(), offset: 20, size: Some(4) });
+    assert_eq!(
+        bad.members[0],
+        Member {
+            name: "a".to_string(),
+            offset: 0,
+            size: Some(1)
+        }
+    );
+    assert_eq!(
+        bad.members[3],
+        Member {
+            name: "d".to_string(),
+            offset: 20,
+            size: Some(4)
+        }
+    );
 }
 
 #[test]
@@ -370,7 +449,10 @@ fn compile_db_flags_never_borrow_another_files_entry() {
         {"directory": root, "file": root.join("b/util.cpp"), "command": "c++ -DB_ONLY -c b/util.cpp"},
     ]);
     std::fs::write(root.join("compile_commands.json"), db.to_string()).unwrap();
-    assert_eq!(compile_db_flags(root, "b/util.cpp"), vec!["-DB_ONLY".to_string()]);
+    assert_eq!(
+        compile_db_flags(root, "b/util.cpp"),
+        vec!["-DB_ONLY".to_string()]
+    );
     // Not in the database, and its name is ambiguous: no flags rather than a guess.
     std::fs::create_dir_all(root.join("c")).unwrap();
     std::fs::write(root.join("c/util.cpp"), "").unwrap();
@@ -439,7 +521,15 @@ async fn live_clang_layout_reports_bad_struct() {
     };
     let file = dir.path().join("lay.cpp").display().to_string();
     let outcome = tool
-        .clang_layout(&clang, &call_args, &file, "c++", &[], 64, std::time::Duration::from_secs(60))
+        .clang_layout(
+            &clang,
+            &call_args,
+            &file,
+            "c++",
+            &[],
+            64,
+            std::time::Duration::from_secs(60),
+        )
         .await
         .expect("clang layout");
     match outcome {
@@ -532,19 +622,43 @@ fn pahole_nested_aggregates_are_one_member_and_never_a_new_record() {
     // pahole's own summary: 7 bytes of holes + 5 of tail padding.
     let out = render_record(rec, 64);
     assert!(out.contains("12 of 40 bytes are padding (30%)"), "{out}");
-    assert!(out.contains("-- 4-byte hole --") && out.contains("-- 3-byte hole --"), "{out}");
+    assert!(
+        out.contains("-- 4-byte hole --") && out.contains("-- 3-byte hole --"),
+        "{out}"
+    );
 }
 
 #[test]
 fn pahole_member_names_understand_every_declarator() {
     let name = |decl: &str| pahole_member_name(&format!("{decl};  /* 0 4 */"));
-    assert_eq!(name("char                       tag[6]").as_deref(), Some("tag"));
-    assert_eq!(name("int                        grid[2][3]").as_deref(), Some("grid"));
-    assert_eq!(name("char *                     names[4]").as_deref(), Some("names"));
-    assert_eq!(name("void                       (*cb)(int)").as_deref(), Some("cb"));
-    assert_eq!(name("int                        (**_vptr.Foo)(void)").as_deref(), Some("_vptr.Foo"));
-    assert_eq!(name("std::uint8_t               flag:1").as_deref(), Some("flag:1"));
-    assert_eq!(name("class Base                 <ancestor>").as_deref(), Some("(base Base)"));
+    assert_eq!(
+        name("char                       tag[6]").as_deref(),
+        Some("tag")
+    );
+    assert_eq!(
+        name("int                        grid[2][3]").as_deref(),
+        Some("grid")
+    );
+    assert_eq!(
+        name("char *                     names[4]").as_deref(),
+        Some("names")
+    );
+    assert_eq!(
+        name("void                       (*cb)(int)").as_deref(),
+        Some("cb")
+    );
+    assert_eq!(
+        name("int                        (**_vptr.Foo)(void)").as_deref(),
+        Some("_vptr.Foo")
+    );
+    assert_eq!(
+        name("std::uint8_t               flag:1").as_deref(),
+        Some("flag:1")
+    );
+    assert_eq!(
+        name("class Base                 <ancestor>").as_deref(),
+        Some("(base Base)")
+    );
     assert_eq!(name("std::string                s").as_deref(), Some("s"));
 }
 
@@ -585,7 +699,9 @@ fn real_pahole_padding_matches_paholes_own_summary() {
         .status()
         .unwrap();
     assert!(built.success());
-    let names = ["Arr", "Multi", "Ptrs", "Bits", "Nest", "Fn", "Derived", "Hot", "Str"];
+    let names = [
+        "Arr", "Multi", "Ptrs", "Bits", "Nest", "Fn", "Derived", "Hot", "Str",
+    ];
     let out = std::process::Command::new("pahole")
         .arg("-C")
         .arg(names.join(","))
@@ -596,7 +712,10 @@ fn real_pahole_padding_matches_paholes_own_summary() {
     let recs = parse_pahole(&text);
     let parsed: Vec<&str> = recs.iter().map(|r| r.name.as_str()).collect();
     for name in names {
-        assert!(parsed.contains(&name), "{name} missing from {parsed:?}\n{text}");
+        assert!(
+            parsed.contains(&name),
+            "{name} missing from {parsed:?}\n{text}"
+        );
     }
     // Ground truth where pahole contradicts itself: Derived's `d` sits in
     // Base's tail padding (vptr 8 + int 4, so bytes 12..16), leaving 13..16.
@@ -608,7 +727,9 @@ fn real_pahole_padding_matches_paholes_own_summary() {
     // A record ends at a `}` in column 0 (`};` or `} __attribute__(...);`).
     for block in text.split("\n}").filter(|b| !b.trim().is_empty()) {
         let name = block.trim_start().split_whitespace().nth(1).unwrap_or("");
-        let Some(rec) = recs.iter().find(|r| r.name == name) else { continue };
+        let Some(rec) = recs.iter().find(|r| r.name == name) else {
+            continue;
+        };
         if block.contains("BRAIN FART ALERT") {
             // pahole's own sums do not add up for this record (asserted above).
             continue;
@@ -618,14 +739,22 @@ fn real_pahole_padding_matches_paholes_own_summary() {
                 .lines()
                 .filter(|l| !l.starts_with("\t\t"))
                 .find_map(|l| l.split(key).nth(1))
-                .and_then(|rest| rest.trim().split(|c: char| !c.is_ascii_digit()).next().map(str::to_string))
+                .and_then(|rest| {
+                    rest.trim()
+                        .split(|c: char| !c.is_ascii_digit())
+                        .next()
+                        .map(str::to_string)
+                })
                 .and_then(|n| n.parse::<u64>().ok())
                 .unwrap_or(0)
         };
         let pahole_padding = field("sum holes:") + field("padding:");
         let ours = render_record(rec, 64);
         assert!(
-            ours.contains(&format!("{pahole_padding} of {} bytes are padding", rec.size)),
+            ours.contains(&format!(
+                "{pahole_padding} of {} bytes are padding",
+                rec.size
+            )),
             "{name}: pahole says {pahole_padding} bytes of padding\n--- ours ---\n{ours}\n--- pahole ---\n{block}"
         );
     }
@@ -643,7 +772,9 @@ fn a_misnamed_field_is_an_error_not_silently_ignored() {
 
 /// Compile nothing: build a tool rooted at `dir`.
 fn tool_in(dir: &std::path::Path) -> CppLayoutTool {
-    CppLayoutTool { cwd: dir.to_path_buf() }
+    CppLayoutTool {
+        cwd: dir.to_path_buf(),
+    }
 }
 
 fn named(file: &str, name: &str) -> LayoutArgs {
@@ -703,27 +834,40 @@ async fn real_clang_backend_agrees_with_pahole_on_every_shape() {
     let file = dir.path().join("shapes.cpp").display().to_string();
     let clang = clang_binary(dir.path()).await.expect("clang");
     let timeout = std::time::Duration::from_secs(120);
-    for name in ["Arr", "Ptrs", "Bits", "Nest", "Fn", "Base", "Derived", "EBO", "NUA", "Hot", "Str", "Mix"] {
+    for name in [
+        "Arr", "Ptrs", "Bits", "Nest", "Fn", "Base", "Derived", "EBO", "NUA", "Hot", "Str", "Mix",
+    ] {
         let args = named("shapes.cpp", name);
-        let PaholeOutcome::Text(pahole) = tool.pahole_layout(&args, &file, "c++", &[], 64, timeout).await.unwrap() else {
+        let PaholeOutcome::Text(pahole) = tool
+            .pahole_layout(&args, &file, "c++", &[], 64, timeout)
+            .await
+            .unwrap()
+        else {
             panic!("pahole gave no layout for {name}");
         };
-        let ClangOutcome::Records(clang_text) =
-            tool.clang_layout(&clang, &args, &file, "c++", &[], 64, timeout).await.unwrap()
+        let ClangOutcome::Records(clang_text) = tool
+            .clang_layout(&clang, &args, &file, "c++", &[], 64, timeout)
+            .await
+            .unwrap()
         else {
             panic!("clang gave no layout for {name}");
         };
         // The clang output may carry other records matching the substring.
         let clang_record = clang_text
             .split("\n\n")
-            .find(|block| block.starts_with(&format!("{name}: ")) || block.contains(&format!("\n{name}: ")))
+            .find(|block| {
+                block.starts_with(&format!("{name}: ")) || block.contains(&format!("\n{name}: "))
+            })
             .unwrap_or(&clang_text);
         assert_eq!(
             padding_line(clang_record),
             padding_line(&pahole),
             "{name}\n--- clang ---\n{clang_record}\n--- pahole ---\n{pahole}"
         );
-        assert!(!clang_record.contains("partial"), "{name} not fully sized:\n{clang_record}");
+        assert!(
+            !clang_record.contains("partial"),
+            "{name} not fully sized:\n{clang_record}"
+        );
     }
 }
 
@@ -753,7 +897,11 @@ async fn real_pahole_reads_a_headers_types_and_says_which_namespace() {
         let args = named("cache.hpp", name);
         let tool = &tool;
         let file = file.clone();
-        async move { tool.pahole_layout(&args, &file, "c++", &[], 64, timeout).await.unwrap() }
+        async move {
+            tool.pahole_layout(&args, &file, "c++", &[], 64, timeout)
+                .await
+                .unwrap()
+        }
     };
     match run("kvcache::Entry").await {
         PaholeOutcome::Text(text) => assert!(text.contains("kvcache::Entry: size 24"), "{text}"),
@@ -762,7 +910,10 @@ async fn real_pahole_reads_a_headers_types_and_says_which_namespace() {
     match run("Entry").await {
         PaholeOutcome::Text(text) => {
             assert!(text.contains("2 records are named Entry"), "{text}");
-            assert!(text.contains("kvcache::Entry (24 B)") && text.contains("other::Entry (1 B)"), "{text}");
+            assert!(
+                text.contains("kvcache::Entry (24 B)") && text.contains("other::Entry (1 B)"),
+                "{text}"
+            );
         }
         PaholeOutcome::Declined(why) => panic!("declined: {why:?}"),
     }
@@ -771,7 +922,10 @@ async fn real_pahole_reads_a_headers_types_and_says_which_namespace() {
     match run("other::Entry").await {
         PaholeOutcome::Declined(Some(why)) => assert!(why.contains("other::Entry"), "{why}"),
         PaholeOutcome::Text(text) => {
-            assert!(text.contains("other::Entry: size 1"), "wrong record presented:\n{text}")
+            assert!(
+                text.contains("other::Entry: size 1"),
+                "wrong record presented:\n{text}"
+            )
         }
         PaholeOutcome::Declined(None) => panic!("declined without saying why"),
     }
@@ -815,15 +969,30 @@ fn dwarf_records_carry_their_namespace() {
 
 #[test]
 fn qualify_labels_decline_or_note() {
-    let rec = |size: u64| Record { name: "Entry".to_string(), size, align: None, members: Vec::new(), source: "pahole (exact)" };
-    let defs = vec![("kvcache::Entry".to_string(), 24), ("other::Entry".to_string(), 1)];
+    let rec = |size: u64| Record {
+        name: "Entry".to_string(),
+        size,
+        align: None,
+        members: Vec::new(),
+        source: "pahole (exact)",
+    };
+    let defs = vec![
+        ("kvcache::Entry".to_string(), 24),
+        ("other::Entry".to_string(), 1),
+    ];
     // Asked by qualified name, and pahole's record is it.
     let mut records = vec![rec(24)];
-    assert!(matches!(qualify(&mut records, "kvcache::Entry", &defs), Qualified::Labelled(None)));
+    assert!(matches!(
+        qualify(&mut records, "kvcache::Entry", &defs),
+        Qualified::Labelled(None)
+    ));
     assert_eq!(records[0].name, "kvcache::Entry");
     // Asked for the other one: pahole's record is not it.
     let mut records = vec![rec(24)];
-    assert!(matches!(qualify(&mut records, "other::Entry", &defs), Qualified::NotIt(_)));
+    assert!(matches!(
+        qualify(&mut records, "other::Entry", &defs),
+        Qualified::NotIt(_)
+    ));
     // Asked unqualified: identified by size, with a note naming both.
     let mut records = vec![rec(1)];
     match qualify(&mut records, "Entry", &defs) {
@@ -900,9 +1069,21 @@ async fn real_whole_file_listing_is_not_flooded_by_system_headers() {
     .unwrap();
     let tool = tool_in(dir.path());
     let file = dir.path().join("net.cpp").display().to_string();
-    let args = LayoutArgs { file: "net.cpp".to_string(), name: None, flags: None, cacheline: None };
+    let args = LayoutArgs {
+        file: "net.cpp".to_string(),
+        name: None,
+        flags: None,
+        cacheline: None,
+    };
     let PaholeOutcome::Text(text) = tool
-        .pahole_layout(&args, &file, "c++", &[], 64, std::time::Duration::from_secs(120))
+        .pahole_layout(
+            &args,
+            &file,
+            "c++",
+            &[],
+            64,
+            std::time::Duration::from_secs(120),
+        )
         .await
         .unwrap()
     else {
@@ -910,5 +1091,8 @@ async fn real_whole_file_listing_is_not_flooded_by_system_headers() {
     };
     let records = text.matches("(source: pahole").count();
     assert!(text.contains("Conn: size"), "{text}");
-    assert!(records < 20, "{records} records listed for a file declaring one:\n{text}");
+    assert!(
+        records < 20,
+        "{records} records listed for a file declaring one:\n{text}"
+    );
 }

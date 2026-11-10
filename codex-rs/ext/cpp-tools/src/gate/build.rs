@@ -44,7 +44,10 @@ pub(crate) enum TestStatus {
 
 impl TestStatus {
     pub fn failing(self) -> bool {
-        matches!(self, TestStatus::Failed | TestStatus::TimedOut | TestStatus::NotRun)
+        matches!(
+            self,
+            TestStatus::Failed | TestStatus::TimedOut | TestStatus::NotRun
+        )
     }
 
     fn from_selection(status: crate::base_run_cache::TestStatus) -> Self {
@@ -318,7 +321,10 @@ pub(crate) fn meson_build_dirs(root: &Path) -> Vec<PathBuf> {
             };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') || name == "node_modules" || !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                if name.starts_with('.')
+                    || name == "node_modules"
+                    || !entry.file_type().is_ok_and(|t| t.is_dir())
+                {
                     continue;
                 }
                 let path = entry.path();
@@ -342,7 +348,11 @@ pub(crate) fn meson_build_dirs(root: &Path) -> Vec<PathBuf> {
 /// out-of-tree build directory with `config.status` and a Makefile among the root's children.
 pub(crate) fn make_tree(root: &Path) -> Option<(PathBuf, bool)> {
     let autotools = root.join("configure.ac").is_file() || root.join("configure.in").is_file();
-    let has_makefile = |d: &Path| ["GNUmakefile", "makefile", "Makefile"].iter().any(|n| d.join(n).is_file());
+    let has_makefile = |d: &Path| {
+        ["GNUmakefile", "makefile", "Makefile"]
+            .iter()
+            .any(|n| d.join(n).is_file())
+    };
     if has_makefile(root) && (!autotools || root.join("config.status").is_file()) {
         return Some((root.to_path_buf(), autotools));
     }
@@ -403,7 +413,11 @@ async fn run_logged_full(
             ..
         }) => (Some(success), format!("{stdout}\n{stderr}"), true),
         Ok(RunOutcome::TimedOut { secs }) => (None, format!("timed out after {secs}s"), true),
-        Err(err) => (Some(false), format!("could not run {program}: {err:?}"), false),
+        Err(err) => (
+            Some(false),
+            format!("could not run {program}: {err:?}"),
+            false,
+        ),
     };
     write_log(log, cwd, program, args, &text);
     (status, text, secs, spawned)
@@ -413,7 +427,10 @@ async fn run_logged_full(
 pub(crate) fn log_tail(text: &str) -> String {
     const LINES: usize = 20;
     const CHARS: usize = 2_000;
-    let lines: Vec<&str> = text.lines().filter(|line| !line.trim().is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
     let tail = lines[lines.len().saturating_sub(LINES)..].join("\n");
     if tail.len() <= CHARS {
         return tail;
@@ -497,7 +514,9 @@ pub(crate) async fn cmake_configure(
     }
     // A scratch tree shares compiled objects with every other checkout of the project
     // through the compiler cache, so a new session's first check is warm.
-    if let Some(launcher) = compiler_cache_launcher(&source_canon, build, |key| std::env::var(key).ok()) {
+    if let Some(launcher) =
+        compiler_cache_launcher(&source_canon, build, |key| std::env::var(key).ok())
+    {
         args.push(format!("-DCMAKE_C_COMPILER_LAUNCHER={launcher}"));
         args.push(format!("-DCMAKE_CXX_COMPILER_LAUNCHER={launcher}"));
     }
@@ -558,7 +577,8 @@ pub(crate) fn compiler_cache_launcher(
         sccache.display().to_string(),
     ];
     // A path with a ';' or ':' would break the CMake list or the base-dir list.
-    if parts.iter().skip(1).any(|part| part.contains(';')) || source.to_string_lossy().contains(':') {
+    if parts.iter().skip(1).any(|part| part.contains(';')) || source.to_string_lossy().contains(':')
+    {
         return None;
     }
     Some(parts.join(";"))
@@ -628,7 +648,11 @@ pub(crate) async fn build(
 /// The command that builds everything for `plan`, keeping going past errors, with `jobs`
 /// parallel jobs (every build tool gets the memory-aware count; ninja would otherwise use all
 /// CPUs + 2).
-pub(crate) fn build_argv(plan: &BuildPlan, root: &Path, jobs: usize) -> (&'static str, Vec<String>, PathBuf) {
+pub(crate) fn build_argv(
+    plan: &BuildPlan,
+    root: &Path,
+    jobs: usize,
+) -> (&'static str, Vec<String>, PathBuf) {
     let jobs = jobs.to_string();
     match &plan.kind {
         BuildKind::CMake { dir, generator } => {
@@ -775,17 +799,20 @@ const CUSTOM_CHECK_TARGETS: &[&str] = &["check", "tests"];
 /// A conventional test-running custom target of a CMake build tree, read from its generated
 /// files (`build.ninja` phony edges or the top-level Makefile's rules), never by running them.
 pub(crate) fn cmake_custom_check_target(dir: &Path) -> Option<String> {
-    let defined: BTreeSet<String> = if let Ok(text) = std::fs::read_to_string(dir.join("build.ninja")) {
-        text.lines()
-            .filter_map(|line| line.strip_prefix("build "))
-            .filter_map(|rest| {
-                let (name, rule) = rest.split_once(':')?;
-                rule.trim_start().starts_with("phony").then(|| name.trim().to_string())
-            })
-            .collect()
-    } else {
-        crate::testsel::make::static_targets(dir)
-    };
+    let defined: BTreeSet<String> =
+        if let Ok(text) = std::fs::read_to_string(dir.join("build.ninja")) {
+            text.lines()
+                .filter_map(|line| line.strip_prefix("build "))
+                .filter_map(|rest| {
+                    let (name, rule) = rest.split_once(':')?;
+                    rule.trim_start()
+                        .starts_with("phony")
+                        .then(|| name.trim().to_string())
+                })
+                .collect()
+        } else {
+            crate::testsel::make::static_targets(dir)
+        };
     CUSTOM_CHECK_TARGETS
         .iter()
         .find(|t| defined.contains(**t))
@@ -832,8 +859,7 @@ pub(crate) async fn run_tests(
     {
         // The suite's own exit status as one pseudo-test (make and custom targets always,
         // since a failure can come from a part without per-test output).
-        let suite_failed = status == Some(false)
-            || results.values().any(|s| s.failing());
+        let suite_failed = status == Some(false) || results.values().any(|s| s.failing());
         results.insert(
             label.clone(),
             if suite_failed {
@@ -1075,7 +1101,9 @@ pub(crate) fn parse_cases(label: &str, text: &str) -> BTreeMap<String, TestStatu
 fn tap_cases(text: &str) -> Vec<(String, TestStatus)> {
     let has_plan = text.lines().any(|l| {
         let l = l.trim();
-        l.strip_prefix("1..").is_some_and(|n| !n.is_empty() && n.chars().take_while(|c| c.is_ascii_digit()).count() > 0)
+        l.strip_prefix("1..").is_some_and(|n| {
+            !n.is_empty() && n.chars().take_while(|c| c.is_ascii_digit()).count() > 0
+        })
     });
     if !has_plan {
         return Vec::new();
@@ -1105,7 +1133,11 @@ fn tap_cases(text: &str) -> Vec<(String, TestStatus)> {
             }
         };
         let desc = desc.trim_start_matches("- ").trim();
-        let name = if desc.is_empty() { number.clone() } else { desc.to_string() };
+        let name = if desc.is_empty() {
+            number.clone()
+        } else {
+            desc.to_string()
+        };
         if name.is_empty() {
             continue;
         }
@@ -1129,11 +1161,18 @@ fn pytest_cases(text: &str) -> (Vec<(String, TestStatus)>, bool) {
     let mut complete = false;
     for line in text.lines() {
         let line = line.trim();
-        if line.starts_with("==") && line.ends_with("==") && line.contains(" in ") && (line.contains(" passed") || line.contains(" failed") || line.contains(" error")) {
+        if line.starts_with("==")
+            && line.ends_with("==")
+            && line.contains(" in ")
+            && (line.contains(" passed") || line.contains(" failed") || line.contains(" error"))
+        {
             complete = true;
             continue;
         }
-        for (prefix, status) in [("FAILED ", TestStatus::Failed), ("ERROR ", TestStatus::Failed)] {
+        for (prefix, status) in [
+            ("FAILED ", TestStatus::Failed),
+            ("ERROR ", TestStatus::Failed),
+        ] {
             if let Some(rest) = line.strip_prefix(prefix) {
                 let name = rest.split(" - ").next().unwrap_or(rest).trim();
                 if name.contains("::") {
@@ -1190,7 +1229,9 @@ fn catch_console_failures(text: &str) -> (Vec<String>, bool) {
     let mut out: Vec<String> = Vec::new();
     for (n, (_, name, close)) in headers.iter().enumerate() {
         let next = headers.get(n + 1).map(|h| h.0).unwrap_or(lines.len());
-        let end = (close + 1..next).find(|&j| ruled(lines[j], '=')).unwrap_or(next);
+        let end = (close + 1..next)
+            .find(|&j| ruled(lines[j], '='))
+            .unwrap_or(next);
         if lines[close + 1..end].iter().any(|l| l.contains("FAILED:")) && !out.contains(name) {
             out.push(name.clone());
         }
@@ -1303,7 +1344,12 @@ pub(crate) fn shell_quote(text: &str) -> String {
 
 /// The base-tree equivalent of `plan` (`root` is the working tree `base_tree` copies). `None`
 /// when the build directory is outside the copied tree.
-pub(crate) fn base_plan(plan: &BuildPlan, root: &Path, base_tree: &Path, scratch: &Path) -> Option<BuildPlan> {
+pub(crate) fn base_plan(
+    plan: &BuildPlan,
+    root: &Path,
+    base_tree: &Path,
+    scratch: &Path,
+) -> Option<BuildPlan> {
     Some(match &plan.kind {
         BuildKind::CMake { generator, .. } => BuildPlan {
             kind: BuildKind::CMake {
@@ -1398,15 +1444,30 @@ Could not find executable /b/gamma\n";
     fn every_build_command_carries_the_job_count() {
         let root = Path::new("/w");
         let plans = [
-            BuildKind::CMake { dir: PathBuf::from("/w/build"), generator: "Ninja".to_string() },
-            BuildKind::Meson { dir: PathBuf::from("/w/build") },
-            BuildKind::Make { autotools: false, dir: PathBuf::from("/w") },
+            BuildKind::CMake {
+                dir: PathBuf::from("/w/build"),
+                generator: "Ninja".to_string(),
+            },
+            BuildKind::Meson {
+                dir: PathBuf::from("/w/build"),
+            },
+            BuildKind::Make {
+                autotools: false,
+                dir: PathBuf::from("/w"),
+            },
         ];
         for kind in plans {
-            let plan = BuildPlan { kind, scratch: false, description: String::new() };
+            let plan = BuildPlan {
+                kind,
+                scratch: false,
+                description: String::new(),
+            };
             let (program, args, _) = build_argv(&plan, root, 3);
             let joined = args.join(" ");
-            assert!(joined.contains("-j 3") || joined.contains("-j3"), "{program} {joined}");
+            assert!(
+                joined.contains("-j 3") || joined.contains("-j3"),
+                "{program} {joined}"
+            );
         }
     }
 

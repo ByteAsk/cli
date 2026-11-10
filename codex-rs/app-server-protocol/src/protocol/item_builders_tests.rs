@@ -1,5 +1,6 @@
 use super::*;
 use crate::protocol::thread_history::build_turns_from_rollout_items;
+use crate::protocol::v2::ThreadItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::GuardianAssessmentStatus;
@@ -108,7 +109,9 @@ fn guardian_stdin_reviews_preserve_parent_command_history() {
     };
     let start_turn = |turn_id: &str| {
         RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
             turn_id: turn_id.into(),
+            root_turn_id: None,
             trace_id: None,
             started_at: None,
             model_context_window: None,
@@ -124,11 +127,17 @@ fn guardian_stdin_reviews_preserve_parent_command_history() {
     assert_eq!(expected.len(), 2);
     assert_eq!(
         expected[0].items,
-        vec![build_command_execution_begin_item(&begin)],
+        [ThreadItem {
+            payload: build_command_execution_begin_item(&begin),
+            started_at_ms: Some(begin.started_at_ms),
+            completed_at_ms: None,
+        }],
     );
     assert!(expected[1].items.is_empty());
 
     let assessment = GuardianAssessmentEvent {
+        review_reason: None,
+        model_context: None,
         id: "review-stdin".into(),
         target_item_id: Some("terminal-command".into()),
         plugin_id: None,
@@ -159,6 +168,7 @@ fn guardian_stdin_reviews_preserve_parent_command_history() {
         ] {
             items.push(RolloutItem::EventMsg(EventMsg::GuardianAssessment(
                 GuardianAssessmentEvent {
+                    review_reason: None,
                     turn_id: turn_id.into(),
                     status,
                     ..assessment.clone()

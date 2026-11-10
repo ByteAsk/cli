@@ -167,7 +167,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for BinaryTool {
 }
 
 impl BinaryTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: BinaryArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -204,7 +207,8 @@ impl BinaryTool {
                 let all = run_tool("nm", &symbols_args(&binary_str, false), &self.cwd).await?;
                 let (table, text) = if no_symbols(&all.stdout) {
                     // Stripped: retry against the dynamic symbol table.
-                    let dynamic = run_tool("nm", &symbols_args(&binary_str, true), &self.cwd).await?;
+                    let dynamic =
+                        run_tool("nm", &symbols_args(&binary_str, true), &self.cwd).await?;
                     if no_symbols(&dynamic.stdout) {
                         // nm's own error ("file format not recognized",
                         // "Is a directory") is the answer — it must not be
@@ -214,12 +218,21 @@ impl BinaryTool {
                             TOOL_NAME,
                             &args.binary,
                             no_symbols_message(&why),
-                            check_result::CheckResult::no_claim(TOOL_NAME, "No symbol table could be read from this file."),
+                            check_result::CheckResult::no_claim(
+                                TOOL_NAME,
+                                "No symbol table could be read from this file.",
+                            ),
                         ));
                     }
-                    ("dynamic symbols (nm -D; the static table is empty — stripped)", dynamic)
+                    (
+                        "dynamic symbols (nm -D; the static table is empty — stripped)",
+                        dynamic,
+                    )
                 } else {
-                    ("symbols (nm; `U` = undefined, imported from a library)", all)
+                    (
+                        "symbols (nm; `U` = undefined, imported from a library)",
+                        all,
+                    )
                 };
                 let listing = combine_output(&text.stdout, &text.stderr);
                 match symbol {
@@ -263,7 +276,10 @@ impl BinaryTool {
                 "The listing was longer than this tool shows, so it was cut (pass `symbol` to narrow it).",
             )
         } else {
-            check_result::CheckResult::pass(TOOL_NAME, "Read the binary with the system's binutils.")
+            check_result::CheckResult::pass(
+                TOOL_NAME,
+                "Read the binary with the system's binutils.",
+            )
         };
         Ok(crate::report::report(TOOL_NAME, &args.binary, body, result))
     }
@@ -358,9 +374,14 @@ fn symbols_args(binary: &str, dynamic: bool) -> Vec<String> {
 /// Neither symbol table had anything. Stripped, or not something nm can read
 /// at all — and then nm's own complaint is the answer.
 fn no_symbols_message(nm_stderr: &str) -> String {
-    let unreadable = ["format not recognized", "Is a directory", "No such file", "not recognized"]
-        .iter()
-        .any(|needle| nm_stderr.contains(needle));
+    let unreadable = [
+        "format not recognized",
+        "Is a directory",
+        "No such file",
+        "not recognized",
+    ]
+    .iter()
+    .any(|needle| nm_stderr.contains(needle));
     if unreadable {
         format!("nm could not read this file as a binary: {nm_stderr}")
     } else {
@@ -446,7 +467,9 @@ impl AbiFlavour {
         match self {
             AbiFlavour::Cxx11 => "new ABI (std::__cxx11::basic_string, _GLIBCXX_USE_CXX11_ABI=1)",
             AbiFlavour::Legacy => "old ABI (std::string, _GLIBCXX_USE_CXX11_ABI=0)",
-            AbiFlavour::Neutral => "no std::string in the signature, so the dual ABI is not involved",
+            AbiFlavour::Neutral => {
+                "no std::string in the signature, so the dual ABI is not involved"
+            }
         }
     }
 
@@ -789,8 +812,9 @@ fn render_posture(raw: &[NmSymbol], demangled: &[NmSymbol]) -> String {
         .filter(|s| abi_flavour(&s.name) == AbiFlavour::Legacy)
         .count();
     let verdict = match (cxx11, legacy) {
-        (0, 0) => "no std::string in any symbol, so the dual ABI cannot be the problem here"
-            .to_string(),
+        (0, 0) => {
+            "no std::string in any symbol, so the dual ABI cannot be the problem here".to_string()
+        }
         (c, 0) => format!(
             "built with -D_GLIBCXX_USE_CXX11_ABI=1 ({c} __cxx11 symbol(s), 0 old-ABI std::string)"
         ),
@@ -943,7 +967,10 @@ mod tests {
     fn resolves_relative_and_absolute_paths() {
         let cwd = Path::new("/work");
         assert_eq!(resolve_path(cwd, "a.out"), PathBuf::from("/work/a.out"));
-        assert_eq!(resolve_path(cwd, "build/libx.so"), PathBuf::from("/work/build/libx.so"));
+        assert_eq!(
+            resolve_path(cwd, "build/libx.so"),
+            PathBuf::from("/work/build/libx.so")
+        );
         assert_eq!(resolve_path(cwd, "/abs/bin"), PathBuf::from("/abs/bin"));
     }
 
@@ -993,13 +1020,19 @@ mod tests {
 
     #[test]
     fn dynamic_argv_queries_dynamic_section() {
-        assert_eq!(dynamic_args("/b/a.out"), vec!["-d".to_string(), "/b/a.out".to_string()]);
+        assert_eq!(
+            dynamic_args("/b/a.out"),
+            vec!["-d".to_string(), "/b/a.out".to_string()]
+        );
     }
 
     #[test]
     fn symbols_argv_is_demangled_and_keeps_imports() {
         let argv = symbols_args("/b/a.out", false);
-        assert!(argv.contains(&"-C".to_string()), "demangle flag present: {argv:?}");
+        assert!(
+            argv.contains(&"-C".to_string()),
+            "demangle flag present: {argv:?}"
+        );
         // `U __stack_chk_fail` is how a stack canary shows.
         assert!(!argv.contains(&"--defined-only".to_string()));
         assert!(!argv.contains(&"-D".to_string()));
@@ -1018,15 +1051,28 @@ mod tests {
 
         let raw = "                 U _Z6recordd\n0000000000001139 T _Z6recorddi\n";
         let out = status_of("_Z6recordd", raw, "");
-        assert!(out.contains("UNDEFINED") && !out.contains("DEFINED."), "mangled: {out}");
+        assert!(
+            out.contains("UNDEFINED") && !out.contains("DEFINED."),
+            "mangled: {out}"
+        );
 
-        let out = status_of("record(double)", "", "0000000000001139 T metrics::record(double)\n");
-        assert!(out.contains("ABSENT"), "signature vs a namespaced one: {out}");
+        let out = status_of(
+            "record(double)",
+            "",
+            "0000000000001139 T metrics::record(double)\n",
+        );
+        assert!(
+            out.contains("ABSENT"),
+            "signature vs a namespaced one: {out}"
+        );
 
         let dem = "0000000000001139 T metrics::log(std::__cxx11::basic_string<char, \
                    std::char_traits<char>, std::allocator<char> > const&)\n";
         let out = status_of("log(std::string const&)", "", dem);
-        assert!(!out.contains("MISMATCH"), "a different function is no ABI mismatch: {out}");
+        assert!(
+            !out.contains("MISMATCH"),
+            "a different function is no ABI mismatch: {out}"
+        );
     }
 
     #[test]
@@ -1068,15 +1114,24 @@ mod tests {
     fn an_unreadable_file_is_not_called_stripped() {
         // nm's error must not be reported as "binary is stripped".
         let msg = no_symbols_message("nm: notes.txt: file format not recognized");
-        assert!(msg.contains("could not read") && !msg.contains("stripped"), "{msg}");
+        assert!(
+            msg.contains("could not read") && !msg.contains("stripped"),
+            "{msg}"
+        );
         assert!(no_symbols_message("").contains("stripped"));
     }
 
     #[test]
     fn symbols_argv_dynamic_fallback_uses_dash_d_and_demangles() {
         let argv = symbols_args("/b/a.out", true);
-        assert!(argv.contains(&"-D".to_string()), "dynamic-symbol flag: {argv:?}");
-        assert!(argv.contains(&"-C".to_string()), "demangle flag present: {argv:?}");
+        assert!(
+            argv.contains(&"-D".to_string()),
+            "dynamic-symbol flag: {argv:?}"
+        );
+        assert!(
+            argv.contains(&"-C".to_string()),
+            "demangle flag present: {argv:?}"
+        );
         assert!(!argv.contains(&"--defined-only".to_string()));
     }
 
@@ -1085,15 +1140,24 @@ mod tests {
         let argv = disasm_args("/b/a.out", Some("foo::bar(int)"));
         assert_eq!(argv[0], "--disassemble=foo::bar(int)");
         assert!(argv.contains(&"-M".to_string()) && argv.contains(&"intel".to_string()));
-        assert!(argv.contains(&"-C".to_string()), "demangle flag present: {argv:?}");
-        assert!(!argv.contains(&"-d".to_string()), "scoped disasm must not pass -d: {argv:?}");
+        assert!(
+            argv.contains(&"-C".to_string()),
+            "demangle flag present: {argv:?}"
+        );
+        assert!(
+            !argv.contains(&"-d".to_string()),
+            "scoped disasm must not pass -d: {argv:?}"
+        );
         assert_eq!(argv.last().unwrap(), "/b/a.out");
     }
 
     #[test]
     fn disasm_argv_full_when_no_symbol() {
         let argv = disasm_args("/b/a.out", None);
-        assert!(argv.contains(&"-d".to_string()), "full disasm uses -d: {argv:?}");
+        assert!(
+            argv.contains(&"-d".to_string()),
+            "full disasm uses -d: {argv:?}"
+        );
         assert!(argv.iter().all(|a| !a.starts_with("--disassemble=")));
         assert!(argv.contains(&"-M".to_string()) && argv.contains(&"intel".to_string()));
         assert!(argv.contains(&"-C".to_string()));
@@ -1118,7 +1182,11 @@ mod tests {
         assert!(line_count <= MAX_LINES + 1, "got {line_count} lines");
         assert!(out.contains("truncated"));
         assert!(out.contains("showing 200 of 500 lines"));
-        assert!(out.len() <= MAX_BYTES + 256, "byte cap respected: {}", out.len());
+        assert!(
+            out.len() <= MAX_BYTES + 256,
+            "byte cap respected: {}",
+            out.len()
+        );
     }
 
     #[test]
@@ -1217,7 +1285,11 @@ mod tests {
             "                 U printf\n",
         );
         let syms = parse_nm(text);
-        assert_eq!(syms.len(), 2, "member header must not become a symbol: {syms:?}");
+        assert_eq!(
+            syms.len(),
+            2,
+            "member header must not become a symbol: {syms:?}"
+        );
         assert_eq!(syms[0].kind, 'T');
         assert_eq!(syms[0].name, "_ZN7metrics6recordERKSsd");
         assert!(syms[0].is_defined());

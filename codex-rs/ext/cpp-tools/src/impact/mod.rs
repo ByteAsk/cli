@@ -136,7 +136,11 @@ pub(crate) struct ImpactReport {
 /// bug in the heuristics (a panic) costs the checklist, never the user's turn.
 pub(crate) async fn analyze(req: &ImpactRequest) -> ImpactReport {
     let owned = req.clone();
-    match tokio::spawn(crate::sandbox::inherit(async move { analyze_inner(&owned).await })).await {
+    match tokio::spawn(crate::sandbox::inherit(async move {
+        analyze_inner(&owned).await
+    }))
+    .await
+    {
         Ok(report) => report,
         Err(err) => ImpactReport {
             base_short: req.base_rev.chars().take(10).collect(),
@@ -1733,7 +1737,11 @@ impl FacetCtx<'_> {
                     sites.push((path.clone(), tok.line, enclosing));
                 }
             }
-            let cap = if c.entity.owner().is_some() { CALLERS_CAP / 2 } else { CALLERS_CAP };
+            let cap = if c.entity.owner().is_some() {
+                CALLERS_CAP / 2
+            } else {
+                CALLERS_CAP
+            };
             if total == 0 || total > cap {
                 // No callers, or a name too common for a textual list to mean anything.
                 continue;
@@ -1798,7 +1806,10 @@ fn merge_peer_items(items: Vec<Item>) -> Vec<Item> {
         let parts: Vec<String> = item.key.splitn(4, '|').map(str::to_string).collect();
         let field = |n: usize| parts.get(n).cloned().unwrap_or_default();
         let (peer, subject, op) = (field(1), field(2), field(3));
-        if let Some(entry) = merged.iter_mut().find(|(p, s, _, _)| *p == peer && *s == subject) {
+        if let Some(entry) = merged
+            .iter_mut()
+            .find(|(p, s, _, _)| *p == peer && *s == subject)
+        {
             entry.3.push(op);
             continue;
         }

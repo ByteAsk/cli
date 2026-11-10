@@ -199,17 +199,36 @@ mod tests {
     fn search_group_matches_ripgrep_heading_layout() {
         let input = "src/a.rs:10:fn a()\nsrc/a.rs:22:fn b()\nsrc/a.rs:30:x\nsrc/b.rs:5:fn c()\n";
         let got = search_group(input, &|_| true).unwrap();
-        assert_eq!(got, "src/a.rs\n10:fn a()\n22:fn b()\n30:x\n\nsrc/b.rs\n5:fn c()\n");
+        assert_eq!(
+            got,
+            "src/a.rs\n10:fn a()\n22:fn b()\n30:x\n\nsrc/b.rs\n5:fn c()\n"
+        );
     }
 
     #[test]
     fn search_group_refuses_anything_ambiguous() {
         let ok = "a.rs:1:x\na.rs:2:y\na.rs:3:z\nb.rs:4:w\n";
         assert!(search_group(ok, &|_| true).is_some());
-        assert_eq!(search_group(ok, &|p| p != "b.rs"), None, "a path that does not exist");
-        assert_eq!(search_group("a.rs:1:x\na.rs:2:y\nnot a match line\na.rs:3:z\n", &|_| true), None);
-        assert_eq!(search_group("a.rs:1:x\nb.rs:2:y\na.rs:3:z\nb.rs:9:q\n", &|_| true), None, "path returns later");
-        assert_eq!(search_group("a.rs:x:1\na.rs:2:y\na.rs:3:z\na.rs:4:w\n", &|_| true), None);
+        assert_eq!(
+            search_group(ok, &|p| p != "b.rs"),
+            None,
+            "a path that does not exist"
+        );
+        assert_eq!(
+            search_group("a.rs:1:x\na.rs:2:y\nnot a match line\na.rs:3:z\n", &|_| {
+                true
+            }),
+            None
+        );
+        assert_eq!(
+            search_group("a.rs:1:x\nb.rs:2:y\na.rs:3:z\nb.rs:9:q\n", &|_| true),
+            None,
+            "path returns later"
+        );
+        assert_eq!(
+            search_group("a.rs:x:1\na.rs:2:y\na.rs:3:z\na.rs:4:w\n", &|_| true),
+            None
+        );
     }
 
     #[test]
@@ -228,7 +247,9 @@ mod tests {
             input.push_str(&format!("/home/u/project/src/mod{i}/file.rs\n"));
         }
         let got = path_fold(&input).unwrap();
-        assert!(got.starts_with("[byteask: every path below is relative to /home/u/project/src/]\n"));
+        assert!(
+            got.starts_with("[byteask: every path below is relative to /home/u/project/src/]\n")
+        );
         assert!(got.contains("\nmod3/file.rs\n"));
         assert!(!got.contains("/home/u/project/src/mod3"));
     }
@@ -238,7 +259,9 @@ mod tests {
         assert_eq!(path_fold("/a/b/c\n/a/b/d\n"), None);
         let mut cols = String::new();
         for i in 0..10 {
-            cols.push_str(&format!("-rw-r--r-- 1 u u 10 Sep 1 /long/prefix/dir/f{i}\n"));
+            cols.push_str(&format!(
+                "-rw-r--r-- 1 u u 10 Sep 1 /long/prefix/dir/f{i}\n"
+            ));
         }
         assert_eq!(path_fold(&cols), None);
     }

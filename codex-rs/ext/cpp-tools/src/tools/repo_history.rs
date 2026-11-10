@@ -105,7 +105,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for RepoHistoryTool {
         );
         p.insert(
             "sha".to_string(),
-            JsonSchema::string(Some("For mode=show: a commit id (hex) from this history.".to_string())),
+            JsonSchema::string(Some(
+                "For mode=show: a commit id (hex) from this history.".to_string(),
+            )),
         );
         p.insert(
             "query".to_string(),
@@ -155,7 +157,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for RepoHistoryTool {
 }
 
 impl RepoHistoryTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: Args = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -189,7 +194,10 @@ impl RepoHistoryTool {
         let cap_at = if mode == "show" { SHOW_CAP } else { OUTPUT_CAP };
         let mut text = cap(body, cap_at);
         text.push('\n');
-        text.push_str(&audit.footer(&format!("revisions: {} and its ancestors only", head.short())));
+        text.push_str(&audit.footer(&format!(
+            "revisions: {} and its ancestors only",
+            head.short()
+        )));
         // History is evidence to read, not a verdict on the code.
         let result = check_result::CheckResult::no_claim(
             TOOL_NAME,
@@ -253,7 +261,12 @@ fn parse_log(text: &str) -> Vec<Commit> {
             files.push((status, path));
         }
         if !sha.is_empty() {
-            out.push(Commit { sha, time, subject, files });
+            out.push(Commit {
+                sha,
+                time,
+                subject,
+                files,
+            });
         }
     }
     out
@@ -289,28 +302,45 @@ fn role(path: &str) -> Role {
     let lower = path.to_ascii_lowercase();
     let name = lower.rsplit('/').next().unwrap_or(&lower);
     let dirs: Vec<&str> = lower.split('/').collect();
-    if ["changelog", "news", "changes", "release-notes", "release_notes", "history"]
-        .iter()
-        .any(|p| name.starts_with(p))
+    if [
+        "changelog",
+        "news",
+        "changes",
+        "release-notes",
+        "release_notes",
+        "history",
+    ]
+    .iter()
+    .any(|p| name.starts_with(p))
     {
         return Role::Changelog;
     }
     // Single-header copies generated from the real sources.
-    if dirs.iter().any(|d| d.starts_with("single")) || lower.contains("amalgam") || lower.contains("/generated/") {
+    if dirs.iter().any(|d| d.starts_with("single"))
+        || lower.contains("amalgam")
+        || lower.contains("/generated/")
+    {
         return Role::Generated;
     }
-    if dirs[..dirs.len().saturating_sub(1)]
-        .iter()
-        .any(|d| d.starts_with("test") || *d == "t" || d.ends_with("tests") || *d == "unittest" || *d == "spec")
-        || name.contains("test")
+    if dirs[..dirs.len().saturating_sub(1)].iter().any(|d| {
+        d.starts_with("test")
+            || *d == "t"
+            || d.ends_with("tests")
+            || *d == "unittest"
+            || *d == "spec"
+    }) || name.contains("test")
         || name.contains("_spec")
     {
         return Role::Test;
     }
-    if crate::testsel::is_build_file(Path::new(path)) || name.starts_with("build") && name.ends_with(".gn") {
+    if crate::testsel::is_build_file(Path::new(path))
+        || name.starts_with("build") && name.ends_with(".gn")
+    {
         return Role::Build;
     }
-    if dirs.first().is_some_and(|d| *d == "doc" || *d == "docs" || *d == "man")
+    if dirs
+        .first()
+        .is_some_and(|d| *d == "doc" || *d == "docs" || *d == "man")
         || name.ends_with(".md")
         || name.ends_with(".rst")
         || name.ends_with(".txt") && name != "cmakelists.txt"
@@ -337,17 +367,43 @@ fn recency(time: i64, now: i64) -> f64 {
 async fn summary(head: &Head, args: &Args, audit: &Audit, blame_only: bool) -> String {
     let root = &head.root;
     let mut out = String::new();
-    let count = gitx::git_str(TOOL_NAME, Some(audit), root, &["rev-list", "--count", &head.sha], LOG_TIMEOUT).await;
+    let count = gitx::git_str(
+        TOOL_NAME,
+        Some(audit),
+        root,
+        &["rev-list", "--count", &head.sha],
+        LOG_TIMEOUT,
+    )
+    .await;
     let commits: u64 = count.stdout.trim().parse().unwrap_or(0);
-    let git_dir = gitx::git_str(TOOL_NAME, Some(audit), root, &["rev-parse", "--git-dir"], gitx::GIT_TIMEOUT).await;
+    let git_dir = gitx::git_str(
+        TOOL_NAME,
+        Some(audit),
+        root,
+        &["rev-parse", "--git-dir"],
+        gitx::GIT_TIMEOUT,
+    )
+    .await;
     let shallow = git_dir.ok && {
         let dir = PathBuf::from(git_dir.stdout.trim());
-        let dir = if dir.is_absolute() { dir } else { root.join(dir) };
+        let dir = if dir.is_absolute() {
+            dir
+        } else {
+            root.join(dir)
+        };
         dir.join("shallow").is_file()
     };
 
     // What to ask about.
-    let changes = symbols::changes(root, &head.sha, String::new(), None, args.symbols.as_deref()).await.ok();
+    let changes = symbols::changes(
+        root,
+        &head.sha,
+        String::new(),
+        None,
+        args.symbols.as_deref(),
+    )
+    .await
+    .ok();
     let paths: Vec<String> = match &args.paths {
         Some(paths) => paths.clone(),
         None => changes
@@ -361,16 +417,38 @@ async fn summary(head: &Head, args: &Args, audit: &Audit, blame_only: bool) -> S
             })
             .unwrap_or_default(),
     };
-    let functions: Vec<String> = changes.as_ref().map(|c| c.symbols.clone()).unwrap_or_default();
+    let functions: Vec<String> = changes
+        .as_ref()
+        .map(|c| c.symbols.clone())
+        .unwrap_or_default();
     out.push_str(&format!(
         "cpp_repo_history — {commits} ancestor commit(s) of {}{}; {} file(s) queried{}\n",
         head.short(),
-        if shallow { " (shallow clone: older history missing)" } else { "" },
+        if shallow {
+            " (shallow clone: older history missing)"
+        } else {
+            ""
+        },
         paths.len(),
-        if functions.is_empty() { String::new() } else { format!(", functions: {}", functions.iter().take(6).cloned().collect::<Vec<_>>().join(", ")) }
+        if functions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", functions: {}",
+                functions
+                    .iter()
+                    .take(6)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
     ));
     if let Some(query) = &args.query {
-        for sha in query.split(|c: char| !c.is_ascii_hexdigit()).filter(|t| gitx::looks_like_sha(t) && t.len() >= 7) {
+        for sha in query
+            .split(|c: char| !c.is_ascii_hexdigit())
+            .filter(|t| gitx::looks_like_sha(t) && t.len() >= 7)
+        {
             out.push_str(&named_commit(head, sha, audit).await);
         }
     }
@@ -387,7 +465,11 @@ async fn summary(head: &Head, args: &Args, audit: &Audit, blame_only: bool) -> S
         return out;
     }
     if !blame_only {
-        let max = args.max_commits.unwrap_or(DEFAULT_MAX_COMMITS).clamp(50, 20_000).to_string();
+        let max = args
+            .max_commits
+            .unwrap_or(DEFAULT_MAX_COMMITS)
+            .clamp(50, 20_000)
+            .to_string();
         let mut log_args: Vec<String> = [
             "log",
             head.sha.as_str(),
@@ -407,11 +489,21 @@ async fn summary(head: &Head, args: &Args, audit: &Audit, blame_only: bool) -> S
         let log = gitx::git_logged(TOOL_NAME, Some(audit), root, &log_args, LOG_TIMEOUT).await;
         let touching = parse_log(&log.stdout);
         let base_rates = base_rates(head, audit).await;
-        out.push_str(&cochange_section(&touching, &paths, &base_rates, log.truncated || log.timed_out));
+        out.push_str(&cochange_section(
+            &touching,
+            &paths,
+            &base_rates,
+            log.truncated || log.timed_out,
+        ));
         out.push_str(&structure_section(&touching, &paths));
         let funcs = function_index(head, &paths, audit).await;
         out.push_str(&function_section(&funcs, &functions));
-        out.push_str(&examples_section(&touching, &funcs, &functions, args.query.as_deref()));
+        out.push_str(&examples_section(
+            &touching,
+            &funcs,
+            &functions,
+            args.query.as_deref(),
+        ));
     }
     out.push_str(&blame_section(head, &paths, audit, if blame_only { 8 } else { 4 }).await);
     out
@@ -424,7 +516,15 @@ async fn base_rates(head: &Head, audit: &Audit) -> (usize, BTreeMap<String, usiz
         TOOL_NAME,
         Some(audit),
         &head.root,
-        &["log", &head.sha, "--no-merges", "--name-only", "--format=%x00", "-n", &n],
+        &[
+            "log",
+            &head.sha,
+            "--no-merges",
+            "--name-only",
+            "--format=%x00",
+            "-n",
+            &n,
+        ],
         LOG_TIMEOUT,
     )
     .await;
@@ -443,8 +543,16 @@ async fn base_rates(head: &Head, audit: &Audit) -> (usize, BTreeMap<String, usiz
     (total, counts)
 }
 
-fn cochange_section(touching: &[Commit], query: &[String], base: &(usize, BTreeMap<String, usize>), partial: bool) -> String {
-    let kept_all: Vec<&Commit> = touching.iter().filter(|c| c.files.len() <= BULK_FILES).collect();
+fn cochange_section(
+    touching: &[Commit],
+    query: &[String],
+    base: &(usize, BTreeMap<String, usize>),
+    partial: bool,
+) -> String {
+    let kept_all: Vec<&Commit> = touching
+        .iter()
+        .filter(|c| c.files.len() <= BULK_FILES)
+        .collect();
     let bulk = touching.len() - kept_all.len();
     if kept_all.is_empty() {
         return format!("CO-CHANGE: no non-bulk commit touches these files ({bulk} bulk).\n");
@@ -452,7 +560,11 @@ fn cochange_section(touching: &[Commit], query: &[String], base: &(usize, BTreeM
     // TARMAQ: the transactions with the largest overlap with the query.
     let overlap = |c: &Commit| query.iter().filter(|q| c.touches(q)).count();
     let kmax = kept_all.iter().map(|c| overlap(c)).max().unwrap_or(0);
-    let kept: Vec<&Commit> = kept_all.iter().copied().filter(|c| overlap(c) == kmax).collect();
+    let kept: Vec<&Commit> = kept_all
+        .iter()
+        .copied()
+        .filter(|c| overlap(c) == kmax)
+        .collect();
     let now = kept.iter().map(|c| c.time).max().unwrap_or(0);
     let total_weight: f64 = kept.iter().map(|c| recency(c.time, now)).sum();
     let mut support: BTreeMap<&str, (usize, f64)> = BTreeMap::new();
@@ -471,8 +583,13 @@ fn cochange_section(touching: &[Commit], query: &[String], base: &(usize, BTreeM
     let mut rows: Vec<(String, usize, f64, f64)> = support
         .iter()
         .map(|(file, (n, w))| {
-            let confidence = if total_weight > 0.0 { w / total_weight } else { 0.0 };
-            let p = base_counts.get(*file).copied().unwrap_or(*n) as f64 / (*base_total).max(1) as f64;
+            let confidence = if total_weight > 0.0 {
+                w / total_weight
+            } else {
+                0.0
+            };
+            let p =
+                base_counts.get(*file).copied().unwrap_or(*n) as f64 / (*base_total).max(1) as f64;
             let lift = if p > 0.0 { confidence / p } else { 0.0 };
             ((*file).to_string(), *n, confidence, lift)
         })
@@ -484,27 +601,53 @@ fn cochange_section(touching: &[Commit], query: &[String], base: &(usize, BTreeM
         "CO-CHANGE (files; support/confidence/lift over {} commit(s) touching {} of the queried files{}{})\n",
         kept.len(),
         kmax,
-        if bulk > 0 { format!("; {bulk} bulk commit(s) >{BULK_FILES} files ignored") } else { String::new() },
-        if partial { "; history read partially" } else { "" }
+        if bulk > 0 {
+            format!("; {bulk} bulk commit(s) >{BULK_FILES} files ignored")
+        } else {
+            String::new()
+        },
+        if partial {
+            "; history read partially"
+        } else {
+            ""
+        }
     );
     if rows.is_empty() {
         out.push_str("  none with support ≥ 2\n");
     }
     for (file, n, confidence, lift) in rows.into_iter().take(8) {
-        out.push_str(&format!("  {file:<40} {n}/{confidence:.2}/{lift:.1}  [{}]\n", role(&file).label()));
+        out.push_str(&format!(
+            "  {file:<40} {n}/{confidence:.2}/{lift:.1}  [{}]\n",
+            role(&file).label()
+        ));
     }
     out
 }
 
 fn structure_section(touching: &[Commit], query: &[String]) -> String {
-    let commits: Vec<&Commit> = touching.iter().filter(|c| c.files.len() <= BULK_FILES).collect();
+    let commits: Vec<&Commit> = touching
+        .iter()
+        .filter(|c| c.files.len() <= BULK_FILES)
+        .collect();
     if commits.is_empty() {
         return String::new();
     }
     let n = commits.len() as f64;
-    let share = |pred: &dyn Fn(&Commit) -> bool| -> f64 { commits.iter().filter(|c| pred(c)).count() as f64 * 100.0 / n };
-    let has_role = |r: Role| move |c: &Commit| c.files.iter().any(|(_, f)| !query.contains(f) && role(f) == r);
-    let tests_added = share(&|c: &Commit| c.files.iter().any(|(s, f)| *s == 'A' && role(f) == Role::Test));
+    let share = |pred: &dyn Fn(&Commit) -> bool| -> f64 {
+        commits.iter().filter(|c| pred(c)).count() as f64 * 100.0 / n
+    };
+    let has_role = |r: Role| {
+        move |c: &Commit| {
+            c.files
+                .iter()
+                .any(|(_, f)| !query.contains(f) && role(f) == r)
+        }
+    };
+    let tests_added = share(&|c: &Commit| {
+        c.files
+            .iter()
+            .any(|(s, f)| *s == 'A' && role(f) == Role::Test)
+    });
     let mut test_touches: BTreeMap<&str, usize> = BTreeMap::new();
     for c in &commits {
         for (_, f) in &c.files {
@@ -515,13 +658,21 @@ fn structure_section(touching: &[Commit], query: &[String]) -> String {
     }
     let mut top: Vec<(&str, usize)> = test_touches.into_iter().collect();
     top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    let top: Vec<String> = top.into_iter().take(3).map(|(f, c)| format!("{f} {c}")).collect();
+    let top: Vec<String> = top
+        .into_iter()
+        .take(3)
+        .map(|(f, c)| format!("{f} {c}"))
+        .collect();
     format!(
         "STRUCTURE of the {} past commit(s) touching these files: tests {:.0}% (new test files {:.0}%{}); docs {:.0}%; changelog {:.0}%; build files {:.0}%; generated copies {:.0}%\n",
         commits.len(),
         share(&has_role(Role::Test)),
         tests_added,
-        if top.is_empty() { String::new() } else { format!("; most touched: {}", top.join(", ")) },
+        if top.is_empty() {
+            String::new()
+        } else {
+            format!("; most touched: {}", top.join(", "))
+        },
         share(&has_role(Role::Doc)),
         share(&has_role(Role::Changelog)),
         share(&has_role(Role::Build)),
@@ -530,7 +681,11 @@ fn structure_section(touching: &[Commit], query: &[String]) -> String {
 }
 
 /// commit → functions its hunks in the queried C/C++ files touch.
-async fn function_index(head: &Head, paths: &[String], audit: &Audit) -> BTreeMap<String, BTreeSet<String>> {
+async fn function_index(
+    head: &Head,
+    paths: &[String],
+    audit: &Audit,
+) -> BTreeMap<String, BTreeSet<String>> {
     let cpp: Vec<&String> = paths.iter().filter(|p| is_cpp_file(Path::new(p))).collect();
     if cpp.is_empty() {
         return BTreeMap::new();
@@ -538,7 +693,10 @@ async fn function_index(head: &Head, paths: &[String], audit: &Audit) -> BTreeMa
     let n = FUNCTION_LOG_COMMITS.to_string();
     let mut args: Vec<String> = vec![
         "-c".to_string(),
-        format!("core.attributesFile={}", symbols::attributes_file().display()),
+        format!(
+            "core.attributesFile={}",
+            symbols::attributes_file().display()
+        ),
         "log".to_string(),
         head.sha.clone(),
         "--no-merges".to_string(),
@@ -614,7 +772,10 @@ fn examples_section(
     functions: &[String],
     query: Option<&str>,
 ) -> String {
-    let commits: Vec<&Commit> = touching.iter().filter(|c| c.files.len() <= BULK_FILES).collect();
+    let commits: Vec<&Commit> = touching
+        .iter()
+        .filter(|c| c.files.len() <= BULK_FILES)
+        .collect();
     if commits.is_empty() {
         return String::new();
     }
@@ -629,7 +790,10 @@ fn examples_section(
     let mut scored: Vec<(f64, &Commit)> = commits
         .iter()
         .map(|c| {
-            let fs: BTreeSet<&str> = funcs.get(&c.sha).map(|s| s.iter().map(String::as_str).collect()).unwrap_or_default();
+            let fs: BTreeSet<&str> = funcs
+                .get(&c.sha)
+                .map(|s| s.iter().map(String::as_str).collect())
+                .unwrap_or_default();
             let inter = fs.intersection(&want).count() as f64;
             let union = fs.union(&want).count().max(1) as f64;
             let subject: BTreeSet<String> = c
@@ -637,12 +801,20 @@ fn examples_section(
                 .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
                 .map(str::to_ascii_lowercase)
                 .collect();
-            let q = if words.is_empty() { 0.0 } else { words.intersection(&subject).count() as f64 / words.len() as f64 };
-            (0.5 * inter / union + 0.3 * q + 0.2 * recency(c.time, now), *c)
+            let q = if words.is_empty() {
+                0.0
+            } else {
+                words.intersection(&subject).count() as f64 / words.len() as f64
+            };
+            (
+                0.5 * inter / union + 0.3 * q + 0.2 * recency(c.time, now),
+                *c,
+            )
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let mut out = String::from("EXAMPLES (most similar past commits; `mode=show sha=…` for the diff)\n");
+    let mut out =
+        String::from("EXAMPLES (most similar past commits; `mode=show sha=…` for the diff)\n");
     for (_, c) in scored.into_iter().take(3) {
         let mut by_role: BTreeMap<Role, Vec<&str>> = BTreeMap::new();
         for (_, f) in &c.files {
@@ -653,7 +825,16 @@ fn examples_section(
             .map(|(r, fs)| {
                 let shown: Vec<&str> = fs.iter().take(3).copied().collect();
                 let more = fs.len().saturating_sub(3);
-                format!("{}: {}{}", r.label(), shown.join(" "), if more > 0 { format!(" (+{more})") } else { String::new() })
+                format!(
+                    "{}: {}{}",
+                    r.label(),
+                    shown.join(" "),
+                    if more > 0 {
+                        format!(" (+{more})")
+                    } else {
+                        String::new()
+                    }
+                )
             })
             .collect();
         out.push_str(&format!(
@@ -676,7 +857,16 @@ async fn blame_section(head: &Head, paths: &[String], audit: &Audit, max_commits
             TOOL_NAME,
             Some(audit),
             &head.root,
-            &["diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", &head.sha, "--", path],
+            &[
+                "diff",
+                "-U0",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                &head.sha,
+                "--",
+                path,
+            ],
             gitx::GIT_TIMEOUT,
         )
         .await;
@@ -687,7 +877,17 @@ async fn blame_section(head: &Head, paths: &[String], audit: &Audit, max_commits
                 TOOL_NAME,
                 Some(audit),
                 &head.root,
-                &["blame", "-w", "-M", "--line-porcelain", "-L", &range, &head.sha, "--", path],
+                &[
+                    "blame",
+                    "-w",
+                    "-M",
+                    "--line-porcelain",
+                    "-L",
+                    &range,
+                    &head.sha,
+                    "--",
+                    path,
+                ],
                 LOG_TIMEOUT,
             )
             .await;
@@ -767,9 +967,14 @@ async fn named_commit(head: &Head, sha: &str, audit: &Audit) -> String {
             gitx::GIT_TIMEOUT,
         )
         .await;
-        format!("commit {sha}: in local history — {}\n", subject.stdout.trim())
+        format!(
+            "commit {sha}: in local history — {}\n",
+            subject.stdout.trim()
+        )
     } else {
-        format!("commit {sha}: not in local history (absent, or not an ancestor of the session-start commit)\n")
+        format!(
+            "commit {sha}: not in local history (absent, or not an ancestor of the session-start commit)\n"
+        )
     }
 }
 
@@ -777,37 +982,64 @@ async fn named_commit(head: &Head, sha: &str, audit: &Audit) -> String {
 fn tree_only(root: &Path, paths: &[String]) -> String {
     let stems: Vec<String> = paths
         .iter()
-        .filter_map(|p| Path::new(p).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()))
+        .filter_map(|p| {
+            Path::new(p)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        })
         .filter(|s| s.len() >= 3)
         .collect();
     let mut hits: Vec<String> = Vec::new();
     for entry in walkdir::WalkDir::new(root)
         .max_depth(6)
         .into_iter()
-        .filter_entry(|e| !(e.file_type().is_dir() && e.depth() > 0 && crate::testsel::skip_dir(e.path())))
+        .filter_entry(|e| {
+            !(e.file_type().is_dir() && e.depth() > 0 && crate::testsel::skip_dir(e.path()))
+        })
         .flatten()
     {
-        let rel = entry.path().strip_prefix(root).map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-        if entry.file_type().is_file() && role(&rel) == Role::Test && stems.iter().any(|s| rel.to_ascii_lowercase().contains(s.as_str())) {
+        let rel = entry
+            .path()
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if entry.file_type().is_file()
+            && role(&rel) == Role::Test
+            && stems
+                .iter()
+                .any(|s| rel.to_ascii_lowercase().contains(s.as_str()))
+        {
             hits.push(rel);
         }
         if hits.len() >= 6 {
             break;
         }
     }
-    let changelog = ["ChangeLog", "CHANGELOG.md", "NEWS", "CHANGES", "ChangeLog.md", "NEWS.md"]
-        .iter()
-        .find(|f| root.join(f).is_file());
+    let changelog = [
+        "ChangeLog",
+        "CHANGELOG.md",
+        "NEWS",
+        "CHANGES",
+        "ChangeLog.md",
+        "NEWS.md",
+    ]
+    .iter()
+    .find(|f| root.join(f).is_file());
     format!(
         "TREE-ONLY: tests named like the touched files: {}; changelog: {}\n",
-        if hits.is_empty() { "none found".to_string() } else { hits.join(", ") },
+        if hits.is_empty() {
+            "none found".to_string()
+        } else {
+            hits.join(", ")
+        },
         changelog.copied().unwrap_or("none")
     )
 }
 
 async fn show(head: &Head, sha: &str, audit: &Audit) -> String {
     if !gitx::looks_like_sha(sha) {
-        return "mode=show needs `sha`: a commit id (7-40 hex digits) from this history.".to_string();
+        return "mode=show needs `sha`: a commit id (7-40 hex digits) from this history."
+            .to_string();
     }
     if !gitx::is_ancestor(TOOL_NAME, Some(audit), &head.root, sha, &head.sha).await {
         return format!(
@@ -839,7 +1071,10 @@ async fn show(head: &Head, sha: &str, audit: &Audit) -> String {
         return format!("git show failed: {}", out.stderr.trim());
     }
     let lines: Vec<&str> = out.stdout.lines().collect();
-    let diff_start = lines.iter().position(|l| l.starts_with("diff --git")).unwrap_or(lines.len());
+    let diff_start = lines
+        .iter()
+        .position(|l| l.starts_with("diff --git"))
+        .unwrap_or(lines.len());
     let mut text: Vec<&str> = lines[..diff_start].to_vec();
     let diff = &lines[diff_start..];
     text.extend(diff.iter().take(100));
@@ -893,10 +1128,26 @@ mod tests {
         let log = "\0abc123\t1700000000\tAdd size()\nM\tsrc/a.cc\nA\ttests/a_test.cc\nR100\told.h\tnew.h\n\0def456\t1600000000\tFix\nM\tsrc/a.cc\n";
         let commits = parse_log(log);
         assert_eq!(commits.len(), 2);
-        assert_eq!(commits[0].files, vec![('M', "src/a.cc".to_string()), ('A', "tests/a_test.cc".to_string()), ('R', "new.h".to_string())]);
-        assert_eq!(old_ranges("@@ -3,2 +3,2 @@ f\n@@ -9,0 +10,1 @@\n@@ -20 +21 @@\n"), vec![(3, 4), (20, 20)]);
-        let blame = format!("{} 3 3 1\nauthor x\nauthor-time 1700000000\nsummary Normalize once\nfilename a.c\n\tcode\n", "a".repeat(40));
-        assert_eq!(parse_blame(&blame), vec![("a".repeat(40), 1_700_000_000, "Normalize once".to_string())]);
+        assert_eq!(
+            commits[0].files,
+            vec![
+                ('M', "src/a.cc".to_string()),
+                ('A', "tests/a_test.cc".to_string()),
+                ('R', "new.h".to_string())
+            ]
+        );
+        assert_eq!(
+            old_ranges("@@ -3,2 +3,2 @@ f\n@@ -9,0 +10,1 @@\n@@ -20 +21 @@\n"),
+            vec![(3, 4), (20, 20)]
+        );
+        let blame = format!(
+            "{} 3 3 1\nauthor x\nauthor-time 1700000000\nsummary Normalize once\nfilename a.c\n\tcode\n",
+            "a".repeat(40)
+        );
+        assert_eq!(
+            parse_blame(&blame),
+            vec![("a".repeat(40), 1_700_000_000, "Normalize once".to_string())]
+        );
     }
 
     /// A history where every change to `widget.c` also touched its test and a
@@ -911,11 +1162,20 @@ mod tests {
             std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
             std::fs::write(root.join(path), text).unwrap();
         };
-        write("src/widget.c", "int size(void) {\n  return 0;\n}\nint cap(void) {\n  return 1;\n}\n");
+        write(
+            "src/widget.c",
+            "int size(void) {\n  return 0;\n}\nint cap(void) {\n  return 1;\n}\n",
+        );
         write("README.md", "x\n");
         test_repo::init_and_commit(&root);
         for i in 0..24 {
-            write("src/widget.c", &format!("int size(void) {{\n  return {i};\n}}\nint cap(void) {{\n  return {};\n}}\n", i + 1));
+            write(
+                "src/widget.c",
+                &format!(
+                    "int size(void) {{\n  return {i};\n}}\nint cap(void) {{\n  return {};\n}}\n",
+                    i + 1
+                ),
+            );
             write("tests/widget_test.c", &format!("// {i}\n"));
             write("single/lib.h", &format!("// copy {i}\n"));
             if i % 3 == 0 {
@@ -931,7 +1191,10 @@ mod tests {
         let future = test_repo::commit_all(&root, "the upstream fix");
         test_repo::git(&root, &["checkout", "-q", &h0]);
         // The agent's working-tree change.
-        write("src/widget.c", "int size(void) {\n  return -1;\n}\nint cap(void) {\n  return 25;\n}\n");
+        write(
+            "src/widget.c",
+            "int size(void) {\n  return -1;\n}\nint cap(void) {\n  return 25;\n}\n",
+        );
 
         let t = RepoHistoryTool {
             head: SessionHead::ready(
@@ -942,7 +1205,12 @@ mod tests {
                 root.clone(),
             ),
         };
-        let text = call(&t, json!({"query": format!("regression since {}", &future[..10])})).await.unwrap();
+        let text = call(
+            &t,
+            json!({"query": format!("regression since {}", &future[..10])}),
+        )
+        .await
+        .unwrap();
         assert!(text.contains("25 ancestor commit(s)"), "{text}");
         assert!(text.contains("tests/widget_test.c"), "{text}");
         assert!(text.contains("single/lib.h"), "{text}");
@@ -952,16 +1220,26 @@ mod tests {
         assert!(text.contains("not in local history"), "{text}");
         assert!(!text.contains("leaked_fix"), "{text}");
         assert!(!text.contains("the upstream fix"), "{text}");
-        assert!(text.contains(&format!("revisions: {} and its ancestors only", &h0[..10])), "{text}");
+        assert!(
+            text.contains(&format!("revisions: {} and its ancestors only", &h0[..10])),
+            "{text}"
+        );
 
         // show refuses a commit outside the ancestry, and shows one inside it.
-        let text = call(&t, json!({"mode": "show", "sha": &future[..12]})).await.unwrap();
+        let text = call(&t, json!({"mode": "show", "sha": &future[..12]}))
+            .await
+            .unwrap();
         assert!(text.contains("is not in the local history"), "{text}");
         assert!(!text.contains("leaked_fix"), "{text}");
         let old = test_repo::git(&root, &["rev-parse", "HEAD~3"]);
-        let text = call(&t, json!({"mode": "show", "sha": &old[..12]})).await.unwrap();
+        let text = call(&t, json!({"mode": "show", "sha": &old[..12]}))
+            .await
+            .unwrap();
         assert!(text.contains("widget: change 20"), "{text}");
-        let err = call(&t, json!({"mode": "bogus"})).await.unwrap_err().to_string();
+        let err = call(&t, json!({"mode": "bogus"}))
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("unknown mode"), "{err}");
     }
 
@@ -977,7 +1255,13 @@ mod tests {
         let h0 = test_repo::init_and_commit(&root);
         std::fs::write(root.join("src/parser.c"), "int q;\n").unwrap();
         let t = RepoHistoryTool {
-            head: SessionHead::ready(Some(Head { sha: h0, root: root.clone() }), root.clone()),
+            head: SessionHead::ready(
+                Some(Head {
+                    sha: h0,
+                    root: root.clone(),
+                }),
+                root.clone(),
+            ),
         };
         let text = call(&t, json!({})).await.unwrap();
         assert!(text.contains("History too short"), "{text}");

@@ -122,6 +122,20 @@ impl LifecycleTestHandler {
 
 impl CoreToolRuntime for LifecycleTestHandler {}
 
+impl codex_extension_api::ApprovalReviewContributor for LifecycleTestHandler {
+    fn decide<'a>(
+        &'a self,
+        _input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+    ) -> codex_extension_api::ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>>
+    {
+        Box::pin(async {
+            Some(codex_extension_api::ApprovalDecision::Reviewed(
+                codex_protocol::protocol::ReviewDecision::denied("review denied"),
+            ))
+        })
+    }
+}
+
 fn test_spec(tool_name: &codex_tools::ToolName) -> codex_tools::ToolSpec {
     codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
         name: tool_name.name.clone(),
@@ -470,6 +484,7 @@ async fn function_tools_expose_default_hook_payloads_and_rewrites() -> anyhow::R
     assert_eq!(
         handler.post_tool_use_payload(&invocation, &output),
         Some(PostToolUsePayload {
+            tool_cwd: None,
             tool_name: HookToolName::new("functions.echo"),
             tool_use_id: "call-1".to_string(),
             tool_input: serde_json::json!({ "message": "hello" }),
@@ -563,7 +578,9 @@ async fn code_mode_wait_does_not_expose_default_hook_payloads() {
     let (session, turn) = crate::session::tests::make_session_and_context().await;
     let output = crate::tools::context::FunctionToolOutput::from_text("ok".to_string(), Some(true));
 
-    let wait = crate::tools::handlers::CodeModeWaitHandler;
+    let wait = crate::tools::handlers::CodeModeWaitHandler::new(
+        /*description_override*/ None, /*parameters_override*/ None,
+    );
     let wait_invocation = test_invocation(
         Arc::new(session),
         Arc::new(turn),
@@ -609,6 +626,7 @@ fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
                     meta: None,
                 },
                 tool_input: serde_json::json!({}),
+                result_metadata_capture_allowed: false,
                 wall_time: Duration::ZERO,
                 original_image_detail_supported: false,
                 truncation_policy,
@@ -629,7 +647,7 @@ fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
                 output: FunctionCallOutputPayload::from_text("hook feedback".to_string()),
             }),
             metadata: Some(CodexHarnessMetadata {
-                fallback_token_limit_override: Some(expected_token_limit),
+                history_truncation_token_limit: Some(expected_token_limit),
                 ..Default::default()
             }),
         }
@@ -691,6 +709,43 @@ fn post_tool_use_feedback_output_keeps_code_mode_result_typed() {
     );
 }
 
+#[test_case::test_case(false; "success")]
+#[test_case::test_case(true; "tool error")]
+fn post_tool_use_feedback_output_preserves_mcp_result_metadata(tool_error: bool) {
+    let metadata = serde_json::json!({
+        "openai/resource_access": { "resources": [] },
+        "provider/custom": { "items": [1, null, { "value": true }] },
+    });
+    let result = PostToolUseFeedbackOutput {
+        original: Box::new(crate::tools::context::McpToolOutput {
+            result: codex_protocol::mcp::CallToolResult {
+                content: vec![serde_json::json!({
+                    "type": "text",
+                    "text": "original result",
+                })],
+                structured_content: None,
+                is_error: Some(tool_error),
+                meta: Some(metadata.clone()),
+            },
+            tool_input: serde_json::json!({ "query": "rewritten query" }),
+            result_metadata_capture_allowed: true,
+            wall_time: std::time::Duration::ZERO,
+            original_image_detail_supported: false,
+            truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(64),
+        }),
+        model_visible: FunctionToolOutput::from_text(
+            "unrelated hook feedback".to_string(),
+            /*success*/ None,
+        ),
+    };
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let original_result = result.original.code_mode_result(&payload);
+    assert_eq!(result.tool_result_metadata(), Some(&metadata));
+    assert_eq!(result.code_mode_result(&payload), original_result);
+}
+
 #[tokio::test]
 async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyhow::Result<()> {
     let (mut session, turn) = crate::session::tests::make_session_and_context().await;
@@ -701,7 +756,6 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
     builder.tool_lifecycle_contributor(Arc::new(ToolLifecycleRecorder {
         records: Arc::clone(&records),
     }));
-    session.services.extensions = Arc::new(builder.build());
 
     let ok_tool = codex_tools::ToolName::plain("ok_tool");
     let failing_tool = codex_tools::ToolName::namespaced("extensions", "failing_tool");
@@ -713,30 +767,42 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
         tool_name: failing_tool.clone(),
         result: LifecycleTestResult::Err,
     }) as Arc<dyn CoreToolRuntime>;
-    let registry = ToolRegistry::from_tools([ok_handler, failing_handler]);
+    let reviewed_tool = codex_tools::ToolName::namespaced("extensions", "reviewed_tool");
+    let reviewed_handler = Arc::new(LifecycleTestHandler {
+        tool_name: reviewed_tool.clone(),
+        result: LifecycleTestResult::Err,
+    });
+    builder.approval_review_contributor(reviewed_handler.clone());
+    session.services.extensions = Arc::new(builder.build());
+    let mut registry = ToolRegistry::from_tools([ok_handler, failing_handler]);
+    registry.register_trusted_with_native_review(
+        reviewed_handler,
+        super::ToolExposure::Direct,
+        super::NativeReview::Required,
+    );
     let session = Arc::new(session);
     let turn = Arc::new(turn);
 
     registry
-        .dispatch_any_with_terminal_outcome(
+        .dispatch_any_with_state(
             test_invocation(
                 Arc::clone(&session),
                 Arc::clone(&turn),
                 "ok-call",
                 codex_tools::ToolName::namespaced(DEFAULT_FUNCTION_NAMESPACE, "ok_tool"),
             ),
-            /*terminal_outcome_reached*/ None,
+            /*call_state*/ None,
         )
         .await?;
     let err = match registry
-        .dispatch_any_with_terminal_outcome(
+        .dispatch_any_with_state(
             test_invocation(
                 Arc::clone(&session),
                 Arc::clone(&turn),
                 "failing-call",
                 failing_tool.clone(),
             ),
-            /*terminal_outcome_reached*/ None,
+            /*call_state*/ None,
         )
         .await
     {
@@ -744,6 +810,16 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
         Err(err) => err,
     };
     assert_eq!(err.to_string(), "handler failed");
+    let denied = registry
+        .dispatch_any_with_state(
+            test_invocation(session, turn, "reviewed-call", reviewed_tool.clone()),
+            /*call_state*/ None,
+        )
+        .await;
+    assert_eq!(
+        denied.err().expect("review must deny").to_string(),
+        "review denied"
+    );
 
     let expected = vec![
         RecordedToolLifecycle::Start {
@@ -766,6 +842,13 @@ async fn dispatch_uses_canonical_tool_names_for_lifecycle_contributors() -> anyh
             tool_name: failing_tool,
             outcome: codex_extension_api::ToolCallOutcome::Failed {
                 handler_executed: true,
+            },
+        },
+        RecordedToolLifecycle::Finish {
+            call_id: "reviewed-call".to_string(),
+            tool_name: reviewed_tool,
+            outcome: codex_extension_api::ToolCallOutcome::Failed {
+                handler_executed: false,
             },
         },
     ];
@@ -797,6 +880,8 @@ fn test_invocation(
         call_id: call_id.to_string(),
         tool_name,
         source: crate::tools::context::ToolCallSource::Direct,
+        native_call: None,
+        environments: Default::default(),
         payload: ToolPayload::Function {
             arguments: "{}".to_string(),
         },

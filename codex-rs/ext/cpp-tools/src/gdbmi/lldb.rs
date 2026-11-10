@@ -97,11 +97,17 @@ pub async fn start_lldb(
     #[cfg(unix)]
     command.process_group(0);
 
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("could not start {} for lldb: {err}", python.python.display()))?;
+    let mut child = command.spawn().map_err(|err| {
+        format!(
+            "could not start {} for lldb: {err}",
+            python.python.display()
+        )
+    })?;
     let mut stdin = child.stdin.take().ok_or("lldb helper stdin unavailable")?;
-    let stdout = child.stdout.take().ok_or("lldb helper stdout unavailable")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("lldb helper stdout unavailable")?;
     let mut stderr = child.stderr.take();
     let mut lines = BufReader::new(stdout).lines();
 
@@ -191,7 +197,8 @@ pub async fn start_lldb(
         // does, the program's pid may already belong to someone else: forget
         // it. Otherwise the reaper takes everything down as this task ends.
         drop(stdin);
-        if matches!(timeout(Duration::from_secs(5), child.wait()).await, Ok(Ok(status)) if status.success()) {
+        if matches!(timeout(Duration::from_secs(5), child.wait()).await, Ok(Ok(status)) if status.success())
+        {
             reaper.program = None;
             reaper.group = None;
         }
@@ -234,7 +241,12 @@ async fn await_reply(
     loop {
         let line = match tokio::time::timeout_at(deadline, lines.next_line()).await {
             Ok(Ok(Some(line))) => line,
-            Ok(_) => return (("lldb session ended unexpectedly.".to_string(), None), false),
+            Ok(_) => {
+                return (
+                    ("lldb session ended unexpectedly.".to_string(), None),
+                    false,
+                );
+            }
             Err(_) if !stopped && pid.is_some() => {
                 if let Some(pid) = *pid {
                     signal(pid, Signal::Stop);
@@ -306,13 +318,14 @@ async fn locate_python() -> Result<LldbPython, String> {
         Some(p) if !p.is_empty() => Some(PathBuf::from(p)),
         _ => lldb_python_dir(&lldb, &real).await,
     };
-    let debugserver = if cfg!(target_os = "linux") && std::env::var_os("LLDB_DEBUGSERVER_PATH").is_none() {
-        real.parent()
-            .map(|dir| dir.join("lldb-server"))
-            .filter(|p| p.is_file())
-    } else {
-        None
-    };
+    let debugserver =
+        if cfg!(target_os = "linux") && std::env::var_os("LLDB_DEBUGSERVER_PATH").is_none() {
+            real.parent()
+                .map(|dir| dir.join("lldb-server"))
+                .filter(|p| p.is_file())
+        } else {
+            None
+        };
     Ok(LldbPython {
         python,
         pythonpath,
@@ -336,7 +349,10 @@ async fn default_python() -> PathBuf {
 /// the real `lldb` binary.
 async fn lldb_python_dir(lldb: &Path, real: &Path) -> Option<PathBuf> {
     let has_module = |dir: &Path| dir.join("lldb").join("__init__.py").is_file();
-    if let Some(dir) = output_of(&lldb.to_string_lossy(), &["-P"]).await.map(PathBuf::from) {
+    if let Some(dir) = output_of(&lldb.to_string_lossy(), &["-P"])
+        .await
+        .map(PathBuf::from)
+    {
         if has_module(&dir) {
             return Some(dir);
         }
@@ -346,7 +362,10 @@ async fn lldb_python_dir(lldb: &Path, real: &Path) -> Option<PathBuf> {
         .ok()?
         .flatten()
         .map(|entry| entry.path())
-        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("python3")))
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("python3"))
+        })
         .flat_map(|p| [p.join("dist-packages"), p.join("site-packages")])
         .filter(|p| has_module(p))
         .collect();

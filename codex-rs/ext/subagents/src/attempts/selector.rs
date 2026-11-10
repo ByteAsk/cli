@@ -136,7 +136,11 @@ pub type JudgeFuture<'a> = Pin<Box<dyn Future<Output = Option<Pick>> + Send + 'a
 
 /// A fresh-context pairwise judge. `None` means no usable verdict.
 pub trait Judge: Send + Sync {
-    fn compare<'a>(&'a self, first: &'a CandidateEval, second: &'a CandidateEval) -> JudgeFuture<'a>;
+    fn compare<'a>(
+        &'a self,
+        first: &'a CandidateEval,
+        second: &'a CandidateEval,
+    ) -> JudgeFuture<'a>;
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -198,13 +202,19 @@ fn violations(c: &CandidateEval) -> Vec<String> {
         why.push(format!("{} new test failure(s): {}", r.len(), r.join(", ")));
     }
     if !c.test_file_edits.is_empty() {
-        why.push(format!("edits existing tests: {}", c.test_file_edits.join(", ")));
+        why.push(format!(
+            "edits existing tests: {}",
+            c.test_file_edits.join(", ")
+        ));
     }
     why
 }
 
 /// Candidates that pass the hard filters (or the least-bad ones if none do).
-pub fn filter<'a>(cands: &'a [CandidateEval], trace: &mut Vec<String>) -> (Vec<&'a CandidateEval>, bool) {
+pub fn filter<'a>(
+    cands: &'a [CandidateEval],
+    trace: &mut Vec<String>,
+) -> (Vec<&'a CandidateEval>, bool) {
     for c in cands {
         let why = violations(c);
         if !why.is_empty() {
@@ -223,7 +233,11 @@ pub fn filter<'a>(cands: &'a [CandidateEval], trace: &mut Vec<String>) -> (Vec<&
     if !survivors.is_empty() || eligible.is_empty() {
         return (survivors, false);
     }
-    let best = eligible.iter().map(|c| c.violation_key()).min().unwrap_or_default();
+    let best = eligible
+        .iter()
+        .map(|c| c.violation_key())
+        .min()
+        .unwrap_or_default();
     let relaxed: Vec<&CandidateEval> = eligible
         .into_iter()
         .filter(|c| c.violation_key() == best)
@@ -239,7 +253,10 @@ fn ids(group: &[&CandidateEval]) -> Vec<usize> {
     group.iter().map(|c| c.attempt).collect()
 }
 
-fn keep_min(group: Vec<&CandidateEval>, key: impl Fn(&CandidateEval) -> usize) -> Vec<&CandidateEval> {
+fn keep_min(
+    group: Vec<&CandidateEval>,
+    key: impl Fn(&CandidateEval) -> usize,
+) -> Vec<&CandidateEval> {
     let best = group.iter().map(|c| key(c)).min().unwrap_or(0);
     group.into_iter().filter(|c| key(c) == best).collect()
 }
@@ -254,7 +271,8 @@ fn narrow<'a>(
     let before = top.len();
     let after = keep(top);
     if after.len() < before {
-        sel.trace.push(format!("tie-break {label}: {:?}", ids(&after)));
+        sel.trace
+            .push(format!("tie-break {label}: {:?}", ids(&after)));
         if after.len() == 1 {
             sel.winner = Some(after[0].attempt);
             sel.reason = format!("tie-break: {label}");
@@ -263,7 +281,11 @@ fn narrow<'a>(
     after
 }
 
-pub async fn select(cands: &[CandidateEval], tests: &[PooledTest], judge: Option<&dyn Judge>) -> Selection {
+pub async fn select(
+    cands: &[CandidateEval],
+    tests: &[PooledTest],
+    judge: Option<&dyn Judge>,
+) -> Selection {
     let mut sel = Selection::default();
     let (survivors, relaxed) = filter(cands, &mut sel.trace);
     sel.relaxed = relaxed;
@@ -289,7 +311,11 @@ pub async fn select(cands: &[CandidateEval], tests: &[PooledTest], judge: Option
             sel.scores.insert(c.attempt, score);
         }
     }
-    let best = sel.scores.values().copied().fold(f64::NEG_INFINITY, f64::max);
+    let best = sel
+        .scores
+        .values()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
     let mut top: Vec<&CandidateEval> = survivors
         .iter()
         .copied()
@@ -308,17 +334,23 @@ pub async fn select(cands: &[CandidateEval], tests: &[PooledTest], judge: Option
     }
 
     // Tie-breaks.
-    top = narrow(&mut sel, top, "fewest new sanitizer reports", |g| keep_min(g, |c| c.new_sanitizer_reports));
+    top = narrow(&mut sel, top, "fewest new sanitizer reports", |g| {
+        keep_min(g, |c| c.new_sanitizer_reports)
+    });
     if sel.winner.is_some() {
         return sel;
     }
-    top = narrow(&mut sel, top, "fewest new compiler warnings", |g| keep_min(g, |c| c.new_warnings));
+    top = narrow(&mut sel, top, "fewest new compiler warnings", |g| {
+        keep_min(g, |c| c.new_warnings)
+    });
     if sel.winner.is_some() {
         return sel;
     }
     top = narrow(&mut sel, top, "minimality (files touched)", |g| {
         let fewest = g.iter().map(|c| c.changed_files).min().unwrap_or(0);
-        g.into_iter().filter(|c| c.changed_files <= fewest + 1).collect()
+        g.into_iter()
+            .filter(|c| c.changed_files <= fewest + 1)
+            .collect()
     });
     if sel.winner.is_some() {
         return sel;
@@ -397,8 +429,18 @@ pub fn disagreement(cands: &[CandidateEval], tests: &[PooledTest]) -> (bool, Str
         .iter()
         .map(|c| (c.attempt, matrix_score(c, &usable_tests(&survivors, tests))))
         .collect();
-    let best = scores.values().flatten().copied().fold(f64::NEG_INFINITY, f64::max);
-    let is_top = |c: &CandidateEval| scores.get(&c.attempt).copied().flatten().is_none_or(|s| s >= best - 1e-9);
+    let best = scores
+        .values()
+        .flatten()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let is_top = |c: &CandidateEval| {
+        scores
+            .get(&c.attempt)
+            .copied()
+            .flatten()
+            .is_none_or(|s| s >= best - 1e-9)
+    };
     for (i, a) in survivors.iter().enumerate() {
         for b in survivors.iter().skip(i + 1) {
             if (is_top(a) || is_top(b)) && agree(a, b, &usable) {
@@ -468,8 +510,15 @@ mod tests {
     }
 
     impl Judge for ScriptedJudge {
-        fn compare<'a>(&'a self, first: &'a CandidateEval, second: &'a CandidateEval) -> JudgeFuture<'a> {
-            self.calls.lock().unwrap().push((first.attempt, second.attempt));
+        fn compare<'a>(
+            &'a self,
+            first: &'a CandidateEval,
+            second: &'a CandidateEval,
+        ) -> JudgeFuture<'a> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((first.attempt, second.attempt));
             let answer = self.answers.lock().unwrap().remove(0);
             Box::pin(async move { answer })
         }
@@ -522,10 +571,35 @@ mod tests {
 
     #[tokio::test]
     async fn matrix_prefers_independent_evidence_and_ignores_own_tests() {
-        let tests = vec![test("repro", Author::Independent), test("t2", Author::Attempt(2)), test("t3", Author::Attempt(3))];
-        let c1 = with_cells(cand(1), &[("repro", Cell::Fail), ("t2", Cell::Pass), ("t3", Cell::Pass)]);
-        let c2 = with_cells(cand(2), &[("repro", Cell::Pass), ("t2", Cell::Pass), ("t3", Cell::Fail)]);
-        let c3 = with_cells(cand(3), &[("repro", Cell::Pass), ("t2", Cell::Pass), ("t3", Cell::Pass)]);
+        let tests = vec![
+            test("repro", Author::Independent),
+            test("t2", Author::Attempt(2)),
+            test("t3", Author::Attempt(3)),
+        ];
+        let c1 = with_cells(
+            cand(1),
+            &[
+                ("repro", Cell::Fail),
+                ("t2", Cell::Pass),
+                ("t3", Cell::Pass),
+            ],
+        );
+        let c2 = with_cells(
+            cand(2),
+            &[
+                ("repro", Cell::Pass),
+                ("t2", Cell::Pass),
+                ("t3", Cell::Fail),
+            ],
+        );
+        let c3 = with_cells(
+            cand(3),
+            &[
+                ("repro", Cell::Pass),
+                ("t2", Cell::Pass),
+                ("t3", Cell::Pass),
+            ],
+        );
         let sel = select(&[c1, c2, c3], &tests, None).await;
         // c1: (0 + .5 + .5)/2 = .5; c2: (1 + 0)/1.5 = .667; c3: (1 + .5)/1.5 = 1.
         assert_eq!(sel.winner, Some(3));
@@ -557,11 +631,35 @@ mod tests {
         unq.qualified = false;
         let mut invalid = test("t2", Author::Attempt(2));
         invalid.valid = false;
-        let tests = vec![test("repro", Author::Independent), unq, invalid, test("late", Author::Independent)];
-        let c1 = with_cells(cand(1), &[("repro", Cell::Conflict), ("passes-on-base", Cell::Pass), ("t2", Cell::Pass), ("late", Cell::Pass)]);
-        let c2 = with_cells(cand(2), &[("repro", Cell::Pass), ("passes-on-base", Cell::Fail), ("t2", Cell::Fail), ("late", Cell::NotRun)]);
+        let tests = vec![
+            test("repro", Author::Independent),
+            unq,
+            invalid,
+            test("late", Author::Independent),
+        ];
+        let c1 = with_cells(
+            cand(1),
+            &[
+                ("repro", Cell::Conflict),
+                ("passes-on-base", Cell::Pass),
+                ("t2", Cell::Pass),
+                ("late", Cell::Pass),
+            ],
+        );
+        let c2 = with_cells(
+            cand(2),
+            &[
+                ("repro", Cell::Pass),
+                ("passes-on-base", Cell::Fail),
+                ("t2", Cell::Fail),
+                ("late", Cell::NotRun),
+            ],
+        );
         let usable = usable_tests(&[&c1, &c2], &tests);
-        assert_eq!(usable.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["repro"]);
+        assert_eq!(
+            usable.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            vec!["repro"]
+        );
         let sel = select(&[c1, c2], &tests, None).await;
         assert_eq!(sel.winner, Some(2));
     }
@@ -571,14 +669,20 @@ mod tests {
         let mut a = cand(1);
         a.new_sanitizer_reports = 1;
         let sel = select(&[a, cand(2)], &[], None).await;
-        assert_eq!((sel.winner, sel.reason.as_str()), (Some(2), "tie-break: fewest new sanitizer reports"));
+        assert_eq!(
+            (sel.winner, sel.reason.as_str()),
+            (Some(2), "tie-break: fewest new sanitizer reports")
+        );
 
         let mut a = cand(1);
         a.new_warnings = 1;
         let mut b = cand(2);
         b.new_warnings = 3;
         let sel = select(&[a, b], &[], None).await;
-        assert_eq!((sel.winner, sel.reason.as_str()), (Some(1), "tie-break: fewest new compiler warnings"));
+        assert_eq!(
+            (sel.winner, sel.reason.as_str()),
+            (Some(1), "tie-break: fewest new compiler warnings")
+        );
 
         // Minimality is coarse: one extra file is tolerated, more is not; lines never count.
         let mut a = cand(1);
@@ -587,11 +691,17 @@ mod tests {
         b.changed_files = 1;
         b.changed_lines = 400;
         let sel = select(&[a, b], &[], None).await;
-        assert_eq!((sel.winner, sel.reason.as_str()), (Some(2), "tie-break: minimality (files touched)"));
+        assert_eq!(
+            (sel.winner, sel.reason.as_str()),
+            (Some(2), "tie-break: minimality (files touched)")
+        );
         let mut a = cand(1);
         a.changed_files = 2;
         let sel = select(&[a, cand(2)], &[], None).await;
-        assert_eq!(sel.reason, "execution signals tie and no judge; lowest attempt number kept");
+        assert_eq!(
+            sel.reason,
+            "execution signals tie and no judge; lowest attempt number kept"
+        );
     }
 
     #[tokio::test]
@@ -603,7 +713,10 @@ mod tests {
         let mut a = cand(1);
         a.diff_bytes = 0;
         let sel = select(&[a, b.clone(), c.clone()], &[], None).await;
-        assert_eq!((sel.winner, sel.reason.as_str()), (Some(2), "the remaining candidates made the same change"));
+        assert_eq!(
+            (sel.winner, sel.reason.as_str()),
+            (Some(2), "the remaining candidates made the same change")
+        );
         // With attempt 1 different, the judge sees 1 vs 2 only (3 = 2).
         let judge = ScriptedJudge::new(vec![Some(Pick::First), Some(Pick::Second)]);
         let sel = select(&[cand(1), b, c], &[], Some(&judge)).await;
@@ -626,10 +739,18 @@ mod tests {
         let sel = select(&[cand(1), cand(2)], &[], Some(&judge)).await;
         assert_eq!(sel.winner, Some(1));
         // King of the hill: 2 beats 1, then 3 is inconsistent against 2.
-        let judge = ScriptedJudge::new(vec![Some(Pick::Second), Some(Pick::First), Some(Pick::First), Some(Pick::First)]);
+        let judge = ScriptedJudge::new(vec![
+            Some(Pick::Second),
+            Some(Pick::First),
+            Some(Pick::First),
+            Some(Pick::First),
+        ]);
         let sel = select(&[cand(1), cand(2), cand(3)], &[], Some(&judge)).await;
         assert_eq!(sel.winner, Some(2));
-        assert_eq!(*judge.calls.lock().unwrap(), vec![(1, 2), (2, 1), (2, 3), (3, 2)]);
+        assert_eq!(
+            *judge.calls.lock().unwrap(),
+            vec![(1, 2), (2, 1), (2, 3), (3, 2)]
+        );
     }
 
     #[test]
@@ -637,9 +758,15 @@ mod tests {
         let tests = vec![test("repro", Author::Independent)];
         let a = with_cells(cand(1), &[("repro", Cell::Pass)]);
         let b = with_cells(cand(2), &[("repro", Cell::Pass)]);
-        assert!(!disagreement(&[a.clone(), b], &tests).0, "agree on a qualified test");
+        assert!(
+            !disagreement(&[a.clone(), b], &tests).0,
+            "agree on a qualified test"
+        );
         let c = with_cells(cand(2), &[("repro", Cell::Fail)]);
-        assert!(disagreement(&[a.clone(), c], &tests).0, "different test outcomes");
+        assert!(
+            disagreement(&[a.clone(), c], &tests).0,
+            "different test outcomes"
+        );
         let mut broken = cand(2);
         broken.build_ok = Some(false);
         assert!(disagreement(&[a, broken], &tests).0, "one survivor");
@@ -660,7 +787,10 @@ mod tests {
         assert!(!dis, "{why}");
         assert_eq!(why, "attempts 2 and 3 agree");
         // An agreeing pair of losers does not stop escalation.
-        let tests2 = vec![test("r1", Author::Independent), test("r2", Author::Independent)];
+        let tests2 = vec![
+            test("r1", Author::Independent),
+            test("r2", Author::Independent),
+        ];
         let w = with_cells(cand(1), &[("r1", Cell::Pass), ("r2", Cell::Pass)]);
         let l1 = with_cells(cand(2), &[("r1", Cell::Fail), ("r2", Cell::Pass)]);
         let l2 = with_cells(cand(3), &[("r1", Cell::Fail), ("r2", Cell::Pass)]);

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -7,44 +6,48 @@ use anyhow::Result;
 use codex_config::HookStateToml;
 use codex_config::McpServerConfig;
 use codex_config::test_support::CloudConfigBundleFixture;
+use codex_core::ForkSnapshot;
 use codex_core::StartThreadOptions;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
-use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_core::config::ThreadStoreConfig;
 use codex_features::Feature;
+use codex_history::InitialHistory;
 use codex_history::RolloutItem;
-use codex_history::RolloutLine;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::built_in_model_providers;
-use codex_plugin::PluginHookSource;
-use codex_plugin::PluginId;
+use codex_models_manager::bundled_models_response;
 use codex_protocol::items::parse_hook_prompt_fragment;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::NetworkPermissions;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookEventName;
+use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSettingsOverrides;
+use codex_protocol::protocol::TurnSettingsUpdate;
+use codex_protocol::protocol::TurnSettingsUpdateOutcome;
 use codex_protocol::request_permissions::PermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
+use codex_protocol::request_user_input::RequestUserInputAnswer;
+use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
 use codex_thread_store::InMemoryThreadStore;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use core_test_support::TestTargetOs;
 use core_test_support::fs_wait;
 use core_test_support::hooks::trust_discovered_hooks;
-use core_test_support::hooks::trust_hooks;
-use core_test_support::managed_network_requirements_loader;
 use core_test_support::responses;
 use core_test_support::responses::ev_apply_patch_custom_tool_call;
 use core_test_support::responses::ev_assistant_message;
@@ -68,21 +71,29 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::test_target_os;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_match;
 use core_test_support::wait_for_mcp_server;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 use tokio::time::timeout;
+use tracing_test::traced_test;
 
 const FIRST_CONTINUATION_PROMPT: &str = "Retry with exactly the phrase meow meow meow.";
 const SECOND_CONTINUATION_PROMPT: &str = "Now tighten it to just: meow.";
 const BLOCKED_PROMPT_CONTEXT: &str = "Remember the blocked lighthouse note.";
 const PERMISSION_REQUEST_HOOK_MATCHER: &str = "^Bash$";
 const PERMISSION_REQUEST_ALLOW_REASON: &str = "should not be used for allow";
+
+#[cfg(test)]
+#[path = "hooks_cwd_tests.rs"]
+mod cwd_tests;
 
 #[tokio::test]
 async fn managed_hook_discovery_failure_rejects_session_startup_when_hooks_enabled() -> Result<()> {
@@ -157,24 +168,6 @@ fn non_openai_model_provider(server: &wiremock::MockServer) -> ModelProviderInfo
     provider.base_url = Some(format!("{}/v1", server.uri()));
     provider.supports_websockets = false;
     provider
-}
-
-fn trust_plugin_hooks(config: &mut Config, plugin_hook_sources: Vec<PluginHookSource>) {
-    config
-        .features
-        .enable(Feature::CodexHooks)
-        .expect("test config should allow feature update");
-    let listed = codex_hooks::list_hooks(codex_hooks::HooksConfig {
-        feature_enabled: true,
-        config_layer_stack: Some(config.config_layer_stack.clone()),
-        plugin_hook_sources,
-        ..codex_hooks::HooksConfig::default()
-    });
-    assert!(
-        !listed.hooks.is_empty(),
-        "trusted plugin hook fixture should discover at least one hook"
-    );
-    trust_hooks(config, listed.hooks);
 }
 
 fn write_stop_hook(home: &Path, block_prompts: &[&str]) -> Result<()> {
@@ -459,7 +452,7 @@ with Path(r"{log_path}").open("a", encoding="utf-8") as handle:
     Ok(())
 }
 
-fn write_pre_tool_use_hook(
+pub(super) fn write_pre_tool_use_hook(
     home: &Path,
     matcher: Option<&str>,
     mode: &str,
@@ -538,7 +531,7 @@ elif mode == "exit_2":
     Ok(())
 }
 
-fn write_updating_pre_tool_use_hook(
+pub(super) fn write_updating_pre_tool_use_hook(
     home: &Path,
     matcher: &str,
     updated_input: &Value,
@@ -727,7 +720,7 @@ elif mode == "exit_2":
     Ok(())
 }
 
-fn install_allow_permission_request_hook(home: &Path) -> Result<()> {
+pub(super) fn install_allow_permission_request_hook(home: &Path) -> Result<()> {
     write_permission_request_hook(
         home,
         Some(PERMISSION_REQUEST_HOOK_MATCHER),
@@ -1145,7 +1138,7 @@ fn rollout_hook_prompt_texts(text: &str) -> Result<Vec<String>> {
         if trimmed.is_empty() {
             continue;
         }
-        let rollout: RolloutLine = serde_json::from_str(trimmed).context("parse rollout line")?;
+        let rollout = codex_rollout::parse_rollout_line(trimmed).context("parse rollout line")?;
         if let RolloutItem::ResponseItem(envelope) = rollout.item
             && let ResponseItem::Message { role, content, .. } = envelope.item
             && role == "user"
@@ -1190,7 +1183,7 @@ fn read_pre_tool_use_hook_inputs(home: &Path) -> Result<Vec<serde_json::Value>> 
     read_hook_inputs_from_log(home.join("pre_tool_use_hook_log.jsonl").as_path())
 }
 
-fn read_permission_request_hook_inputs(home: &Path) -> Result<Vec<serde_json::Value>> {
+pub(super) fn read_permission_request_hook_inputs(home: &Path) -> Result<Vec<serde_json::Value>> {
     fs::read_to_string(home.join("permission_request_hook_log.jsonl"))
         .context("read permission request hook log")?
         .lines()
@@ -1613,6 +1606,157 @@ async fn session_start_runs_before_user_prompt_submit_on_first_turn() -> Result<
 }
 
 #[tokio::test]
+async fn forked_thread_matches_fork_session_start_without_repeating_startup_context() -> Result<()>
+{
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_completed("resp-1")]),
+            sse(vec![ev_completed("resp-2")]),
+            sse(vec![ev_completed("resp-fork")]),
+        ],
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_pre_build_hook(|home| {
+            let script_path = home.join("session_start_hook.py");
+            fs::write(
+                &script_path,
+                r#"import json
+import sys
+
+source = json.load(sys.stdin)["source"]
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": source + " hook context"
+}}))
+"#,
+            )
+            .expect("write session start hook");
+            let groups = ["^startup$", "^fork$"].map(|matcher| {
+                serde_json::json!({
+                    "matcher": matcher,
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("python3 {}", script_path.display()),
+                    }],
+                })
+            });
+            fs::write(
+                home.join("hooks.json"),
+                serde_json::json!({"hooks": {"SessionStart": groups}}).to_string(),
+            )
+            .expect("write hooks.json");
+        })
+        .with_config(trust_discovered_hooks);
+    // Command hooks run on the host and require a host-native working directory.
+    let test = builder.build(&server).await?;
+    test.submit_turn("first prompt").await?;
+    test.submit_turn("second prompt").await?;
+    test.codex.flush_rollout().await?;
+
+    let forked = test
+        .thread_manager
+        .fork_legacy_thread(
+            ForkSnapshot::TruncateBeforeNthUserMessage(1),
+            StartThreadOptions::new(test.config.clone()),
+            test.codex.rollout_path().expect("parent rollout path"),
+        )
+        .await?
+        .thread;
+    forked
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "edited second prompt".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&forked, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    let hook_contexts = requests[2]
+        .message_input_texts("developer")
+        .into_iter()
+        .filter(|message| {
+            matches!(
+                message.as_str(),
+                "startup hook context" | "fork hook context"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        hook_contexts,
+        vec!["startup hook context", "fork hook context"]
+    );
+
+    forked.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn explicit_history_runs_resume_session_start_hook() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response = mount_sse_once(&server, sse(vec![ev_completed("resp-resume")])).await;
+    let mut builder = test_codex()
+        .with_pre_build_hook(|home| {
+            write_resume_and_compact_session_start_hook_with_context(
+                home,
+                "resume hook context",
+                "compact hook context",
+            )
+            .expect("write resume session start hook");
+        })
+        .with_config(trust_discovered_hooks);
+    // Command hooks run on the host and require a host-native working directory.
+    let test = builder.build(&server).await?;
+    let history = InitialHistory::Forked(vec![RolloutItem::ResponseItem(
+        responses::user_message_item("supplied history").into(),
+    )]);
+    let resumed = test
+        .thread_manager
+        .resume_thread_with_history(
+            test.config.clone(),
+            history,
+            test.thread_manager.auth_manager(),
+            /*parent_trace*/ None,
+            ClientMcpExtensions::default(),
+        )
+        .await?
+        .thread;
+    resumed
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "continue".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&resumed, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let hook_inputs = read_session_start_hook_inputs(test.codex_home_path())?;
+    assert_eq!(
+        hook_inputs
+            .iter()
+            .filter_map(|input| input.get("source").and_then(Value::as_str))
+            .collect::<Vec<_>>(),
+        vec!["resume"],
+    );
+    assert!(
+        response
+            .single_request()
+            .message_input_texts("developer")
+            .iter()
+            .any(|message| message == "resume hook context"),
+    );
+
+    resumed.shutdown_and_wait().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn async_hook_context_is_injected_into_the_active_turn() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1774,12 +1918,10 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
         .await
         .context("timed out waiting for the async hook to start")?;
 
-    fs::write(
-        test.codex_home_path()
-            .join("async_user_prompt_submit_release"),
-        "ready",
-    )
-    .context("release gated async hook")?;
+    let release_path = test
+        .codex_home_path()
+        .join("async_user_prompt_submit_release");
+    fs::write(&release_path, "ready").context("release gated async hook")?;
 
     let finished_path = test
         .codex_home_path()
@@ -1800,6 +1942,10 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
         1,
         "an async hook result from the previous turn must not start a model turn"
     );
+
+    // Keep the next prompt's hook pending so only the first hook's buffered
+    // output can contribute to the next model turn.
+    fs::remove_file(release_path).context("reset the async hook gate")?;
 
     let next_prompt = "observe the buffered async context";
     let next_turn = if automatic_continuation {
@@ -1878,6 +2024,7 @@ async fn async_hook_finishing_while_idle_waits_for_the_next_turn(
         "buffered async hook context should precede the next user prompt"
     );
 
+    test.codex.shutdown_and_wait().await?;
     Ok(())
 }
 
@@ -2575,7 +2722,9 @@ async fn multiple_blocking_stop_hooks_persist_multiple_hook_prompt_fragments() -
     Ok(())
 }
 
+/// A blocked prompt keeps hook context but never reaches prompt telemetry, the rollout, or the model.
 #[tokio::test]
+#[traced_test]
 async fn blocked_user_prompt_submit_persists_additional_context_for_next_turn() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -2595,11 +2744,40 @@ async fn blocked_user_prompt_submit_persists_additional_context_for_next_turn() 
             write_user_prompt_submit_hook(home, "blocked first prompt", BLOCKED_PROMPT_CONTEXT)
                 .expect("failed to write user prompt submit hook test fixture");
         })
-        .with_config(trust_discovered_hooks);
+        .with_config(|config| {
+            trust_discovered_hooks(config);
+            config.otel.log_user_prompt = true;
+        });
     let test = builder.build(&server).await?;
 
-    test.submit_turn("blocked first prompt").await?;
+    test.codex
+        .start_turn_if_idle(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "blocked first prompt".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
     test.submit_turn("second prompt").await?;
+
+    logs_assert(|lines| {
+        let prompts: Vec<_> = lines
+            .iter()
+            .filter(|line| line.contains("codex.user_prompt") && line.contains(" prompt="))
+            .collect();
+        if prompts.len() == 1 && prompts[0].contains("prompt=second prompt") {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected only the accepted prompt in telemetry: {prompts:?}"
+            ))
+        }
+    });
+    let rollout = fs::read_to_string(test.codex.rollout_path().expect("rollout path"))?;
+    assert!(!rollout.contains("blocked first prompt"));
+    assert!(rollout.contains("second prompt"));
 
     let request = response.single_request();
     assert!(
@@ -2650,7 +2828,9 @@ async fn blocked_user_prompt_submit_persists_additional_context_for_next_turn() 
     Ok(())
 }
 
+/// Queued input is logged exactly once after acceptance; a later blocked prompt cannot leak or strand it.
 #[tokio::test]
+#[traced_test]
 async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -2669,11 +2849,11 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Resu
             body: sse_event(ev_output_text_delta("first ")),
         },
         StreamingSseChunk {
-            gate: None,
+            gate: Some(gate_completed_rx),
             body: sse_event(ev_message_item_done("msg-1", "first response")),
         },
         StreamingSseChunk {
-            gate: Some(gate_completed_rx),
+            gate: None,
             body: sse_event(ev_completed("resp-1")),
         },
     ];
@@ -2694,7 +2874,10 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Resu
             write_user_prompt_submit_hook(home, "blocked queued prompt", BLOCKED_PROMPT_CONTEXT)
                 .expect("failed to write user prompt submit hook test fixture");
         })
-        .with_config(trust_discovered_hooks);
+        .with_config(move |config| {
+            trust_discovered_hooks(config);
+            config.otel.log_user_prompt = true;
+        });
     let test = builder.build_with_streaming_server(&server).await?;
 
     test.codex
@@ -2735,9 +2918,32 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Resu
     .into_iter()
     .collect::<Vec<_>>();
 
-    sleep(Duration::from_millis(100)).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     assert_eq!(requests.len(), 2);
+
+    logs_assert(|lines| {
+        let prompts: Vec<_> = lines
+            .iter()
+            .filter(|line| line.contains("codex.user_prompt") && line.contains(" prompt="))
+            .collect();
+        if prompts.len() == 2
+            && prompts[0].contains("prompt=initial prompt")
+            && prompts[1].contains("prompt=accepted queued prompt")
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "expected only accepted prompts in telemetry: {prompts:?}"
+            ))
+        }
+    });
+    let rollout = fs::read_to_string(test.codex.rollout_path().expect("rollout path"))?;
+    assert!(!rollout.contains("blocked queued prompt"));
+    assert!(rollout.contains("accepted queued prompt"));
 
     let second_user_texts = request_message_input_texts(&requests[1], "user");
     assert!(
@@ -2748,6 +2954,28 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Resu
         !second_user_texts.contains(&"blocked queued prompt".to_string()),
         "second request should not include the blocked queued prompt",
     );
+
+    let history = test.codex.conversation_history_snapshot().await;
+    assert!(history.retained_context().is_some());
+    let retained = serde_json::to_value(history.retained_context().cloned().unwrap_or_default())?;
+    let messages = retained["user_messages"]
+        .as_array()
+        .expect("retained user messages");
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message["text"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!("initial prompt"), json!("accepted queued prompt")],
+    );
+    assert!(
+        messages
+            .windows(2)
+            .all(|pair| pair[0]["order"].as_u64() < pair[1]["order"].as_u64())
+    );
+    // Three accepted input positions (including the blocked prompt), then
+    // the two completed assistant messages.
+    assert_eq!(retained["next_order"], json!(5));
 
     let hook_inputs = read_user_prompt_submit_hook_inputs(test.codex_home_path())?;
     assert_eq!(hook_inputs.len(), 3);
@@ -3213,7 +3441,7 @@ mode = "limited"
 allow_local_binding = true
 "#,
     )?;
-    let args = serde_json::json!({ "cmd": command });
+    let args = serde_json::json!({ "cmd": command, "workdir": "network-workdir" });
     let responses = mount_sse_sequence(
         &server,
         vec![
@@ -3244,8 +3472,26 @@ allow_local_binding = true
                 hook_reason,
             )
             .expect("failed to write permission request hook test fixture");
+            let script_path = home.join("permission_request_hook.py");
+            let script = fs::read_to_string(&script_path)
+                .expect("read permission request hook script")
+                .replace(
+                    "payload = json.load(sys.stdin)",
+                    "payload = json.load(sys.stdin)\npayload['process_cwd'] = str(Path.cwd())",
+                );
+            fs::write(script_path, script).expect("record network hook process cwd");
         })
-        .with_cloud_config_bundle(managed_network_requirements_loader())
+        .with_cloud_config_bundle(
+            CloudConfigBundleFixture::loader_with_enterprise_requirement(
+                r#"
+[experimental_network]
+enabled = true
+allow_local_binding = true
+allowed_domains = ["**.invalid"]
+review_domains = ["codex-network-test.invalid"]
+"#,
+            ),
+        )
         .with_config(move |config| {
             trust_discovered_hooks(config);
             config.approvals_reviewer = codex_config::types::ApprovalsReviewer::AutoReview;
@@ -3257,6 +3503,8 @@ allow_local_binding = true
         })
         .build(&server)
         .await?;
+    let execution_cwd = test.workspace_path_uri("network-workdir")?;
+    fs::create_dir(execution_cwd.to_abs_path()?).context("create network command workdir")?;
 
     test.submit_turn_with_approval_and_permission_profile(
         "run the shell command after the network permission hook",
@@ -3293,11 +3541,21 @@ allow_local_binding = true
         );
     }
 
-    assert_single_permission_request_hook_input(
+    let hook_inputs = assert_single_permission_request_hook_input(
         test.codex_home_path(),
         command,
         Some("network-access http://codex-network-test.invalid:80"),
     )?;
+    assert_eq!(
+        json!({
+            "cwd": hook_inputs[0]["cwd"],
+            "process_cwd": hook_inputs[0]["process_cwd"],
+        }),
+        json!({
+            "cwd": execution_cwd.inferred_native_path_string(),
+            "process_cwd": dunce::canonicalize(&test.config.cwd)?.to_string_lossy(),
+        }),
+    );
     let requests = responses.requests();
     assert_eq!(
         requests
@@ -3413,6 +3671,143 @@ async fn pre_tool_use_json_deny_blocks_exec_command_before_execution() -> Result
             .as_str()
             .is_some_and(|turn_id| !turn_id.is_empty())
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn pre_tool_use_hook_model_tracks_step_after_a_turn_update() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let request_user_input_call_id = "pause-before-pretooluse-exec-command";
+    let call_id = "pretooluse-exec-command";
+    let model_a = "pretooluse-attribution-a";
+    let model_b = "pretooluse-attribution-b";
+    let command = "echo attribution";
+    let args = serde_json::json!({ "cmd": command });
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_function_call(
+                    request_user_input_call_id,
+                    "request_user_input",
+                    r#"{"questions":[{"id":"continue","header":"Continue","question":"Continue?","options":[{"label":"Yes (Recommended)","description":"Run it."},{"label":"No","description":"Stop."}]}]}"#,
+                ),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                core_test_support::responses::ev_function_call(
+                    call_id,
+                    "exec_command",
+                    &serde_json::to_string(&args)?,
+                ),
+                ev_completed("resp-2"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-3"),
+                ev_assistant_message("msg-1", "hook blocked it"),
+                ev_completed("resp-3"),
+            ]),
+        ],
+    )
+    .await;
+
+    let base_model = bundled_models_response()
+        .expect("bundled models should parse")
+        .models
+        .into_iter()
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("bundled gpt-5.5 model");
+    let models = [model_a, model_b]
+        .into_iter()
+        .map(|slug| {
+            let mut model = base_model.clone();
+            model.slug = slug.to_string();
+            model
+        })
+        .collect();
+    let mut builder = test_codex()
+        .with_model(model_a)
+        .with_pre_build_hook(|home| {
+            write_pre_tool_use_hook(home, Some("^Bash$"), "json_deny", "blocked by pre hook")
+                .expect("failed to write pre tool use hook test fixture");
+        })
+        .with_config(move |config| {
+            trust_discovered_hooks(config);
+            for feature in [
+                Feature::StepModelSwitching,
+                Feature::DefaultModeRequestUserInput,
+            ] {
+                config
+                    .features
+                    .enable(feature)
+                    .expect("test config should allow feature update");
+            }
+            config.model_catalog = Some(ModelsResponse { models });
+        });
+    let test = builder.build(&server).await?;
+
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+    test.codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "run the blocked shell command".to_string(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                ..Default::default()
+            }),
+        )
+        .await?;
+
+    let request = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::RequestUserInput(request) => Some(request.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(request.call_id, request_user_input_call_id);
+    let (reply, outcome) = oneshot::channel();
+    test.codex
+        .submit(Op::TurnSettings {
+            turn_id: request.turn_id.clone(),
+            update: TurnSettingsUpdate {
+                model: Some(model_b.to_string()),
+                effort: Some(Some(ReasoningEffort::High)),
+                ..Default::default()
+            },
+            reply,
+        })
+        .await?;
+    assert_eq!(outcome.await?, TurnSettingsUpdateOutcome::Applied);
+    test.codex
+        .submit(Op::UserInputAnswer {
+            id: request.turn_id,
+            response: RequestUserInputResponse {
+                answers: HashMap::from([(
+                    "continue".to_string(),
+                    RequestUserInputAnswer {
+                        answers: vec!["Yes (Recommended)".to_string()],
+                    },
+                )]),
+            },
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert_eq!(responses.requests().len(), 3);
+    let hook_inputs = read_pre_tool_use_hook_inputs(test.codex_home_path())?;
+    assert_eq!(hook_inputs.len(), 1);
+    assert_eq!(hook_inputs[0]["model"], model_b);
 
     Ok(())
 }
@@ -4240,6 +4635,7 @@ async fn local_bundled_cleanup_hook_runs_without_saved_trust(
         HookStateToml {
             enabled: Some(false),
             trusted_hash: None,
+            trusted_content_hash: None,
         },
     )]);
     if !hooks_enabled {
@@ -4255,6 +4651,7 @@ async fn local_bundled_cleanup_hook_runs_without_saved_trust(
                 HookStateToml {
                     enabled: None,
                     trusted_hash: Some(hook.current_hash),
+                    trusted_content_hash: None,
                 },
             );
         }
@@ -4322,8 +4719,11 @@ async fn plugin_pre_tool_use_blocks_exec_command_before_execution() -> Result<()
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
     let call_id = "plugin-pretooluse-exec-command";
-    let marker = std::env::temp_dir().join("plugin-pretooluse-exec-command-marker");
+    let same_turn_call_id = "plugin-pretooluse-exec-command-same-turn";
+    let changed_call_id = "plugin-pretooluse-changed-script";
+    let marker = home.path().join("plugin-pretooluse-exec-command-marker");
     let command = format!("printf blocked > {}", marker.display());
     let args = serde_json::json!({ "cmd": command });
     let responses = mount_sse_sequence(
@@ -4339,6 +4739,24 @@ async fn plugin_pre_tool_use_blocks_exec_command_before_execution() -> Result<()
                 ev_completed("resp-1"),
             ]),
             sse(vec![
+                ev_response_created("resp-same-turn"),
+                ev_function_call(
+                    same_turn_call_id,
+                    "exec_command",
+                    &serde_json::to_string(&args)?,
+                ),
+                ev_completed("resp-same-turn"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-changed"),
+                ev_function_call(
+                    changed_call_id,
+                    "exec_command",
+                    &serde_json::to_string(&args)?,
+                ),
+                ev_completed("resp-changed"),
+            ]),
+            sse(vec![
                 ev_response_created("resp-2"),
                 ev_assistant_message("msg-1", "plugin hook blocked it"),
                 ev_completed("resp-2"),
@@ -4347,7 +4765,6 @@ async fn plugin_pre_tool_use_blocks_exec_command_before_execution() -> Result<()
     )
     .await;
 
-    let home = Arc::new(TempDir::new()?);
     let plugin_root = home.path().join("plugins/cache/test/sample/local");
     let hooks_dir = plugin_root.join("hooks");
     fs::create_dir_all(plugin_root.join(".codex-plugin"))
@@ -4362,18 +4779,40 @@ async fn plugin_pre_tool_use_blocks_exec_command_before_execution() -> Result<()
         home.path().join("config.toml"),
         r#"[plugins."sample@test"]
 enabled = true
+
+# Declaration-only approvals from before content fingerprinting.
+[hooks.state."sample@test:hooks/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:c9ee1aca1b5d8c72b99df6571c87d61350b09f7f4594ae30e7250a2027e9d76b"
+[hooks.state."sample@test:hooks/hooks.json:post_tool_use:0:0"]
+trusted_hash = "sha256:9eef43ad6f26b1f9b94f318a50445f8bb62c363da08152a2966b73d308bf42ba"
 "#,
     )
     .context("write plugin config")?;
 
     let script_path = hooks_dir.join("pre_tool_use_hook.py");
-    let log_path = hooks_dir.join("pre_tool_use_hook_log.jsonl");
+    let log_path = home.path().join("pre_tool_use_hook_log.jsonl");
+    fs::write(
+        hooks_dir.join("hook_support.py"),
+        "DENIAL_REASON = 'blocked by plugin hook'\n",
+    )
+    .context("write bundled hook module")?;
     fs::write(
         &script_path,
         format!(
             r#"import json
 from pathlib import Path
 import sys
+sys.path.insert(0, str(Path(__file__).parent))
+from hook_support import DENIAL_REASON
+
+root = Path(__file__).parents[1]
+for relative in (".venv/pyvenv.cfg", "sample.egg-info/PKG-INFO"):
+    artifact = root / relative
+    artifact.parent.mkdir(exist_ok=True)
+    artifact.write_text("generated")
+python_link = root / ".venv/python"
+if sys.platform != "win32" and not python_link.exists():
+    python_link.symlink_to(sys.executable)
 
 payload = json.load(sys.stdin)
 with Path(r"{log_path}").open("a", encoding="utf-8") as handle:
@@ -4383,9 +4822,12 @@ print(json.dumps({{
     "hookSpecificOutput": {{
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
-        "permissionDecisionReason": "blocked by plugin hook"
+        "permissionDecisionReason": DENIAL_REASON
     }}
 }}))
+if len(Path(r"{log_path}").read_text().splitlines()) == 2:
+    with Path(__file__).open("a", encoding="utf-8") as script:
+        script.write("\n# updated plugin bundle\n")
 "#,
             log_path = log_path.display(),
         ),
@@ -4397,30 +4839,20 @@ print(json.dumps({{
       "matcher": "^Bash$",
       "hooks": [{
         "type": "command",
-        "command": "python3 ${PLUGIN_ROOT}/hooks/pre_tool_use_hook.py"
+        "command": "python3 -I -S ${PLUGIN_ROOT}/hooks/pre_tool_use_hook.py"
+      }]
+    }],
+    "PostToolUse": [{
+      "matcher": "^Bash$",
+      "hooks": [{
+        "type": "command",
+        "command": "python3 -I -S ${PLUGIN_ROOT}/hooks/pre_tool_use_hook.py"
       }]
     }]
   }
 }"#;
     let plugin_hooks_path = hooks_dir.join("hooks.json");
     fs::write(&plugin_hooks_path, plugin_hooks_json).context("write plugin hooks config")?;
-    let plugin_root_abs =
-        AbsolutePathBuf::try_from(plugin_root.clone()).context("absolute plugin root")?;
-    let plugin_hooks_path_abs =
-        AbsolutePathBuf::try_from(plugin_hooks_path).context("absolute plugin hooks path")?;
-    let plugin_data_root =
-        AbsolutePathBuf::try_from(plugin_root.join("data")).context("absolute plugin data root")?;
-    let plugin_hook_sources = vec![PluginHookSource {
-        plugin_id: PluginId::parse("sample@test").context("plugin id")?,
-        plugin_root: plugin_root_abs,
-        plugin_data_root,
-        source_path: plugin_hooks_path_abs,
-        source_relative_path: "hooks/hooks.json".to_string(),
-        hooks: serde_json::from_str::<codex_config::HooksFile>(plugin_hooks_json)
-            .context("parse plugin hooks")?
-            .hooks,
-    }];
-
     let mut builder = test_codex()
         .with_home(Arc::clone(&home))
         .with_config(move |config| {
@@ -4428,13 +4860,11 @@ print(json.dumps({{
                 .features
                 .enable(Feature::Plugins)
                 .expect("test config should allow feature update");
-            trust_plugin_hooks(config, plugin_hook_sources);
+            config.features.enable(Feature::CodexHooks).unwrap();
         });
     let test = builder.build(&server).await?;
-
-    if marker.exists() {
-        fs::remove_file(&marker).context("remove leftover plugin pre tool use marker")?;
-    }
+    assert!(!home.path().join(".hook-trust").exists());
+    let legacy_config = fs::read_to_string(home.path().join("config.toml"))?;
 
     test.submit_turn_with_policy(
         "run the shell command blocked by a plugin hook",
@@ -4443,7 +4873,7 @@ print(json.dumps({{
     .await?;
 
     let requests = responses.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 4);
     let output_item = requests[1].function_call_output(call_id);
     let output = output_item
         .get("output")
@@ -4453,17 +4883,32 @@ print(json.dumps({{
         output.contains("Command blocked by PreToolUse hook: blocked by plugin hook"),
         "blocked tool output should surface the plugin hook reason",
     );
+    assert!(marker.exists(), "the modified hook must not execute again");
     assert!(
-        !marker.exists(),
-        "plugin hook should block shell command execution"
+        requests[2].function_call_output(same_turn_call_id)["output"]
+            .as_str()
+            .unwrap()
+            .contains("Command blocked by PreToolUse hook")
     );
 
     let hook_inputs = read_hook_inputs_from_log(&log_path)?;
-    assert_eq!(hook_inputs.len(), 1);
+    // A legacy hook first used after a bundle change must share the earlier baseline.
+    assert_eq!(hook_inputs.len(), 2);
     assert_eq!(hook_inputs[0]["hook_event_name"], "PreToolUse");
     assert_eq!(hook_inputs[0]["tool_name"], "Bash");
     assert_eq!(hook_inputs[0]["tool_use_id"], call_id);
     assert_eq!(hook_inputs[0]["tool_input"]["command"], command);
+    assert!(
+        hooks_dir.join("__pycache__").exists(),
+        "isolated Python should create bytecode without invalidating hook trust"
+    );
+    assert_eq!(hook_inputs[1]["tool_use_id"], same_turn_call_id);
+    // Migration keeps declaration-only approvals readable by older clients.
+    assert_eq!(
+        fs::read_to_string(home.path().join("config.toml"))?,
+        legacy_config
+    );
+    assert_eq!(fs::read_dir(home.path().join(".hook-trust"))?.count(), 1);
 
     Ok(())
 }
@@ -5627,5 +6072,300 @@ async fn post_tool_use_records_apply_patch_context_with_edit_alias() -> Result<(
     assert_eq!(hook_inputs[0]["tool_use_id"], call_id);
     assert_eq!(hook_inputs[0]["tool_input"]["command"], patch);
 
+    Ok(())
+}
+
+pub(super) fn write_lifecycle_hooks(home: &Path, events: &[&str]) -> Result<()> {
+    let mut hooks = serde_json::Map::new();
+    for event in events {
+        let log = home.join(format!("{event}.jsonl"));
+        let command = format!(
+            "cat >> '{log}'; echo >> '{log}'; printf '%s' '{{\"continue\":false,\"decision\":\"block\",\"reason\":\"ignored-observer-control\"}}'",
+            log = log.display(),
+        );
+        hooks.insert(
+            (*event).into(),
+            json!([{"hooks": [{"type": "command", "command": command}]}]),
+        );
+    }
+    fs::write(home.join("hooks.json"), json!({"hooks": hooks}).to_string())?;
+    Ok(())
+}
+
+async fn wait_for_hook_inputs(home: &Path, event: &str, count: usize) -> Result<Vec<Value>> {
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(inputs) = read_hook_inputs_from_log(&home.join(format!("{event}.jsonl")))
+                && inputs.len() >= count
+            {
+                return Ok(inputs);
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?
+}
+
+#[tokio::test]
+async fn model_request_hooks_report_failures_and_retries_but_cannot_veto() -> Result<()> {
+    core_test_support::skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let requests = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_response_created("failed-attempt")]),
+            sse(vec![
+                ev_response_created("successful-attempt"),
+                ev_assistant_message("answer", "done"),
+                ev_completed_with_tokens("successful-attempt", /*total_tokens*/ 42),
+            ]),
+        ],
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_pre_build_hook(|home| {
+            write_lifecycle_hooks(home, &["PreModelRequest", "PostModelRequest"]).unwrap()
+        })
+        .with_config(trust_discovered_hooks);
+    let test = builder.build(&server).await?;
+    test.submit_turn("respond").await?;
+    for request in requests.requests() {
+        assert!(
+            !request
+                .body_json()
+                .to_string()
+                .contains("ignored-observer-control")
+        );
+    }
+    let pre = wait_for_hook_inputs(test.codex_home_path(), "PreModelRequest", /*count*/ 2).await?;
+    let post =
+        wait_for_hook_inputs(test.codex_home_path(), "PostModelRequest", /*count*/ 2).await?;
+    assert_eq!(pre.len(), 2);
+    assert_eq!(post.len(), 2);
+    assert_eq!(post[0]["status"], "failed");
+    assert!(post[0]["error"].is_string());
+    assert_eq!(post[1]["status"], "completed");
+    assert_eq!(post[1]["error"], Value::Null);
+    assert_eq!(post[0]["token_usage"], Value::Null);
+    assert_eq!(
+        post[1]["token_usage"],
+        json!({
+            "input_tokens": 42,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 42,
+        })
+    );
+    for (before, after) in pre.iter().zip(&post) {
+        let mut common = after.clone();
+        common["hook_event_name"] = json!("PreModelRequest");
+        let fields = common.as_object_mut().unwrap();
+        fields.remove("status");
+        fields.remove("error");
+        fields.remove("token_usage");
+        assert_eq!(before, &common);
+        assert!(before["session_id"].is_string());
+        assert!(before["cwd"].is_string());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_request_observer_reports_cancellation() -> Result<()> {
+    core_test_support::skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let request_received = Arc::new(tokio::sync::Notify::new());
+    let notify = Arc::clone(&request_received);
+    responses::mount_response_once_match(
+        &server,
+        move |_: &wiremock::Request| {
+            notify.notify_one();
+            true
+        },
+        responses::sse_response(responses::sse_completed("initial"))
+            .set_delay(Duration::from_secs(60)),
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_pre_build_hook(|home| {
+            write_lifecycle_hooks(home, &["PreModelRequest", "PostModelRequest"]).unwrap()
+        })
+        .with_config(trust_discovered_hooks);
+    let test = builder.build(&server).await?;
+    test.codex
+        .start_or_steer_turn(codex_core::TurnInputRequest::user_input(vec![
+            codex_protocol::user_input::UserInput::Text {
+                text: "respond".into(),
+                text_elements: vec![],
+            },
+        ]))
+        .await?;
+    timeout(Duration::from_secs(10), request_received.notified()).await?;
+    test.codex
+        .submit(codex_protocol::protocol::Op::Interrupt)
+        .await?;
+    let post =
+        wait_for_hook_inputs(test.codex_home_path(), "PostModelRequest", /*count*/ 1).await?;
+    assert_eq!(post.len(), 1);
+    assert_eq!(post[0]["status"], "cancelled");
+    assert_eq!(post[0]["token_usage"], Value::Null);
+    Ok(())
+}
+
+#[test_case::test_case(Some(false), false; "sync finishes before dispatch")]
+#[test_case::test_case(Some(false), true; "resume after interrupt preserves aborted custom call and usage")]
+#[test_case::test_case(Some(true), false; "async dispatches before stream ends")]
+#[test_case::test_case(None, false; "no post hook dispatches before stream ends")]
+#[tokio::test]
+async fn model_request_post_hook_orders_tool_dispatch(
+    hook_async: Option<bool>,
+    interrupt: bool,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let (finish_stream, gate) = oneshot::channel();
+    let call = if interrupt {
+        ev_apply_patch_custom_tool_call(
+            "call",
+            "*** Begin Patch\n*** Add File: should-not-exist\n+unexpected\n*** End Patch",
+        )
+    } else {
+        ev_function_call("call", "test_sync_tool", "{}")
+    };
+    let first = vec![
+        StreamingSseChunk {
+            gate: None,
+            body: sse(vec![ev_response_created("first"), call]),
+        },
+        StreamingSseChunk {
+            gate: Some(gate),
+            body: sse_event(ev_completed_with_tokens("first", /*total_tokens*/ 42)),
+        },
+    ];
+    let second = vec![StreamingSseChunk {
+        gate: None,
+        body: sse(vec![ev_response_created("second"), ev_completed("second")]),
+    }];
+    let (server, _) = start_streaming_sse_server(vec![first, second]).await;
+    let test = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_pre_build_hook(move |home| {
+            let order = home.join("order").display().to_string();
+            let tool = format!("echo tool >> '{order}'");
+            let mut hooks =
+                json!({"PreToolUse": [{"hooks": [{"type": "command", "command": tool}]}]});
+            if let Some(hook_async) = hook_async {
+                let started = home.join("post-started");
+                let release = home.join("release-post");
+                let post = format!(
+                    "touch '{}'; while test ! -e '{}'; do sleep 0.02; done; echo post >> '{order}'",
+                    started.display(),
+                    release.display(),
+                );
+                hooks["PostModelRequest"] = json!([{"hooks": [{
+                    "type": "command", "command": post, "async": hook_async,
+                }]}]);
+            }
+            fs::write(home.join("hooks.json"), json!({"hooks": hooks}).to_string())
+                .expect("write hook configuration");
+        })
+        .with_config(trust_discovered_hooks)
+        .build_with_streaming_server(&server)
+        .await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "use the tool".into(),
+            text_elements: vec![],
+        }]))
+        .await?;
+
+    let home = test.codex_home_path();
+    let order = home.join("order");
+    let sync_post = hook_async == Some(false);
+    if !sync_post {
+        // Dispatch must not depend on the terminal response event, which we still hold.
+        fs_wait::wait_for_path_exists(&order, Duration::from_secs(10)).await?;
+    }
+    finish_stream.send(()).expect("release response stream");
+    let release = home.join("release-post");
+    if sync_post {
+        fs_wait::wait_for_path_exists(home.join("post-started"), Duration::from_secs(10)).await?;
+    }
+    if interrupt {
+        test.codex.submit(Op::Interrupt).await?;
+        wait_for_event(&test.codex, |event| matches!(event,
+            EventMsg::TokenCount(ev) if ev.info.as_ref().is_some_and(|info| info.total_token_usage.total_tokens == 42)
+        )).await;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnAborted(_))
+        })
+        .await;
+        assert!(
+            !order.exists(),
+            "interrupt must not dispatch the deferred tool"
+        );
+        fs::write(release, "")?;
+        assert!(!test.workspace_path("should-not-exist").exists());
+
+        let server = start_mock_server().await;
+        let requests = mount_sse_once(&server, responses::sse_completed("resumed")).await;
+        let resumed = test_codex().restart(&server, &test).await?;
+        let usage = resumed
+            .codex
+            .token_usage_info()
+            .await
+            .context("restored usage")?;
+        assert_eq!(usage.total_token_usage.total_tokens, 42);
+        resumed.submit_turn("continue after interrupt").await?;
+        let (output, _) = requests
+            .single_request()
+            .custom_tool_call_output_content_and_success("call")
+            .context("aborted custom tool output")?;
+        assert_eq!(output.as_deref(), Some("aborted before dispatch"));
+    } else {
+        fs::write(release, "")?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+        let events = fs::read_to_string(order)?;
+        assert!(
+            events.starts_with(if sync_post { "post\ntool\n" } else { "tool\n" }),
+            "{events}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn memory_consolidation_skips_user_model_request_hooks() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let response = mount_sse_once(&server, responses::sse_completed("memory")).await;
+    let mut test = test_codex()
+        .with_pre_build_hook(|home| {
+            write_lifecycle_hooks(home, &["PreModelRequest", "PostModelRequest"])
+                .expect("write synchronous model request hooks");
+        })
+        .with_config(trust_discovered_hooks)
+        .build(&server)
+        .await?;
+    let thread = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            session_source: Some(SessionSource::Internal(
+                InternalSessionSource::MemoryConsolidation,
+            )),
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?;
+    test.codex = thread.thread;
+    test.submit_turn("consolidate").await?;
+    response.single_request();
+    let home = test.codex_home_path();
+    for event in ["PreModelRequest", "PostModelRequest"] {
+        assert!(!home.join(format!("{event}.jsonl")).exists(), "{event} ran");
+    }
     Ok(())
 }

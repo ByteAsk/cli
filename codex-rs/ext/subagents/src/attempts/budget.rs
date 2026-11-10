@@ -76,13 +76,20 @@ impl Budget {
     pub fn eval_reserve(&self, now: Instant, measured: Option<Duration>, judge: bool) -> Duration {
         let judge_time = if judge { JUDGE_RESERVE } else { Duration::ZERO };
         match measured {
-            Some(m) => (m * 2 + judge_time).clamp(Duration::from_secs(120), Duration::from_secs(1800)),
+            Some(m) => {
+                (m * 2 + judge_time).clamp(Duration::from_secs(120), Duration::from_secs(1800))
+            }
             None => (self.left(now) / 4).clamp(Duration::from_secs(120), Duration::from_secs(1200)),
         }
     }
 
     /// Deadline for an attempt started at `now`, or why none can start.
-    pub fn child_deadline(&self, now: Instant, reserve: Duration, min_run: Duration) -> Result<Instant, String> {
+    pub fn child_deadline(
+        &self,
+        now: Instant,
+        reserve: Duration,
+        min_run: Duration,
+    ) -> Result<Instant, String> {
         let end = self.attempts_end();
         let child_end = end.checked_sub(reserve).unwrap_or(now);
         let run = child_end.saturating_duration_since(now);
@@ -118,12 +125,22 @@ mod tests {
     #[test]
     fn margin_is_at_least_ten_percent_and_the_apply_floor() {
         let t0 = Instant::now();
-        let b = Budget::new(t0, t0 + Duration::from_secs(3600), Some(Duration::from_secs(5400)), Duration::from_secs(120));
+        let b = Budget::new(
+            t0,
+            t0 + Duration::from_secs(3600),
+            Some(Duration::from_secs(5400)),
+            Duration::from_secs(120),
+        );
         assert_eq!(b.source, "task timeout");
         assert_eq!(b.margin, Duration::from_secs(540));
         assert_eq!(b.attempts_end(), t0 + Duration::from_secs(5400 - 540));
         // Short budgets keep the floor.
-        let b = Budget::new(t0, t0 + Duration::from_secs(600), None, Duration::from_secs(120));
+        let b = Budget::new(
+            t0,
+            t0 + Duration::from_secs(600),
+            None,
+            Duration::from_secs(120),
+        );
         assert_eq!(b.source, "sub-agent session deadline");
         assert_eq!(b.margin, Duration::from_secs(120));
         assert_eq!(b.attempts_end(), t0 + Duration::from_secs(480));
@@ -132,7 +149,12 @@ mod tests {
     #[test]
     fn a_new_attempt_needs_working_time_after_the_reserve() {
         let t0 = Instant::now();
-        let b = Budget::new(t0, t0, Some(Duration::from_secs(5400)), Duration::from_secs(120));
+        let b = Budget::new(
+            t0,
+            t0,
+            Some(Duration::from_secs(5400)),
+            Duration::from_secs(120),
+        );
         // 20 minutes in: 4860 - 1200 = 3660 s left; reserve a quarter (clamped to 1200).
         let now = t0 + Duration::from_secs(1200);
         let reserve = b.eval_reserve(now, None, true);
@@ -143,16 +165,27 @@ mod tests {
         let late = t0 + Duration::from_secs(4500);
         let reserve = b.eval_reserve(late, None, true);
         assert_eq!(reserve, Duration::from_secs(120));
-        let err = b.child_deadline(late, reserve, MIN).err().unwrap_or_default();
+        let err = b
+            .child_deadline(late, reserve, MIN)
+            .err()
+            .unwrap_or_default();
         assert!(err.contains("only 240s"), "{err}");
         // Past the margin nothing starts.
-        assert!(b.child_deadline(t0 + Duration::from_secs(5000), Duration::ZERO, MIN).is_err());
+        assert!(
+            b.child_deadline(t0 + Duration::from_secs(5000), Duration::ZERO, MIN)
+                .is_err()
+        );
     }
 
     #[test]
     fn measured_evaluation_time_sizes_the_reserve() {
         let t0 = Instant::now();
-        let b = Budget::new(t0, t0, Some(Duration::from_secs(5400)), Duration::from_secs(120));
+        let b = Budget::new(
+            t0,
+            t0,
+            Some(Duration::from_secs(5400)),
+            Duration::from_secs(120),
+        );
         assert_eq!(
             b.eval_reserve(t0, Some(Duration::from_secs(200)), true),
             Duration::from_secs(640)

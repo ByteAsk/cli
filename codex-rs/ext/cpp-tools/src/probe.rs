@@ -46,9 +46,7 @@ impl Probe {
             Probe::NotInstalled { tool, install_hint } => {
                 Some(format!("{tool} not installed ({install_hint})"))
             }
-            Probe::Blocked { tool, remediation } => {
-                Some(format!("{tool} blocked ({remediation})"))
-            }
+            Probe::Blocked { tool, remediation } => Some(format!("{tool} blocked ({remediation})")),
         }
     }
 }
@@ -250,9 +248,16 @@ mod tests {
 
     #[tokio::test]
     async fn missing_binary_is_not_installed() {
-        let p = probe("byteask-definitely-not-a-real-binary", &["--version"], &PathBuf::from(".")).await;
+        let p = probe(
+            "byteask-definitely-not-a-real-binary",
+            &["--version"],
+            &PathBuf::from("."),
+        )
+        .await;
         match p {
-            Probe::NotInstalled { tool, .. } => assert_eq!(tool, "byteask-definitely-not-a-real-binary"),
+            Probe::NotInstalled { tool, .. } => {
+                assert_eq!(tool, "byteask-definitely-not-a-real-binary")
+            }
             other => panic!("expected NotInstalled, got {other:?}"),
         }
     }
@@ -318,8 +323,12 @@ mod tests {
         assert!(is_perf_restricted(
             "rr needs /proc/sys/kernel/perf_event_paranoid <= 1, but it is 3."
         ));
-        assert!(is_perf_restricted("ptrace(PTRACE_TRACEME) failed: Operation not permitted"));
-        assert!(is_perf_restricted("Unable to open performance counter (PMU not available)"));
+        assert!(is_perf_restricted(
+            "ptrace(PTRACE_TRACEME) failed: Operation not permitted"
+        ));
+        assert!(is_perf_restricted(
+            "Unable to open performance counter (PMU not available)"
+        ));
         assert!(is_perf_restricted("requires CAP_SYS_ADMIN"));
     }
 

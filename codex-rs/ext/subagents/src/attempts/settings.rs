@@ -86,12 +86,21 @@ const KEYS: &[(&str, &str)] = &[
     ("BYTEASK_ATTEMPTS", "attempts"),
     ("BYTEASK_ATTEMPTS_MAX", "attempts_max"),
     ("BYTEASK_ATTEMPTS_MAX_TOKENS", "attempts_max_tokens"),
-    ("BYTEASK_ATTEMPTS_CHILD_MAX_STEPS", "attempts_child_max_steps"),
+    (
+        "BYTEASK_ATTEMPTS_CHILD_MAX_STEPS",
+        "attempts_child_max_steps",
+    ),
     ("BYTEASK_TASK_TIMEOUT_SECS", "task_timeout_secs"),
-    ("BYTEASK_ATTEMPTS_APPLY_MARGIN_SECS", "attempts_apply_margin_secs"),
+    (
+        "BYTEASK_ATTEMPTS_APPLY_MARGIN_SECS",
+        "attempts_apply_margin_secs",
+    ),
     ("BYTEASK_ATTEMPTS_MIN_SECS", "attempts_min_secs"),
     ("BYTEASK_ATTEMPTS_JUDGE", "attempts_judge"),
-    ("BYTEASK_ATTEMPTS_WRITER_GRACE_SECS", "attempts_writer_grace_secs"),
+    (
+        "BYTEASK_ATTEMPTS_WRITER_GRACE_SECS",
+        "attempts_writer_grace_secs",
+    ),
 ];
 
 fn toml_to_string(value: &Value) -> Option<String> {
@@ -208,19 +217,28 @@ mod tests {
 
     #[test]
     fn modes_parse_and_attempts_are_off_unless_set() {
-        assert_eq!(AttemptsMode::parse("adaptive"), Some(AttemptsMode::Adaptive));
+        assert_eq!(
+            AttemptsMode::parse("adaptive"),
+            Some(AttemptsMode::Adaptive)
+        );
         assert_eq!(AttemptsMode::parse(" OFF "), Some(AttemptsMode::Off));
         assert_eq!(AttemptsMode::parse("1"), Some(AttemptsMode::Off));
         assert_eq!(AttemptsMode::parse("3"), Some(AttemptsMode::Fixed(3)));
         assert_eq!(AttemptsMode::parse("9"), None);
         assert_eq!(AttemptsMode::parse("lots"), None);
-        assert_eq!(AttemptsSettings::default().effective_mode(), AttemptsMode::Off);
+        assert_eq!(
+            AttemptsSettings::default().effective_mode(),
+            AttemptsMode::Off
+        );
         let off = from(&[("attempts", "off")]);
         assert_eq!(off.effective_mode(), AttemptsMode::Off);
         let on = from(&[("attempts", "adaptive")]);
         assert_eq!(on.effective_mode(), AttemptsMode::Adaptive);
         // A malformed value keeps the default.
-        assert_eq!(from(&[("attempts", "lots")]).effective_mode(), AttemptsMode::Off);
+        assert_eq!(
+            from(&[("attempts", "lots")]).effective_mode(),
+            AttemptsMode::Off
+        );
     }
 
     #[test]
@@ -233,13 +251,20 @@ mod tests {
             ("attempts_judge", "no"),
             ("attempts_child_max_steps", "x"),
         ]);
-        assert_eq!(s.cap(AttemptsMode::Fixed(6)), 3, "the hard cap wins over a fixed count");
+        assert_eq!(
+            s.cap(AttemptsMode::Fixed(6)),
+            3,
+            "the hard cap wins over a fixed count"
+        );
         assert_eq!(s.cap(AttemptsMode::Adaptive), 3);
         assert_eq!(s.cap(AttemptsMode::Off), 1);
         assert_eq!(s.max_tokens, 100_000);
         assert_eq!(s.task_timeout_secs, Some(5400));
         assert!(!s.judge);
-        assert_eq!(s.child_max_steps, AttemptsSettings::default().child_max_steps);
+        assert_eq!(
+            s.child_max_steps,
+            AttemptsSettings::default().child_max_steps
+        );
     }
 
     #[test]

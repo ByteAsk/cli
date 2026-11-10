@@ -297,8 +297,14 @@ index 1111111..2222222 100644
 
     #[test]
     fn function_names_from_contexts() {
-        assert_eq!(function_name("static int foo(int x)").as_deref(), Some("foo"));
-        assert_eq!(function_name("void ns::A::run(const B &b) const").as_deref(), Some("ns::A::run"));
+        assert_eq!(
+            function_name("static int foo(int x)").as_deref(),
+            Some("foo")
+        );
+        assert_eq!(
+            function_name("void ns::A::run(const B &b) const").as_deref(),
+            Some("ns::A::run")
+        );
         assert_eq!(function_name("if (x)"), None);
         assert_eq!(function_name("struct thing {"), None);
     }

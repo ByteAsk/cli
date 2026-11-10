@@ -20,6 +20,7 @@ fn rate_limit_snapshot(
     RateLimitSnapshot {
         limit_id: Some("codex".to_string()),
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent,
             window_duration_mins: Some(300),
@@ -40,6 +41,7 @@ fn rate_limit_snapshot(
 
 fn account_rate_limits_response(snapshot: RateLimitSnapshot) -> GetAccountRateLimitsResponse {
     GetAccountRateLimitsResponse {
+        ordinary_usage_allowed: None,
         account_id: None,
         rate_limit_upsell: None,
         rate_limits: snapshot,
@@ -124,7 +126,6 @@ async fn backend_banner_state_survives_widget_replacement() -> Result<()> {
             app.chat_widget
                 .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         }
-        let before = render_bottom_popup(&app.chat_widget, /*width*/ 90);
         let mut tui = crate::tui::test_support::make_test_tui()?;
         let init = app.chatwidget_init_for_forked_or_resumed_thread(
             &mut tui,
@@ -137,9 +138,15 @@ async fn backend_banner_state_survives_widget_replacement() -> Result<()> {
             Box::new(PlainHistoryCell::new(Vec::new())),
         );
         app.chat_widget.pre_draw_tick();
-        assert_eq!(render_bottom_popup(&app.chat_widget, /*width*/ 90), before);
+        assert_eq!(
+            render_bottom_popup(&app.chat_widget, /*width*/ 90).contains("View usage"),
+            !dismiss
+        );
         app.chat_widget.update_backend_banner(&response);
-        assert_eq!(render_bottom_popup(&app.chat_widget, /*width*/ 90), before);
+        assert_eq!(
+            render_bottom_popup(&app.chat_widget, /*width*/ 90).contains("View usage"),
+            !dismiss
+        );
         response.rate_limit_upsell = None;
         app.chat_widget.update_backend_banner(&response);
         assert!(!render_bottom_popup(&app.chat_widget, /*width*/ 90).contains("View usage"));
@@ -223,6 +230,12 @@ async fn stale_rate_limit_reads_preserve_newer_workspace_hard_stop_for_every_ori
         ))
         .await?;
 
+        app.chat_widget
+            .on_rate_limit_snapshot(Some(rate_limit_snapshot(
+                /*used_percent*/ 20,
+                /*rate_limit_reached_type*/ None,
+                Some(false),
+            )));
         let origin = match origin_name {
             "startup" => RateLimitRefreshOrigin::StartupPrefetch {
                 reset_hint_request_id: app.chat_widget.start_rate_limit_reset_startup_check(),
@@ -295,7 +308,10 @@ async fn stale_rate_limit_reads_preserve_newer_workspace_hard_stop_for_every_ori
 
         let popup = render_bottom_popup(&app.chat_widget, /*width*/ 100);
         match origin_name {
-            "usage" => assert!(popup.contains("No usage limit resets available.")),
+            "usage" => assert!(
+                popup.contains("Redeem reset    None available"),
+                "expected usage reset availability, got: {popup}"
+            ),
             "reset-picker" => {
                 assert!(popup.contains("You don't have any usage limit resets available."));
             }
@@ -308,8 +324,8 @@ async fn stale_rate_limit_reads_preserve_newer_workspace_hard_stop_for_every_ori
 
         let status = render_status_output(&mut app, &mut app_event_rx);
         assert!(
-            status.contains("5% left"),
-            "expected {origin_name} to preserve rolling limits, got: {status}"
+            status.contains("80% left"),
+            "expected {origin_name} to preserve the last account usage snapshot, got: {status}"
         );
         deliver_usage_limit_error(&mut app);
         let popup = render_bottom_popup(&app.chat_widget, /*width*/ 100);

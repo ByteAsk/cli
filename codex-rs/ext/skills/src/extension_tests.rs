@@ -15,6 +15,16 @@ struct RecordingMetrics {
 }
 
 impl ExtensionMetrics for RecordingMetrics {
+    fn histogram_with_boundaries(
+        &self,
+        name: &str,
+        value: i64,
+        _boundaries: &[f64],
+        tags: &[(&str, &str)],
+    ) {
+        self.histogram(name, value, tags);
+    }
+
     fn counter(&self, name: &str, _inc: i64, _tags: &[(&str, &str)]) {
         panic!("unexpected counter: {name}");
     }
@@ -36,7 +46,7 @@ fn empty_catalog_records_zero_metrics_without_a_fragment() {
         CatalogSurface::ThreadContext,
         &SkillCatalog::default(),
         /*include_skills_usage_instructions*/ false,
-        SkillCatalogRenderPolicy::ExtensionCompatible,
+        SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE,
         SkillMetadataBudget::Characters(8_000),
     );
 

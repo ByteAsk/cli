@@ -37,8 +37,7 @@ use codex_extension_api::FunctionCallError;
 pub(crate) const ALLOW_ENV: &str = "BYTEASK_ALLOW_NATIVE_TOOLS";
 
 /// Tools refused by this gate, for the "what still works" half of the message.
-const STATIC_TOOLS: &str =
-    "cpp_check, cpp_tidy, cpp_nav, cpp_impact, cpp_layout, cpp_godbolt, cpp_binary, cpp_symbolize, cpp_repo_history";
+const STATIC_TOOLS: &str = "cpp_check, cpp_tidy, cpp_nav, cpp_impact, cpp_layout, cpp_godbolt, cpp_binary, cpp_symbolize, cpp_repo_history";
 
 /// Parse a truthy env value. Anything else (including unset, `0`, empty) is not
 /// an opt-in — the gate fails closed.
@@ -76,7 +75,10 @@ pub fn full_access(config: &Config) -> bool {
     let unrestricted = matches!(
         config.permissions.permission_profile(),
         PermissionProfile::Disabled
-    ) || matches!(config.legacy_sandbox_policy(), SandboxPolicy::DangerFullAccess);
+    ) || matches!(
+        config.legacy_sandbox_policy(),
+        SandboxPolicy::DangerFullAccess
+    );
     is_full_access(never, unrestricted)
 }
 

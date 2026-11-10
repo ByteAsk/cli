@@ -50,9 +50,16 @@ pub(crate) fn parse_trace(path: &str, json: &str) -> Option<FileCost> {
         let dur = event["dur"].as_u64().unwrap_or(0);
         match event["name"].as_str() {
             Some("InstantiateFunction") | Some("InstantiateClass") => {
-                let kind = if event["name"] == "InstantiateFunction" { "function" } else { "class" };
+                let kind = if event["name"] == "InstantiateFunction" {
+                    "function"
+                } else {
+                    "class"
+                };
                 let detail = event["args"]["detail"].as_str().unwrap_or("");
-                *cost.instantiations.entry(format!("{kind} {detail}")).or_default() += dur;
+                *cost
+                    .instantiations
+                    .entry(format!("{kind} {detail}"))
+                    .or_default() += dur;
             }
             Some("Total Frontend") => cost.frontend_us = cost.frontend_us.max(dur),
             _ => {}
@@ -101,12 +108,20 @@ fn trace_files(dir: &Path) -> Vec<PathBuf> {
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
-            (meta.len() <= MAX_TRACE_BYTES)
-                .then(|| (meta.modified().unwrap_or(std::time::UNIX_EPOCH), entry.into_path()))
+            (meta.len() <= MAX_TRACE_BYTES).then(|| {
+                (
+                    meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+                    entry.into_path(),
+                )
+            })
         })
         .collect();
     found.sort_by_key(|entry| std::cmp::Reverse(entry.0));
-    found.into_iter().take(READ_CAP).map(|(_, path)| path).collect()
+    found
+        .into_iter()
+        .take(READ_CAP)
+        .map(|(_, path)| path)
+        .collect()
 }
 
 fn costs_in_dir(dir: &Path) -> Vec<FileCost> {
@@ -118,7 +133,11 @@ fn costs_in_dir(dir: &Path) -> Vec<FileCost> {
                 return None;
             }
             // clang names the trace after the object: `foo.cpp.o` -> `foo.cpp.json`.
-            let name = path.strip_prefix(dir).unwrap_or(&path).to_string_lossy().into_owned();
+            let name = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
             let name = name.strip_suffix(".json").unwrap_or(&name).to_string();
             parse_trace(&name, &text)
         })
@@ -141,7 +160,11 @@ pub(crate) fn collect(trees: &[PathBuf], env: impl Fn(&str) -> Option<String>) -
             return costs;
         }
     }
-    trees.iter().filter(|tree| tree.is_dir()).flat_map(|tree| costs_in_dir(tree)).collect()
+    trees
+        .iter()
+        .filter(|tree| tree.is_dir())
+        .flat_map(|tree| costs_in_dir(tree))
+        .collect()
 }
 
 fn secs(us: u64) -> String {
@@ -152,7 +175,10 @@ fn shorten(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_string()
     } else {
-        format!("{}...", text.chars().take(max.saturating_sub(3)).collect::<String>())
+        format!(
+            "{}...",
+            text.chars().take(max.saturating_sub(3)).collect::<String>()
+        )
     }
 }
 
@@ -181,7 +207,11 @@ pub(crate) fn card(costs: &[FileCost]) -> Option<String> {
         secs(total)
     );
     for cost in files.iter().take(5) {
-        out.push_str(&format!("  {:>7}  {}\n", secs(cost.frontend_us), shorten(&cost.path, 100)));
+        out.push_str(&format!(
+            "  {:>7}  {}\n",
+            secs(cost.frontend_us),
+            shorten(&cost.path, 100)
+        ));
     }
     if !heavy.is_empty() {
         out.push_str("Heaviest template instantiations (summed over files):\n");

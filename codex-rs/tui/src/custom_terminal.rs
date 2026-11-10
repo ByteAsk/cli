@@ -27,6 +27,7 @@ use std::io::Write;
 use crossterm::cursor::MoveTo;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::queue;
+use crossterm::style::Colored;
 use crossterm::style::Colors;
 use crossterm::style::Print;
 use crossterm::style::SetAttribute;
@@ -49,6 +50,10 @@ use ratatui::style::Modifier;
 use ratatui::widgets::WidgetRef;
 
 mod cursor;
+
+#[cfg(test)]
+#[path = "custom_terminal_test_support.rs"]
+pub(crate) mod test_support;
 
 fn osc8_hyperlink_parts(symbol: &str) -> Option<(&str, &str)> {
     let content = symbol.strip_prefix("\x1b]8;;")?;
@@ -76,6 +81,9 @@ pub struct Frame<'a> {
 
     /// The buffer that is used to draw the current frame
     pub(crate) buffer: &'a mut Buffer,
+
+    /// Frame graphics to send after text, before the synchronized frame is committed.
+    pub(crate) image_placements: Vec<crate::transcript_image::ImagePlacement>,
 }
 
 impl Frame<'_> {
@@ -138,6 +146,8 @@ where
     current: usize,
     /// Whether the cursor is currently hidden
     pub hidden_cursor: bool,
+    /// Last cursor style sent successfully, so ordinary redraws do not repaint its repair anchor.
+    last_cursor_style: Option<SetCursorStyle>,
     /// Area of the viewport
     pub viewport_area: Rect,
     /// Last known size of the terminal. Used to detect if the internal buffers have to be resized.
@@ -217,6 +227,7 @@ where
             buffers: [Buffer::empty(Rect::ZERO), Buffer::empty(Rect::ZERO)],
             current: 0,
             hidden_cursor: false,
+            last_cursor_style: None,
             viewport_area: Rect::new(
                 /*x*/ 0,
                 cursor_pos.y,
@@ -246,6 +257,7 @@ where
     /// Get a Frame object which provides a consistent view into the terminal state for rendering.
     pub fn get_frame(&mut self) -> Frame<'_> {
         Frame {
+            image_placements: Vec::new(),
             cursor_position: None,
             cursor_style: SetCursorStyle::DefaultUserShape,
             viewport_area: self.viewport_area,
@@ -264,7 +276,7 @@ where
     }
 
     /// Gets the previous buffer as a reference.
-    fn previous_buffer(&self) -> &Buffer {
+    pub(crate) fn previous_buffer(&self) -> &Buffer {
         &self.buffers[1 - self.current]
     }
 
@@ -287,6 +299,10 @@ where
     /// current backend for drawing.
     pub fn flush(&mut self) -> io::Result<()> {
         let updates = diff_buffers(self.previous_buffer(), self.current_buffer());
+        self.flush_updates(updates)
+    }
+
+    fn flush_updates(&mut self, updates: Vec<DrawCommand>) -> io::Result<()> {
         let last_put_command = updates.iter().rfind(|command| command.is_put());
         if let Some(&DrawCommand::Put { x, y, .. }) = last_put_command {
             self.last_known_cursor_pos = Position { x, y };
@@ -305,31 +321,17 @@ where
 
     /// Sets the viewport area.
     pub fn set_viewport_area(&mut self, area: Rect) {
+        if self.viewport_area != area {
+            self.invalidate_cursor_state();
+        }
         self.current_buffer_mut().resize(area);
         self.previous_buffer_mut().resize(area);
         self.viewport_area = area;
         self.visible_history_rows = self.visible_history_rows.min(area.top());
     }
 
-    /// Queries the backend for size and resizes if it doesn't match the previous size.
-    pub fn autoresize(&mut self) -> io::Result<()> {
-        let screen_size = self.size()?;
-        if screen_size != self.last_known_screen_size {
-            self.resize(screen_size)?;
-        }
-        Ok(())
-    }
-
     /// Draws a single frame to the terminal.
-    ///
-    /// Returns a [`CompletedFrame`] if successful, otherwise a [`std::io::Error`].
-    ///
-    /// If the render callback passed to this method can fail, use [`try_draw`] instead.
-    ///
-    /// Applications should call `draw` or [`try_draw`] in a loop to continuously render the
-    /// terminal. These methods are the main entry points for drawing to the terminal.
-    ///
-    /// [`try_draw`]: Terminal::try_draw
+    /// Applications should call `draw` in a loop to continuously render the terminal.
     ///
     /// This method will:
     ///
@@ -348,87 +350,103 @@ where
         F: FnOnce(&mut Frame),
     {
         let screen_size = self.size()?;
-        self.draw_with_size(screen_size, render_callback)
+        self.draw_with_size(screen_size, &mut Vec::new(), render_callback)
     }
 
-    /// Draws a single frame using a screen size already obtained by the caller.
-    pub(crate) fn draw_with_size<F>(&mut self, screen_size: Size, render: F) -> io::Result<()>
-    where
-        F: FnOnce(&mut Frame),
-    {
-        self.try_draw_with_size(screen_size, |frame| {
-            render(frame);
-            io::Result::Ok(())
+    /// Remove graphics on the screen that owns them before switching buffers or yielding the terminal.
+    pub(crate) fn clear_frame_images(
+        &mut self,
+        images: &mut Vec<crate::transcript_image::ImagePlacement>,
+    ) -> io::Result<()> {
+        if images.is_empty() {
+            return Ok(());
+        }
+        let text = self.previous_buffer().clone();
+        let cursor = (!self.hidden_cursor).then_some(self.last_known_cursor_pos);
+        let style = self
+            .last_cursor_style
+            .unwrap_or(SetCursorStyle::DefaultUserShape);
+        self.draw_with_size(self.last_known_screen_size, images, |frame| {
+            *frame.buffer = text;
+            if let Some(cursor) = cursor {
+                frame.set_cursor_position(cursor);
+                frame.set_cursor_style(style);
+            }
         })
     }
 
-    /// Tries to draw a single frame to the terminal.
-    ///
-    /// Returns [`Result::Ok`] containing a [`CompletedFrame`] if successful, otherwise
-    /// [`Result::Err`] containing the [`std::io::Error`] that caused the failure.
-    ///
-    /// This is the equivalent of [`Terminal::draw`] but the render callback is a function or
-    /// closure that returns a `Result` instead of nothing.
-    ///
-    /// Applications should call `try_draw` or [`draw`] in a loop to continuously render the
-    /// terminal. These methods are the main entry points for drawing to the terminal.
-    ///
-    /// [`draw`]: Terminal::draw
-    ///
-    /// This method will:
-    ///
-    /// - autoresize the terminal if necessary
-    /// - call the render callback, passing it a [`Frame`] reference to render to
-    /// - flush the current internal state by copying the current buffer to the backend
-    /// - move the cursor to the last known position if it was set during the rendering closure
-    /// - return a [`CompletedFrame`] with the current buffer and the area of the terminal
-    ///
-    /// The render callback passed to `try_draw` can return any [`Result`] with an error type that
-    /// can be converted into an [`std::io::Error`] using the [`Into`] trait. This makes it possible
-    /// to use the `?` operator to propagate errors that occur during rendering. If the render
-    /// callback returns an error, the error will be returned from `try_draw` as an
-    /// [`std::io::Error`] and the terminal will not be updated.
-    ///
-    /// The [`CompletedFrame`] returned by this method can be useful for debugging or testing
-    /// purposes, but it is often not used in regular applicationss.
-    ///
-    /// The render callback should fully render the entire frame when called, including areas that
-    /// are unchanged from the previous frame. This is because each frame is compared to the
-    /// previous frame to determine what has changed, and only the changes are written to the
-    /// terminal. If the render function does not fully render the frame, the terminal will not be
-    /// in a consistent state.
-    pub fn try_draw<F, E>(&mut self, render_callback: F) -> io::Result<()>
+    /// Draws a single frame using a screen size already obtained by the caller.
+    pub(crate) fn draw_with_size<F>(
+        &mut self,
+        screen_size: Size,
+        retained_images: &mut Vec<crate::transcript_image::ImagePlacement>,
+        render_callback: F,
+    ) -> io::Result<()>
     where
-        F: FnOnce(&mut Frame) -> Result<(), E>,
-        E: Into<io::Error>,
-    {
-        let screen_size = self.size()?;
-        self.try_draw_with_size(screen_size, render_callback)
-    }
-
-    fn try_draw_with_size<F, E>(&mut self, screen_size: Size, render_callback: F) -> io::Result<()>
-    where
-        F: FnOnce(&mut Frame) -> Result<(), E>,
-        E: Into<io::Error>,
+        F: FnOnce(&mut Frame),
     {
         if screen_size != self.last_known_screen_size {
             self.resize(screen_size)?;
         }
         let mut frame = self.get_frame();
 
-        render_callback(&mut frame).map_err(Into::into)?;
+        render_callback(&mut frame);
 
         // We can't change the cursor position right away because we have to flush the frame to
         // stdout first. But we also can't keep the frame around, since it holds a &mut to
         // Buffer. Thus, we're taking the important data out of the Frame and dropping it.
         let cursor_position = frame.cursor_position;
         let cursor_style = frame.cursor_style;
+        let images = std::mem::take(&mut frame.image_placements);
+        let changed = *retained_images != images;
+        if changed {
+            // Remove old graphics before text painting, including when switching to overlays.
+            for (index, placement) in retained_images.iter().enumerate() {
+                match placement.image.protocol {
+                    crate::pets::ImageProtocol::Kitty
+                    | crate::pets::ImageProtocol::KittyLocalFile => {
+                        let id = crate::transcript_image::FIRST_IMAGE_ID + index as u32;
+                        self.backend
+                            .write_all(crate::pets::kitty_delete_image(id).as_bytes())?;
+                    }
+                    crate::pets::ImageProtocol::Sixel => self.invalidate_viewport(),
+                }
+            }
+        }
 
-        // Draw to stdout
-        self.flush()?;
+        // Not every terminal or multiplexer hides intermediate cursor moves inside a
+        // synchronized update, especially when the frame spans multiple writes.
+        let updates = diff_buffers(self.previous_buffer(), self.current_buffer());
+        // A text clear, focus highlight, or full repaint may erase an otherwise stable image.
+        let repaint_images = changed
+            || updates.iter().any(|update| {
+                images.iter().any(|placement| match update {
+                    DrawCommand::Put { x, y, .. } => placement.area.contains((*x, *y).into()),
+                    DrawCommand::ClearToEnd { x, y, .. } => {
+                        *y >= placement.area.y
+                            && *y < placement.area.bottom()
+                            && *x < placement.area.right()
+                    }
+                })
+            });
+        if !updates.is_empty() && !self.hidden_cursor {
+            self.hide_cursor()?;
+        }
+        self.flush_updates(updates)?;
+        if repaint_images {
+            *retained_images = images;
+            for (index, placement) in retained_images.iter_mut().enumerate() {
+                let id = crate::transcript_image::FIRST_IMAGE_ID + index as u32;
+                placement.file = placement
+                    .image
+                    .draw(&mut self.backend, placement.area, placement.first_row, id)
+                    .map_err(io::Error::other)?;
+            }
+        }
 
         match cursor_position {
-            None => self.hide_cursor()?,
+            None if !self.hidden_cursor => self.hide_cursor()?,
+            None => {}
             Some(position) => {
                 self.set_cursor_style_with_repair(cursor_style)?;
                 self.set_cursor_position(position)?;
@@ -459,7 +477,9 @@ where
 
     /// Sets the visible terminal cursor style.
     pub fn set_cursor_style(&mut self, style: SetCursorStyle) -> io::Result<()> {
-        queue!(self.backend, style)
+        queue!(self.backend, style)?;
+        self.last_cursor_style = Some(style);
+        Ok(())
     }
 
     /// Restores the user-configured terminal cursor style.
@@ -496,7 +516,7 @@ where
         self.backend.set_cursor_position(position)?;
         self.backend.clear_region(ClearType::AfterCursor)?;
         // Reset the back buffer to make sure the next update will redraw everything.
-        self.previous_buffer_mut().reset();
+        self.invalidate_viewport();
         Ok(())
     }
 
@@ -523,7 +543,7 @@ where
         self.set_cursor_position(home)?;
         std::io::Write::flush(&mut self.backend)?;
         self.visible_history_rows = 0;
-        self.previous_buffer_mut().reset();
+        self.invalidate_viewport();
         Ok(())
     }
 
@@ -542,7 +562,7 @@ where
         std::io::Write::flush(&mut self.backend)?;
         self.last_known_cursor_pos = Position { x: 0, y: 0 };
         self.visible_history_rows = 0;
-        self.previous_buffer_mut().reset();
+        self.invalidate_viewport();
         Ok(())
     }
 
@@ -692,6 +712,8 @@ fn draw<I>(writer: &mut impl Write, commands: I) -> io::Result<()>
 where
     I: Iterator<Item = DrawCommand>,
 {
+    // Disabled crossterm colors emit an empty SGR that also resets non-color attributes.
+    let color_enabled = !Colored::ansi_color_disabled_memoized();
     let mut fg = Color::Reset;
     let mut bg = Color::Reset;
     let mut modifier = Modifier::empty();
@@ -726,7 +748,7 @@ where
                     diff.queue(writer)?;
                     modifier = cell.modifier;
                 }
-                if cell.fg != fg || cell.bg != bg {
+                if color_enabled && (cell.fg != fg || cell.bg != bg) {
                     queue!(
                         writer,
                         SetColors(Colors::new(
@@ -773,13 +795,13 @@ where
 /// The `ModifierDiff` struct is used to calculate the difference between two `Modifier`
 /// values. This is useful when updating the terminal display, as it allows for more
 /// efficient updates by only sending the necessary changes.
-struct ModifierDiff {
+pub(crate) struct ModifierDiff {
     pub from: Modifier,
     pub to: Modifier,
 }
 
 impl ModifierDiff {
-    fn queue<W: io::Write>(self, w: &mut W) -> io::Result<()> {
+    pub(crate) fn queue<W: io::Write>(self, w: &mut W) -> io::Result<()> {
         use crossterm::style::Attribute as CAttribute;
         let removed = self.from - self.to;
         if removed.contains(Modifier::REVERSED) {
@@ -889,6 +911,77 @@ mod tests {
 
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn transcript_images_survive_unrelated_redraws_and_are_removed_for_overlays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("viewed.png");
+        image::RgbaImage::from_pixel(32, 32, image::Rgba([10, 110, 200, 255]))
+            .save(&path)
+            .unwrap();
+        for protocol in [
+            crate::pets::ImageProtocol::Kitty,
+            crate::pets::ImageProtocol::KittyLocalFile,
+        ] {
+            let image = std::sync::Arc::new(
+                crate::transcript_image::TranscriptImage::load(&path, /*width*/ 40, protocol)
+                    .unwrap(),
+            );
+            let mut terminal =
+                Terminal::with_options(CaptureBackend::new(/*width*/ 40, /*height*/ 12)).unwrap();
+            let size = terminal.last_known_screen_size;
+            terminal.set_viewport_area(Rect::new(
+                /*x*/ 0,
+                /*y*/ 0,
+                size.width,
+                size.height,
+            ));
+            let mut retained = Vec::new();
+            for (index, text) in ["", "a", "ab", "ab"].into_iter().enumerate() {
+                if index == 3 {
+                    assert_eq!(terminal.backend().output().matches("_Ga=T").count(), 1);
+                    terminal.clear().unwrap();
+                }
+                terminal
+                    .draw_with_size(size, &mut retained, |frame| {
+                        Line::from(text).render(
+                            Rect::new(
+                                /*x*/ 0, /*y*/ 10, /*width*/ 40, /*height*/ 1,
+                            ),
+                            frame.buffer_mut(),
+                        );
+                        frame
+                            .image_placements
+                            .push(crate::transcript_image::ImagePlacement {
+                                image: std::sync::Arc::clone(&image),
+                                area: Rect::new(
+                                    /*x*/ 2,
+                                    /*y*/ 2,
+                                    image.columns,
+                                    image.rows,
+                                ),
+                                first_row: 0,
+                                file: None,
+                            });
+                    })
+                    .unwrap();
+            }
+            let output = terminal.backend().output();
+            assert_eq!(output.matches("_Ga=T").count(), 2);
+            assert_eq!(output.matches("_Ga=d").count(), 0);
+            if protocol == crate::pets::ImageProtocol::KittyLocalFile {
+                assert!(output.contains("t=f") && output.contains("C=1"));
+                assert!(retained[0].file.as_ref().unwrap().path().exists());
+            } else {
+                assert!(retained[0].file.is_none());
+            }
+            terminal
+                .draw_with_size(size, &mut retained, |_| {})
+                .unwrap();
+            assert_eq!(terminal.backend().output().matches("_Ga=d").count(), 1);
+            assert!(retained.is_empty());
         }
     }
 
@@ -1009,6 +1102,79 @@ mod tests {
         ");
     }
 
+    #[tokio::test]
+    async fn leaving_alternate_screen_repaints_restored_inline_viewport() {
+        let mut tui = crate::tui::test_support::make_test_tui().expect("test tui");
+        let size = tui.terminal.last_known_screen_size;
+        let inline = Rect::new(/*x*/ 0, /*y*/ 3, size.width, /*height*/ 6);
+        tui.terminal.set_viewport_area(inline);
+        tui.enter_alt_screen().expect("enter alternate screen");
+        tui.terminal
+            .draw(|frame| {
+                Paragraph::new(vec![
+                    Line::from(" Resume a previous session"),
+                    Line::default(),
+                    Line::from(" Type to search".dim()),
+                ])
+                .render(frame.area(), frame.buffer_mut());
+            })
+            .expect("draw picker");
+        tui.leave_alt_screen().expect("leave alternate screen");
+
+        let mut terminal = Terminal::with_options(VT100Backend::new(size.width, size.height))
+            .expect("physical terminal");
+        write!(terminal.backend_mut(), "Previous conversation").expect("write history");
+        terminal.set_viewport_area(inline);
+        terminal
+            .draw(|frame| {
+                Paragraph::new(vec![
+                    Line::default(),
+                    Line::default(),
+                    Line::from(vec!["›".bold(), " ".into(), "/resume".dim()]),
+                ])
+                .render(frame.area(), frame.buffer_mut());
+            })
+            .expect("draw submitted command");
+
+        // Apply the real Tui screen-return baseline to the unchanged physical main screen.
+        // Matching spaces and letters in the picker must not leave /resume cells behind.
+        *terminal.previous_buffer_mut() = tui.terminal.previous_buffer().clone();
+        for _ in 0..2 {
+            terminal
+                .draw(|frame| {
+                    Paragraph::new(vec![
+                        Line::default(),
+                        Line::default(),
+                        Line::from(vec![
+                            "›".bold(),
+                            " ".into(),
+                            "Ask ByteAsk to do anything".dim(),
+                        ]),
+                    ])
+                    .render(frame.area(), frame.buffer_mut());
+                })
+                .expect("restore composer");
+        }
+
+        let visible = terminal
+            .backend()
+            .vt100()
+            .screen()
+            .contents()
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_snapshot!(visible.trim_end(), @r"
+        Previous conversation
+
+
+
+
+        › Ask Codex to do anything
+        ");
+    }
+
     #[test]
     fn ordinary_redraws_with_known_size_do_not_query_backend_size() {
         let mut terminal =
@@ -1017,7 +1183,9 @@ mod tests {
         let screen_size = terminal.last_known_screen_size;
 
         for _ in 0..3 {
-            terminal.draw_with_size(screen_size, |_| {}).expect("draw");
+            terminal
+                .draw_with_size(screen_size, &mut Vec::new(), |_| {})
+                .expect("draw");
         }
 
         terminal.set_viewport_area(Rect::new(
@@ -1041,7 +1209,7 @@ mod tests {
             let area = Rect::new(/*x*/ 0, /*y*/ 0, size.width, size.height);
             terminal.set_viewport_area(area);
             terminal
-                .draw_with_size(size, |frame| {
+                .draw_with_size(size, &mut Vec::new(), |frame| {
                     Paragraph::new("alpha beta")
                         .wrap(Wrap { trim: false })
                         .render(area, frame.buffer_mut());
@@ -1170,7 +1338,13 @@ mod tests {
         terminal
             .draw(|frame| {
                 Paragraph::new(vec![
-                    Line::from(vec!["  ".into(), auth_url.as_str().fg(crate::style::accent_color()).underlined()]),
+                    Line::from(vec![
+                        "  ".into(),
+                        auth_url
+                            .as_str()
+                            .fg(crate::style::accent_color())
+                            .underlined(),
+                    ]),
                     "".into(),
                     "  Press Esc to cancel".into(),
                 ])
@@ -1250,10 +1424,7 @@ mod tests {
         ));
 
         terminal
-            .try_draw(|frame| {
-                frame.set_cursor_position(cursor_position);
-                io::Result::Ok(())
-            })
+            .draw(|frame| frame.set_cursor_position(cursor_position))
             .expect("draw");
 
         let mut expected_move = Vec::new();

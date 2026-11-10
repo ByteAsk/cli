@@ -99,12 +99,34 @@ fn synthetic_core(notes: &[u8], loads: &[(u64, u64, u32)]) -> Vec<u8> {
 #[test]
 fn the_notes_give_the_signal_the_faulting_thread_and_the_memory_map() {
     let mut notes = Vec::new();
-    notes.extend(note(1, b"CORE\0", &prstatus(4242, 11, 0x5555_0000_1135, 0x7ffd_0000_0c50)));
-    notes.extend(note(3, b"CORE\0", &prpsinfo(4240, "trader", "./trader --cfg prod.toml")));
+    notes.extend(note(
+        1,
+        b"CORE\0",
+        &prstatus(4242, 11, 0x5555_0000_1135, 0x7ffd_0000_0c50),
+    ));
+    notes.extend(note(
+        3,
+        b"CORE\0",
+        &prpsinfo(4240, "trader", "./trader --cfg prod.toml"),
+    ));
     notes.extend(note(0x5349_4749, b"CORE\0", &siginfo(11, 1, 0x18)));
-    notes.extend(note(0x4649_4c45, b"CORE\0", &nt_file(&[(0x5555_0000_0000, 0x5555_0000_2000, "/opt/app/trader"), (0x7f00_0000_0000, 0x7f00_0000_4000, "/data/journal.bin")])));
+    notes.extend(note(
+        0x4649_4c45,
+        b"CORE\0",
+        &nt_file(&[
+            (0x5555_0000_0000, 0x5555_0000_2000, "/opt/app/trader"),
+            (0x7f00_0000_0000, 0x7f00_0000_4000, "/data/journal.bin"),
+        ]),
+    ));
     notes.extend(note(1, b"CORE\0", &prstatus(4243, 0, 0, 0)));
-    let core = synthetic_core(&notes, &[(0x5555_0000_0000, 0x2000, 5), (0x7f00_0000_0000, 0x4000, 6), (0x7ffd_0000_0000, 0x21000, 6)]);
+    let core = synthetic_core(
+        &notes,
+        &[
+            (0x5555_0000_0000, 0x2000, 5),
+            (0x7f00_0000_0000, 0x4000, 6),
+            (0x7ffd_0000_0000, 0x21000, 6),
+        ],
+    );
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("core");
     std::fs::write(&path, core).unwrap();
@@ -112,7 +134,10 @@ fn the_notes_give_the_signal_the_faulting_thread_and_the_memory_map() {
     assert_eq!(n.threads, vec![4242, 4243]);
     assert_eq!((n.signo, n.code, n.addr), (Some(11), Some(1), Some(0x18)));
     assert_eq!(n.cursig, Some(11));
-    assert_eq!((n.pc, n.sp), (Some(0x5555_0000_1135), Some(0x7ffd_0000_0c50)));
+    assert_eq!(
+        (n.pc, n.sp),
+        (Some(0x5555_0000_1135), Some(0x7ffd_0000_0c50))
+    );
     assert_eq!(n.pid, Some(4240));
     assert_eq!(n.fname.as_deref(), Some("trader"));
     assert_eq!(n.args.as_deref(), Some("./trader --cfg prod.toml"));
@@ -141,8 +166,14 @@ fn a_file_that_is_not_a_core_is_an_error_never_a_panic() {
     let dir = tempfile::tempdir().unwrap();
     for (name, bytes) in [
         ("empty", Vec::new()),
-        ("text", b"hello world, not an ELF file at all; long enough to read a header from".repeat(2)),
-        ("truncated", synthetic_core(&note(1, b"CORE\0", &prstatus(1, 11, 1, 1)), &[])[..80].to_vec()),
+        (
+            "text",
+            b"hello world, not an ELF file at all; long enough to read a header from".repeat(2),
+        ),
+        (
+            "truncated",
+            synthetic_core(&note(1, b"CORE\0", &prstatus(1, 11, 1, 1)), &[])[..80].to_vec(),
+        ),
     ] {
         let path = dir.path().join(name);
         std::fs::write(&path, bytes).unwrap();
@@ -153,7 +184,11 @@ fn a_file_that_is_not_a_core_is_an_error_never_a_panic() {
     exe[16..18].copy_from_slice(&2u16.to_le_bytes());
     let path = dir.path().join("exe");
     std::fs::write(&path, exe).unwrap();
-    assert!(read_core_notes(&path).unwrap_err().contains("not a core dump"));
+    assert!(
+        read_core_notes(&path)
+            .unwrap_err()
+            .contains("not a core dump")
+    );
 }
 
 #[test]
@@ -164,8 +199,22 @@ fn the_program_is_found_from_the_core_when_it_exists_here() {
     let notes = CoreNotes {
         fname: Some("trader".into()),
         maps: vec![
-            Mapping { start: 0x7f00, end: 0x8000, read: true, write: false, exec: true, file: Some("/lib/libc.so.6".into()) },
-            Mapping { start: 0x5000, end: 0x6000, read: true, write: false, exec: true, file: Some(exe.to_string_lossy().into_owned()) },
+            Mapping {
+                start: 0x7f00,
+                end: 0x8000,
+                read: true,
+                write: false,
+                exec: true,
+                file: Some("/lib/libc.so.6".into()),
+            },
+            Mapping {
+                start: 0x5000,
+                end: 0x6000,
+                read: true,
+                write: false,
+                exec: true,
+                file: Some(exe.to_string_lossy().into_owned()),
+            },
         ],
         ..CoreNotes::default()
     };
@@ -174,22 +223,41 @@ fn the_program_is_found_from_the_core_when_it_exists_here() {
     let root = tempfile::tempdir().unwrap();
     let remote = CoreNotes {
         fname: Some("trader".into()),
-        maps: vec![Mapping { start: 0x5000, end: 0x6000, read: true, write: false, exec: true, file: Some("/opt/app/trader".into()) }],
+        maps: vec![Mapping {
+            start: 0x5000,
+            end: 0x6000,
+            read: true,
+            write: false,
+            exec: true,
+            file: Some("/opt/app/trader".into()),
+        }],
         ..CoreNotes::default()
     };
     assert_eq!(program_from_core(&remote, None), None);
     std::fs::create_dir_all(root.path().join("opt/app")).unwrap();
     std::fs::write(root.path().join("opt/app/trader"), b"x").unwrap();
-    assert_eq!(program_from_core(&remote, Some(root.path())), Some(root.path().join("opt/app/trader")));
+    assert_eq!(
+        program_from_core(&remote, Some(root.path())),
+        Some(root.path().join("opt/app/trader"))
+    );
 }
 
 #[test]
 fn the_memory_operand_of_the_faulting_instruction_is_parsed() {
-    assert_eq!(memory_base("mov    0x8(%rax),%rax"), Some(("rax".into(), 8)));
+    assert_eq!(
+        memory_base("mov    0x8(%rax),%rax"),
+        Some(("rax".into(), 8))
+    );
     assert_eq!(memory_base("movsd  (%rax),%xmm0"), Some(("rax".into(), 0)));
     assert_eq!(memory_base("movb   $0x58,(%rax)"), Some(("rax".into(), 0)));
-    assert_eq!(memory_base("mov    %rdi,-0x108(%rbp)"), Some(("rbp".into(), -0x108)));
-    assert_eq!(memory_base("mov    0x10(%rbx,%rcx,8),%rdx"), Some(("rbx".into(), 0x10)));
+    assert_eq!(
+        memory_base("mov    %rdi,-0x108(%rbp)"),
+        Some(("rbp".into(), -0x108))
+    );
+    assert_eq!(
+        memory_base("mov    0x10(%rbx,%rcx,8),%rdx"),
+        Some(("rbx".into(), 0x10))
+    );
     assert_eq!(memory_base("idivl  -0x8(%rbp)"), Some(("rbp".into(), -8)));
     assert_eq!(memory_base("ldr x0, [x1, #8]"), Some(("x1".into(), 8)));
     assert_eq!(memory_base("ldr x0, [x19]"), Some(("x19".into(), 0)));
@@ -199,14 +267,22 @@ fn the_memory_operand_of_the_faulting_instruction_is_parsed() {
 
 #[test]
 fn text_bytes_in_a_pointer_are_recognised() {
-    assert_eq!(printable_ascii(0x4141_4141_4141_4141).as_deref(), Some("AAAAAAAA"));
+    assert_eq!(
+        printable_ascii(0x4141_4141_4141_4141).as_deref(),
+        Some("AAAAAAAA")
+    );
     assert_eq!(printable_ascii(0x0000_7ffd_1234_5678), None);
     assert_eq!(printable_ascii(0), None);
 }
 
 #[test]
 fn gdbs_argv_is_hardened_and_keeps_debug_info_downloads_off() {
-    let argv = build_gdb_argv(Path::new("/w/trader"), Path::new("/w/core"), None, Path::new("/tmp/d.py"));
+    let argv = build_gdb_argv(
+        Path::new("/w/trader"),
+        Path::new("/w/core"),
+        None,
+        Path::new("/tmp/d.py"),
+    );
     assert_eq!(
         argv,
         [
@@ -229,9 +305,17 @@ fn gdbs_argv_is_hardened_and_keeps_debug_info_downloads_off() {
     );
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("usr/lib/debug")).unwrap();
-    let argv = build_gdb_argv(Path::new("/w/t"), Path::new("/w/c"), Some(root.path()), Path::new("/d.py"));
+    let argv = build_gdb_argv(
+        Path::new("/w/t"),
+        Path::new("/w/c"),
+        Some(root.path()),
+        Path::new("/d.py"),
+    );
     assert!(argv.contains(&format!("set sysroot {}", root.path().display())));
-    assert!(argv.contains(&format!("set debug-file-directory {}", root.path().join("usr/lib/debug").display())));
+    assert!(argv.contains(&format!(
+        "set debug-file-directory {}",
+        root.path().join("usr/lib/debug").display()
+    )));
 }
 
 #[test]
@@ -245,60 +329,157 @@ fn without_gdb_the_notes_still_give_a_first_guess_and_say_so() {
         fname: Some("trader".into()),
         ..CoreNotes::default()
     };
-    let text = render(&notes, Path::new("/w/core"), Path::new("/w/trader"), &GdbAnswer::default(), "Python scripting is not supported in this copy of GDB.", None, Path::new("/w"));
+    let text = render(
+        &notes,
+        Path::new("/w/core"),
+        Path::new("/w/trader"),
+        &GdbAnswer::default(),
+        "Python scripting is not supported in this copy of GDB.",
+        None,
+        Path::new("/w"),
+    );
     assert!(text.contains("CRASH: SIGSEGV at address 0x8"), "{text}");
-    assert!(text.contains("FAULTING THREAD: 10 (thread 1 of 1; the kernel dumped it first)"), "{text}");
-    assert!(text.contains("LIKELY CAUSE: a NULL pointer dereference"), "{text}");
+    assert!(
+        text.contains("FAULTING THREAD: 10 (thread 1 of 1; the kernel dumped it first)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("LIKELY CAUSE: a NULL pointer dereference"),
+        "{text}"
+    );
     assert!(text.contains("treat it as a first guess"), "{text}");
-    assert!(text.contains("backtrace: RESULT: NOT RUN") && text.contains("without Python"), "{text}");
+    assert!(
+        text.contains("backtrace: RESULT: NOT RUN") && text.contains("without Python"),
+        "{text}"
+    );
 }
 
 // ------------------------------ the cause rules ------------------------------
 
 fn user_frame(function: &str, line: u64) -> Frame {
-    Frame { function: Some(function.into()), file: Some(format!("/w/{function}.cpp")), line: Some(line), user: true, ..Frame::default() }
+    Frame {
+        function: Some(function.into()),
+        file: Some(format!("/w/{function}.cpp")),
+        line: Some(line),
+        user: true,
+        ..Frame::default()
+    }
 }
 
 fn sys_frame(function: &str) -> Frame {
-    Frame { function: Some(function.into()), library: Some("/lib/x86_64-linux-gnu/libc.so.6".into()), ..Frame::default() }
+    Frame {
+        function: Some(function.into()),
+        library: Some("/lib/x86_64-linux-gnu/libc.so.6".into()),
+        ..Frame::default()
+    }
 }
 
-fn cause_for(notes: CoreNotes, insn: Option<&str>, regs: &[(&str, &str)], frames: Vec<Frame>) -> Cause {
-    cause_with(notes, GdbCore { instruction: insn.map(str::to_string), registers: regs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), ..GdbCore::default() }, frames)
+fn cause_for(
+    notes: CoreNotes,
+    insn: Option<&str>,
+    regs: &[(&str, &str)],
+    frames: Vec<Frame>,
+) -> Cause {
+    cause_with(
+        notes,
+        GdbCore {
+            instruction: insn.map(str::to_string),
+            registers: regs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..GdbCore::default()
+        },
+        frames,
+    )
 }
 
 fn cause_with(notes: CoreNotes, gdb: GdbCore, frames: Vec<Frame>) -> Cause {
-    let thread = GdbThread { tid: 1, faulting: true, frames, truncated: false };
-    let facts = Facts { notes: &notes, gdb: Some(&gdb), faulting: Some(&thread), others: Vec::new() };
+    let thread = GdbThread {
+        tid: 1,
+        faulting: true,
+        frames,
+        truncated: false,
+    };
+    let facts = Facts {
+        notes: &notes,
+        gdb: Some(&gdb),
+        faulting: Some(&thread),
+        others: Vec::new(),
+    };
     likely_cause(&facts, Path::new("/w"))
 }
 
 fn segv(code: i32, addr: u64) -> CoreNotes {
-    CoreNotes { signo: Some(11), code: Some(code), addr: Some(addr), pid: Some(1), threads: vec![1], ..CoreNotes::default() }
+    CoreNotes {
+        signo: Some(11),
+        code: Some(code),
+        addr: Some(addr),
+        pid: Some(1),
+        threads: vec![1],
+        ..CoreNotes::default()
+    }
 }
 
 #[test]
 fn null_is_decided_by_the_pointer_register_not_the_fault_address() {
-    let null = cause_for(segv(1, 0x8), Some("mov    0x8(%rax),%rax"), &[("rax", "0x0")], vec![user_frame("qty_of", 2)]);
+    let null = cause_for(
+        segv(1, 0x8),
+        Some("mov    0x8(%rax),%rax"),
+        &[("rax", "0x0")],
+        vec![user_frame("qty_of", 2)],
+    );
     assert!(null.title.starts_with("a NULL pointer dereference in qty_of() at qty_of.cpp:2, reading the member at offset 0x8"), "{null:?}");
     // Found by the live test: address 0x10 from a pointer holding 0x10 was
     // called NULL. It is a bad pointer.
-    let small = cause_for(segv(1, 0x10), Some("mov    (%rax),%rax"), &[("rax", "0x10")], vec![user_frame("walk", 2)]);
-    assert!(small.title.starts_with("a bad pointer 0x10 — not NULL"), "{small:?}");
+    let small = cause_for(
+        segv(1, 0x10),
+        Some("mov    (%rax),%rax"),
+        &[("rax", "0x10")],
+        vec![user_frame("walk", 2)],
+    );
+    assert!(
+        small.title.starts_with("a bad pointer 0x10 — not NULL"),
+        "{small:?}"
+    );
     // No instruction known: the address alone decides.
     let unknown = cause_for(segv(1, 0x18), None, &[], vec![user_frame("walk", 2)]);
-    assert!(unknown.title.starts_with("a NULL pointer dereference"), "{unknown:?}");
+    assert!(
+        unknown.title.starts_with("a NULL pointer dereference"),
+        "{unknown:?}"
+    );
 }
 
 #[test]
 fn text_over_a_pointer_and_a_jump_to_nowhere_are_named() {
-    let text = cause_for(segv(128, 0), Some("movsd  (%rax),%xmm0"), &[("rax", "0x4141414141414141")], vec![user_frame("read", 3)]);
-    assert!(text.title.contains("overwritten with text") && text.title.contains("\"AAAAAAAA\""), "{text:?}");
+    let text = cause_for(
+        segv(128, 0),
+        Some("movsd  (%rax),%xmm0"),
+        &[("rax", "0x4141414141414141")],
+        vec![user_frame("read", 3)],
+    );
+    assert!(
+        text.title.contains("overwritten with text") && text.title.contains("\"AAAAAAAA\""),
+        "{text:?}"
+    );
     let mut notes = segv(1, 0xdead0000);
     notes.pc = Some(0xdead0000);
-    let jump = cause_for(notes, None, &[], vec![Frame::default(), user_frame("dispatch", 2)]);
-    assert!(jump.title.contains("a call or jump to the bad address 0xdead0000"), "{jump:?}");
-    assert!(jump.title.contains("the call was made from dispatch() at dispatch.cpp:2"), "{jump:?}");
+    let jump = cause_for(
+        notes,
+        None,
+        &[],
+        vec![Frame::default(), user_frame("dispatch", 2)],
+    );
+    assert!(
+        jump.title
+            .contains("a call or jump to the bad address 0xdead0000"),
+        "{jump:?}"
+    );
+    assert!(
+        jump.title
+            .contains("the call was made from dispatch() at dispatch.cpp:2"),
+        "{jump:?}"
+    );
 }
 
 #[test]
@@ -306,71 +487,240 @@ fn recursion_into_the_guard_page_is_a_stack_overflow() {
     let mut notes = segv(1, 0x7fff_0000_def8);
     notes.sp = Some(0x7fff_0000_def0);
     let frames = (0..40).map(|_| user_frame("depth", 1)).collect();
-    let c = cause_for(notes, Some("mov    %rdi,-0x108(%rbp)"), &[("rbp", "0x7fff0000e000")], frames);
-    assert!(c.title.starts_with("a stack overflow: depth recursed"), "{c:?}");
-    assert!(c.because.iter().any(|b| b.contains("40 times in a row")), "{c:?}");
+    let c = cause_for(
+        notes,
+        Some("mov    %rdi,-0x108(%rbp)"),
+        &[("rbp", "0x7fff0000e000")],
+        frames,
+    );
+    assert!(
+        c.title.starts_with("a stack overflow: depth recursed"),
+        "{c:?}"
+    );
+    assert!(
+        c.because.iter().any(|b| b.contains("40 times in a row")),
+        "{c:?}"
+    );
 }
 
 #[test]
 fn read_only_and_mapped_file_faults_use_the_memory_map() {
     let mut notes = segv(2, 0x5000_2004);
-    notes.maps = vec![Mapping { start: 0x5000_2000, end: 0x5000_3000, read: true, write: false, exec: false, file: Some("/w/ro".into()) }];
-    let ro = cause_for(notes, Some("movb   $0x58,(%rax)"), &[("rax", "0x50002004")], vec![user_frame("upcase", 1)]);
-    assert!(ro.title.starts_with("a write to read-only memory in upcase()"), "{ro:?}");
+    notes.maps = vec![Mapping {
+        start: 0x5000_2000,
+        end: 0x5000_3000,
+        read: true,
+        write: false,
+        exec: false,
+        file: Some("/w/ro".into()),
+    }];
+    let ro = cause_for(
+        notes,
+        Some("movb   $0x58,(%rax)"),
+        &[("rax", "0x50002004")],
+        vec![user_frame("upcase", 1)],
+    );
+    assert!(
+        ro.title
+            .starts_with("a write to read-only memory in upcase()"),
+        "{ro:?}"
+    );
     let bus = cause_for(
         CoreNotes {
             signo: Some(7),
             code: Some(2),
             addr: Some(0x7f00_0000_0008),
-            maps: vec![Mapping { start: 0x7f00_0000_0000, end: 0x7f00_0000_2000, read: true, write: true, exec: false, file: Some("/data/journal.bin".into()) }],
+            maps: vec![Mapping {
+                start: 0x7f00_0000_0000,
+                end: 0x7f00_0000_2000,
+                read: true,
+                write: true,
+                exec: false,
+                file: Some("/data/journal.bin".into()),
+            }],
             ..CoreNotes::default()
         },
         None,
         &[],
         vec![user_frame("main", 9)],
     );
-    assert!(bus.title.contains("past the end of the memory-mapped file /data/journal.bin"), "{bus:?}");
+    assert!(
+        bus.title
+            .contains("past the end of the memory-mapped file /data/journal.bin"),
+        "{bus:?}"
+    );
 }
 
 #[test]
 fn arithmetic_and_illegal_instruction_rules() {
     let mut div_frame = user_frame("per_lot", 1);
     div_frame.args = vec![("qty".into(), "100".into()), ("lots".into(), "0".into())];
-    let div = cause_for(CoreNotes { signo: Some(8), code: Some(1), ..CoreNotes::default() }, Some("idivl  -0x8(%rbp)"), &[], vec![div_frame]);
-    assert!(div.title.starts_with("an integer division by zero"), "{div:?}");
-    assert!(div.because.iter().any(|b| b == "argument `lots` is 0"), "{div:?}");
-    let ill = |insn: &str| cause_for(CoreNotes { signo: Some(4), code: Some(2), ..CoreNotes::default() }, Some(insn), &[], vec![user_frame("f", 1)]);
-    assert!(ill("ud2").title.starts_with("a trap instruction (ud2)"), "{:?}", ill("ud2"));
+    let div = cause_for(
+        CoreNotes {
+            signo: Some(8),
+            code: Some(1),
+            ..CoreNotes::default()
+        },
+        Some("idivl  -0x8(%rbp)"),
+        &[],
+        vec![div_frame],
+    );
+    assert!(
+        div.title.starts_with("an integer division by zero"),
+        "{div:?}"
+    );
+    assert!(
+        div.because.iter().any(|b| b == "argument `lots` is 0"),
+        "{div:?}"
+    );
+    let ill = |insn: &str| {
+        cause_for(
+            CoreNotes {
+                signo: Some(4),
+                code: Some(2),
+                ..CoreNotes::default()
+            },
+            Some(insn),
+            &[],
+            vec![user_frame("f", 1)],
+        )
+    };
+    assert!(
+        ill("ud2").title.starts_with("a trap instruction (ud2)"),
+        "{:?}",
+        ill("ud2")
+    );
     let avx = ill("vpaddd %zmm1,%zmm2,%zmm3");
-    assert!(avx.title.contains("this CPU does not support the instruction `vpaddd`"), "{avx:?}");
-    assert!(ill("addb   %al,(%rax)").title.starts_with("an illegal instruction"));
+    assert!(
+        avx.title
+            .contains("this CPU does not support the instruction `vpaddd`"),
+        "{avx:?}"
+    );
+    assert!(
+        ill("addb   %al,(%rax)")
+            .title
+            .starts_with("an illegal instruction")
+    );
 }
 
 #[test]
 fn abort_rules_read_the_exception_the_message_and_the_stack() {
-    let abort = CoreNotes { signo: Some(6), code: Some(-6), sender_pid: Some(1), pid: Some(1), threads: vec![1], ..CoreNotes::default() };
+    let abort = CoreNotes {
+        signo: Some(6),
+        code: Some(-6),
+        sender_pid: Some(1),
+        pid: Some(1),
+        threads: vec![1],
+        ..CoreNotes::default()
+    };
     let gdb = GdbCore {
-        exception: Some(Exception { ty: Some("std::runtime_error".into()), what: Some("config missing".into()), frame: 2 }),
+        exception: Some(Exception {
+            ty: Some("std::runtime_error".into()),
+            what: Some("config missing".into()),
+            frame: 2,
+        }),
         ..GdbCore::default()
     };
-    let exc = cause_with(abort.clone(), gdb, vec![sys_frame("abort"), sys_frame("std::terminate()"), sys_frame("__cxa_throw"), user_frame("load", 2)]);
-    assert!(exc.title.starts_with("an uncaught C++ exception std::runtime_error thrown from load() at load.cpp:2"), "{exc:?}");
-    assert!(exc.because.iter().any(|b| b.contains("\"config missing\"")), "{exc:?}");
-    let msg = |text: &str| cause_with(abort.clone(), GdbCore { abort_msg: Some(text.into()), ..GdbCore::default() }, vec![sys_frame("abort"), user_frame("f", 3)]);
-    assert!(msg("a.out: a.cpp:2: void f(): Assertion `x' failed.").title.starts_with("an assertion failed in f()"));
-    assert!(msg("free(): double free detected in tcache 2").title.starts_with("heap corruption, detected by glibc"));
-    assert!(msg("*** stack smashing detected ***: terminated").title.starts_with("a stack buffer overflow in f()"));
-    assert!(msg("*** buffer overflow detected ***: terminated").title.starts_with("_FORTIFY_SOURCE caught"));
-    let thread = cause_with(abort.clone(), GdbCore::default(), vec![sys_frame("std::terminate()"), sys_frame("std::thread::~thread"), user_frame("main", 2)]);
-    assert!(thread.title.starts_with("a std::thread was destroyed while still joinable"), "{thread:?}");
-    let killed = cause_with(CoreNotes { sender_pid: Some(777), code: Some(0), ..abort }, GdbCore::default(), vec![sys_frame("pause")]);
-    assert!(killed.title.starts_with("killed with SIGABRT by another process (pid 777)"), "{killed:?}");
+    let exc = cause_with(
+        abort.clone(),
+        gdb,
+        vec![
+            sys_frame("abort"),
+            sys_frame("std::terminate()"),
+            sys_frame("__cxa_throw"),
+            user_frame("load", 2),
+        ],
+    );
+    assert!(
+        exc.title.starts_with(
+            "an uncaught C++ exception std::runtime_error thrown from load() at load.cpp:2"
+        ),
+        "{exc:?}"
+    );
+    assert!(
+        exc.because.iter().any(|b| b.contains("\"config missing\"")),
+        "{exc:?}"
+    );
+    let msg = |text: &str| {
+        cause_with(
+            abort.clone(),
+            GdbCore {
+                abort_msg: Some(text.into()),
+                ..GdbCore::default()
+            },
+            vec![sys_frame("abort"), user_frame("f", 3)],
+        )
+    };
+    assert!(
+        msg("a.out: a.cpp:2: void f(): Assertion `x' failed.")
+            .title
+            .starts_with("an assertion failed in f()")
+    );
+    assert!(
+        msg("free(): double free detected in tcache 2")
+            .title
+            .starts_with("heap corruption, detected by glibc")
+    );
+    assert!(
+        msg("*** stack smashing detected ***: terminated")
+            .title
+            .starts_with("a stack buffer overflow in f()")
+    );
+    assert!(
+        msg("*** buffer overflow detected ***: terminated")
+            .title
+            .starts_with("_FORTIFY_SOURCE caught")
+    );
+    let thread = cause_with(
+        abort.clone(),
+        GdbCore::default(),
+        vec![
+            sys_frame("std::terminate()"),
+            sys_frame("std::thread::~thread"),
+            user_frame("main", 2),
+        ],
+    );
+    assert!(
+        thread
+            .title
+            .starts_with("a std::thread was destroyed while still joinable"),
+        "{thread:?}"
+    );
+    let killed = cause_with(
+        CoreNotes {
+            sender_pid: Some(777),
+            code: Some(0),
+            ..abort
+        },
+        GdbCore::default(),
+        vec![sys_frame("pause")],
+    );
+    assert!(
+        killed
+            .title
+            .starts_with("killed with SIGABRT by another process (pid 777)"),
+        "{killed:?}"
+    );
 }
 
 #[test]
 fn a_crash_inside_the_allocator_is_reported_as_a_victim() {
-    let c = cause_for(segv(1, 0x5555_0000_1000), Some("mov    0x8(%rdx),%rax"), &[("rdx", "0x555500000ff8")], vec![sys_frame("_int_malloc"), sys_frame("malloc"), user_frame("add_order", 7)]);
-    assert!(c.title.starts_with("heap corruption: the crash is inside the allocator, called from add_order()"), "{c:?}");
+    let c = cause_for(
+        segv(1, 0x5555_0000_1000),
+        Some("mov    0x8(%rdx),%rax"),
+        &[("rdx", "0x555500000ff8")],
+        vec![
+            sys_frame("_int_malloc"),
+            sys_frame("malloc"),
+            user_frame("add_order", 7),
+        ],
+    );
+    assert!(
+        c.title.starts_with(
+            "heap corruption: the crash is inside the allocator, called from add_order()"
+        ),
+        "{c:?}"
+    );
 }
 
 // ------------------------- live: real kernel cores -------------------------
@@ -389,7 +739,12 @@ fn live_skip(why: &str) {
 
 /// Compile `source` and run it until the kernel dumps its core. Returns the
 /// workspace directory, the binary and the core.
-fn kernel_core(name: &str, source: &str, flags: &[&str], args: &[&str]) -> Option<(tempfile::TempDir, PathBuf, PathBuf)> {
+fn kernel_core(
+    name: &str,
+    source: &str,
+    flags: &[&str],
+    args: &[&str],
+) -> Option<(tempfile::TempDir, PathBuf, PathBuf)> {
     use std::os::unix::process::CommandExt;
     use std::os::unix::process::ExitStatusExt;
     if !crate::program_args::fixture::have("g++") || !crate::program_args::fixture::have("gdb") {
@@ -410,11 +765,17 @@ fn kernel_core(name: &str, source: &str, flags: &[&str], args: &[&str]) -> Optio
     assert!(built, "fixture {name} did not compile");
     let bin = root.join(name);
     let mut cmd = std::process::Command::new(&bin);
-    cmd.current_dir(&root).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.current_dir(&root)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     // SAFETY: setrlimit(2) only, in the forked child before exec.
     unsafe {
         cmd.pre_exec(|| {
-            let lim = libc::rlimit { rlim_cur: libc::RLIM_INFINITY, rlim_max: libc::RLIM_INFINITY };
+            let lim = libc::rlimit {
+                rlim_cur: libc::RLIM_INFINITY,
+                rlim_max: libc::RLIM_INFINITY,
+            };
             libc::setrlimit(libc::RLIMIT_CORE, &lim);
             Ok(())
         });
@@ -422,7 +783,10 @@ fn kernel_core(name: &str, source: &str, flags: &[&str], args: &[&str]) -> Optio
     let mut child = cmd.spawn().ok()?;
     let pid = child.id();
     let status = child.wait().ok()?;
-    assert!(status.signal().is_some(), "fixture {name} did not crash: {status:?}");
+    assert!(
+        status.signal().is_some(),
+        "fixture {name} did not crash: {status:?}"
+    );
     // core_pattern "core" / "core.%p", or Ubuntu's apport keeping it under
     // /var/lib/apport/coredump with the pid in the name.
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -435,7 +799,11 @@ fn kernel_core(name: &str, source: &str, flags: &[&str], args: &[&str]) -> Optio
     for _ in 0..20 {
         if let Ok(entries) = std::fs::read_dir(apport) {
             let needle = format!(".{pid}.");
-            if let Some(found) = entries.flatten().map(|e| e.path()).find(|p| p.to_string_lossy().contains(&needle)) {
+            if let Some(found) = entries
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| p.to_string_lossy().contains(&needle))
+            {
                 let local = root.join("core");
                 if std::fs::copy(&found, &local).is_ok() {
                     return Some((dir, bin, local));
@@ -446,22 +814,29 @@ fn kernel_core(name: &str, source: &str, flags: &[&str], args: &[&str]) -> Optio
     }
     live_skip(&format!(
         "the kernel did not leave a core for {name} here (core_pattern: {})",
-        std::fs::read_to_string("/proc/sys/kernel/core_pattern").unwrap_or_default().trim()
+        std::fs::read_to_string("/proc/sys/kernel/core_pattern")
+            .unwrap_or_default()
+            .trim()
     ));
     None
 }
 
 async fn triage(name: &str, source: &str, flags: &[&str], args: &[&str]) -> Option<String> {
     let (dir, _bin, core) = kernel_core(name, source, flags, args)?;
-    let tool = CoreTriageTool { cwd: dir.path().canonicalize().unwrap() };
-    let text = crate::test_support::call(&tool, serde_json::json!({ "core": core.to_string_lossy() }))
-        .await
-        .unwrap_or_else(|e| panic!("debug_core failed on {name}: {e:?}"));
+    let tool = CoreTriageTool {
+        cwd: dir.path().canonicalize().unwrap(),
+    };
+    let text =
+        crate::test_support::call(&tool, serde_json::json!({ "core": core.to_string_lossy() }))
+            .await
+            .unwrap_or_else(|e| panic!("debug_core failed on {name}: {e:?}"));
     Some(text)
 }
 
 fn cause(text: &str) -> &str {
-    text.lines().find(|l| l.starts_with("LIKELY CAUSE: ")).unwrap_or_else(|| panic!("no cause:\n{text}"))
+    text.lines()
+        .find(|l| l.starts_with("LIKELY CAUSE: "))
+        .unwrap_or_else(|| panic!("no cause:\n{text}"))
 }
 
 #[tokio::test]
@@ -477,9 +852,20 @@ async fn live_null_pointer() {
         return;
     };
     assert!(text.contains("CRASH: SIGSEGV at address 0x8"), "{text}");
-    assert!(text.contains("CRASH SITE (first frame in your code): qty_of() at null.cpp:2"), "{text}");
-    assert!(cause(&text).contains("a NULL pointer dereference in qty_of() at null.cpp:2, reading the member at offset 0x8"), "{text}");
-    assert!(text.contains("because: faulting instruction: mov") && text.contains("with rax = 0x0"), "{text}");
+    assert!(
+        text.contains("CRASH SITE (first frame in your code): qty_of() at null.cpp:2"),
+        "{text}"
+    );
+    assert!(
+        cause(&text).contains(
+            "a NULL pointer dereference in qty_of() at null.cpp:2, reading the member at offset 0x8"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("because: faulting instruction: mov") && text.contains("with rax = 0x0"),
+        "{text}"
+    );
     assert!(text.contains("the kernel dumped it first"), "{text}");
 }
 
@@ -558,7 +944,10 @@ async fn live_stack_overflow_from_recursion() {
     else {
         return;
     };
-    assert!(cause(&text).contains("a stack overflow: depth recursed until the stack ran out"), "{text}");
+    assert!(
+        cause(&text).contains("a stack overflow: depth recursed until the stack ran out"),
+        "{text}"
+    );
     assert!(text.contains("times in a row on the stack"), "{text}");
 }
 
@@ -607,11 +996,17 @@ async fn live_a_worker_threads_exception_names_the_thread_and_its_siblings() {
     // apply() are pointed out as a race candidate.
     let c = cause(&text);
     if c.contains("uncaught C++ exception") {
-        assert!(c.contains("std::out_of_range") && c.contains("on a std::thread"), "{text}");
+        assert!(
+            c.contains("std::out_of_range") && c.contains("on a std::thread"),
+            "{text}"
+        );
         assert!(text.contains("vector::_M_range_check"), "{text}");
     }
     assert!(text.contains("were inside apply at the crash"), "{text}");
-    assert!(text.contains("FAULTING THREAD:") && text.contains("of 4"), "{text}");
+    assert!(
+        text.contains("FAULTING THREAD:") && text.contains("of 4"),
+        "{text}"
+    );
 }
 
 #[tokio::test]
@@ -680,13 +1075,30 @@ async fn live_bad_function_pointer_and_truncated_mapped_file() {
 async fn a_core_from_somewhere_else_without_its_program_asks_for_it() {
     let mut notes = note(1, b"CORE\0", &prstatus(7, 11, 1, 1));
     notes.extend(note(3, b"CORE\0", &prpsinfo(7, "trader", "./trader")));
-    notes.extend(note(0x4649_4c45, b"CORE\0", &nt_file(&[(0x5000, 0x6000, "/opt/nowhere/trader")])));
+    notes.extend(note(
+        0x4649_4c45,
+        b"CORE\0",
+        &nt_file(&[(0x5000, 0x6000, "/opt/nowhere/trader")]),
+    ));
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("core"), synthetic_core(&notes, &[(0x5000, 0x1000, 5)])).unwrap();
-    let tool = CoreTriageTool { cwd: dir.path().to_path_buf() };
-    let err = crate::test_support::call(&tool, serde_json::json!({"core": "core"})).await.unwrap_err();
+    std::fs::write(
+        dir.path().join("core"),
+        synthetic_core(&notes, &[(0x5000, 0x1000, 5)]),
+    )
+    .unwrap();
+    let tool = CoreTriageTool {
+        cwd: dir.path().to_path_buf(),
+    };
+    let err = crate::test_support::call(&tool, serde_json::json!({"core": "core"}))
+        .await
+        .unwrap_err();
     let text = format!("{err:?}");
-    assert!(text.contains("names the program `trader`") && text.contains("pass `program`") && text.contains("sysroot"), "{text}");
+    assert!(
+        text.contains("names the program `trader`")
+            && text.contains("pass `program`")
+            && text.contains("sysroot"),
+        "{text}"
+    );
 }
 
 /// A core "from another machine" (written by gdb's gcore, its crashing
@@ -709,9 +1121,18 @@ async fn a_foreign_core_is_triaged_through_its_sysroot() {
     )
     .await
     .unwrap_or_else(|e| panic!("{e:?}"));
-    assert!(text.contains("CRASH: SIGSEGV at address 0x7f0000000004"), "{text}");
-    assert!(text.contains("CRASH SITE (first frame in your code): queue_find() at q.c:3"), "{text}");
-    assert!(cause(&text).contains("an invalid memory access at 0x7f0000000004 in queue_find()"), "{text}");
+    assert!(
+        text.contains("CRASH: SIGSEGV at address 0x7f0000000004"),
+        "{text}"
+    );
+    assert!(
+        text.contains("CRASH SITE (first frame in your code): queue_find() at q.c:3"),
+        "{text}"
+    );
+    assert!(
+        cause(&text).contains("an invalid memory access at 0x7f0000000004 in queue_find()"),
+        "{text}"
+    );
     assert!(!text.contains("NOT RUN"), "{text}");
 }
 
@@ -719,15 +1140,30 @@ async fn a_foreign_core_is_triaged_through_its_sysroot() {
 fn gdbs_siginfo_fills_only_what_the_notes_lack() {
     let answer = GdbAnswer {
         core: Some(GdbCore {
-            siginfo: Some(GdbSiginfo { signo: 11, code: 1, addr: Some("0x18".into()) }),
+            siginfo: Some(GdbSiginfo {
+                signo: 11,
+                code: 1,
+                addr: Some("0x18".into()),
+            }),
             ..GdbCore::default()
         }),
         ..GdbAnswer::default()
     };
-    let mut bare = CoreNotes { cursig: Some(11), ..CoreNotes::default() };
+    let mut bare = CoreNotes {
+        cursig: Some(11),
+        ..CoreNotes::default()
+    };
     fill_from_gdb(&mut bare, &answer);
-    assert_eq!((bare.signo, bare.code, bare.addr), (Some(11), Some(1), Some(0x18)));
-    let mut kernel = CoreNotes { signo: Some(11), code: Some(1), addr: Some(0x8), ..CoreNotes::default() };
+    assert_eq!(
+        (bare.signo, bare.code, bare.addr),
+        (Some(11), Some(1), Some(0x18))
+    );
+    let mut kernel = CoreNotes {
+        signo: Some(11),
+        code: Some(1),
+        addr: Some(0x8),
+        ..CoreNotes::default()
+    };
     fill_from_gdb(&mut kernel, &answer);
     assert_eq!(kernel.addr, Some(0x8), "the core's own note wins");
 }

@@ -163,7 +163,10 @@ enum Resolution<'a> {
 }
 
 impl DecompileTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: DecompileArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -206,7 +209,10 @@ impl DecompileTool {
             }
         };
         if action == "disasm" {
-            Ok(budget(&self.run_r2(&at_address("pdf", addr), &binary).await?, MAX_LINES))
+            Ok(budget(
+                &self.run_r2(&at_address("pdf", addr), &binary).await?,
+                MAX_LINES,
+            ))
         } else {
             self.decompile(addr, &binary).await
         }
@@ -216,7 +222,12 @@ impl DecompileTool {
     /// then `aflj` resolves the name and `pdg`/`pdf` answers from the same
     /// analysis. Two separate runs (the list, then the code) each paid for a
     /// full `-A` analysis — minutes on a large binary.
-    async fn named(&self, name: &str, action: &str, binary: &Path) -> Result<String, FunctionCallError> {
+    async fn named(
+        &self,
+        name: &str,
+        action: &str,
+        binary: &Path,
+    ) -> Result<String, FunctionCallError> {
         let use_pdg = action != "disasm" && self.pdg_installed().await?;
         let mut r2 = R2Session::open(binary, &self.cwd).await?;
         if let Err(failure) = r2.cmd("aaa").await {
@@ -283,15 +294,17 @@ impl DecompileTool {
     /// analysing anything.
     async fn pdg_installed(&self) -> Result<bool, FunctionCallError> {
         let argv = ["-e", "scr.color=0", "-q", "-c", "pdg?", "--"].map(str::to_string);
-        Ok(match run_capped("r2", &argv, &self.cwd, PROBE_TIMEOUT).await? {
-            RunOutcome::Finished {
-                success: true,
-                stdout,
-                stderr,
-                ..
-            } => !pdg_unavailable(&combine_output(stdout.as_bytes(), stderr.as_bytes())),
-            _ => false,
-        })
+        Ok(
+            match run_capped("r2", &argv, &self.cwd, PROBE_TIMEOUT).await? {
+                RunOutcome::Finished {
+                    success: true,
+                    stdout,
+                    stderr,
+                    ..
+                } => !pdg_unavailable(&combine_output(stdout.as_bytes(), stderr.as_bytes())),
+                _ => false,
+            },
+        )
     }
 
     /// radare2's analysis (`aaa`) on a large stripped binary can run for
@@ -415,7 +428,9 @@ impl R2Session {
                     text.push_str(&String::from_utf8_lossy(&chunk[..n]));
                     if text.len() > 4000 {
                         let cut = text.len() - 4000;
-                        let cut = (cut..text.len()).find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+                        let cut = (cut..text.len())
+                            .find(|&i| text.is_char_boundary(i))
+                            .unwrap_or(0);
                         text.drain(..cut);
                     }
                 }
@@ -437,7 +452,8 @@ impl R2Session {
     async fn cmd(&mut self, command: &str) -> Result<String, R2Died> {
         use tokio::io::AsyncWriteExt as _;
         let line = format!("{command}\n");
-        if self.stdin.write_all(line.as_bytes()).await.is_err() || self.stdin.flush().await.is_err() {
+        if self.stdin.write_all(line.as_bytes()).await.is_err() || self.stdin.flush().await.is_err()
+        {
             return Err(self.died());
         }
         self.read_reply().await
@@ -554,7 +570,10 @@ fn parse_function_list(stdout: &str) -> Option<Vec<R2Function>> {
         .filter_map(|entry| {
             let name = entry.get("name")?.as_str()?.to_string();
             // r2 5.9 calls it `offset`; later releases rename it `addr`.
-            let addr = entry.get("offset").or_else(|| entry.get("addr"))?.as_u64()?;
+            let addr = entry
+                .get("offset")
+                .or_else(|| entry.get("addr"))?
+                .as_u64()?;
             Some(R2Function { name, addr })
         })
         .collect();
@@ -579,8 +598,10 @@ fn resolve<'a>(query: &str, functions: &'a [R2Function]) -> Resolution<'a> {
         }));
     }
     for (wanted, key) in levels {
-        let mut hits: Vec<&R2Function> =
-            functions.iter().filter(|f| key(&f.name) == wanted).collect();
+        let mut hits: Vec<&R2Function> = functions
+            .iter()
+            .filter(|f| key(&f.name) == wanted)
+            .collect();
         hits.sort_by_key(|f| f.addr);
         hits.dedup_by_key(|f| f.addr);
         match hits.len() {
@@ -596,7 +617,12 @@ fn resolve<'a>(query: &str, functions: &'a [R2Function]) -> Resolution<'a> {
 /// near-miss (`std::vector<int>::push_back`) still leads somewhere.
 fn close_matches<'a>(query: &str, functions: &'a [R2Function]) -> Vec<&'a R2Function> {
     let base = without_params(strip_r2_prefix(query.trim()));
-    let last = base.rsplit("::").next().unwrap_or(base).trim().to_lowercase();
+    let last = base
+        .rsplit("::")
+        .next()
+        .unwrap_or(base)
+        .trim()
+        .to_lowercase();
     if last.is_empty() {
         return Vec::new();
     }
@@ -778,7 +804,11 @@ mod tests {
             "13c0",
             "+10",
         ] {
-            assert_eq!(parse_target(name), Target::Name(name.trim().to_string()), "{name}");
+            assert_eq!(
+                parse_target(name),
+                Target::Name(name.trim().to_string()),
+                "{name}"
+            );
         }
     }
 
@@ -849,7 +879,10 @@ mod tests {
         // Only one `leaf` exists; asking for leaf(long) must not silently
         // disassemble leaf(int*).
         let functions = listing();
-        assert!(matches!(resolve("leaf(long)", &functions), Resolution::Missing(_)));
+        assert!(matches!(
+            resolve("leaf(long)", &functions),
+            Resolution::Missing(_)
+        ));
     }
 
     #[test]
@@ -869,7 +902,8 @@ mod tests {
 
     #[test]
     fn parses_aflj_with_offset_or_addr_keys() {
-        let json = r#"[{"name":"dbg.main","offset":5229,"size":492},{"name":"entry0","addr":4368}]"#;
+        let json =
+            r#"[{"name":"dbg.main","offset":5229,"size":492},{"name":"entry0","addr":4368}]"#;
         assert_eq!(
             parse_function_list(json),
             Some(vec![
@@ -890,10 +924,16 @@ mod tests {
     #[test]
     fn without_params_keeps_operator_call_and_strips_qualifiers() {
         assert_eq!(without_params("ns::f(int) const"), "ns::f");
-        assert_eq!(without_params("S::operator()(int) const &"), "S::operator()");
+        assert_eq!(
+            without_params("S::operator()(int) const &"),
+            "S::operator()"
+        );
         assert_eq!(without_params("main"), "main");
         // A trailing `)` that is not a parameter list stays put.
-        assert_eq!(without_params("(anonymous namespace)::x"), "(anonymous namespace)::x");
+        assert_eq!(
+            without_params("(anonymous namespace)::x"),
+            "(anonymous namespace)::x"
+        );
     }
 
     #[test]
@@ -971,7 +1011,10 @@ mod tests {
     fn resolves_relative_and_absolute_paths() {
         let cwd = Path::new("/work");
         assert_eq!(resolve_path(cwd, "a.out"), PathBuf::from("/work/a.out"));
-        assert_eq!(resolve_path(cwd, "bin/a.out"), PathBuf::from("/work/bin/a.out"));
+        assert_eq!(
+            resolve_path(cwd, "bin/a.out"),
+            PathBuf::from("/work/bin/a.out")
+        );
         assert_eq!(resolve_path(cwd, "/abs/a.out"), PathBuf::from("/abs/a.out"));
     }
 
@@ -1055,7 +1098,9 @@ int main(int argc, char **argv) {
         // Measured before the fix: `main; !touch X` ran `touch`, a
         // backtick ran it via substitution, and a C++ template name's `>`
         // redirected r2's output into a new file named `::push_back`.
-        let Some(dir) = r2_fixture("inject") else { return };
+        let Some(dir) = r2_fixture("inject") else {
+            return;
+        };
         let tool = DecompileTool { cwd: dir.clone() };
         let attacks = [
             ("disasm", "main; !touch INJECTED_MARKER"),
@@ -1080,7 +1125,10 @@ int main(int argc, char **argv) {
             "PIPE_MARKER",
             "DECOMPILE_MARKER",
         ] {
-            assert!(!dir.join(marker).exists(), "r2 executed caller text: {marker} exists");
+            assert!(
+                !dir.join(marker).exists(),
+                "r2 executed caller text: {marker} exists"
+            );
         }
         // `~` is r2's grep: it used to filter the output down to `call` lines.
         let grep = tool.run(&call("disasm", "main~call")).await.expect("run");
@@ -1092,18 +1140,29 @@ int main(int argc, char **argv) {
     async fn real_r2_disassembles_bare_demangled_and_address_targets() {
         // Given a raw name, r2 answers `Invalid tmpseek address` for every C++ name,
         // including the `dbg.leaf(int*)` its own function list prints.
-        let Some(dir) = r2_fixture("names") else { return };
+        let Some(dir) = r2_fixture("names") else {
+            return;
+        };
         let tool = DecompileTool { cwd: dir.clone() };
         for function in ["leaf", "leaf(int*)", "leaf(int *)"] {
             let out = tool.run(&call("disasm", function)).await.expect("run");
             let header = out.lines().next().unwrap_or_default();
-            assert!(header.starts_with("function: ") && header.contains("leaf"), "{function}: {out}");
+            assert!(
+                header.starts_with("function: ") && header.contains("leaf"),
+                "{function}: {out}"
+            );
             assert!(!out.contains("Invalid tmpseek"), "{function}: {out}");
             assert!(!out.contains('\u{1b}'), "no ANSI escapes: {out}");
         }
-        let out = tool.run(&call("disasm", "ns::overload")).await.expect("run");
+        let out = tool
+            .run(&call("disasm", "ns::overload"))
+            .await
+            .expect("run");
         assert!(out.contains("matches 2 functions"), "{out}");
-        assert!(out.contains("ns::overload(int)") && out.contains("ns::overload(double)"), "{out}");
+        assert!(
+            out.contains("ns::overload(int)") && out.contains("ns::overload(double)"),
+            "{out}"
+        );
         // An address is used as given, with no lookup.
         let addr = out
             .lines()
@@ -1120,7 +1179,9 @@ int main(int argc, char **argv) {
     async fn real_r2_decompile_falls_back_to_disassembly_without_r2ghidra() {
         // Without r2ghidra, `decompile` must not print r2's `Missing plugin`
         // error in place of the disassembly it promises.
-        let Some(dir) = r2_fixture("fallback") else { return };
+        let Some(dir) = r2_fixture("fallback") else {
+            return;
+        };
         let tool = DecompileTool { cwd: dir.clone() };
         let out = tool.run(&call("decompile", "main")).await.expect("run");
         if tool.pdg_installed().await.expect("probe") {

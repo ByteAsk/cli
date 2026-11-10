@@ -12,6 +12,7 @@ use codex_skills::SkillRootSnapshots;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_absolute_path::test_support::PathExt;
+use codex_utils_path_uri::PathUri;
 use codex_utils_plugins::PluginIdentity;
 use codex_utils_plugins::PluginSkillRoot;
 use codex_utils_plugins::SkillDiscoveryMode;
@@ -208,6 +209,88 @@ async fn skills_for_config_reuses_cache_for_same_effective_config() {
 }
 
 #[tokio::test]
+async fn skills_for_config_bounds_plugin_generations_and_preserves_live_snapshots() {
+    let codex_home = tempfile::tempdir().expect("tempdir");
+    let cwd = tempfile::tempdir().expect("tempdir");
+    let skill_path = write_plugin_skill(
+        &codex_home,
+        "test",
+        "sample",
+        "search",
+        "search",
+        "initial description",
+    );
+    let plugin_root = plugin_skill_root_for_skill_path(&skill_path, "sample@test", "sample");
+    let base_input = HostSkillsLoadInput::new(
+        cwd.path().abs(),
+        vec![plugin_root],
+        config_stack(&codex_home, "[skills.bundled]\nenabled = false\n"),
+    );
+    let skills_service = HostSkillsService::new(
+        codex_home.path().abs(),
+        /*bundled_skills_enabled*/ false,
+    );
+    let mut generations = Vec::new();
+    let mut recent = None;
+    let mut held_snapshot = None;
+    let mut held_skills = Vec::new();
+
+    // Reloads allocate new handles even when roots repeat, as they do after a rollback.
+    for generation in 0..CONFIG_SKILLS_CACHE_CAPACITY + 2 {
+        fs::write(
+            &skill_path,
+            format!("---\nname: search\ndescription: generation {generation}\n---\n\n# Body\n"),
+        )
+        .expect("write updated skill");
+        let owner = Arc::new(TestPluginSkillSnapshotCache::default());
+        generations.push(Arc::downgrade(&owner));
+        let input = base_input
+            .clone()
+            .with_plugin_skill_snapshots(Some(SkillRootSnapshots::new(owner)));
+        let snapshot = skills_service
+            .snapshot_for_config(&input, Some(Arc::clone(&LOCAL_FS)))
+            .await;
+
+        if generation == 0 {
+            recent = Some((input, snapshot));
+        } else if generation == 1 {
+            held_skills = snapshot.outcome().skills.clone();
+            held_snapshot = Some(snapshot);
+        }
+        if generation == CONFIG_SKILLS_CACHE_CAPACITY - 1 {
+            let (input, snapshot) = recent.as_ref().expect("first generation");
+            let reused = skills_service
+                .snapshot_for_config(input, Some(Arc::clone(&LOCAL_FS)))
+                .await;
+            assert!(std::ptr::eq(snapshot.outcome(), reused.outcome()));
+        }
+    }
+    drop(recent);
+
+    let retained_generations = generations
+        .iter()
+        .enumerate()
+        .filter_map(|(generation, owner)| owner.upgrade().map(|_| generation))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retained_generations,
+        std::iter::once(/*value*/ 0)
+            .chain(3..CONFIG_SKILLS_CACHE_CAPACITY + 2)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        held_snapshot
+            .expect("evicted live snapshot")
+            .outcome()
+            .skills,
+        held_skills
+    );
+
+    skills_service.clear_cache();
+    assert_eq!(generations.iter().filter_map(Weak::upgrade).count(), 0);
+}
+
+#[tokio::test]
 async fn watchable_skill_root_paths_exclude_plugin_and_system_roots() {
     let codex_home = tempfile::tempdir().expect("tempdir");
     let cwd = tempfile::tempdir().expect("tempdir");
@@ -327,9 +410,11 @@ async fn snapshot_for_config_preserves_host_precedence_for_symlinked_plugin_root
             interface: None,
             dependencies: None,
             policy: None,
-            path_to_skills_md: dunce::canonicalize(plugin_skill_path)
-                .expect("canonical plugin skill path")
-                .abs(),
+            path_to_skills_md: PathUri::from_abs_path(
+                &dunce::canonicalize(plugin_skill_path)
+                    .expect("canonical plugin skill path")
+                    .abs()
+            ),
             scope: SkillScope::User,
             plugin_id: None,
             remote_plugin_id: None,
@@ -647,13 +732,9 @@ async fn skills_for_config_disables_plugin_skills_by_name() {
         .expect("skill path should canonicalize")
         .abs();
 
-    assert_eq!(skill.path_to_skills_md, skill_path);
+    assert_eq!(skill.path_to_skills_md, PathUri::from_abs_path(&skill_path));
     assert!(outcome.disabled_paths.contains(&skill.path_to_skills_md));
-    assert!(
-        outcome
-            .implicit_skill_for_doc_path(&skill.path_to_skills_md)
-            .is_none()
-    );
+    assert!(outcome.implicit_skill_for_doc_path(&skill_path).is_none());
 }
 
 #[tokio::test]

@@ -5,6 +5,8 @@ use crate::events::shared::log_event;
 use crate::events::shared::trace_event;
 use crate::metrics::API_CALL_COUNT_METRIC;
 use crate::metrics::API_CALL_DURATION_METRIC;
+use crate::metrics::MULTI_AGENT_SPAWN_FAILURE_METRIC;
+use crate::metrics::MULTI_AGENT_SPAWN_PHASE_DURATION_METRIC;
 use crate::metrics::MetricsClient;
 use crate::metrics::MetricsConfig;
 use crate::metrics::MetricsError;
@@ -43,6 +45,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::ToolName;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ToolResultLogConfig;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrKind;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
@@ -98,8 +102,10 @@ pub struct SessionTelemetryMetadata {
     pub(crate) auth_mode: Option<String>,
     pub(crate) auth_env: AuthEnvTelemetryMetadata,
     pub(crate) account_id: Option<String>,
+    pub(crate) user_id: Option<String>,
     pub(crate) account_email: Option<String>,
     pub(crate) originator: String,
+    pub(crate) product_sku: Option<&'static str>,
     pub(crate) service_name: Option<String>,
     pub(crate) session_source: String,
     pub(crate) model: String,
@@ -114,12 +120,35 @@ pub struct SessionTelemetryMetadata {
 #[derive(Debug, Clone)]
 pub struct SessionTelemetry {
     tool_result_log_config: ToolResultLogConfig,
+    log_sse_deltas: bool,
     pub(crate) metadata: SessionTelemetryMetadata,
     pub(crate) metrics: Option<MetricsClient>,
     pub(crate) metrics_use_metadata_tags: bool,
 }
 
+/// Bounds product SKU attribution before it is used in telemetry dimensions.
+pub fn bounded_product_sku(product_sku: Option<&str>) -> Option<&'static str> {
+    const KNOWN_PRODUCT_SKUS: &[&str] = &["codex"];
+
+    match product_sku {
+        None | Some("") => None,
+        Some(sku) => Some(
+            KNOWN_PRODUCT_SKUS
+                .iter()
+                .copied()
+                .find(|known| *known == sku)
+                .unwrap_or("other"),
+        ),
+    }
+}
+
 impl SessionTelemetry {
+    /// Suppress successful SSE delta logs while retaining errors and all metrics.
+    pub fn without_sse_delta_logs(mut self) -> Self {
+        self.log_sse_deltas = false;
+        self
+    }
+
     pub fn with_tool_result_log_config(mut self, config: ToolResultLogConfig) -> Self {
         self.tool_result_log_config = config;
         self
@@ -148,6 +177,12 @@ impl SessionTelemetry {
 
     pub fn with_metrics_service_name(mut self, service_name: &str) -> Self {
         self.metadata.service_name = Some(sanitize_metric_tag_value(service_name));
+        self
+    }
+
+    /// Attributes bounded telemetry without turning arbitrary configuration into metric labels.
+    pub fn with_product_sku(mut self, product_sku: Option<&str>) -> Self {
+        self.metadata.product_sku = bounded_product_sku(product_sku);
         self
     }
 
@@ -205,6 +240,29 @@ impl SessionTelemetry {
         }
     }
 
+    /// Records a histogram with explicit buckets and the usual session attribution.
+    /// All callers of the same metric name must use the same boundaries.
+    pub fn histogram_with_boundaries(
+        &self,
+        name: &str,
+        value: i64,
+        boundaries: &[f64],
+        tags: &[(&str, &str)],
+    ) {
+        let res: MetricsResult<()> = (|| {
+            let Some(metrics) = &self.metrics else {
+                return Ok(());
+            };
+
+            let tags = self.tags_with_metadata(tags)?;
+            metrics.histogram_with_boundaries(name, value, boundaries, &tags)
+        })();
+
+        if let Err(e) = res {
+            tracing::warn!("metrics histogram [{name}] failed: {e}");
+        }
+    }
+
     pub fn record_duration(&self, name: &str, duration: Duration, tags: &[(&str, &str)]) {
         let res: MetricsResult<()> = (|| {
             let Some(metrics) = &self.metrics else {
@@ -218,6 +276,73 @@ impl SessionTelemetry {
         if let Err(e) = res {
             tracing::warn!("metrics duration [{name}] failed: {e}");
         }
+    }
+
+    /// Records one successful multi-agent spawn phase with bounded spawn dimensions.
+    pub fn record_multi_agent_spawn_phase(
+        &self,
+        phase: &'static str,
+        duration: Duration,
+        fork_mode: &'static str,
+        history_mode: &'static str,
+        multi_agent_version: &'static str,
+    ) {
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
+        let mut tags = self.multi_agent_spawn_tags(fork_mode, multi_agent_version);
+        tags.push(("history_mode", history_mode));
+        tags.push(("phase", phase));
+        let _ = metrics.record_duration(MULTI_AGENT_SPAWN_PHASE_DURATION_METRIC, duration, &tags);
+    }
+
+    /// Records one failed multi-agent spawn after request validation has completed.
+    pub fn record_multi_agent_spawn_failure(
+        &self,
+        reason: &'static str,
+        err: &CodexErr,
+        call_id: &str,
+        turn_id: &str,
+        fork_mode: &'static str,
+        multi_agent_version: &'static str,
+    ) {
+        let detail = err.agent_context().map_or("unknown", <&str>::from);
+        let error_kind: &'static str = CodexErrKind::from(err).into();
+        // Only bounded classifications and correlation IDs belong in trace-safe diagnostics.
+        trace_event!(
+            self,
+            event.name = MULTI_AGENT_SPAWN_FAILURE_METRIC,
+            reason,
+            detail,
+            error_kind,
+            call_id,
+            turn_id,
+            fork_mode,
+            multi_agent_version,
+            product_sku = self.metadata.product_sku,
+        );
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
+        let mut tags = self.multi_agent_spawn_tags(fork_mode, multi_agent_version);
+        tags.push(("reason", reason));
+        tags.push(("detail", detail));
+        tags.push(("error_kind", error_kind));
+        let _ = metrics.counter(MULTI_AGENT_SPAWN_FAILURE_METRIC, /*inc*/ 1, &tags);
+    }
+
+    fn multi_agent_spawn_tags(
+        &self,
+        fork_mode: &'static str,
+        multi_agent_version: &'static str,
+    ) -> Vec<(&'static str, &'static str)> {
+        let mut tags = Vec::with_capacity(5);
+        tags.push(("fork_mode", fork_mode));
+        tags.push(("multi_agent_version", multi_agent_version));
+        if let Some(product_sku) = self.metadata.product_sku {
+            tags.push(("product_sku", product_sku));
+        }
+        tags
     }
 
     fn record_duration_ms_f64(&self, name: &str, duration_ms: f64, tags: &[(&str, &str)]) {
@@ -491,14 +616,17 @@ impl SessionTelemetry {
             });
         Self {
             tool_result_log_config: ToolResultLogConfig::default(),
+            log_sse_deltas: true,
             metadata: SessionTelemetryMetadata {
                 conversation_id,
                 agent_name,
                 auth_mode: auth_mode.map(|m| m.to_string()),
                 auth_env: AuthEnvTelemetryMetadata::default(),
                 account_id,
+                user_id: None,
                 account_email,
                 originator: sanitize_metric_tag_value(originator.as_str()),
+                product_sku: None,
                 service_name: None,
                 session_source: session_source.to_string(),
                 model: model.to_owned(),
@@ -945,6 +1073,9 @@ impl SessionTelemetry {
             duration,
             &[("kind", kind), ("success", "true")],
         );
+        if !self.log_sse_deltas && kind.ends_with(".delta") {
+            return;
+        }
         log_event!(
             self,
             event.name = "codex.sse_event",
@@ -1187,10 +1318,13 @@ impl SessionTelemetry {
     ) {
         let flat_tool_name = tool_name.to_string();
         let success_str = if success { "true" } else { "false" };
-        let mut tags = Vec::with_capacity(2 + extra_tags.len());
+        let mut tags = Vec::with_capacity(3 + extra_tags.len());
         tags.push(("tool", flat_tool_name.as_str()));
         tags.push(("success", success_str));
         tags.extend_from_slice(extra_tags);
+        if let Some(product_sku) = self.metadata.product_sku {
+            tags.push(("product_sku", product_sku));
+        }
         self.counter(TOOL_CALL_COUNT_METRIC, /*inc*/ 1, &tags);
         self.record_duration(TOOL_CALL_DURATION_METRIC, duration, &tags);
         let mcp_server = trace_field_value(extra_trace_fields, "mcp_server").unwrap_or("");
@@ -1270,7 +1404,7 @@ impl SessionTelemetry {
 
     fn responses_type(event: &ResponseEvent) -> String {
         match event {
-            ResponseEvent::Created => "created".into(),
+            ResponseEvent::Created { .. } => "created".into(),
             ResponseEvent::OutputItemDone(item) | ResponseEvent::OutputItemAdded(item) => {
                 SessionTelemetry::responses_item_type(item)
             }
@@ -1286,6 +1420,7 @@ impl SessionTelemetry {
             ResponseEvent::ServerModel(_) => "server_model".into(),
             ResponseEvent::ModelVerifications(_) => "model_verifications".into(),
             ResponseEvent::TurnModerationMetadata(_) => "turn_moderation_metadata".into(),
+            ResponseEvent::GuardianAssessment(_) => "guardian_assessment".into(),
             ResponseEvent::SafetyBuffering(_) => "safety_buffering".into(),
             ResponseEvent::ServerReasoningIncluded(_) => "server_reasoning_included".into(),
             ResponseEvent::RateLimits(_) => "rate_limits".into(),
@@ -1309,6 +1444,7 @@ impl SessionTelemetry {
             ResponseItem::WebSearchCall { .. } => "web_search_call".into(),
             ResponseItem::ImageGenerationCall { .. } => "image_generation_call".into(),
             ResponseItem::Compaction { .. } => "compaction".into(),
+            ResponseItem::ConfigurationUpdate { .. } => "configuration_update".into(),
             ResponseItem::CompactionTrigger { .. } => "compaction_trigger".into(),
             ResponseItem::ContextCompaction { .. } => "context_compaction".into(),
             ResponseItem::Other => "other".into(),

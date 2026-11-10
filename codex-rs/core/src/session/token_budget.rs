@@ -4,6 +4,7 @@ use crate::config::Config;
 use crate::config::TokenBudgetConfig;
 use crate::config::resolve_token_budget_config;
 use crate::context::ContextualUserFragment;
+use codex_config::config_toml::ConfigToml;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::account::PlanType;
@@ -14,16 +15,18 @@ fn experimental_context_is_eligible(auth_mode: AuthMode, plan_type: Option<PlanT
     auth_mode == AuthMode::Chatgpt
         && matches!(
             plan_type,
-            Some(PlanType::Plus | PlanType::Pro | PlanType::ProLite)
+            Some(PlanType::Plus | PlanType::Pro | PlanType::ProLite | PlanType::ProMax)
         )
 }
 
 pub(super) fn apply_experimental_context(
     config: &mut Config,
     auth: Option<&CodexAuth>,
+    starting_model: &ModelInfo,
 ) -> std::io::Result<()> {
     let provider = &config.model_provider;
     if !config.features.enabled(Feature::ContextManagement)
+        || !starting_model.supports_experimental_context
         || !provider.supports_codex_backend_routes()
         || !provider.requires_openai_auth
         || provider.env_key.is_some()
@@ -40,10 +43,7 @@ pub(super) fn apply_experimental_context(
     }
 
     if config.token_budget.is_none() {
-        let config_toml = config
-            .config_layer_stack
-            .effective_config()
-            .try_into()
+        let config_toml = ConfigToml::try_from(config.config_layer_stack.effective_config())
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
         config.token_budget = resolve_token_budget_config(&config_toml, &config.features)?;
     }
@@ -187,8 +187,12 @@ pub(super) async fn maybe_record(
                     &config.reminder_message_template,
                     base_window_tokens_remaining,
                 ));
-            sess.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
-                .await;
+            sess.record_conversation_items(
+                turn_context,
+                turn_context.model_info(),
+                std::slice::from_ref(&response_item),
+            )
+            .await;
         }
     }
 
@@ -209,8 +213,12 @@ pub(super) async fn maybe_record(
 
     let response_item =
         ContextualUserFragment::into(crate::context::AutoCompactFallbackPrompt::new(prompt));
-    sess.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
-        .await;
+    sess.record_conversation_items(
+        turn_context,
+        turn_context.model_info(),
+        std::slice::from_ref(&response_item),
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -225,6 +233,7 @@ mod tests {
             (AuthMode::Chatgpt, PlanType::Plus, true),
             (AuthMode::Chatgpt, PlanType::Pro, true),
             (AuthMode::Chatgpt, PlanType::ProLite, true),
+            (AuthMode::Chatgpt, PlanType::ProMax, true),
             (AuthMode::Chatgpt, PlanType::Free, false),
             (AuthMode::Chatgpt, PlanType::Enterprise, false),
             (AuthMode::ApiKey, PlanType::Pro, false),

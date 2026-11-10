@@ -11,7 +11,12 @@ pub(crate) fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
         .arg("-C")
         .arg(repo)
         // Never run the repository's own hooks or filters, and never page.
-        .args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"])
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+        ])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PAGER", "cat")
@@ -24,14 +29,24 @@ pub(crate) fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
         let err = String::from_utf8_lossy(&output.stderr);
-        let first = err.lines().find(|line| !line.trim().is_empty()).unwrap_or("failed");
-        Err(format!("git {}: {}", args.first().copied().unwrap_or(""), first.trim()))
+        let first = err
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("failed");
+        Err(format!(
+            "git {}: {}",
+            args.first().copied().unwrap_or(""),
+            first.trim()
+        ))
     }
 }
 
 /// The full object id of a revision (`commit`, `tree` or `blob` as the suffix asks).
 pub(crate) fn rev_parse(repo: &Path, rev: &str) -> Result<String, String> {
-    let out = git(repo, &["rev-parse", "--verify", "--quiet", "--end-of-options", rev])?;
+    let out = git(
+        repo,
+        &["rev-parse", "--verify", "--quiet", "--end-of-options", rev],
+    )?;
     let id = out.trim().to_string();
     if id.is_empty() {
         Err(format!("no such revision: {rev}"))
@@ -58,7 +73,14 @@ pub(crate) fn merge_tree(repo: &Path, base: &str, head: &str) -> Result<String, 
         .arg("-C")
         .arg(repo)
         .args(["-c", "core.hooksPath=/dev/null"])
-        .args(["merge-tree", "--write-tree", "--no-messages", "--name-only", base, head])
+        .args([
+            "merge-tree",
+            "--write-tree",
+            "--no-messages",
+            "--name-only",
+            base,
+            head,
+        ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|err| MergeError::Git(format!("could not run git: {err}")))?;
@@ -67,11 +89,19 @@ pub(crate) fn merge_tree(repo: &Path, base: &str, head: &str) -> Result<String, 
     match output.status.code() {
         Some(0) if is_object_id(&first) => Ok(first),
         Some(1) => Err(MergeError::Conflict(
-            stdout.lines().skip(1).map(str::to_string).filter(|l| !l.is_empty()).collect(),
+            stdout
+                .lines()
+                .skip(1)
+                .map(str::to_string)
+                .filter(|l| !l.is_empty())
+                .collect(),
         )),
         _ => Err(MergeError::Git(format!(
             "git merge-tree: {}",
-            String::from_utf8_lossy(&output.stderr).lines().next().unwrap_or("failed")
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or("failed")
         ))),
     }
 }
@@ -90,7 +120,10 @@ pub(crate) fn is_object_id(text: &str) -> bool {
 /// Paths that differ between two tree-ish objects (renames as delete + add, so both names
 /// count).
 pub(crate) fn changed_paths(repo: &Path, from: &str, to: &str) -> Result<Vec<String>, String> {
-    let out = git(repo, &["diff", "--name-only", "--no-renames", "-z", from, to, "--"])?;
+    let out = git(
+        repo,
+        &["diff", "--name-only", "--no-renames", "-z", from, to, "--"],
+    )?;
     Ok(out
         .split('\0')
         .filter(|path| !path.is_empty())
@@ -123,7 +156,10 @@ pub(crate) fn commit_tree(repo: &Path, tree: &str, parents: &[&str]) -> Result<S
     } else {
         Err(format!(
             "git commit-tree: {}",
-            String::from_utf8_lossy(&output.stderr).lines().next().unwrap_or("failed")
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or("failed")
         ))
     }
 }

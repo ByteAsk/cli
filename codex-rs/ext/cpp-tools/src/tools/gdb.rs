@@ -58,7 +58,10 @@ struct GdbArgs {
 fn default_commands(backend: Backend) -> Vec<String> {
     match backend {
         Backend::Gdb => DEFAULT_COMMANDS.iter().map(|c| c.to_string()).collect(),
-        Backend::Lldb => DEFAULT_LLDB_COMMANDS.iter().map(|c| c.to_string()).collect(),
+        Backend::Lldb => DEFAULT_LLDB_COMMANDS
+            .iter()
+            .map(|c| c.to_string())
+            .collect(),
     }
 }
 
@@ -134,12 +137,13 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GdbTool {
 
         ToolSpec::Function(ResponsesApiTool {
             name: TOOL_NAME.to_string(),
-            description: "Run a debugger in batch mode for crash/core-dump post-mortem (backtrace, \
+            description:
+                "Run a debugger in batch mode for crash/core-dump post-mortem (backtrace, \
                 locals, args) — non-interactive and hardened (no inferior calls, no auto-load). \
                 Uses a gdb or lldb backend (lldb by default on macOS, where gdb does not run). \
                 C/C++ only; for a core dump pass `core` (plus `sysroot` when the core comes from \
                 another machine), for a live crash pass `program`+`args`."
-                .to_string(),
+                    .to_string(),
             strict: false,
             parameters: JsonSchema::object(
                 properties,
@@ -168,7 +172,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GdbTool {
 }
 
 impl GdbTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: GdbArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -189,7 +196,10 @@ impl GdbTool {
             .unwrap_or_else(|| default_commands(backend));
         commands = vet_commands(backend, commands).map_err(FunctionCallError::RespondToModel)?;
 
-        let mut notes: Vec<String> = chosen_because.map(|why| format!("note: {why}")).into_iter().collect();
+        let mut notes: Vec<String> = chosen_because
+            .map(|why| format!("note: {why}"))
+            .into_iter()
+            .collect();
         let mut sysroot_setup: Vec<String> = Vec::new();
         if let Some(root) = &sysroot {
             if !root.is_dir() {
@@ -227,12 +237,18 @@ impl GdbTool {
         let mut envs = Vec::new();
         let (bin, debugger_args) = match backend {
             Backend::Gdb => {
-                let inferior = inferior_args(&prog_args).map_err(FunctionCallError::RespondToModel)?;
+                let inferior =
+                    inferior_args(&prog_args).map_err(FunctionCallError::RespondToModel)?;
                 if inferior.needs_shell {
                     envs.push((INFERIOR_SHELL.0.to_string(), INFERIOR_SHELL.1.to_string()));
                 }
                 let mut argv = sysroot_setup;
-                argv.extend(build_gdb_args(&program, core.as_deref(), &inferior.commands, &commands));
+                argv.extend(build_gdb_args(
+                    &program,
+                    core.as_deref(),
+                    &inferior.commands,
+                    &commands,
+                ));
                 ("gdb", argv)
             }
             Backend::Lldb => {
@@ -252,9 +268,16 @@ impl GdbTool {
         // Batch debugging *runs the program*. With a raw `.output()`, a
         // program that never exits (or a gdb waiting on a prompt we did not
         // anticipate) would wedge the turn with no cap at all.
-        let mut result = check_result::CheckResult::pass(TOOL_NAME, "The debugger ran the commands.");
-        let combined = match run_capped_env(bin, &debugger_args, &self.cwd, timeout_from(None), &envs)
-            .await?
+        let mut result =
+            check_result::CheckResult::pass(TOOL_NAME, "The debugger ran the commands.");
+        let combined = match run_capped_env(
+            bin,
+            &debugger_args,
+            &self.cwd,
+            timeout_from(None),
+            &envs,
+        )
+        .await?
         {
             RunOutcome::TimedOut { secs } => {
                 result = crate::results::timed_out(
@@ -350,12 +373,15 @@ fn vet_commands(backend: Backend, commands: Vec<String>) -> Result<Vec<String>, 
         .enumerate()
         .map(|(index, command)| {
             let checked = if command.contains(['\n', '\r']) {
-                Err("it contains a line break, which makes it several commands; put each in its \
+                Err(
+                    "it contains a line break, which makes it several commands; put each in its \
                      own `commands` entry"
-                    .to_string())
+                        .to_string(),
+                )
             } else {
                 match backend {
-                    Backend::Gdb => match crate::tools::gdb_session::blocked_reason(command.trim()) {
+                    Backend::Gdb => match crate::tools::gdb_session::blocked_reason(command.trim())
+                    {
                         Some(reason) => Err(reason),
                         None => Ok(command.clone()),
                     },
@@ -381,7 +407,10 @@ fn lldb_cannot_pass(args: &[String]) -> Option<&'static str> {
     if args.iter().any(|arg| arg.contains(['\n', '\r'])) {
         return Some("a line break inside an argument breaks its launch command");
     }
-    if args.iter().any(|arg| arg.trim() != arg && !arg.trim().is_empty()) {
+    if args
+        .iter()
+        .any(|arg| arg.trim() != arg && !arg.trim().is_empty())
+    {
         return Some("it trims leading and trailing whitespace from each argument");
     }
     None
@@ -561,7 +590,10 @@ mod tests {
         let err = serde_json::from_str::<GdbArgs>(r#"{"program":"a.out","run_args":"x"}"#)
             .err()
             .expect("unknown field refused");
-        assert!(err.to_string().contains("unknown field `run_args`"), "{err}");
+        assert!(
+            err.to_string().contains("unknown field `run_args`"),
+            "{err}"
+        );
     }
 
     use super::*;
@@ -633,15 +665,20 @@ mod tests {
         let program = PathBuf::from("/work/a.out");
         for commands in [
             vec!["run".to_string(), "bt 25".to_string()],
-            vec!["set pagination off".to_string(), "run".to_string(), "bt full".to_string()],
-            vec!["break parse".to_string(), "r".to_string(), "info locals".to_string()],
+            vec![
+                "set pagination off".to_string(),
+                "run".to_string(),
+                "bt full".to_string(),
+            ],
+            vec![
+                "break parse".to_string(),
+                "r".to_string(),
+                "info locals".to_string(),
+            ],
             vec!["start".to_string(), "next".to_string()],
         ] {
             let gdb = build_gdb_args(&program, None, &[], &commands);
-            let runs = gdb
-                .iter()
-                .filter(|arg| starts_program(arg))
-                .count();
+            let runs = gdb.iter().filter(|arg| starts_program(arg)).count();
             assert_eq!(runs, 1, "gdb {commands:?}: {gdb:?}");
             let lldb = build_lldb_args(&program, None, &[], &commands);
             let runs = lldb.iter().filter(|arg| starts_program(arg)).count();
@@ -708,8 +745,18 @@ mod tests {
             return;
         };
         let args = vec!["once".to_string()];
-        run_real_gdb(&program, dir.path(), &args, &["run".to_string(), "bt 25".to_string()]).await;
-        assert_eq!(fixture::runs(dir.path()).len(), 1, "the program must run exactly once");
+        run_real_gdb(
+            &program,
+            dir.path(),
+            &args,
+            &["run".to_string(), "bt 25".to_string()],
+        )
+        .await;
+        assert_eq!(
+            fixture::runs(dir.path()).len(),
+            1,
+            "the program must run exactly once"
+        );
         // And with no caller `run`, ours still runs it (the post-mortem default).
         run_real_gdb(&program, dir.path(), &args, &default_commands(Backend::Gdb)).await;
         assert_eq!(fixture::runs(dir.path()).len(), 2);
@@ -751,7 +798,19 @@ mod tests {
         assert!(refused(&["trail\t"]).is_some());
         assert!(refused(&["a\nb"]).is_some());
         // Measured exact on lldb 14.
-        assert!(refused(&["a b", "x\"y", "back\\slash", "$HOME", "*", "-v", " ", "mid  dle"]).is_none());
+        assert!(
+            refused(&[
+                "a b",
+                "x\"y",
+                "back\\slash",
+                "$HOME",
+                "*",
+                "-v",
+                " ",
+                "mid  dle"
+            ])
+            .is_none()
+        );
     }
 
     #[test]
@@ -761,8 +820,14 @@ mod tests {
             .expect("shell path")
             .commands;
         let argv = build_gdb_args(&program, None, &setup, &["bt".to_string()]);
-        let set_args = argv.iter().position(|a| a == "set args '' 'a b'").expect("set args");
-        let shell = argv.iter().position(|a| a == "set startup-with-shell on").expect("shell on");
+        let set_args = argv
+            .iter()
+            .position(|a| a == "set args '' 'a b'")
+            .expect("set args");
+        let shell = argv
+            .iter()
+            .position(|a| a == "set startup-with-shell on")
+            .expect("shell on");
         let run = argv.iter().position(|a| a == "run").expect("run");
         assert!(shell < run && set_args < run);
         assert!(!argv.contains(&"--args".to_string()));
@@ -895,11 +960,20 @@ mod tests {
                 crate::test_support::call(&tool, args)
             };
             let without = call(false).await.expect("debug ran");
-            assert!(!without.contains("queue_find"), "{backend} control resolved it anyway:\n{without}");
+            assert!(
+                !without.contains("queue_find"),
+                "{backend} control resolved it anyway:\n{without}"
+            );
             let with = call(true).await.expect("debug ran");
-            assert!(with.contains("queue_find"), "{backend} with sysroot:\n{with}");
+            assert!(
+                with.contains("queue_find"),
+                "{backend} with sysroot:\n{with}"
+            );
             if backend == "lldb" {
-                assert!(with.contains("sysroot") && with.contains("loaded"), "{with}");
+                assert!(
+                    with.contains("sysroot") && with.contains("loaded"),
+                    "{with}"
+                );
             }
         }
     }
@@ -938,10 +1012,23 @@ mod tests {
              int *p = 0; (void)argv; return *p + sentinel; }\n",
         )
         .unwrap();
-        assert!(std::process::Command::new("cc").args(["-g", "-O0", "-o"]).arg(&program).arg(&src).status().unwrap().success());
-        for commands in [default_commands(Backend::Lldb), vec!["frame variable sentinel".to_string()]] {
+        assert!(
+            std::process::Command::new("cc")
+                .args(["-g", "-O0", "-o"])
+                .arg(&program)
+                .arg(&src)
+                .status()
+                .unwrap()
+                .success()
+        );
+        for commands in [
+            default_commands(Backend::Lldb),
+            vec!["frame variable sentinel".to_string()],
+        ] {
             let argv = build_lldb_args(&program, None, &[], &commands);
-            let out = match run_capped_env("lldb", &argv, dir.path(), timeout_from(Some(60)), &[]).await {
+            let out = match run_capped_env("lldb", &argv, dir.path(), timeout_from(Some(60)), &[])
+                .await
+            {
                 Ok(RunOutcome::Finished { stdout, stderr, .. }) => format!("{stdout}{stderr}"),
                 other => panic!("{:?}", other.is_ok()),
             };
@@ -961,7 +1048,15 @@ mod tests {
         let src = dir.path().join("crash.c");
         let program = dir.path().join("crash");
         std::fs::write(&src, "int main(void){ int *p = 0; return *p; }\n").unwrap();
-        assert!(std::process::Command::new("cc").args(["-g", "-o"]).arg(&program).arg(&src).status().unwrap().success());
+        assert!(
+            std::process::Command::new("cc")
+                .args(["-g", "-o"])
+                .arg(&program)
+                .arg(&src)
+                .status()
+                .unwrap()
+                .success()
+        );
         let cores = dir.path().join("core dir");
         std::fs::create_dir(&cores).unwrap();
         // Dump a core with gdb itself: independent of core_pattern/ulimit.
@@ -976,7 +1071,8 @@ mod tests {
             return;
         }
         let argv = build_lldb_args(&program, Some(&core), &[], &["bt".to_string()]);
-        let out = match run_capped_env("lldb", &argv, dir.path(), timeout_from(Some(60)), &[]).await {
+        let out = match run_capped_env("lldb", &argv, dir.path(), timeout_from(Some(60)), &[]).await
+        {
             Ok(RunOutcome::Finished { stdout, stderr, .. }) => format!("{stdout}{stderr}"),
             other => panic!("{:?}", other.is_ok()),
         };
@@ -989,12 +1085,7 @@ mod tests {
         // The mandatory hang-guard: a crash in batch mode without a TTY must run
         // `bt` then `quit` rather than dropping to an interactive prompt.
         for core in [None, Some(Path::new("/work/core"))] {
-            let argv = build_lldb_args(
-                Path::new("/work/a.out"),
-                core,
-                &[],
-                &["bt".to_string()],
-            );
+            let argv = build_lldb_args(Path::new("/work/a.out"), core, &[], &["bt".to_string()]);
             let k_positions: Vec<usize> = argv
                 .iter()
                 .enumerate()
@@ -1024,10 +1115,16 @@ mod tests {
             (Backend::Lldb, "command alias zz platform shell"),
             (Backend::Lldb, "command source evil.lldb"),
             (Backend::Lldb, "br s -n main"),
-            (Backend::Lldb, "breakpoint set -n main --comm \"platform shell touch x\""),
+            (
+                Backend::Lldb,
+                "breakpoint set -n main --comm \"platform shell touch x\"",
+            ),
             (Backend::Lldb, "breakpoint set -n main -Hc 1"),
             (Backend::Lldb, "breakpoint command add 1"),
-            (Backend::Lldb, "target stop-hook add -o \"platform shell touch x\""),
+            (
+                Backend::Lldb,
+                "target stop-hook add -o \"platform shell touch x\"",
+            ),
             (Backend::Lldb, "display x"),
             (Backend::Lldb, "settings set prompt x"),
             (Backend::Lldb, "p side()"),
@@ -1047,20 +1144,53 @@ mod tests {
     #[test]
     fn ordinary_commands_pass_and_lldb_expressions_cannot_call() {
         let gdb: Vec<String> = [
-            "bt full", "info locals", "info args", "run", "r", "start", "break parse", "print x",
-            "x/4x &buf", "frame 2", "set pagination off", "set var x = 5", "finish",
+            "bt full",
+            "info locals",
+            "info args",
+            "run",
+            "r",
+            "start",
+            "break parse",
+            "print x",
+            "x/4x &buf",
+            "frame 2",
+            "set pagination off",
+            "set var x = 5",
+            "finish",
         ]
         .iter()
         .map(|c| c.to_string())
         .collect();
         assert_eq!(vet_commands(Backend::Gdb, gdb.clone()), Ok(gdb));
         let lldb: Vec<String> = [
-            "bt", "bt all", "frame variable", "frame variable sentinel", "v x", "run", "r",
-            "process launch", "b main", "b t.c:12", "breakpoint set -f t.c -l 3 -i 2",
-            "image list", "target modules lookup -a 0x1000", "x/4xw &x", "memory read -c 16 $sp",
-            "register read", "thread backtrace all", "thread list", "frame select 1", "up",
-            "down 2", "disassemble -n main", "c", "n", "s", "finish",
-            "settings set target.source-map /a /b", "watchpoint set variable -w write x",
+            "bt",
+            "bt all",
+            "frame variable",
+            "frame variable sentinel",
+            "v x",
+            "run",
+            "r",
+            "process launch",
+            "b main",
+            "b t.c:12",
+            "breakpoint set -f t.c -l 3 -i 2",
+            "image list",
+            "target modules lookup -a 0x1000",
+            "x/4xw &x",
+            "memory read -c 16 $sp",
+            "register read",
+            "thread backtrace all",
+            "thread list",
+            "frame select 1",
+            "up",
+            "down 2",
+            "disassemble -n main",
+            "c",
+            "n",
+            "s",
+            "finish",
+            "settings set target.source-map /a /b",
+            "watchpoint set variable -w write x",
         ]
         .iter()
         .map(|c| c.to_string())
@@ -1072,8 +1202,14 @@ mod tests {
             ("call a + b", "expression --allow-jit false -- a + b"),
             ("po obj", "expression -O --allow-jit false -- obj"),
             ("p/x x", "expression --gdb-format x --allow-jit false -- x"),
-            ("expression -G x -- x", "expression -G x --allow-jit false -- x"),
-            ("expr sizeof(S)", "expression --allow-jit false -- sizeof(S)"),
+            (
+                "expression -G x -- x",
+                "expression -G x --allow-jit false -- x",
+            ),
+            (
+                "expr sizeof(S)",
+                "expression --allow-jit false -- sizeof(S)",
+            ),
             ("p -x", "expression --allow-jit false -- -x"),
         ] {
             assert_eq!(
@@ -1108,7 +1244,11 @@ mod tests {
         }
         if fixture::have("lldb") {
             cases.push(("lldb", "", format!("pla sh {touch}")));
-            cases.push(("lldb", "", format!("breakpoint set -n main --comm \"platform shell {touch}\"")));
+            cases.push((
+                "lldb",
+                "",
+                format!("breakpoint set -n main --comm \"platform shell {touch}\""),
+            ));
         }
         for (backend, args, escape) in cases {
             let result = crate::test_support::call(
@@ -1118,9 +1258,15 @@ mod tests {
             )
             .await;
             let err = format!("{:?}", result.expect_err("refused"));
-            assert!(err.contains("Refused commands[0]"), "{backend} {escape}: {err}");
+            assert!(
+                err.contains("Refused commands[0]"),
+                "{backend} {escape}: {err}"
+            );
             assert!(!marker.exists(), "{backend}: `{escape}` ran on the host");
-            assert!(fixture::runs(dir.path()).is_empty(), "{backend}: the program ran");
+            assert!(
+                fixture::runs(dir.path()).is_empty(),
+                "{backend}: the program ran"
+            );
         }
     }
 
@@ -1148,7 +1294,15 @@ mod tests {
         )
         .unwrap();
         let program = dir.path().join("op");
-        assert!(std::process::Command::new("c++").args(["-g", "-O0", "-o"]).arg(&program).arg(&src).status().unwrap().success());
+        assert!(
+            std::process::Command::new("c++")
+                .args(["-g", "-O0", "-o"])
+                .arg(&program)
+                .arg(&src)
+                .status()
+                .unwrap()
+                .success()
+        );
         let tool = GdbTool {
             cwd: dir.path().to_path_buf(),
             native_exec: true,
@@ -1161,8 +1315,14 @@ mod tests {
         .await
         .expect("debug ran");
         assert!(out.contains("stop reason = breakpoint"), "{out}");
-        assert!(out.contains("expression --allow-jit false -- a + b"), "{out}");
-        assert!(out.contains("(int) $0 = 0x"), "a plain read still works:\n{out}");
+        assert!(
+            out.contains("expression --allow-jit false -- a + b"),
+            "{out}"
+        );
+        assert!(
+            out.contains("(int) $0 = 0x"),
+            "a plain read still works:\n{out}"
+        );
         assert!(!marker.exists(), "operator+ ran inside the program:\n{out}");
     }
 

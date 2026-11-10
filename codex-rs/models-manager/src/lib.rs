@@ -1,13 +1,18 @@
 pub mod cache;
+mod catalog;
 pub mod collaboration_mode_presets;
 pub(crate) mod config;
 pub mod manager;
 pub mod model_info;
 pub mod model_presets;
+mod originator;
 pub mod test_support;
 
+pub use catalog::CatalogModel;
+pub use catalog::ModelOrigin;
 pub use codex_protocol::auth::AuthMode;
 pub use config::ModelsManagerConfig;
+pub use originator::ModelCatalogOriginator;
 
 /// Load the bundled model catalog shipped with `codex-models-manager`.
 pub fn bundled_models_response()
@@ -51,12 +56,18 @@ mod version_override_tests {
     fn auto_maps_to_upstream_and_never_the_rejected_build_version() {
         // The whole point of the override: `auto` (what the wrapper sends) must resolve to a
         // real upstream Codex version, NOT the baked 0.1.0 the ChatGPT backend rejects.
-        assert_eq!(resolve_reported_version(Some("auto"), &build_version()), UPSTREAM_CODEX_VERSION);
+        assert_eq!(
+            resolve_reported_version(Some("auto"), &build_version()),
+            UPSTREAM_CODEX_VERSION
+        );
         assert_eq!(
             resolve_reported_version(Some("UPSTREAM"), &build_version()),
             UPSTREAM_CODEX_VERSION
         );
-        assert_ne!(resolve_reported_version(Some("auto"), &build_version()), build_version());
+        assert_ne!(
+            resolve_reported_version(Some("auto"), &build_version()),
+            build_version()
+        );
         assert!(UPSTREAM_CODEX_VERSION.split('.').count() >= 2);
         assert_ne!(UPSTREAM_CODEX_VERSION, build_version());
     }
@@ -64,9 +75,18 @@ mod version_override_tests {
     #[test]
     fn explicit_wins_blank_and_absent_fall_back() {
         // A concrete literal is still honoured (manual escape hatch)...
-        assert_eq!(resolve_reported_version(Some("0.153.4"), &build_version()), "0.153.4");
+        assert_eq!(
+            resolve_reported_version(Some("0.153.4"), &build_version()),
+            "0.153.4"
+        );
         // ...but blank / unset stay on the managed build version.
-        assert_eq!(resolve_reported_version(Some("   "), &build_version()), build_version());
-        assert_eq!(resolve_reported_version(None, &build_version()), build_version());
+        assert_eq!(
+            resolve_reported_version(Some("   "), &build_version()),
+            build_version()
+        );
+        assert_eq!(
+            resolve_reported_version(None, &build_version()),
+            build_version()
+        );
     }
 }

@@ -37,9 +37,16 @@ impl FakeApi {
                 let headers = request
                     .headers()
                     .iter()
-                    .map(|h| (h.field.to_string().to_ascii_lowercase(), h.value.to_string()))
+                    .map(|h| {
+                        (
+                            h.field.to_string().to_ascii_lowercase(),
+                            h.value.to_string(),
+                        )
+                    })
                     .collect();
-                log.lock().expect("lock").push((method.clone(), url.clone(), body, headers));
+                log.lock()
+                    .expect("lock")
+                    .push((method.clone(), url.clone(), body, headers));
                 let answer = if method == "GET" {
                     gets.iter()
                         .find(|(path, _)| url.starts_with(path))
@@ -64,7 +71,11 @@ impl FakeApi {
             .iter()
             .filter(|(method, ..)| method == "POST")
             .map(|(_, url, body, headers)| {
-                (url.clone(), serde_json::from_str(body).unwrap_or_default(), headers.clone())
+                (
+                    url.clone(),
+                    serde_json::from_str(body).unwrap_or_default(),
+                    headers.clone(),
+                )
             })
             .collect()
     }
@@ -151,7 +162,10 @@ async fn github_reviews_become_approvals_with_their_commit() {
                  "commit_id": "h1", "submitted_at": "2026-10-19T10:03:00+02:00"}
             ]),
         ),
-        ("/repos/acme/book/pulls/7", serde_json::json!({"user": {"login": "carol"}})),
+        (
+            "/repos/acme/book/pulls/7",
+            serde_json::json!({"user": {"login": "carol"}}),
+        ),
     ]);
     let github = GitHub {
         api: api.base.clone(),
@@ -187,9 +201,19 @@ async fn gitlab_gets_a_commit_status_and_a_note() {
     let d = decision(true, Verdict::NotRun, vec![]);
     gitlab.post(&d, "card").await.expect("posted");
     let posts = api.posts();
-    assert_eq!(posts[0].0, format!("/projects/42/statuses/{}", "h".repeat(40)));
-    assert_eq!(posts[0].1["state"], "skipped", "an approved NOT RUN is never success");
-    assert!(posts[0].2.contains(&("private-token".into(), "glpat".into())));
+    assert_eq!(
+        posts[0].0,
+        format!("/projects/42/statuses/{}", "h".repeat(40))
+    );
+    assert_eq!(
+        posts[0].1["state"], "skipped",
+        "an approved NOT RUN is never success"
+    );
+    assert!(
+        posts[0]
+            .2
+            .contains(&("private-token".into(), "glpat".into()))
+    );
     assert_eq!(posts[1].0, "/projects/42/merge_requests/5/notes");
     assert_eq!(posts[1].1["body"], "card");
 }
@@ -199,7 +223,12 @@ fn jenkins_reports_not_run_as_skipped_never_passed() {
     let checks = vec![
         CheckResult::pass("build", "ok"),
         CheckResult::fail("tests", "1 failed"),
-        CheckResult::not_run("manifest", NotRunReason::BuildFailed, "build failed <&>", ""),
+        CheckResult::not_run(
+            "manifest",
+            NotRunReason::BuildFailed,
+            "build failed <&>",
+            "",
+        ),
     ];
     let (_, xml) = jenkins_files(&decision(false, Verdict::Fail, checks), "md");
     let cases = crate::junit::parse(&xml).expect("valid JUnit");

@@ -71,12 +71,14 @@ impl ModelReplayPlanner {
             RolloutItem::ResponseItem(response) if rollback::counts_as_boundary(&response.item) => {
                 ReplayRecord::UserBoundary
             }
-            RolloutItem::SessionMeta(_)
+            RolloutItem::DynamicToolsUpdated { .. }
+            | RolloutItem::SessionMeta(_)
             | RolloutItem::ResponseItem(_)
             | RolloutItem::EventMsg(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::RealtimeItem(_)
             | RolloutItem::TokenUsageRecord(_)
+            | RolloutItem::RetainedContext(_)
             | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::WorldState(_) => return,
         };

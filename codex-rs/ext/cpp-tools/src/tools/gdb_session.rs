@@ -191,7 +191,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GdbSessionTool {
 }
 
 impl GdbSessionTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: SessionArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -230,7 +233,10 @@ impl GdbSessionTool {
         let (backend, chosen_because) =
             choose_backend_here(args.backend).map_err(FunctionCallError::RespondToModel)?;
 
-        let mut notes: Vec<String> = chosen_because.map(|why| format!("note: {why}.")).into_iter().collect();
+        let mut notes: Vec<String> = chosen_because
+            .map(|why| format!("note: {why}."))
+            .into_iter()
+            .collect();
         let session = match backend {
             Backend::Gdb => GdbSession::start_with_sysroot(
                 id,
@@ -276,12 +282,20 @@ impl GdbSessionTool {
         }
         if core.is_some() {
             let backtrace = session
-                .command(if backend == Backend::Gdb { "backtrace" } else { "bt" })
+                .command(if backend == Backend::Gdb {
+                    "backtrace"
+                } else {
+                    "bt"
+                })
                 .await;
             body.push_str("\nLoaded core dump — crash backtrace:\n");
             body.push_str(&backtrace);
         } else {
-            let example = if backend == Backend::Gdb { "break main" } else { "b main" };
+            let example = if backend == Backend::Gdb {
+                "break main"
+            } else {
+                "b main"
+            };
             body.push_str(&format!(
                 "\nReady. Drive it with action=\"cmd\", session={id} \
                  (e.g. command=\"{example}\", then command=\"run\"). End with action=\"stop\"."
@@ -369,7 +383,12 @@ impl GdbSessionTool {
             }
             out
         };
-        report(TOOL_NAME, "", body, check_result::CheckResult::pass(TOOL_NAME, "Listed the open debug sessions."))
+        report(
+            TOOL_NAME,
+            "",
+            body,
+            check_result::CheckResult::pass(TOOL_NAME, "Listed the open debug sessions."),
+        )
     }
 }
 
@@ -419,7 +438,9 @@ pub(crate) fn blocked_reason(command: &str) -> Option<String> {
         "-interpreter-exec",
     ];
     if names_one_of(&HOST_ESCAPES) || first == "gr" {
-        return Some(format!("`{first}` is disabled (it can run code on the host)"));
+        return Some(format!(
+            "`{first}` is disabled (it can run code on the host)"
+        ));
     }
     // These read their body from the following input lines, which here are
     // the next calls' commands.
@@ -436,15 +457,23 @@ pub(crate) fn blocked_reason(command: &str) -> Option<String> {
     // would reach that shell: `run $(touch x)` runs `touch` on the host.
     const ARGS_REASON: &str = "program arguments are set by the tool's `args`, which passes them \
                                exactly; arguments given to a debugger command can reach a shell";
-    if matches!(first.as_str(), "r" | "ru" | "run" | "start" | "starti" | "-exec-arguments")
-        && (first == "-exec-arguments" || words.clone().next().is_some())
+    if matches!(
+        first.as_str(),
+        "r" | "ru" | "run" | "start" | "starti" | "-exec-arguments"
+    ) && (first == "-exec-arguments" || words.clone().next().is_some())
     {
         return Some(ARGS_REASON.to_string());
     }
     // Re-enabling the hardening, by any value (`on`, `1`, `yes`) and any verb
     // that changes a setting (`set`, MI `-gdb-set`, `with`/`w`).
-    const GUARDED: [&str; 4] = ["may-call-functions", "startup-with-shell", "auto-load", "confirm"];
-    let changes_a_setting = first == "set" || first == "-gdb-set" || "with".starts_with(first.as_str());
+    const GUARDED: [&str; 4] = [
+        "may-call-functions",
+        "startup-with-shell",
+        "auto-load",
+        "confirm",
+    ];
+    let changes_a_setting =
+        first == "set" || first == "-gdb-set" || "with".starts_with(first.as_str());
     if changes_a_setting && !first.is_empty() {
         if let Some(setting) = words.next().map(str::to_ascii_lowercase) {
             if let Some(guard) = GUARDED.iter().find(|guard| {
@@ -527,19 +556,33 @@ mod tests {
     #[tokio::test]
     async fn an_lldb_session_steps_a_program_and_refuses_host_escapes() {
         let dir = tempfile::tempdir().unwrap();
-        let Some(program) = spinner(dir.path()) else { return };
+        let Some(program) = spinner(dir.path()) else {
+            return;
+        };
         let tool = session_tool(dir.path());
-        let Some((_, id)) = start_lldb(&tool, serde_json::json!({"program": program, "args": "'hello world'"})).await
+        let Some((_, id)) = start_lldb(
+            &tool,
+            serde_json::json!({"program": program, "args": "'hello world'"}),
+        )
+        .await
         else {
             return;
         };
-        let cmd = |command: &str| call(&tool, serde_json::json!({"action": "cmd", "session": id, "command": command}));
+        let cmd = |command: &str| {
+            call(
+                &tool,
+                serde_json::json!({"action": "cmd", "session": id, "command": command}),
+            )
+        };
         assert!(cmd("b add").await.contains("Breakpoint 1"));
         let run = cmd("run").await;
         assert!(run.contains("stop reason = breakpoint 1"), "{run}");
         assert!(cmd("frame variable").await.contains("(int) a ="));
         let finish = cmd("finish").await;
-        assert!(finish.contains("Return value: (int)") && finish.contains("= 42"), "{finish}");
+        assert!(
+            finish.contains("Return value: (int)") && finish.contains("= 42"),
+            "{finish}"
+        );
         let marker = dir.path().join("pwned");
         for escape in [
             format!("platform shell touch {}", marker.display()),
@@ -553,7 +596,10 @@ mod tests {
             "run $(touch x)".to_string(),
             // lldb accepts any unambiguous prefix of a long option, and a short
             // one inside a cluster; each of these passed the check before.
-            format!("breakpoint set -n add --comm \"platform shell touch {}\"", marker.display()),
+            format!(
+                "breakpoint set -n add --comm \"platform shell touch {}\"",
+                marker.display()
+            ),
             "breakpoint set -n add -Hc 1".to_string(),
             "expression --allow true -- a".to_string(),
         ] {
@@ -563,7 +609,10 @@ mod tests {
         assert!(!marker.exists(), "an escape ran on the host");
         let finished = cmd("continue").await;
         assert!(finished.contains("exited with status = 0"), "{finished}");
-        assert!(finished.contains("a1=[hello world]"), "the argument arrived whole: {finished}");
+        assert!(
+            finished.contains("a1=[hello world]"),
+            "the argument arrived whole: {finished}"
+        );
         let stopped = call(&tool, serde_json::json!({"action": "stop", "session": id})).await;
         assert!(stopped.contains("Stopped lldb session"), "{stopped}");
     }
@@ -571,17 +620,31 @@ mod tests {
     #[tokio::test]
     async fn an_lldb_session_stops_a_program_that_never_stops() {
         let dir = tempfile::tempdir().unwrap();
-        let Some(program) = spinner(dir.path()) else { return };
+        let Some(program) = spinner(dir.path()) else {
+            return;
+        };
         let tool = session_tool(dir.path());
-        let Some((_, id)) = start_lldb(&tool, serde_json::json!({"program": program, "args": "spin"})).await
+        let Some((_, id)) = start_lldb(
+            &tool,
+            serde_json::json!({"program": program, "args": "spin"}),
+        )
+        .await
         else {
             return;
         };
-        let cmd = |command: &str| call(&tool, serde_json::json!({"action": "cmd", "session": id, "command": command}));
+        let cmd = |command: &str| {
+            call(
+                &tool,
+                serde_json::json!({"action": "cmd", "session": id, "command": command}),
+            )
+        };
         // Before: `run` never returned, and killing the helper left the program
         // spinning (lldb's Python holds the GIL while `continue` blocks).
         let run = cmd("run").await;
-        assert!(run.contains("still running") && run.contains("SIGSTOP"), "{run}");
+        assert!(
+            run.contains("still running") && run.contains("SIGSTOP"),
+            "{run}"
+        );
         let again = cmd("continue").await;
         assert!(again.contains("still running"), "{again}");
         call(&tool, serde_json::json!({"action": "stop", "session": id})).await;
@@ -597,7 +660,10 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default();
-        assert!(survivors.is_empty(), "the program outlived its session: {survivors:?}");
+        assert!(
+            survivors.is_empty(),
+            "the program outlived its session: {survivors:?}"
+        );
     }
 
     #[tokio::test]
@@ -628,10 +694,15 @@ mod tests {
     #[test]
     fn a_misnamed_field_is_an_error_not_silently_ignored() {
         // A field outside the schema used to be dropped without a word.
-        let err = serde_json::from_str::<SessionArgs>(r#"{"action":"start","program":"a.out","run_args":"x"}"#)
-            .err()
-            .expect("unknown field refused");
-        assert!(err.to_string().contains("unknown field `run_args`"), "{err}");
+        let err = serde_json::from_str::<SessionArgs>(
+            r#"{"action":"start","program":"a.out","run_args":"x"}"#,
+        )
+        .err()
+        .expect("unknown field refused");
+        assert!(
+            err.to_string().contains("unknown field `run_args`"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -673,7 +744,12 @@ mod tests {
     #[test]
     fn a_line_break_is_refused_wherever_it_is() {
         // Otherwise the second line runs unchecked and its output is never shown.
-        for command in ["print 1\nshell touch x", "print 2\npython open('x','w')", "run\nfinish", "bt\r"] {
+        for command in [
+            "print 1\nshell touch x",
+            "print 2\npython open('x','w')",
+            "run\nfinish",
+            "bt\r",
+        ] {
             assert!(blocked_reason(command).is_some(), "{command:?}");
         }
     }
@@ -724,11 +800,36 @@ mod tests {
     #[test]
     fn ordinary_commands_and_their_one_letter_aliases_still_run() {
         for command in [
-            "s", "n", "c", "p x", "print x", "bt", "info locals", "break main", "run", "continue",
-            "finish", "set var x = 5", "set x = 5", "set print pretty on", "with print pretty -- p s",
-            "delete 1", "display x", "interrupt", "info sharedlibrary", "show version", "x/4x &buf",
-            "frame 2", "up", "watch x", "dprintf main,\"hi\\n\"", "info inferiors", "detach",
-            "kill", "-exec-interrupt", "-exec-continue",
+            "s",
+            "n",
+            "c",
+            "p x",
+            "print x",
+            "bt",
+            "info locals",
+            "break main",
+            "run",
+            "continue",
+            "finish",
+            "set var x = 5",
+            "set x = 5",
+            "set print pretty on",
+            "with print pretty -- p s",
+            "delete 1",
+            "display x",
+            "interrupt",
+            "info sharedlibrary",
+            "show version",
+            "x/4x &buf",
+            "frame 2",
+            "up",
+            "watch x",
+            "dprintf main,\"hi\\n\"",
+            "info inferiors",
+            "detach",
+            "kill",
+            "-exec-interrupt",
+            "-exec-continue",
         ] {
             assert_eq!(blocked_reason(command), None, "{command}");
         }
@@ -759,5 +860,4 @@ mod tests {
             assert_eq!(blocked_reason(cmd), None, "should allow: {cmd}");
         }
     }
-
 }

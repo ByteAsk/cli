@@ -1,6 +1,8 @@
 use super::ContextualUserFragment;
+use codex_prompts::ResolvedModelMessages;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
-use codex_protocol::openai_models::ModelMessages;
+use codex_protocol::models::input_text;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GuardianNodeReplPolicy {
@@ -8,11 +10,8 @@ pub(crate) struct GuardianNodeReplPolicy {
 }
 
 impl GuardianNodeReplPolicy {
-    pub(crate) fn from_model_messages(messages: Option<&ModelMessages>) -> Self {
-        let policy = messages
-            .and_then(|messages| messages.auto_review.as_ref())
-            .and_then(|messages| messages.node_repl_policy.as_deref())
-            .unwrap_or(include_str!("../../assets/guardian/node_repl_policy.md"));
+    pub(crate) fn from_messages(model_messages: ResolvedModelMessages<'_>) -> Self {
+        let policy = model_messages.auto_review().node_repl_policy;
         Self {
             policy: policy.to_string(),
         }
@@ -36,7 +35,7 @@ impl ContextualUserFragment for GuardianNodeReplPolicy {
         ("", "")
     }
 
-    fn body(&self) -> String {
-        self.policy.clone()
+    fn body(&self) -> ContentItem {
+        input_text(self.policy.clone())
     }
 }

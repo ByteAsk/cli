@@ -216,10 +216,15 @@ pub(crate) enum PaneOutcome {
     },
     /// The device code arrived: swap the "requesting" pane for the one the user
     /// reads the URL and code off.
-    SubscriptionCode { url: String, code: String },
+    SubscriptionCode {
+        url: String,
+        code: String,
+    },
     /// The sign-in finished. `Err` carries the message to show, including the
     /// plan refusal raised before anything was stored.
-    SubscriptionDone { error: Option<String> },
+    SubscriptionDone {
+        error: Option<String>,
+    },
 }
 
 impl ChatWidget {
@@ -373,7 +378,8 @@ impl ChatWidget {
     /// the footer named; nothing here closes a pane.
     pub(crate) fn handle_byteask_pane_action(&mut self, pane: ByteAskPane, action: PaneAction) {
         match action {
-            PaneAction::Copy(text) => self.copy_from_byteask_pane(pane, text),
+            // The app performs copies (it owns the clipboard worker); see `finish_byteask_pane_copy`.
+            PaneAction::Copy(_) => {}
             PaneAction::Choose(plan) => {
                 if pane == ByteAskPane::Subscription {
                     // The refusal screen. Retry starts a fresh sign-in in place;
@@ -490,24 +496,19 @@ impl ChatWidget {
         }
     }
 
-    /// Copy the pane's underlying string — never the rendered row — through
-    /// upstream's clipboard path, and keep the returned lease on the widget so
-    /// the copied text outlives the pane.
-    fn copy_from_byteask_pane(&mut self, pane: ByteAskPane, text: String) {
-        self.copy_from_byteask_pane_with(pane, text, crate::clipboard_copy::copy_to_clipboard);
-    }
-
-    pub(super) fn copy_from_byteask_pane_with(
+    /// Show the result of copying a pane's underlying string (the app performs the copy
+    /// through upstream's clipboard worker, never with the rendered row).
+    pub(crate) fn finish_byteask_pane_copy(
         &mut self,
         pane: ByteAskPane,
-        text: String,
-        copy_fn: impl FnOnce(&str) -> Result<Option<crate::clipboard_copy::ClipboardLease>, String>,
+        result: crate::clipboard_copy::worker::CopyResult,
     ) {
-        let footer = match copy_fn(&text) {
-            Ok(lease) => {
-                self.clipboard_lease = lease;
-                vec![format!("{} Copied", glyph("✓")), close_hint()]
-            }
+        let footer = match result {
+            Ok(crate::clipboard_copy::CopyStatus::Busy) => vec![
+                format!("{} Copy already in progress", glyph("…")),
+                close_hint(),
+            ],
+            Ok(_) => vec![format!("{} Copied", glyph("✓")), close_hint()],
             // The value stays on screen, so the fallback is a real instruction
             // rather than an apology.
             Err(_) => vec![
@@ -998,7 +999,9 @@ fn subscription_code_spec(url: &str, code: &str, animations: bool) -> InfoPaneSp
         BodyRow::Text("1. Open this link in your browser and sign in".into()),
         BodyRow::Text(Line::from(vec![
             "   ".into(),
-            url.to_string().fg(crate::style::accent_color()).underlined(),
+            url.to_string()
+                .fg(crate::style::accent_color())
+                .underlined(),
         ])),
         BodyRow::Blank,
         BodyRow::Text("2. Enter this one-time code (expires in 15 minutes)".into()),
@@ -1764,7 +1767,10 @@ fn human_reset(sec: i64) -> String {
     let remaining = format_remaining(sec);
     let now = chrono::Local::now();
     let at = now + chrono::Duration::seconds(sec);
-    format!("{remaining} ({})", format_reset_timestamp(at, now))
+    format!(
+        "{remaining} ({})",
+        format_reset_timestamp(at, now, crate::clock_format::ClockFormat::system())
+    )
 }
 
 /// Exact remaining as the two largest non-zero units, dropping a zero lower
@@ -1841,9 +1847,7 @@ mod tests {
             .body
             .iter()
             .filter_map(|row| match row {
-                BodyRow::Choice {
-                    id, selectable, ..
-                } if *selectable => Some(id.as_str()),
+                BodyRow::Choice { id, selectable, .. } if *selectable => Some(id.as_str()),
                 _ => None,
             })
             .collect();
@@ -1978,7 +1982,10 @@ mod tests {
         info.extra_balance_usd = 15.0;
         info.extra_expiring_usd = 5.0;
         info.extra_expiry_day = "2026-11-08".to_string();
-        let rows = frame(usage_spec(&Fetched::Ok(info), /*animations*/ false), FRAME_WIDTH);
+        let rows = frame(
+            usage_spec(&Fetched::Ok(info), /*animations*/ false),
+            FRAME_WIDTH,
+        );
         assert!(
             rows.iter()
                 .any(|r| r == "          $5.00 expires after 8 Nov"),
@@ -1992,7 +1999,10 @@ mod tests {
         let mut info = usage_info("free", 10, 10);
         info.extra_granted_usd = 20.0;
         info.extra_balance_usd = 15.0;
-        let rows = frame(usage_spec(&Fetched::Ok(info), /*animations*/ false), FRAME_WIDTH);
+        let rows = frame(
+            usage_spec(&Fetched::Ok(info), /*animations*/ false),
+            FRAME_WIDTH,
+        );
         assert!(!rows.iter().any(|r| r.contains("expires")), "{rows:#?}");
     }
 
@@ -2035,13 +2045,21 @@ mod tests {
     #[test]
     fn usage_plan_leads_the_title_in_the_accent_at_every_width() {
         let spec = usage_spec(&Fetched::Ok(usage_info("pro", 1, 0)), false);
-        assert!(spec.tag.is_empty(), "no redundant right tag: {:?}", spec.tag);
+        assert!(
+            spec.tag.is_empty(),
+            "no redundant right tag: {:?}",
+            spec.tag
+        );
         let plan = spec
             .title
             .iter()
             .find(|span| span.content == "Pro plan")
             .expect("plan span in the title");
-        assert!(plan.style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+        assert!(
+            plan.style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
         assert_eq!(plan.style.fg, Some(crate::style::accent_color()));
 
         let narrow = frame(
@@ -2275,8 +2293,7 @@ mod tests {
                 "".to_string(),
                 "  One payment for 30 days. No auto-renew. Renewing extends the plan you"
                     .to_string(),
-                "  are on. Moving up runs the higher plan first, then your remaining"
-                    .to_string(),
+                "  are on. Moving up runs the higher plan first, then your remaining".to_string(),
                 "  days resume.".to_string(),
                 "".to_string(),
                 "enter to get a payment link · esc to close".to_string(),
@@ -2289,7 +2306,10 @@ mod tests {
         let spec = upgrade_options_spec("Pro", false);
         let rows = frame(spec, FRAME_WIDTH);
         assert_eq!(rows[2], "  Pro    $20 · 30 days     current plan · renew");
-        assert_eq!(rows[3], "› Max    $100 · 30 days    $10 per 5h, $30 per week");
+        assert_eq!(
+            rows[3],
+            "› Max    $100 · 30 days    $10 per 5h, $30 per week"
+        );
     }
 
     #[test]
@@ -2627,7 +2647,11 @@ mod tests {
         });
 
         let after = transcript_lines(&mut rx);
-        assert_eq!(after.len(), 1, "the upgrade notice is one line, not a card: {after:?}");
+        assert_eq!(
+            after.len(),
+            1,
+            "the upgrade notice is one line, not a card: {after:?}"
+        );
         assert!(after[0].contains("Upgraded to Pro"), "{after:?}");
     }
 
@@ -2786,7 +2810,10 @@ mod tests {
             .collect();
         // Pro is lower than Max, which the gateway refuses, so it is not offered.
         assert_eq!(ids, vec!["max", "ultra", UPGRADE_REDEEM_ID]);
-        assert_eq!(spec.cursor, 1, "the cursor starts on Ultra, never on the renewal");
+        assert_eq!(
+            spec.cursor, 1,
+            "the cursor starts on Ultra, never on the renewal"
+        );
     }
 
     #[test]
@@ -2876,17 +2903,16 @@ mod tests {
     // --- clipboard ---------------------------------------------------------
 
     #[tokio::test]
-    async fn copying_stores_the_lease_on_the_widget_and_confirms_in_the_footer() {
+    async fn a_confirmed_copy_is_reported_in_the_footer() {
         let (mut chat, _tx, mut rx, _op_rx) = make_chatwidget_manual_with_sender().await;
         chat.open_byteask_pane(referral_spec(&referral_info(), /*animations*/ false));
         let _ = transcript_lines(&mut rx);
 
-        chat.copy_from_byteask_pane_with(ByteAskPane::Referral, "curl ...".to_string(), |_| {
-            Ok(Some(crate::clipboard_copy::ClipboardLease::test()))
-        });
+        chat.finish_byteask_pane_copy(
+            ByteAskPane::Referral,
+            Ok(crate::clipboard_copy::CopyStatus::Confirmed),
+        );
 
-        // The lease must outlive the pane or the copied text vanishes with it.
-        assert!(chat.clipboard_lease.is_some());
         assert!(chat.byteask_pane_open(ByteAskPane::Referral));
         assert_eq!(
             transcript_lines(&mut rx),
@@ -2901,11 +2927,8 @@ mod tests {
         chat.open_byteask_pane(referral_spec(&referral_info(), /*animations*/ false));
         let _ = transcript_lines(&mut rx);
 
-        chat.copy_from_byteask_pane_with(ByteAskPane::Referral, "curl ...".to_string(), |_| {
-            Err("no clipboard".to_string())
-        });
+        chat.finish_byteask_pane_copy(ByteAskPane::Referral, Err("no clipboard".to_string()));
 
-        assert!(chat.clipboard_lease.is_none());
         assert!(chat.byteask_pane_open(ByteAskPane::Referral));
         assert_eq!(transcript_lines(&mut rx), Vec::<String>::new());
     }

@@ -172,7 +172,9 @@ impl ToolboxThread {
             {
                 // The TUI's fragments end with their own separator; the toolbox joins them
                 // itself (`server.rs`), so the served instructions stay as they were.
-                guidance.push(fragment.text().trim_end().to_string());
+                if let Some(text) = fragment.content().clone().into_text() {
+                    guidance.push(text.trim_end().to_string());
+                }
             }
         }
         Self {
@@ -229,6 +231,8 @@ impl ToolboxThread {
                 source: ToolCallSource::Direct,
                 conversation_history: ConversationHistory::default(),
                 turn_item_emitter: Arc::new(NoopTurnItemEmitter),
+                attachment_store: codex_core::passthrough_image_store(),
+                ephemeral: false,
                 environments: Vec::new(),
                 payload: payload.clone(),
             })

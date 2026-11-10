@@ -108,8 +108,7 @@ pub fn split_tests(patch: &[u8]) -> (Vec<u8>, Vec<u8>) {
             && s.kind == ChangeKind::Modified
             && s.adds_only
             && !stems.is_empty()
-            && s
-                .added_lines
+            && s.added_lines
                 .iter()
                 .any(|l| stems.iter().any(|stem| l.contains(stem.as_str())))
     };
@@ -144,7 +143,18 @@ pub async fn added_by_snapshot(repo: &Path, snapshot_commit: &str) -> BTreeSet<S
     let parent = format!("{snapshot_commit}^");
     let (ok, out, _) = spawn_capture(
         "git",
-        &["-c", "core.quotepath=off", "diff-tree", "-r", "-z", "--no-commit-id", "--name-only", "--diff-filter=A", &parent, snapshot_commit],
+        &[
+            "-c",
+            "core.quotepath=off",
+            "diff-tree",
+            "-r",
+            "-z",
+            "--no-commit-id",
+            "--name-only",
+            "--diff-filter=A",
+            &parent,
+            snapshot_commit,
+        ],
         repo,
         &[("GIT_OPTIONAL_LOCKS", "0")],
         None,
@@ -185,11 +195,24 @@ pub fn changed_files(patch: &[u8]) -> usize {
     sections(patch).len()
 }
 
-async fn git_with_index(repo: &Path, index: &str, args: &[&str], stdin: Option<Vec<u8>>) -> Result<String, String> {
+async fn git_with_index(
+    repo: &Path,
+    index: &str,
+    args: &[&str],
+    stdin: Option<Vec<u8>>,
+) -> Result<String, String> {
     let mut full = vec!["-c", "core.hooksPath=/dev/null", "-c", "safe.directory=*"];
     full.extend_from_slice(args);
     let env = [("GIT_INDEX_FILE", index), ("GIT_OPTIONAL_LOCKS", "0")];
-    let (ok, out, err) = spawn_capture("git", &full, repo, &env, stdin, std::time::Duration::from_secs(300)).await;
+    let (ok, out, err) = spawn_capture(
+        "git",
+        &full,
+        repo,
+        &env,
+        stdin,
+        std::time::Duration::from_secs(300),
+    )
+    .await;
     if ok {
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     } else {
@@ -198,7 +221,12 @@ async fn git_with_index(repo: &Path, index: &str, args: &[&str], stdin: Option<V
 }
 
 /// Tree object for `base_tree` plus `patch`, built in a temporary index (no work tree touched).
-pub async fn tree_with_patch(repo: &Path, base_tree: &str, patch: &[u8], tmp: &Path) -> Result<String, String> {
+pub async fn tree_with_patch(
+    repo: &Path,
+    base_tree: &str,
+    patch: &[u8],
+    tmp: &Path,
+) -> Result<String, String> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     std::fs::create_dir_all(tmp).map_err(|e| e.to_string())?;
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -243,7 +271,11 @@ pub fn cap_parallelism(cmd: &str, jobs: usize) -> String {
                 Some(n) if n.chars().all(|c| c.is_ascii_digit()) || computed(n) => {
                     out.push_str(t);
                     out.push_str(toks[i + 1]);
-                    out.push_str(&if computed(n) || too_many(n) { jobs.to_string() } else { n.to_string() });
+                    out.push_str(&if computed(n) || too_many(n) {
+                        jobs.to_string()
+                    } else {
+                        n.to_string()
+                    });
                     i += 3;
                     continue;
                 }
@@ -258,9 +290,17 @@ pub fn cap_parallelism(cmd: &str, jobs: usize) -> String {
             && !n.is_empty()
             && (n.chars().all(|c| c.is_ascii_digit()) || computed(n))
         {
-            out.push_str(&if computed(n) || too_many(n) { format!("-j{jobs}") } else { t.to_string() });
+            out.push_str(&if computed(n) || too_many(n) {
+                format!("-j{jobs}")
+            } else {
+                t.to_string()
+            });
         } else if let Some(n) = t.strip_prefix("--parallel=") {
-            out.push_str(&if computed(n) || too_many(n) { format!("--parallel={jobs}") } else { t.to_string() });
+            out.push_str(&if computed(n) || too_many(n) {
+                format!("--parallel={jobs}")
+            } else {
+                t.to_string()
+            });
         } else {
             out.push_str(t);
         }
@@ -310,7 +350,15 @@ index 5..6 100644
     fn sections_and_sizes() {
         let secs = sections(PATCH.as_bytes());
         let paths: Vec<&str> = secs.iter().map(|s| s.path.as_str()).collect();
-        assert_eq!(paths, vec!["src/calc.cpp", "test/add_case.cpp", "CMakeLists.txt", "test/old_test.cpp"]);
+        assert_eq!(
+            paths,
+            vec![
+                "src/calc.cpp",
+                "test/add_case.cpp",
+                "CMakeLists.txt",
+                "test/old_test.cpp"
+            ]
+        );
         assert_eq!(secs[1].kind, ChangeKind::Added);
         assert!(secs[2].adds_only && !secs[0].adds_only && !secs[3].adds_only);
         assert_eq!(changed_files(PATCH.as_bytes()), 4);
@@ -324,10 +372,19 @@ index 5..6 100644
         let (fix, tests) = split_tests(PATCH.as_bytes());
         let fix = String::from_utf8_lossy(&fix).to_string();
         let tests = String::from_utf8_lossy(&tests).to_string();
-        assert!(fix.contains("src/calc.cpp") && fix.contains("test/old_test.cpp"), "{fix}");
+        assert!(
+            fix.contains("src/calc.cpp") && fix.contains("test/old_test.cpp"),
+            "{fix}"
+        );
         assert!(!fix.contains("add_case"), "{fix}");
-        assert!(tests.contains("b/test/add_case.cpp") && tests.contains("add_test(NAME add_case"), "{tests}");
-        assert!(!tests.contains("old_test"), "an edit to an existing test stays in the fix: {tests}");
+        assert!(
+            tests.contains("b/test/add_case.cpp") && tests.contains("add_test(NAME add_case"),
+            "{tests}"
+        );
+        assert!(
+            !tests.contains("old_test"),
+            "an edit to an existing test stays in the fix: {tests}"
+        );
         // Nothing to split.
         let (fix, tests) = split_tests(b"");
         assert!(fix.is_empty() && tests.is_empty());
@@ -335,11 +392,24 @@ index 5..6 100644
 
     #[test]
     fn paths_are_dropped() {
-        let keep: BTreeSet<String> = ["CMakeLists.txt".to_string(), "test/add_case.cpp".to_string()].into();
+        let keep: BTreeSet<String> = [
+            "CMakeLists.txt".to_string(),
+            "test/add_case.cpp".to_string(),
+        ]
+        .into();
         let out = String::from_utf8_lossy(&drop_paths(PATCH.as_bytes(), &keep)).to_string();
-        let paths: Vec<String> = sections(out.as_bytes()).into_iter().map(|s| s.path).collect();
-        assert_eq!(paths, vec!["src/calc.cpp".to_string(), "test/old_test.cpp".to_string()]);
-        assert_eq!(drop_paths(PATCH.as_bytes(), &BTreeSet::new()), PATCH.as_bytes());
+        let paths: Vec<String> = sections(out.as_bytes())
+            .into_iter()
+            .map(|s| s.path)
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["src/calc.cpp".to_string(), "test/old_test.cpp".to_string()]
+        );
+        assert_eq!(
+            drop_paths(PATCH.as_bytes(), &BTreeSet::new()),
+            PATCH.as_bytes()
+        );
     }
 
     #[test]
@@ -347,12 +417,30 @@ index 5..6 100644
         assert_eq!(cap_parallelism("make -j", 2), "make -j2");
         assert_eq!(cap_parallelism("make -j16 all", 2), "make -j2 all");
         assert_eq!(cap_parallelism("make -j1 all", 2), "make -j1 all");
-        assert_eq!(cap_parallelism("cmake --build b -j 8 && ctest -j0", 2), "cmake --build b -j 2 && ctest -j2");
-        assert_eq!(cap_parallelism("cmake --build b --parallel", 4), "cmake --build b --parallel 4");
-        assert_eq!(cap_parallelism("cmake --build b --parallel 3", 4), "cmake --build b --parallel 3");
-        assert_eq!(cap_parallelism("ninja --parallel=12", 4), "ninja --parallel=4");
-        assert_eq!(cap_parallelism("echo 'a  b' && make", 2), "echo 'a  b' && make");
-        assert_eq!(cap_parallelism("make -j $(nproc) && make -j`nproc` x", 2), "make -j 2 && make -j2 x");
+        assert_eq!(
+            cap_parallelism("cmake --build b -j 8 && ctest -j0", 2),
+            "cmake --build b -j 2 && ctest -j2"
+        );
+        assert_eq!(
+            cap_parallelism("cmake --build b --parallel", 4),
+            "cmake --build b --parallel 4"
+        );
+        assert_eq!(
+            cap_parallelism("cmake --build b --parallel 3", 4),
+            "cmake --build b --parallel 3"
+        );
+        assert_eq!(
+            cap_parallelism("ninja --parallel=12", 4),
+            "ninja --parallel=4"
+        );
+        assert_eq!(
+            cap_parallelism("echo 'a  b' && make", 2),
+            "echo 'a  b' && make"
+        );
+        assert_eq!(
+            cap_parallelism("make -j $(nproc) && make -j`nproc` x", 2),
+            "make -j 2 && make -j2 x"
+        );
         assert_eq!(cap_parallelism("java -jar t.jar", 2), "java -jar t.jar");
     }
 
@@ -377,14 +465,18 @@ index 5..6 100644
         run(&["add", "-A"]);
         run(&["commit", "-q", "-m", "x"]);
         let base = run(&["rev-parse", "HEAD^{tree}"]);
-        let patch = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+two\n";
+        let patch =
+            "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+two\n";
         let tree = tree_with_patch(repo, &base, patch.as_bytes(), &repo.join(".git/tmp-test"))
             .await
             .expect("tree");
         assert_ne!(tree, base);
         assert_eq!(run(&["cat-file", "-p", &format!("{tree}:a.txt")]), "two");
         // The work tree and the real index are untouched.
-        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).expect("read"), "one\n");
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).expect("read"),
+            "one\n"
+        );
         assert_eq!(run(&["status", "--porcelain"]), "");
         // A snapshot commit that adds an untracked file on top of HEAD.
         let head = run(&["rev-parse", "HEAD"]);

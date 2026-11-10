@@ -53,8 +53,14 @@ fn resolve_reported_version_auto_maps_to_stamped_upstream() {
     // baked 0.1.0 the ChatGPT backend rejects. This is the permanent fix: no
     // literal to tune, it tracks the merged rust-v* tag on every rebuild.
     let baked = "0.1.0";
-    assert_eq!(resolve_reported_version(Some("auto"), baked), UPSTREAM_CODEX_VERSION);
-    assert_eq!(resolve_reported_version(Some(" Upstream "), baked), UPSTREAM_CODEX_VERSION);
+    assert_eq!(
+        resolve_reported_version(Some("auto"), baked),
+        UPSTREAM_CODEX_VERSION
+    );
+    assert_eq!(
+        resolve_reported_version(Some(" Upstream "), baked),
+        UPSTREAM_CODEX_VERSION
+    );
     assert_ne!(UPSTREAM_CODEX_VERSION, baked);
     assert!(
         UPSTREAM_CODEX_VERSION.split('.').count() >= 2
@@ -101,6 +107,67 @@ fn reported_version_prefers_the_neutral_env_name_and_still_reads_the_legacy_one(
         Some("auto")
     );
     assert_eq!(version_override_from(None, None), None);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn os_discovery_is_cached_without_freezing_user_agent_overrides() {
+    const PROBE_DIR: &str = "CODEX_TEST_USER_AGENT_PROBE_DIR";
+    if std::env::var_os(PROBE_DIR).is_some() {
+        // Race the first lookup as well as exercising repeated requests.
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..4 {
+                        assert!(get_codex_user_agent().contains("Ubuntu 99.7.3"));
+                    }
+                });
+            }
+        });
+        set_default_originator("cached-os-test".to_string()).expect("set originator");
+        *USER_AGENT_SUFFIX.lock().expect("suffix lock") = Some("updated-client".to_string());
+        let user_agent = get_codex_user_agent();
+        assert!(user_agent.starts_with("cached-os-test/"));
+        assert!(user_agent.ends_with(" (updated-client)"));
+        return;
+    }
+
+    // Use a fresh process so neither the cached OS nor the mutable overrides can
+    // be initialized by another test. Only the child's environment is changed.
+    let temp = tempfile::tempdir().expect("probe directory");
+    for (program, output) in [
+        ("lsb_release", "Distributor ID: Ubuntu\nRelease: 99.7.3\n"),
+        ("getconf", "64\n"),
+    ] {
+        let script = temp.path().join(program);
+        codex_utils_cargo_bin::write_executable(
+            &script,
+            &format!(
+                "#!/bin/sh\nprintf '{program}\\n' >> \"${PROBE_DIR}/calls\"\nprintf '{output}'\n"
+            ),
+        )
+        .expect("write probe");
+    }
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            concat!(
+                module_path!(),
+                "::os_discovery_is_cached_without_freezing_user_agent_overrides"
+            )
+            .trim_start_matches("codex_login::"),
+            "--nocapture",
+        ])
+        .env(PROBE_DIR, temp.path())
+        .env("PATH", temp.path())
+        .env_remove(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR)
+        .output()
+        .expect("run isolated user-agent test");
+    assert!(output.status.success(), "{output:?}");
+    let calls = std::fs::read_to_string(temp.path().join("calls")).expect("probe calls");
+    let mut calls = calls.lines().collect::<Vec<_>>();
+    calls.sort_unstable();
+    assert_eq!(calls, vec!["getconf", "lsb_release"]);
 }
 
 #[test]

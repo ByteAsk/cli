@@ -43,9 +43,15 @@ fn an_aa_pair_posts_no_significant_change() {
         card.contains("- feed handler: no significant change; this run would have caught a change of 0.5% or more in p50_ns."),
         "{card}"
     );
-    assert!(card.contains("bench-host-1 (cpu 2 isolated, 3.09 GHz pinned)"), "{card}");
+    assert!(
+        card.contains("bench-host-1 (cpu 2 isolated, 3.09 GHz pinned)"),
+        "{card}"
+    );
     assert!(card.contains("12 rounds, 95% confidence"), "{card}");
-    assert!(!card.contains("faster"), "an A/A must never read as a speedup: {card}");
+    assert!(
+        !card.contains("faster"),
+        "an A/A must never read as a speedup: {card}"
+    );
     assert_eq!(result(&report).verdict, check_result::Verdict::Pass);
 }
 
@@ -54,7 +60,10 @@ fn an_aa_pair_posts_no_significant_change() {
 fn a_measured_change_posts_the_delta_with_its_confidence_interval() {
     let report = ut("PASS", vec![("feed handler", FASTER, vec![])]);
     let card = card(&report);
-    assert!(card.contains("| feed handler | faster | -36.7% [-37.8%, -33.6%] |"), "{card}");
+    assert!(
+        card.contains("| feed handler | faster | -36.7% [-37.8%, -33.6%] |"),
+        "{card}"
+    );
     assert!(!card.contains("no significant change"), "{card}");
 }
 
@@ -64,13 +73,19 @@ fn a_regression_beyond_the_limit_fails_the_perf_check_and_says_why() {
     let report = ut("FAIL", vec![("feed handler", FASTER, vec![reason])]);
     let result = result(&report);
     assert_eq!(result.verdict, check_result::Verdict::Fail);
-    assert!(result.summary.contains("p50_ns regressed 6.4%"), "{result:?}");
+    assert!(
+        result.summary.contains("p50_ns regressed 6.4%"),
+        "{result:?}"
+    );
     assert!(card(&report).contains(&format!("- feed handler: {reason}")));
 }
 
 #[test]
 fn a_bench_that_did_not_measure_is_not_run() {
-    let report = ut("NOT_RUN", vec![("feed handler", AA, vec!["not measured: host refused"])]);
+    let report = ut(
+        "NOT_RUN",
+        vec![("feed handler", AA, vec!["not measured: host refused"])],
+    );
     let result = result(&report);
     assert_eq!(result.verdict, check_result::Verdict::NotRun);
     assert!(card(&report).starts_with("### ByteAsk perf check: NOT RUN"));

@@ -156,10 +156,7 @@ fn enter_performs_the_footer_action_and_never_closes_a_readout() {
     let mut view = InfoPaneView::new(spec, tx);
 
     view.handle_key_event(KeyEvent::from(KeyCode::Enter));
-    assert!(
-        !view.is_complete(),
-        "enter must never close a pane"
-    );
+    assert!(!view.is_complete(), "enter must never close a pane");
     assert!(matches!(
         rx.try_recv(),
         Ok(AppEvent::ByteAskPaneAction {

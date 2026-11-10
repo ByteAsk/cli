@@ -218,7 +218,7 @@ fn only_a_successful_apply_patch_is_an_ai_edit() {
     assert!(!is_ai_edit(
         &ToolName::new(Some("some_mcp_server".to_string()), EDIT_TOOL),
         ToolCallOutcome::Completed { success: true }
-    ));    // Core reports its own tools in the default namespace `functions`
+    )); // Core reports its own tools in the default namespace `functions`
     // (without this case, no CLI edit was ever recorded).
     assert!(is_ai_edit(
         &ToolName::namespaced("functions", EDIT_TOOL),

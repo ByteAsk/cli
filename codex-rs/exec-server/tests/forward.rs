@@ -62,6 +62,7 @@ async fn forwarder_runs_commands_and_transfers_files() -> Result<()> {
         timeout(
             TEST_TIMEOUT,
             client.exec(ExecParams {
+                metadata: Default::default(),
                 process_id: process_id.clone(),
                 argv,
                 cwd: PathUri::from_host_native_path(std::env::current_dir()?)?,
@@ -93,7 +94,7 @@ async fn forwarder_runs_commands_and_transfers_files() -> Result<()> {
                 assert_eq!(response.failure, None);
                 for chunk in response.chunks {
                     assert_eq!(chunk.stream, ExecOutputStream::Stdout);
-                    output.extend(chunk.chunk.0);
+                    output.extend(chunk.chunk.into_inner());
                 }
                 if response.closed {
                     break Ok::<_, ExecServerError>((output, response.exit_code));

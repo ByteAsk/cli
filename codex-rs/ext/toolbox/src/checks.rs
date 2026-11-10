@@ -135,13 +135,25 @@ mod tests {
 
     #[test]
     fn skip_needs_a_reason_and_the_ci_commands_are_there() {
-        assert!(ChecksCli::try_parse_from(["checks", "skip"]).is_err(), "no reason");
-        let cli = ChecksCli::try_parse_from(["checks", "skip", "--reason", "rig down"]).expect("parses");
+        assert!(
+            ChecksCli::try_parse_from(["checks", "skip"]).is_err(),
+            "no reason"
+        );
+        let cli =
+            ChecksCli::try_parse_from(["checks", "skip", "--reason", "rig down"]).expect("parses");
         let ChecksCommand::Skip(args) = cli.command else {
             panic!("skip");
         };
         assert_eq!(args.check, "cpp_finish_gate");
-        for sub in ["run", "sign", "gate", "candidate", "keygen", "profile", "cancel"] {
+        for sub in [
+            "run",
+            "sign",
+            "gate",
+            "candidate",
+            "keygen",
+            "profile",
+            "cancel",
+        ] {
             let err = ChecksCli::try_parse_from(["checks", sub, "--help"]).expect_err("help exits");
             assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp, "{sub}");
         }
@@ -173,7 +185,13 @@ mod tests {
                 .expect_err("refused");
             assert!(err.to_string().starts_with("not skipped:"), "{err}");
         }
-        assert!(std::fs::read_dir(home.path()).expect("dir").next().is_none(), "nothing recorded");
+        assert!(
+            std::fs::read_dir(home.path())
+                .expect("dir")
+                .next()
+                .is_none(),
+            "nothing recorded"
+        );
     }
 
     /// A person at a terminal can skip; the record is NOT RUN (skipped), never PASS.
@@ -197,9 +215,15 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-q", "-m", "b"]);
         let home = tempfile::tempdir().expect("home");
-        let result = skip(args(dir.path()), home.path(), true, |_| None, &["bash".to_string()])
-            .await
-            .expect("recorded");
+        let result = skip(
+            args(dir.path()),
+            home.path(),
+            true,
+            |_| None,
+            &["bash".to_string()],
+        )
+        .await
+        .expect("recorded");
         assert!(!result.is_pass());
         assert_eq!(result.reason, Some(check_result::NotRunReason::Skipped));
     }

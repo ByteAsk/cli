@@ -67,7 +67,11 @@ fn stages<'a>(family: Family, ctx: &'a Ctx<'a>) -> Vec<Stage<'a>> {
         Family::Unknown => {}
         Family::Search => {
             if let Some(exists) = ctx.path_exists {
-                add("search-group", false, Box::new(move |t| l::search_group(t, exists)));
+                add(
+                    "search-group",
+                    false,
+                    Box::new(move |t| l::search_group(t, exists)),
+                );
             }
             add("blob-line", true, Box::new(g::blob_line));
         }
@@ -121,7 +125,10 @@ fn stages<'a>(family: Family, ctx: &'a Ctx<'a>) -> Vec<Stage<'a>> {
 
 /// Run the pipeline. Never panics outward, never grows the text.
 pub fn reduce(input: &str, ctx: &Ctx<'_>, policy: &Policy) -> Outcome {
-    let family = ctx.command.map(crate::family::classify).unwrap_or(Family::Unknown);
+    let family = ctx
+        .command
+        .map(crate::family::classify)
+        .unwrap_or(Family::Unknown);
     let passthrough = |family| Outcome {
         text: input.to_string(),
         fired: Vec::new(),
@@ -131,7 +138,10 @@ pub fn reduce(input: &str, ctx: &Ctx<'_>, policy: &Policy) -> Outcome {
     if policy.brake || input.len() < MIN_BYTES || crate::is_reduced(input) {
         return passthrough(family);
     }
-    let Reduced { mut text, mut fired } = reduce_terminal(input, policy.ansi, policy.cr);
+    let Reduced {
+        mut text,
+        mut fired,
+    } = reduce_terminal(input, policy.ansi, policy.cr);
     let mut lossy = false;
     for (name, stage_lossy, f) in stages(family, ctx) {
         if !policy.reducer_on(name) {
@@ -145,7 +155,12 @@ pub fn reduce(input: &str, ctx: &Ctx<'_>, policy: &Policy) -> Outcome {
             lossy |= stage_lossy;
         }
     }
-    Outcome { text, fired, family, lossy }
+    Outcome {
+        text,
+        fired,
+        family,
+        lossy,
+    }
 }
 
 #[cfg(test)]
@@ -173,7 +188,10 @@ mod tests {
     #[test]
     fn an_unknown_command_gets_only_the_terminal_transforms() {
         let text = cargo_test_output();
-        let ctx = Ctx { command: Some("bash -lc 'cat log.txt'"), path_exists: None };
+        let ctx = Ctx {
+            command: Some("bash -lc 'cat log.txt'"),
+            path_exists: None,
+        };
         let out = reduce(&text, &ctx, &all_on());
         assert_eq!(out.family, Family::Unknown);
         assert_eq!(out.text, text);
@@ -183,15 +201,24 @@ mod tests {
     #[test]
     fn dark_reducers_stay_off_by_default() {
         let text = cargo_test_output();
-        let ctx = Ctx { command: Some("cargo test"), path_exists: None };
+        let ctx = Ctx {
+            command: Some("cargo test"),
+            path_exists: None,
+        };
         let out = reduce(&text, &ctx, &Policy::default());
-        assert_eq!(out.text, text, "class N is off until the policy turns it on");
+        assert_eq!(
+            out.text, text,
+            "class N is off until the policy turns it on"
+        );
     }
 
     #[test]
     fn a_matched_family_with_the_switch_on_reduces_and_reports_lossy() {
         let text = cargo_test_output();
-        let ctx = Ctx { command: Some("cargo test"), path_exists: None };
+        let ctx = Ctx {
+            command: Some("cargo test"),
+            path_exists: None,
+        };
         let out = reduce(&text, &ctx, &all_on());
         assert_eq!(out.family, Family::Test);
         assert_eq!(out.fired, vec!["tests"]);
@@ -203,11 +230,16 @@ mod tests {
     #[test]
     fn the_accept_gate_rejects_a_small_win() {
         // One folded include chain in a large build log saves far less than 10%.
-        let mut text = String::from("In file included from a.h:1,\n                 from b.h:2,\n                 from c.h:3,\n                 from d.h:4,\n                 from main.c:5:\n");
+        let mut text = String::from(
+            "In file included from a.h:1,\n                 from b.h:2,\n                 from c.h:3,\n                 from d.h:4,\n                 from main.c:5:\n",
+        );
         for i in 0..200 {
             text.push_str(&format!("unique build line number {i} with some words\n"));
         }
-        let ctx = Ctx { command: Some("make"), path_exists: None };
+        let ctx = Ctx {
+            command: Some("make"),
+            path_exists: None,
+        };
         let out = reduce(&text, &ctx, &all_on());
         assert_eq!(out.text, text);
         assert!(out.fired.is_empty());
@@ -216,7 +248,10 @@ mod tests {
     #[test]
     fn reducing_twice_is_a_no_op() {
         let text = cargo_test_output();
-        let ctx = Ctx { command: Some("cargo test"), path_exists: None };
+        let ctx = Ctx {
+            command: Some("cargo test"),
+            path_exists: None,
+        };
         let once = reduce(&text, &ctx, &all_on());
         let twice = reduce(&once.text, &ctx, &all_on());
         assert_eq!(twice.text, once.text);
@@ -227,7 +262,10 @@ mod tests {
         let text = format!("\u{1b}[31m{}\u{1b}[0m", "x".repeat(2000));
         let mut p = all_on();
         p.brake = true;
-        let ctx = Ctx { command: Some("cargo test"), path_exists: None };
+        let ctx = Ctx {
+            command: Some("cargo test"),
+            path_exists: None,
+        };
         assert_eq!(reduce(&text, &ctx, &p).text, text);
     }
 
@@ -235,10 +273,15 @@ mod tests {
     fn search_grouping_is_lossless_and_on_by_default() {
         let mut text = String::new();
         for i in 0..40 {
-            text.push_str(&format!("crates/very/long/path/to/module/file_a.rs:{i}:    let value_{i} = compute();\n"));
+            text.push_str(&format!(
+                "crates/very/long/path/to/module/file_a.rs:{i}:    let value_{i} = compute();\n"
+            ));
         }
         let exists = |_: &str| true;
-        let ctx = Ctx { command: Some("rg -n compute"), path_exists: Some(&exists) };
+        let ctx = Ctx {
+            command: Some("rg -n compute"),
+            path_exists: Some(&exists),
+        };
         let out = reduce(&text, &ctx, &Policy::default());
         assert_eq!(out.fired, vec!["search-group"]);
         assert!(!out.lossy);

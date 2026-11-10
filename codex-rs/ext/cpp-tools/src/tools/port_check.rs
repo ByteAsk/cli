@@ -130,7 +130,8 @@ fn body(result: &PortCheckResult) -> String {
             end -= 1;
         }
         evidence.truncate(end);
-        evidence.push_str("\n... [evidence cut for length; the verdict above covers the whole run]");
+        evidence
+            .push_str("\n... [evidence cut for length; the verdict above covers the whole run]");
     }
     text.push_str("\nevidence:\n");
     text.push_str(&evidence);
@@ -171,10 +172,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PortCheckTool {
 }
 
 impl PortCheckTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
-        let mut req: PortCheckRequest = serde_json::from_str(arguments)
-            .map_err(|err| FunctionCallError::RespondToModel(format!("the request is not valid: {err}")))?;
+        let mut req: PortCheckRequest = serde_json::from_str(arguments).map_err(|err| {
+            FunctionCallError::RespondToModel(format!("the request is not valid: {err}"))
+        })?;
         crate::trust::require_native_exec(self.native_exec, TOOL_NAME, &self.cwd)?;
         resolve_paths(&mut req, &self.cwd);
         let placeholders = sandbox_versions(&mut req)?;
@@ -182,9 +187,16 @@ impl PortCheckTool {
         let ran = tokio::task::spawn_blocking(move || byteask_port_check::port_check(&req)).await;
         crate::sandbox::remove_placeholders(&placeholders);
         let result = ran.unwrap_or_else(|err| {
-            byteask_port_check::tool::not_run_result(format!("the check stopped unexpectedly: {err}"))
+            byteask_port_check::tool::not_run_result(format!(
+                "the check stopped unexpectedly: {err}"
+            ))
         });
-        Ok(crate::report::report(TOOL_NAME, &target, body(&result), verdict(&result)))
+        Ok(crate::report::report(
+            TOOL_NAME,
+            &target,
+            body(&result),
+            verdict(&result),
+        ))
     }
 }
 

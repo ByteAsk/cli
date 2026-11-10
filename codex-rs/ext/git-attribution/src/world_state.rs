@@ -1,6 +1,7 @@
 use codex_extension_api::PreviousWorldStateSection;
 use codex_extension_api::RenderedWorldStateFragment;
 use codex_extension_api::WorldStateSectionContribution;
+use codex_extension_api::input_text;
 use serde_json::Value;
 
 const WORLD_STATE_ID: &str = "git_attribution";
@@ -38,43 +39,39 @@ ByteAsk commit and pull request attribution is disabled for the current workspac
 ";
 
 pub(super) fn git_attribution_world_state_section(enabled: bool) -> WorldStateSectionContribution {
-    let contribution =
-        WorldStateSectionContribution::new(WORLD_STATE_ID, Value::Bool(enabled), move |previous| {
-            match (enabled, previous) {
-                (true, PreviousWorldStateSection::Known(Value::Bool(true)))
-                | (true, PreviousWorldStateSection::Unknown) => None,
-                (true, PreviousWorldStateSection::Absent)
-                | (true, PreviousWorldStateSection::Known(_)) => {
-                    Some(RenderedWorldStateFragment::new(
-                        "developer",
-                        (START_MARKER, END_MARKER),
-                        ENABLED_INSTRUCTIONS,
-                    ))
-                }
-                (false, PreviousWorldStateSection::Known(Value::Bool(true)))
-                | (false, PreviousWorldStateSection::Unknown) => {
-                    Some(RenderedWorldStateFragment::new(
-                        "developer",
-                        (START_MARKER, END_MARKER),
-                        DISABLED_INSTRUCTIONS,
-                    ))
-                }
-                (false, PreviousWorldStateSection::Absent)
-                | (false, PreviousWorldStateSection::Known(_)) => None,
-            }
-        })
-        // ByteAsk: with no saved state, a recognised fragment makes the previous state Unknown,
-        // and ON + Unknown renders nothing. So with attribution ON only OUR fragment counts as
-        // already sent: a history carrying upstream's instruction gets the ByteAsk notice, which
-        // replaces it. With it OFF every attribution fragment, ours or upstream's, is a previous
-        // version the disabled notice must retract.
-        .with_legacy_matcher(move |role, text| {
-            if enabled {
-                is_byteask_fragment(role, text)
-            } else {
-                is_enabled_fragment(role, text) || is_legacy_commit_attribution_fragment(role, text)
-            }
-        });
+    let contribution = WorldStateSectionContribution::new(WORLD_STATE_ID, move |previous| {
+        let fragment = match (enabled, previous) {
+            (true, PreviousWorldStateSection::Known(Value::Bool(true)))
+            | (true, PreviousWorldStateSection::Unknown) => None,
+            (true, PreviousWorldStateSection::Absent)
+            | (true, PreviousWorldStateSection::Known(_)) => Some(RenderedWorldStateFragment::new(
+                "developer",
+                (START_MARKER, END_MARKER),
+                input_text(ENABLED_INSTRUCTIONS),
+            )),
+            (false, PreviousWorldStateSection::Known(Value::Bool(true)))
+            | (false, PreviousWorldStateSection::Unknown) => Some(RenderedWorldStateFragment::new(
+                "developer",
+                (START_MARKER, END_MARKER),
+                input_text(DISABLED_INSTRUCTIONS),
+            )),
+            (false, PreviousWorldStateSection::Absent)
+            | (false, PreviousWorldStateSection::Known(_)) => None,
+        };
+        (Some(Value::Bool(enabled)), fragment)
+    })
+    // ByteAsk: with no saved state, a recognised fragment makes the previous state Unknown,
+    // and ON + Unknown renders nothing. So with attribution ON only OUR fragment counts as
+    // already sent: a history carrying upstream's instruction gets the ByteAsk notice, which
+    // replaces it. With it OFF every attribution fragment, ours or upstream's, is a previous
+    // version the disabled notice must retract.
+    .with_legacy_matcher(move |role, text| {
+        if enabled {
+            is_byteask_fragment(role, text)
+        } else {
+            is_enabled_fragment(role, text) || is_legacy_commit_attribution_fragment(role, text)
+        }
+    });
     if enabled {
         contribution.with_retained_fragment_matcher(is_byteask_fragment)
     } else {

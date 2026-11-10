@@ -123,7 +123,11 @@ pub(crate) fn existing_build_dirs(root: &Path) -> Vec<PathBuf> {
                 continue;
             }
             candidates.push(path.clone());
-            if name.starts_with("build") || name == "out" || name.starts_with("cmake-build") || name == "_build" {
+            if name.starts_with("build")
+                || name == "out"
+                || name.starts_with("cmake-build")
+                || name == "_build"
+            {
                 if let Ok(inner) = std::fs::read_dir(&path) {
                     for sub in inner.flatten() {
                         if sub.path().is_dir() {
@@ -224,7 +228,9 @@ fn outside_build_dirs(root: &Path) -> Vec<(std::time::SystemTime, PathBuf)> {
                 continue;
             }
             if let Some(cache) = read_cache(&dir) {
-                if cache_value(&cache, "CMAKE_HOME_DIRECTORY").is_some_and(|home| canonical(Path::new(home)) == root_c) {
+                if cache_value(&cache, "CMAKE_HOME_DIRECTORY")
+                    .is_some_and(|home| canonical(Path::new(home)) == root_c)
+                {
                     out.push((cache_mtime(&dir), dir));
                 }
                 continue;
@@ -234,7 +240,9 @@ fn outside_build_dirs(root: &Path) -> Vec<(std::time::SystemTime, PathBuf)> {
             }
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
-                    if entry.file_type().is_ok_and(|kind| kind.is_dir()) && entry.file_name() != ".git" {
+                    if entry.file_type().is_ok_and(|kind| kind.is_dir())
+                        && entry.file_name() != ".git"
+                    {
                         stack.push((entry.path(), depth + 1));
                     }
                 }
@@ -278,7 +286,11 @@ pub(crate) async fn model(req: &Request<'_>) -> Result<Model, String> {
             let mut note = None;
             // CFG2: a configure of ours that never succeeded starts again from scratch, so the options of a
             // tree configured since (e.g. by the agent, outside the project) can apply
-            if cfg2() && req.commit.is_some() && configured_at(&dir).is_none() && dir.join("CMakeCache.txt").is_file() {
+            if cfg2()
+                && req.commit.is_some()
+                && configured_at(&dir).is_none()
+                && dir.join("CMakeCache.txt").is_file()
+            {
                 let _ = std::fs::remove_file(dir.join("CMakeCache.txt"));
             }
             if stale(&dir, req.cmake_files) || configured_at(&dir).as_deref() != req.commit {
@@ -292,7 +304,10 @@ pub(crate) async fn model(req: &Request<'_>) -> Result<Model, String> {
                         "configured its own tree outside the project with the options of {} (your tree is never built in)",
                         like.strip_prefix(req.root).unwrap_or(&like).display()
                     ),
-                    None => "configured its own tree outside the project (no existing build tree found)".to_string(),
+                    None => {
+                        "configured its own tree outside the project (no existing build tree found)"
+                            .to_string()
+                    }
                 };
                 if let Some(testing) = testing {
                     text.push_str(&format!("; {testing}"));
@@ -338,7 +353,9 @@ pub(crate) async fn model(req: &Request<'_>) -> Result<Model, String> {
         }
     };
     let cache = read_cache(&build_dir).unwrap_or_default();
-    let generator = cache_value(&cache, "CMAKE_GENERATOR").unwrap_or("").to_string();
+    let generator = cache_value(&cache, "CMAKE_GENERATOR")
+        .unwrap_or("")
+        .to_string();
     let ninja = generator.contains("Ninja");
     let mut notes = Vec::new();
     if let Some(note) = extra_note {
@@ -360,7 +377,9 @@ pub(crate) async fn model(req: &Request<'_>) -> Result<Model, String> {
     if targets.is_empty() && crate::toolver::at_least(req.version, (3, 14)) {
         let map_dir = req.scratch.join("map");
         let configured = if stale(&map_dir, req.cmake_files) {
-            configure(req, &map_dir, Some(&build_dir), false).await.map(|_| ())
+            configure(req, &map_dir, Some(&build_dir), false)
+                .await
+                .map(|_| ())
         } else {
             Ok(())
         };
@@ -432,7 +451,13 @@ fn stale(dir: &Path, cmake_files: &[PathBuf]) -> bool {
 }
 
 fn first_line(text: &str) -> String {
-    text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().chars().take(200).collect()
+    text.lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(200)
+        .collect()
 }
 
 /// Marker in our tree: configuring it with the project's test options failed once, so they are
@@ -447,11 +472,20 @@ fn is_test_option(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     const ENDINGS: &[&str] = &["_TEST", "_TESTS", "_TESTING", "BUILDTESTS", "_TEST_SUITE"];
     // Tests that need hardware, tools or privileges the machine may lack, or are not tests.
-    const NOT: &[&str] = &["FUZZ", "CUDA", "HIP", "SYCL", "COVERAGE", "INSTALL", "CONTAINER"];
+    const NOT: &[&str] = &[
+        "FUZZ",
+        "CUDA",
+        "HIP",
+        "SYCL",
+        "COVERAGE",
+        "INSTALL",
+        "CONTAINER",
+    ];
     // CFG2: a switch that skips or disables tests, or needs the network, registers fewer tests when ON
     // (SPIRV_SKIP_TESTS registered none).
     const NOT_CFG2: &[&str] = &["SKIP", "DISABLE", "NO_", "NETWORK"];
-    (ENDINGS.iter().any(|e| upper.ends_with(e)) || matches!(upper.as_str(), "ENABLE_TESTING" | "BUILD_TESTS"))
+    (ENDINGS.iter().any(|e| upper.ends_with(e))
+        || matches!(upper.as_str(), "ENABLE_TESTING" | "BUILD_TESTS"))
         && !NOT.iter().any(|n| upper.contains(n))
         && !(cfg2() && NOT_CFG2.iter().any(|n| upper.contains(n)))
 }
@@ -491,7 +525,11 @@ pub(crate) fn test_options(root: &Path) -> Vec<String> {
     }
     if cfg2() {
         // `-D<NAME>=ON` lines of the top-level README (fkYAML documents FK_YAML_BUILD_TEST there)
-        names.extend(readme_switches(root).into_iter().filter(|name| is_test_option(name)));
+        names.extend(
+            readme_switches(root)
+                .into_iter()
+                .filter(|name| is_test_option(name)),
+        );
     }
     names.into_iter().collect()
 }
@@ -503,7 +541,9 @@ fn first_level_cmakelists(root: &Path) -> Vec<PathBuf> {
     };
     let mut out: Vec<PathBuf> = entries
         .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()) && entry.file_name() != ".git")
+        .filter(|entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_dir()) && entry.file_name() != ".git"
+        })
         .map(|entry| entry.path().join("CMakeLists.txt"))
         .filter(|path| path.is_file())
         .collect();
@@ -513,7 +553,9 @@ fn first_level_cmakelists(root: &Path) -> Vec<PathBuf> {
 
 /// CFG2: every `-D<NAME>=ON` (or 1, TRUE, YES) in a top-level README* file of `root`.
 fn readme_switches(root: &Path) -> Vec<String> {
-    let Ok(pattern) = regex_lite::Regex::new(r"-D([A-Za-z0-9_]+)=(?:ON|On|on|1|TRUE|True|true|YES|Yes|yes)\b") else {
+    let Ok(pattern) =
+        regex_lite::Regex::new(r"-D([A-Za-z0-9_]+)=(?:ON|On|on|1|TRUE|True|true|YES|Yes|yes)\b")
+    else {
         return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -553,7 +595,10 @@ async fn ladder_fixes(root: &Path, dir: &Path, err: &str) -> Vec<(String, bool)>
             let package = package.as_str().to_ascii_uppercase();
             for (name, default_on) in &declared {
                 if *default_on
-                    && name.to_ascii_uppercase().split('_').any(|word| word == package)
+                    && name
+                        .to_ascii_uppercase()
+                        .split('_')
+                        .any(|word| word == package)
                     && !fixes.iter().any(|(have, _)| have == name)
                 {
                     fixes.push((name.clone(), false));
@@ -562,11 +607,24 @@ async fn ladder_fixes(root: &Path, dir: &Path, err: &str) -> Vec<(String, bool)>
         }
     }
     let lower = err.to_ascii_lowercase();
-    let gtest_fetch = (lower.contains("googletest") || lower.contains("google test") || lower.contains("gtest"))
-        && ["clone", "download", "did not find", "could not resolve", "not found", "sources"]
+    let gtest_fetch =
+        (lower.contains("googletest") || lower.contains("google test") || lower.contains("gtest"))
+            && [
+                "clone",
+                "download",
+                "did not find",
+                "could not resolve",
+                "not found",
+                "sources",
+            ]
             .iter()
             .any(|word| lower.contains(word));
-    if gtest_fetch && declared.iter().any(|(name, _)| gtest_switch(name).is_some()) && gtest_found(dir).await {
+    if gtest_fetch
+        && declared
+            .iter()
+            .any(|(name, _)| gtest_switch(name).is_some())
+        && gtest_found(dir).await
+    {
         for (name, _) in &declared {
             if let Some(on) = gtest_switch(name)
                 && !fixes.iter().any(|(have, _)| have == name)
@@ -632,12 +690,18 @@ fn declared_options(root: &Path) -> Vec<(String, bool)> {
             let name = entry.file_name().to_string_lossy().to_string();
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() => {
-                    if depth < 3 && !name.starts_with('.') && !name.starts_with("build") && name != "_deps" {
+                    if depth < 3
+                        && !name.starts_with('.')
+                        && !name.starts_with("build")
+                        && name != "_deps"
+                    {
                         stack.push((entry.path(), depth + 1));
                     }
                 }
                 Ok(kind) if kind.is_file() => {
-                    if (name == "CMakeLists.txt" && depth <= 2) || (name.ends_with(".cmake") && depth <= 3) {
+                    if (name == "CMakeLists.txt" && depth <= 2)
+                        || (name.ends_with(".cmake") && depth <= 3)
+                    {
                         files.push(entry.path());
                     }
                 }
@@ -657,9 +721,12 @@ fn declared_options(root: &Path) -> Vec<(String, bool)> {
                 && let Some(name) = args.first()
                 && !out.iter().any(|(have, _)| have == name)
             {
-                let default_on = args
-                    .get(2)
-                    .is_some_and(|value| matches!(value.to_ascii_uppercase().as_str(), "ON" | "YES" | "TRUE" | "1" | "Y"));
+                let default_on = args.get(2).is_some_and(|value| {
+                    matches!(
+                        value.to_ascii_uppercase().as_str(),
+                        "ON" | "YES" | "TRUE" | "1" | "Y"
+                    )
+                });
                 out.push((name.clone(), default_on));
             }
         }
@@ -699,7 +766,11 @@ pub(crate) async fn configure(
         Ok(()) if declared.is_empty() => Ok(None),
         Ok(()) => Ok(Some(format!(
             "with the project's test options on ({})",
-            declared.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            declared
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ))),
         Err(err) if first && !options.is_empty() => {
             // CFG2: up to 3 more configures with what the error names, before the test options are dropped
@@ -763,7 +834,11 @@ async fn configure_with(
     // A tree configured before keeps its generator and cache: configured again as it is
     // (a different `-G` would be refused, and its objects stay valid).
     let reconfigure = dir.join("CMakeCache.txt").is_file();
-    let like_cache = if reconfigure { None } else { like.and_then(read_cache) };
+    let like_cache = if reconfigure {
+        None
+    } else {
+        like.and_then(read_cache)
+    };
     let fresh_tree = fresh_tree && !reconfigure;
     let mut args: Vec<String> = Vec::new();
     let generator = like_cache
@@ -821,7 +896,11 @@ async fn configure_with(
     match run_capped("cmake", &program_args, &cwd, CONFIGURE_TIMEOUT).await {
         Ok(RunOutcome::Finished { success: true, .. }) => Ok(()),
         Ok(RunOutcome::Finished { stdout, stderr, .. }) => {
-            let text = if stderr.trim().is_empty() { stdout } else { stderr };
+            let text = if stderr.trim().is_empty() {
+                stdout
+            } else {
+                stderr
+            };
             let tail: Vec<&str> = text.lines().rev().take(20).collect();
             Err(format!(
                 "cmake configure of {} failed:\n{}",
@@ -829,7 +908,9 @@ async fn configure_with(
                 tail.into_iter().rev().collect::<Vec<_>>().join("\n")
             ))
         }
-        Ok(RunOutcome::TimedOut { secs }) => Err(format!("cmake configure timed out after {secs}s")),
+        Ok(RunOutcome::TimedOut { secs }) => {
+            Err(format!("cmake configure timed out after {secs}s"))
+        }
         Err(err) => Err(err.to_string()),
     }
 }
@@ -855,9 +936,13 @@ pub(crate) fn init_cache_text(cache: &Cache) -> String {
         "CMAKE_C_COMPILER_LAUNCHER",
         "CMAKE_CXX_COMPILER_LAUNCHER",
     ];
-    let mut out = String::from("# written by cpp_test_select from an existing build tree's cache\n");
+    let mut out =
+        String::from("# written by cpp_test_select from an existing build tree's cache\n");
     for (name, (kind, value)) in cache {
-        let keep_kind = matches!(kind.as_str(), "BOOL" | "STRING" | "PATH" | "FILEPATH" | "UNINITIALIZED");
+        let keep_kind = matches!(
+            kind.as_str(),
+            "BOOL" | "STRING" | "PATH" | "FILEPATH" | "UNINITIALIZED"
+        );
         let cmake_ok = !name.starts_with("CMAKE_") || CMAKE_KEEP.contains(&name.as_str());
         if !keep_kind
             || !cmake_ok
@@ -868,9 +953,18 @@ pub(crate) fn init_cache_text(cache: &Cache) -> String {
         {
             continue;
         }
-        let kind = if kind == "UNINITIALIZED" { "STRING" } else { kind.as_str() };
-        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"").replace('$', "\\$");
-        out.push_str(&format!("set({name} \"{escaped}\" CACHE {kind} \"\" FORCE)\n"));
+        let kind = if kind == "UNINITIALIZED" {
+            "STRING"
+        } else {
+            kind.as_str()
+        };
+        let escaped = value
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$");
+        out.push_str(&format!(
+            "set({name} \"{escaped}\" CACHE {kind} \"\" FORCE)\n"
+        ));
     }
     out
 }
@@ -913,12 +1007,14 @@ pub(crate) fn file_api_targets(reply_tree: &Path, build_dir: &Path) -> Option<Ve
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with("index-") && n.to_string_lossy().ends_with(".json"))
+            p.file_name().is_some_and(|n| {
+                n.to_string_lossy().starts_with("index-") && n.to_string_lossy().ends_with(".json")
+            })
         })
         .collect();
     indexes.sort();
-    let index: Value = serde_json::from_str(&std::fs::read_to_string(indexes.last()?).ok()?).ok()?;
+    let index: Value =
+        serde_json::from_str(&std::fs::read_to_string(indexes.last()?).ok()?).ok()?;
     let codemodel_file = index["objects"]
         .as_array()?
         .iter()
@@ -1079,7 +1175,10 @@ fn link_artifact(target_dir: &Path, subdir_build: &Path) -> (Vec<PathBuf>, bool)
         }
     }
     for (i, token) in tokens.iter().enumerate() {
-        let base = Path::new(token).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let base = Path::new(token)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         if base == "ar" || base.ends_with("-ar") || base == "ar.exe" {
             if let Some(archive) = tokens.get(i + 2) {
                 return (vec![normalize(subdir_build, Path::new(archive))], false);
@@ -1098,7 +1197,10 @@ fn shlex_split(line: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// The build tree's CTest tests.
-pub(crate) async fn ctest_tests(build: &Path, version: Option<(u32, u32)>) -> Result<Vec<TestEntry>, String> {
+pub(crate) async fn ctest_tests(
+    build: &Path,
+    version: Option<(u32, u32)>,
+) -> Result<Vec<TestEntry>, String> {
     if crate::toolver::at_least(version, (3, 14)) {
         let args = vec!["--show-only=json-v1".to_string()];
         match run_capped("ctest", &args, build, CTEST_TIMEOUT).await {
@@ -1135,7 +1237,11 @@ pub(crate) fn parse_ctest_json(text: &str) -> Option<Vec<TestEntry>> {
         let name = t["name"].as_str().unwrap_or_default().to_string();
         let command: Vec<String> = t["command"]
             .as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let mut entry = TestEntry {
             name,
@@ -1151,7 +1257,12 @@ pub(crate) fn parse_ctest_json(text: &str) -> Option<Vec<TestEntry>> {
                     Some("ENVIRONMENT") => {
                         entry.env = prop["value"]
                             .as_array()
-                            .map(|a| a.iter().filter_map(|x| x.as_str()).filter_map(split_env).collect())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str())
+                                    .filter_map(split_env)
+                                    .collect()
+                            })
                             .unwrap_or_default();
                     }
                     Some("DISABLED") => entry.disabled = prop["value"].as_bool().unwrap_or(false),
@@ -1165,7 +1276,8 @@ pub(crate) fn parse_ctest_json(text: &str) -> Option<Vec<TestEntry>> {
 }
 
 fn split_env(item: &str) -> Option<(String, String)> {
-    item.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))
+    item.split_once('=')
+        .map(|(k, v)| (k.to_string(), v.to_string()))
 }
 
 /// Tests from `CTestTestfile.cmake` files (any CMake version), following
@@ -1211,7 +1323,10 @@ pub(crate) fn ctest_testfile_tests(build: &Path) -> Vec<TestEntry> {
                                     entry.env = kv[1].split(';').filter_map(split_env).collect();
                                 }
                                 "DISABLED" => {
-                                    entry.disabled = matches!(kv[1].to_ascii_uppercase().as_str(), "ON" | "TRUE" | "1" | "YES");
+                                    entry.disabled = matches!(
+                                        kv[1].to_ascii_uppercase().as_str(),
+                                        "ON" | "TRUE" | "1" | "YES"
+                                    );
                                 }
                                 _ => {}
                             }
@@ -1238,13 +1353,11 @@ pub(crate) fn ctest_testfile_tests(build: &Path) -> Vec<TestEntry> {
 /// argument) equal to a program's artifact, else a target named like it.
 pub(crate) fn link_tests_to_targets(tests: &mut [TestEntry], targets: &[Target]) {
     for test in tests.iter_mut() {
-        let paths: Vec<PathBuf> = test
-            .command
-            .iter()
-            .map(PathBuf::from)
-            .collect();
+        let paths: Vec<PathBuf> = test.command.iter().map(PathBuf::from).collect();
         let hit = targets.iter().find(|t| {
-            t.artifacts.iter().any(|art| paths.iter().any(|p| same_file(p, art)))
+            t.artifacts
+                .iter()
+                .any(|art| paths.iter().any(|p| same_file(p, art)))
         });
         let hit = hit.or_else(|| {
             let first = test.command.first()?;
@@ -1433,10 +1546,21 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir(dir.path().join("cmake")).unwrap();
-        std::fs::write(dir.path().join("cmake/flags.cmake"), "option(ADA_TESTING \"Build tests\" OFF)\n").unwrap();
+        std::fs::write(
+            dir.path().join("cmake/flags.cmake"),
+            "option(ADA_TESTING \"Build tests\" OFF)\n",
+        )
+        .unwrap();
         assert_eq!(
             test_options(dir.path()),
-            ["ADA_TESTING", "BUILD_TESTING", "FMT_TEST", "JSON_BuildTests", "QL_BUILD_TEST_SUITE", "SML_BUILD_TESTS"]
+            [
+                "ADA_TESTING",
+                "BUILD_TESTING",
+                "FMT_TEST",
+                "JSON_BuildTests",
+                "QL_BUILD_TEST_SUITE",
+                "SML_BUILD_TESTS"
+            ]
         );
     }
 
@@ -1446,7 +1570,17 @@ mod tests {
 set_tests_properties([=[core_test]=] PROPERTIES  WORKING_DIRECTORY \"/b/t\" ENVIRONMENT \"A=1;B=2\" _BACKTRACE_TRIPLES \"x\")\n\
 subdirs(\"tests\")\nsubdirs(more)\n";
         let cmds = cmake_commands(text);
-        assert_eq!(cmds[0], ("add_test".to_string(), vec!["core_test".to_string(), "/b/core_test".to_string(), "--flag".to_string()]));
+        assert_eq!(
+            cmds[0],
+            (
+                "add_test".to_string(),
+                vec![
+                    "core_test".to_string(),
+                    "/b/core_test".to_string(),
+                    "--flag".to_string()
+                ]
+            )
+        );
         assert_eq!(cmds[2], ("subdirs".to_string(), vec!["tests".to_string()]));
         assert_eq!(cmds[3], ("subdirs".to_string(), vec!["more".to_string()]));
     }
@@ -1462,12 +1596,19 @@ subdirs(\"tests\")\nsubdirs(more)\n";
         )
         .unwrap();
         std::fs::create_dir_all(b.join("sub")).unwrap();
-        std::fs::write(b.join("sub/CTestTestfile.cmake"), "ADD_TEST(inner \"/b/sub/inner\")\n").unwrap();
+        std::fs::write(
+            b.join("sub/CTestTestfile.cmake"),
+            "ADD_TEST(inner \"/b/sub/inner\")\n",
+        )
+        .unwrap();
         let tests = ctest_testfile_tests(b);
         let names: Vec<&str> = tests.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["unit", "inner"]);
         assert_eq!(tests[0].env, vec![("K".to_string(), "V".to_string())]);
-        assert_eq!(tests[0].command, vec!["/b/unit".to_string(), "--x".to_string()]);
+        assert_eq!(
+            tests[0].command,
+            vec!["/b/unit".to_string(), "--x".to_string()]
+        );
         assert_eq!(tests[1].workdir.as_deref(), Some(b.join("sub").as_path()));
     }
 
@@ -1475,7 +1616,10 @@ subdirs(\"tests\")\nsubdirs(more)\n";
     fn parses_ctest_json() {
         let json = r#"{"kind":"ctestInfo","tests":[{"name":"a","command":["/b/bin/a","--x"],"properties":[{"name":"WORKING_DIRECTORY","value":"/b/t"},{"name":"ENVIRONMENT","value":["K=V"]},{"name":"DISABLED","value":true}]},{"name":"b"}]}"#;
         let tests = parse_ctest_json(json).unwrap();
-        assert_eq!(tests[0].command, vec!["/b/bin/a".to_string(), "--x".to_string()]);
+        assert_eq!(
+            tests[0].command,
+            vec!["/b/bin/a".to_string(), "--x".to_string()]
+        );
         assert_eq!(tests[0].workdir, Some(PathBuf::from("/b/t")));
         assert_eq!(tests[0].env, vec![("K".to_string(), "V".to_string())]);
         assert!(tests[0].disabled);
@@ -1497,10 +1641,22 @@ subdirs(\"tests\")\nsubdirs(more)\n";
             cache.insert(name.to_string(), (kind.to_string(), value.to_string()));
         }
         let text = init_cache_text(&cache);
-        assert!(text.contains("set(CMAKE_BUILD_TYPE \"Release\" CACHE STRING \"\" FORCE)"), "{text}");
-        assert!(text.contains("set(FMT_TEST \"ON\" CACHE BOOL \"\" FORCE)"), "{text}");
-        assert!(text.contains("set(MY_OPT \"a;b\" CACHE STRING \"\" FORCE)"), "{text}");
-        assert!(text.contains("set(WEIRD \"has \\\"quote\\\" and \\$var\" CACHE STRING \"\" FORCE)"), "{text}");
+        assert!(
+            text.contains("set(CMAKE_BUILD_TYPE \"Release\" CACHE STRING \"\" FORCE)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("set(FMT_TEST \"ON\" CACHE BOOL \"\" FORCE)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("set(MY_OPT \"a;b\" CACHE STRING \"\" FORCE)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("set(WEIRD \"has \\\"quote\\\" and \\$var\" CACHE STRING \"\" FORCE)"),
+            "{text}"
+        );
         assert!(!text.contains("CMAKE_INSTALL_PREFIX"), "{text}");
         assert!(!text.contains("Foo_DIR"), "{text}");
         assert!(!text.contains("CMAKE_HOME_DIRECTORY"), "{text}");
@@ -1530,7 +1686,11 @@ subdirs(\"tests\")\nsubdirs(more)\n";
             },
             TestEntry {
                 name: "t2".to_string(),
-                command: vec!["/usr/bin/python3".to_string(), "run.py".to_string(), "/b/bin/tool".to_string()],
+                command: vec![
+                    "/usr/bin/python3".to_string(),
+                    "run.py".to_string(),
+                    "/b/bin/tool".to_string(),
+                ],
                 ..TestEntry::default()
             },
             TestEntry {
@@ -1541,6 +1701,13 @@ subdirs(\"tests\")\nsubdirs(more)\n";
         ];
         link_tests_to_targets(&mut tests, &targets);
         let got: Vec<Option<String>> = tests.iter().map(|t| t.target.clone()).collect();
-        assert_eq!(got, vec![Some("core_test".to_string()), Some("tool".to_string()), None]);
+        assert_eq!(
+            got,
+            vec![
+                Some("core_test".to_string()),
+                Some("tool".to_string()),
+                None
+            ]
+        );
     }
 }

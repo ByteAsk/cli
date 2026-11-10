@@ -64,8 +64,10 @@ pub fn note_process_start() {
 /// counting reclaimable inactive page cache) when a limit is set, else `MemAvailable`.
 pub fn mem_headroom() -> Option<u64> {
     let read = |p: &str| std::fs::read_to_string(p).ok();
-    if let (Some(max), Some(cur)) = (read("/sys/fs/cgroup/memory.max"), read("/sys/fs/cgroup/memory.current"))
-        && let (Ok(max), Ok(cur)) = (max.trim().parse::<u64>(), cur.trim().parse::<u64>())
+    if let (Some(max), Some(cur)) = (
+        read("/sys/fs/cgroup/memory.max"),
+        read("/sys/fs/cgroup/memory.current"),
+    ) && let (Ok(max), Ok(cur)) = (max.trim().parse::<u64>(), cur.trim().parse::<u64>())
     {
         let inactive_file = read("/sys/fs/cgroup/memory.stat")
             .and_then(|stat| {

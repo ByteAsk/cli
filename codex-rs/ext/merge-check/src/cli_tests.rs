@@ -39,7 +39,10 @@ async fn cli(args: &[&str]) -> i32 {
 async fn cli_err(args: &[&str]) -> String {
     let parsed = TestCli::try_parse_from(std::iter::once("checks").chain(args.iter().copied()))
         .unwrap_or_else(|err| panic!("{args:?}: {err}"));
-    format!("{:#}", run_command(parsed.command).await.expect_err("should fail"))
+    format!(
+        "{:#}",
+        run_command(parsed.command).await.expect_err("should fail")
+    )
 }
 
 fn secret_file(path: &Path, text: &str) {
@@ -56,7 +59,9 @@ fn fake_enterprise(server: Arc<FakeServer>, token: &'static str) -> String {
     let http = tiny_http::Server::http("127.0.0.1:0").expect("bind");
     let base = format!("http://{}", http.server_addr().to_ip().expect("ip"));
     std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread().build().expect("rt");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("rt");
         for mut request in http.incoming_requests() {
             let mut body = String::new();
             let _ = request.as_reader().read_to_string(&mut body);
@@ -71,20 +76,24 @@ fn fake_enterprise(server: Arc<FakeServer>, token: &'static str) -> String {
             };
             // The fake checks the digest the client sent, like the real server.
             let digest = args["digest"].as_str().unwrap_or_default().to_string();
-            let authorized = request
-                .headers()
-                .iter()
-                .any(|h| h.field.equiv("Authorization") && h.value.as_str() == format!("Bearer {token}"));
+            let authorized = request.headers().iter().any(|h| {
+                h.field.equiv("Authorization") && h.value.as_str() == format!("Bearer {token}")
+            });
             let (status, answer) = match request.url() {
                 "/enterprise/v1/runner-keys/verify" if !authorized => (401, serde_json::json!({})),
                 "/enterprise/v1/runner-keys/verify" => {
                     let answer = runtime.block_on(server.verify_digest(&envelope, &digest));
-                    (200, serde_json::json!({"valid": answer.valid, "reason": answer.reason, "kind": answer.kind}))
+                    (
+                        200,
+                        serde_json::json!({"valid": answer.valid, "reason": answer.reason, "kind": answer.kind}),
+                    )
                 }
-                "/enterprise/v1/runner-keys/attest" => match server.attest_digest(&envelope, &digest) {
-                    Ok(()) => (200, serde_json::json!({"ok": true, "attested_ms": 1})),
-                    Err(reason) => (403, serde_json::json!({"ok": false, "reason": reason})),
-                },
+                "/enterprise/v1/runner-keys/attest" => {
+                    match server.attest_digest(&envelope, &digest) {
+                        Ok(()) => (200, serde_json::json!({"ok": true, "attested_ms": 1})),
+                        Err(reason) => (403, serde_json::json!({"ok": false, "reason": reason})),
+                    }
+                }
                 _ => (404, serde_json::json!({})),
             };
             let _ = request.respond(
@@ -109,7 +118,16 @@ impl Ci {
         let fixture = testkit::Fixture::with_profile(profile);
         let dir = tempfile::tempdir().expect("tmp");
         let origin = dir.path().join("origin.git");
-        testing::run(dir.path(), &["clone", "-q", "--bare", &fixture.repo.to_string_lossy(), &origin.to_string_lossy()]);
+        testing::run(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                &fixture.repo.to_string_lossy(),
+                &origin.to_string_lossy(),
+            ],
+        );
         // Protected base branch: only the merge button may move main.
         let hook = origin.join("hooks/pre-receive");
         std::fs::write(
@@ -123,7 +141,15 @@ impl Ci {
             std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         }
         let dev = dir.path().join("dev");
-        testing::run(dir.path(), &["clone", "-q", &origin.to_string_lossy(), &dev.to_string_lossy()]);
+        testing::run(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                &origin.to_string_lossy(),
+                &dev.to_string_lossy(),
+            ],
+        );
         Self {
             dir,
             origin,
@@ -145,7 +171,15 @@ impl Ci {
     fn ci_clone(&self, job: &str) -> PathBuf {
         let path = self.dir.path().join(job);
         if !path.exists() {
-            testing::run(self.dir.path(), &["clone", "-q", &self.origin.to_string_lossy(), &path.to_string_lossy()]);
+            testing::run(
+                self.dir.path(),
+                &[
+                    "clone",
+                    "-q",
+                    &self.origin.to_string_lossy(),
+                    &path.to_string_lossy(),
+                ],
+            );
         }
         testing::run(&path, &["fetch", "-q", "origin"]);
         path
@@ -204,16 +238,39 @@ async fn the_ci_flow_allows_pass_and_blocks_fail_and_no_profile() {
         let report = ci.dir.path().join(format!("{branch}-run.json"));
         let run_repo_s = run_repo.to_string_lossy().into_owned();
         assert_eq!(
-            cli(&["run", "--repo", &run_repo_s, "--base", "origin/main", "--head", &head, "--out", &report.to_string_lossy()]).await,
+            cli(&[
+                "run",
+                "--repo",
+                &run_repo_s,
+                "--base",
+                "origin/main",
+                "--head",
+                &head,
+                "--out",
+                &report.to_string_lossy()
+            ])
+            .await,
             0
         );
         // Job 2: signs; never runs branch code.
         let sign_repo = ci.ci_clone("sign-job");
         assert_eq!(
             cli(&[
-                "sign", "--repo", &sign_repo.to_string_lossy(), "--base", "origin/main", "--head", &head,
-                "--key", &key_file.to_string_lossy(), "--report", &report.to_string_lossy(),
-                "--enterprise", &enterprise, "--cache", &cache.to_string_lossy(),
+                "sign",
+                "--repo",
+                &sign_repo.to_string_lossy(),
+                "--base",
+                "origin/main",
+                "--head",
+                &head,
+                "--key",
+                &key_file.to_string_lossy(),
+                "--report",
+                &report.to_string_lossy(),
+                "--enterprise",
+                &enterprise,
+                "--cache",
+                &cache.to_string_lossy(),
             ])
             .await,
             0
@@ -222,13 +279,32 @@ async fn the_ci_flow_allows_pass_and_blocks_fail_and_no_profile() {
         let gate_repo = ci.ci_clone("gate-job");
         let decision_file = ci.dir.path().join(format!("{branch}-decision.json"));
         let status = cli(&[
-            "gate", "--repo", &gate_repo.to_string_lossy(), "--base", "origin/main", "--head", &head,
-            "--cache", &cache.to_string_lossy(), "--enterprise", &enterprise,
-            "--token-file", &secrets.join("enterprise-token").to_string_lossy(),
-            "--github-repo", "acme/book", "--github-api", &github.base,
-            "--github-token-file", &secrets.join("github-token").to_string_lossy(),
-            "--json", &decision_file.to_string_lossy(),
-            "--jenkins-out", &ci.dir.path().join(format!("{branch}-jenkins")).to_string_lossy(),
+            "gate",
+            "--repo",
+            &gate_repo.to_string_lossy(),
+            "--base",
+            "origin/main",
+            "--head",
+            &head,
+            "--cache",
+            &cache.to_string_lossy(),
+            "--enterprise",
+            &enterprise,
+            "--token-file",
+            &secrets.join("enterprise-token").to_string_lossy(),
+            "--github-repo",
+            "acme/book",
+            "--github-api",
+            &github.base,
+            "--github-token-file",
+            &secrets.join("github-token").to_string_lossy(),
+            "--json",
+            &decision_file.to_string_lossy(),
+            "--jenkins-out",
+            &ci.dir
+                .path()
+                .join(format!("{branch}-jenkins"))
+                .to_string_lossy(),
         ])
         .await;
         assert_eq!(status, if want_allowed { 0 } else { 1 }, "{branch}");
@@ -239,7 +315,8 @@ async fn the_ci_flow_allows_pass_and_blocks_fail_and_no_profile() {
         assert_eq!(last.1["head_sha"], head_commit);
         // The fake merge button: only an allowed decision lands.
         if status == 0 {
-            let decision: Decision = serde_json::from_str(&std::fs::read_to_string(&decision_file).unwrap()).unwrap();
+            let decision: Decision =
+                serde_json::from_str(&std::fs::read_to_string(&decision_file).unwrap()).unwrap();
             assert_eq!(decision.verdict, Verdict::Pass);
             let merged = testing::run(&ci.dev, &["rev-parse", &head]);
             let output = std::process::Command::new("git")
@@ -252,14 +329,27 @@ async fn the_ci_flow_allows_pass_and_blocks_fail_and_no_profile() {
             assert!(output.status.success());
         }
     }
-    assert_eq!(ci.builds(), 2, "one build per candidate, in the run job only");
+    assert_eq!(
+        ci.builds(),
+        2,
+        "one build per candidate, in the run job only"
+    );
 
     // Signing refuses a report for another candidate (e.g. an old base).
     let stale = ci.dir.path().join("bad-run.json");
     let sign_repo = ci.ci_clone("sign-job");
     let err = cli_err(&[
-        "sign", "--repo", &sign_repo.to_string_lossy(), "--base", "origin/main", "--head", "origin/good",
-        "--key", &key_file.to_string_lossy(), "--report", &stale.to_string_lossy(),
+        "sign",
+        "--repo",
+        &sign_repo.to_string_lossy(),
+        "--base",
+        "origin/main",
+        "--head",
+        "origin/good",
+        "--key",
+        &key_file.to_string_lossy(),
+        "--report",
+        &stale.to_string_lossy(),
     ])
     .await;
     assert!(err.contains("another merge candidate"), "{err}");
@@ -282,16 +372,61 @@ async fn no_profile_is_not_run_no_build_profile_at_merge() {
     let repo_s = repo.to_string_lossy().into_owned();
     let report = ci.dir.path().join("run.json");
     let cache = ci.dir.path().join("cache");
-    assert_eq!(cli(&["run", "--repo", &repo_s, "--base", "origin/main", "--head", "origin/f", "--out", &report.to_string_lossy()]).await, 0);
     assert_eq!(
-        cli(&["sign", "--repo", &repo_s, "--base", "origin/main", "--head", "origin/f", "--key", &secrets.join("key.pem").to_string_lossy(),
-              "--report", &report.to_string_lossy(), "--enterprise", &enterprise, "--cache", &cache.to_string_lossy()]).await,
+        cli(&[
+            "run",
+            "--repo",
+            &repo_s,
+            "--base",
+            "origin/main",
+            "--head",
+            "origin/f",
+            "--out",
+            &report.to_string_lossy()
+        ])
+        .await,
+        0
+    );
+    assert_eq!(
+        cli(&[
+            "sign",
+            "--repo",
+            &repo_s,
+            "--base",
+            "origin/main",
+            "--head",
+            "origin/f",
+            "--key",
+            &secrets.join("key.pem").to_string_lossy(),
+            "--report",
+            &report.to_string_lossy(),
+            "--enterprise",
+            &enterprise,
+            "--cache",
+            &cache.to_string_lossy()
+        ])
+        .await,
         0
     );
     let jenkins = ci.dir.path().join("jenkins");
-    let status = cli(&["gate", "--repo", &repo_s, "--base", "origin/main", "--head", "origin/f", "--cache", &cache.to_string_lossy(),
-                      "--enterprise", &enterprise, "--token-file", &secrets.join("tok").to_string_lossy(),
-                      "--jenkins-out", &jenkins.to_string_lossy()]).await;
+    let status = cli(&[
+        "gate",
+        "--repo",
+        &repo_s,
+        "--base",
+        "origin/main",
+        "--head",
+        "origin/f",
+        "--cache",
+        &cache.to_string_lossy(),
+        "--enterprise",
+        &enterprise,
+        "--token-file",
+        &secrets.join("tok").to_string_lossy(),
+        "--jenkins-out",
+        &jenkins.to_string_lossy(),
+    ])
+    .await;
     assert_eq!(status, 1);
     let summary = std::fs::read_to_string(jenkins.join("byteask-merge-check.md")).unwrap();
     assert!(summary.contains("NOT RUN (no build profile)"), "{summary}");
@@ -307,10 +442,27 @@ async fn secrets_must_not_be_readable_by_others_and_never_come_from_argv() {
     {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(read_secret(Some(&path), "UNSET_FOR_TEST").unwrap_err().to_string().contains("chmod 600"));
+        assert!(
+            read_secret(Some(&path), "UNSET_FOR_TEST")
+                .unwrap_err()
+                .to_string()
+                .contains("chmod 600")
+        );
     }
     // There is no flag that takes a token value.
-    assert!(TestCli::try_parse_from(["checks", "gate", "--base", "m", "--enterprise", "x", "--token", "t"]).is_err());
+    assert!(
+        TestCli::try_parse_from([
+            "checks",
+            "gate",
+            "--base",
+            "m",
+            "--enterprise",
+            "x",
+            "--token",
+            "t"
+        ])
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -319,10 +471,17 @@ async fn keygen_and_profile_commands() {
     let key = dir.path().join("k.pem");
     assert_eq!(cli(&["keygen", "--out", &key.to_string_lossy()]).await, 0);
     assert!(RunnerKey::load(&key).is_ok());
-    assert!(cli_err(&["keygen", "--out", &key.to_string_lossy()]).await.contains("could not create"));
+    assert!(
+        cli_err(&["keygen", "--out", &key.to_string_lossy()])
+            .await
+            .contains("could not create")
+    );
     let fixture = testkit::Fixture::new();
     let repo = fixture.repo.to_string_lossy().into_owned();
-    assert_eq!(cli(&["profile", "check", "--repo", &repo, "--rev", "main"]).await, 0);
+    assert_eq!(
+        cli(&["profile", "check", "--repo", &repo, "--rev", "main"]).await,
+        0
+    );
     fixture.write(".byteask/checks.toml", "schema = 1\n[build]\nrun = []\n");
     assert_eq!(cli(&["profile", "check", "--repo", &repo]).await, 1);
     assert_eq!(cli(&["profile", "propose", "--repo", &repo]).await, 0);
@@ -334,7 +493,9 @@ async fn keygen_and_profile_commands() {
 #[tokio::test]
 async fn enterprise_e2e_against_real_server() {
     let Some(byteask_dir) = std::env::var_os("BYTEASK_TEST_ENTERPRISE").map(PathBuf::from) else {
-        eprintln!("skipped: set BYTEASK_TEST_ENTERPRISE to the byteask/ directory of a checkout of the enterprise server");
+        eprintln!(
+            "skipped: set BYTEASK_TEST_ENTERPRISE to the byteask/ directory of a checkout of the enterprise server"
+        );
         return;
     };
     let server = real_server::Server::start(&byteask_dir);
@@ -367,7 +528,11 @@ async fn enterprise_e2e_against_real_server() {
     let foreign = stranger.sign(RunnerKind::Ci, payload.clone(), run::now_ms());
     let decision = decide_with(&verifier, &candidate, vec![foreign]).await;
     assert!(!decision.allowed);
-    assert!(decision.ignored[0].contains("not enrolled"), "{:?}", decision.ignored);
+    assert!(
+        decision.ignored[0].contains("not enrolled"),
+        "{:?}",
+        decision.ignored
+    );
 
     // A bench key cannot vouch for CI results.
     let wrong_kind = bench_key.sign(RunnerKind::Ci, payload.clone(), run::now_ms());
@@ -377,7 +542,11 @@ async fn enterprise_e2e_against_real_server() {
     // Retirement (re-imaged runner): what it recorded before stays valid ...
     server.end(&ci_key, "retire");
     let decision = decide_with(&verifier, &candidate, vec![good.clone()]).await;
-    assert!(decision.allowed, "recorded before retirement: {:?}", decision.ignored);
+    assert!(
+        decision.allowed,
+        "recorded before retirement: {:?}",
+        decision.ignored
+    );
     // ... and it cannot sign anything new.
     let late = ci_key.sign(RunnerKind::Ci, payload.clone(), run::now_ms());
     assert!(verify::attest(&server.base, &late).await.is_err());
@@ -387,12 +556,22 @@ async fn enterprise_e2e_against_real_server() {
     let second = RunnerKey::generate().unwrap();
     server.enrol(&second, "ci");
     let recorded = second.sign(RunnerKind::Ci, payload.clone(), run::now_ms());
-    verify::attest(&server.base, &recorded).await.expect("attest");
-    assert!(decide_with(&verifier, &candidate, vec![recorded.clone()]).await.allowed);
+    verify::attest(&server.base, &recorded)
+        .await
+        .expect("attest");
+    assert!(
+        decide_with(&verifier, &candidate, vec![recorded.clone()])
+            .await
+            .allowed
+    );
     server.end(&second, "revoke");
     let decision = decide_with(&verifier, &candidate, vec![recorded]).await;
     assert!(!decision.allowed);
-    assert!(decision.ignored[0].contains("revoked"), "{:?}", decision.ignored);
+    assert!(
+        decision.ignored[0].contains("revoked"),
+        "{:?}",
+        decision.ignored
+    );
 }
 
 async fn decide_with(
@@ -436,17 +615,29 @@ mod real_server {
     }
 
     fn free_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
     }
 
     fn post(url: &str, token: &str, body: serde_json::Value) -> serde_json::Value {
         let out = Command::new("curl")
-            .args(["-sS", "-X", "POST", "-H", "Content-Type: application/json", "-H"])
+            .args([
+                "-sS",
+                "-X",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "-H",
+            ])
             .arg(format!("Authorization: Bearer {token}"))
             .args(["--data", &body.to_string(), url])
             .output()
             .expect("curl");
-        serde_json::from_slice(&out.stdout).unwrap_or_else(|_| panic!("{url}: {}", String::from_utf8_lossy(&out.stdout)))
+        serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|_| panic!("{url}: {}", String::from_utf8_lossy(&out.stdout)))
     }
 
     impl Server {
@@ -470,13 +661,27 @@ mod real_server {
                     .env_remove("BYTEASK_CONTENT_DB");
             };
             let mut boot = Command::new("python3");
-            boot.args(["-m", "enterprise", "admin-bootstrap", "--config"]).arg(&config);
+            boot.args(["-m", "enterprise", "admin-bootstrap", "--config"])
+                .arg(&config);
             env(&mut boot);
             let out = boot.output().expect("python3");
-            assert!(out.status.success(), "bootstrap: {}", String::from_utf8_lossy(&out.stderr));
-            let admin = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or_default().trim().to_string();
+            assert!(
+                out.status.success(),
+                "bootstrap: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let admin = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             let mut serve = Command::new("python3");
-            serve.args(["-m", "enterprise", "serve", "--config"]).arg(&config).stdout(Stdio::null()).stderr(Stdio::null());
+            serve
+                .args(["-m", "enterprise", "serve", "--config"])
+                .arg(&config)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
             env(&mut serve);
             let child = serve.spawn().expect("serve");
             let base = format!("http://127.0.0.1:{port}");
@@ -491,8 +696,17 @@ mod real_server {
                 &admin,
                 serde_json::json!({"kind": "service", "name": "merge-check"}),
             );
-            let service = token["token"].as_str().unwrap_or_else(|| panic!("token: {token}")).to_string();
-            Self { base, admin, service, child, _dir: dir }
+            let service = token["token"]
+                .as_str()
+                .unwrap_or_else(|| panic!("token: {token}"))
+                .to_string();
+            Self {
+                base,
+                admin,
+                service,
+                child,
+                _dir: dir,
+            }
         }
 
         pub(super) fn enrol(&self, key: &RunnerKey, kind: &str) {
@@ -506,7 +720,11 @@ mod real_server {
 
         pub(super) fn end(&self, key: &RunnerKey, how: &str) {
             let out = post(
-                &format!("{}/enterprise/v1/admin/runner-keys/{}/{how}", self.base, key.key_id()),
+                &format!(
+                    "{}/enterprise/v1/admin/runner-keys/{}/{how}",
+                    self.base,
+                    key.key_id()
+                ),
                 &self.admin,
                 serde_json::json!({"reason": how}),
             );

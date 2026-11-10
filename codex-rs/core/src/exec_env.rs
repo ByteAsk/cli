@@ -1,6 +1,4 @@
 pub use codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR;
-use codex_features::Feature;
-use codex_features::Features;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 #[cfg(test)]
@@ -12,6 +10,10 @@ use std::collections::HashMap;
 
 pub use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
 pub use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
+pub use codex_protocol::shell_environment::CODEX_TOOL_CALL_ID_ENV_VAR;
+pub(crate) use codex_protocol::shell_environment::set_tool_call_id_env_var;
+
+pub(crate) const CODEX_VERSION_ENV_VAR: &str = "CODEX_VERSION";
 
 /// Informational name of the active permission profile. Child processes can
 /// overwrite this value, so it must not be treated as proof of enforcement.
@@ -35,9 +37,16 @@ pub fn create_env(
     shell_environment::create_env(policy, thread_id.as_deref())
 }
 
-/// Exposes the shared root-session identity to model-reachable shell commands.
-pub(crate) fn inject_session_id_env(env: &mut HashMap<String, String>, session_id: SessionId) {
+/// Exposes the shared root-session identity and harness version to shell commands.
+pub(crate) fn inject_session_env(env: &mut HashMap<String, String>, session_id: SessionId) {
     env.insert(CODEX_SESSION_ID_ENV_VAR.to_string(), session_id.to_string());
+    if cfg!(windows) {
+        env.retain(|key, _| !key.eq_ignore_ascii_case(CODEX_VERSION_ENV_VAR));
+    }
+    env.insert(
+        CODEX_VERSION_ENV_VAR.to_string(),
+        env!("CARGO_PKG_VERSION").to_string(),
+    );
 }
 
 /// Injects the selected named permission profile into a shell tool's environment.
@@ -61,20 +70,15 @@ pub(crate) fn inject_permission_profile_env(
     }
 }
 
-/// Carries the configured apply-patch line-ending rollout state into child
-/// processes.
-///
-/// Apply this after inherited or client-provided environment overrides so the
-/// active feature configuration remains authoritative. The in-process
-/// apply-patch path reads the feature directly.
-pub fn inject_apply_patch_env(env: &mut HashMap<String, String>, features: &Features) {
+/// Enables line-ending preservation for older standalone patch executables,
+/// including those provided by remote executors. Override inherited values so
+/// they cannot restore the legacy normalization behavior.
+pub fn inject_apply_patch_env(env: &mut HashMap<String, String>) {
     env.retain(|key, _| !key.eq_ignore_ascii_case(CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR));
-    if features.enabled(Feature::ApplyPatchPreserveLineEndings) {
-        env.insert(
-            CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
-            "1".to_string(),
-        );
-    }
+    env.insert(
+        CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
+        "1".to_string(),
+    );
 }
 
 #[cfg(all(test, target_os = "windows"))]

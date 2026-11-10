@@ -93,8 +93,9 @@ mod tests {
 
     #[test]
     fn aliases_and_missing() {
-        let report = parse_report("BYTEASK_REPORT {\"test_suite\": \"ctest\", \"tests_run\": \"./a\"}")
-            .expect("report");
+        let report =
+            parse_report("BYTEASK_REPORT {\"test_suite\": \"ctest\", \"tests_run\": \"./a\"}")
+                .expect("report");
         assert_eq!(report.test, "ctest");
         assert_eq!(report.run, "./a");
         assert!(!report.has_recipe());

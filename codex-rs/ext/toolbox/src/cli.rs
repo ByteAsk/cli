@@ -248,7 +248,9 @@ const HOOK_INPUT_LIMIT: u64 = 1 << 20;
 async fn hook(overrides: &CliConfigOverrides, args: HookArgs, linux_sandbox_exe: Option<PathBuf>) {
     use std::io::Read as _;
     let mut raw = String::new();
-    let _ = std::io::stdin().take(HOOK_INPUT_LIMIT).read_to_string(&mut raw);
+    let _ = std::io::stdin()
+        .take(HOOK_INPUT_LIMIT)
+        .read_to_string(&mut raw);
     let input: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
     let answer = hook_answer(overrides, &args, &input, linux_sandbox_exe);
     #[cfg(unix)]
@@ -299,7 +301,10 @@ async fn hook_cancelled(args: &HookArgs, input: &serde_json::Value) {
     let ctx = hooks::HookContext {
         home: home.to_path_buf(),
         cwd,
-        session_id: input["session_id"].as_str().unwrap_or("session").to_string(),
+        session_id: input["session_id"]
+            .as_str()
+            .unwrap_or("session")
+            .to_string(),
         source: args.client.clone(),
         native_exec: false,
         sandbox_helper: None,
@@ -326,7 +331,10 @@ async fn hook_answer(
         .as_str()
         .map(PathBuf::from)
         .or_else(|| resolve_cwd(None).ok())?;
-    let session_id = input["session_id"].as_str().unwrap_or("session").to_string();
+    let session_id = input["session_id"]
+        .as_str()
+        .unwrap_or("session")
+        .to_string();
     let mut ctx = hooks::HookContext {
         home: home.clone(),
         cwd: cwd.clone(),
@@ -354,7 +362,9 @@ async fn hook_answer(
         }
         HookEvent::Stop | HookEvent::FollowUp => {
             // The same trust rule as the CLI decides whether the gate may build and test.
-            let config = load_config(overrides, cwd.clone(), linux_sandbox_exe).await.ok()?;
+            let config = load_config(overrides, cwd.clone(), linux_sandbox_exe)
+                .await
+                .ok()?;
             ctx.native_exec = codex_cpp_tools::native_exec_allowed(&config);
             ctx.relaxed = byteask_policy::load(&home, std::slice::from_ref(&cwd))
                 .policy
@@ -425,7 +435,10 @@ async fn serve(
 fn report(args: &crate::report::ReportArgs) -> anyhow::Result<()> {
     let home = codex_utils_home_dir::find_codex_home()
         .context("could not find the ByteAsk home directory")?;
-    print!("{}", crate::report::render(&home, args, results_store::now_unix()));
+    print!(
+        "{}",
+        crate::report::render(&home, args, results_store::now_unix())
+    );
     Ok(())
 }
 
@@ -448,7 +461,8 @@ fn install(args: InstallArgs) -> anyhow::Result<()> {
             "{}",
             install::install_claude_code(&command, &route, args.dry_run)?
         );
-        let settings = install::claude_settings_path().context("could not find the home directory")?;
+        let settings =
+            install::claude_settings_path().context("could not find the home directory")?;
         println!(
             "{}",
             install::install_hooks(&command, &settings, "claude-code", args.dry_run)?
@@ -465,7 +479,9 @@ fn install(args: InstallArgs) -> anyhow::Result<()> {
             "{}",
             install::install_hooks(&command, &hooks, "codex", args.dry_run)?
         );
-        println!("Codex asks you to trust new hooks before it runs them; accept the ByteAsk ones.");
+        println!(
+            "ByteAsk asks you to trust new hooks before it runs them; accept the ByteAsk ones."
+        );
     }
     Ok(())
 }
@@ -504,9 +520,9 @@ pub async fn run_policy(cli: PolicyCli) -> anyhow::Result<()> {
     match cli.command {
         PolicyCommand::Relax { path } => {
             use std::io::IsTerminal as _;
-            if let Some(why) = relax_refusal(std::io::stdin().is_terminal(), |key| {
-                std::env::var_os(key)
-            }) {
+            if let Some(why) =
+                relax_refusal(std::io::stdin().is_terminal(), |key| std::env::var_os(key))
+            {
                 anyhow::bail!("not relaxed: {why}");
             }
             let project = byteask_policy::set_relaxed(&home, &path, true)
@@ -530,9 +546,8 @@ pub async fn run_policy(cli: PolicyCli) -> anyhow::Result<()> {
         PolicyCommand::LocalOnly { state } => {
             use std::io::IsTerminal as _;
             if state == OnOff::Off
-                && let Some(why) = relax_refusal(std::io::stdin().is_terminal(), |key| {
-                    std::env::var_os(key)
-                })
+                && let Some(why) =
+                    relax_refusal(std::io::stdin().is_terminal(), |key| std::env::var_os(key))
             {
                 anyhow::bail!("local only stays on: {why}");
             }
@@ -663,7 +678,10 @@ mod relax_tests {
         assert!(relax_refusal(false, clean).is_some(), "no terminal");
         for marker in ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX"] {
             let env = move |key: &str| (key == marker).then(|| std::ffi::OsString::from("1"));
-            assert!(relax_refusal(true, env).is_some(), "{marker} marks an agent session");
+            assert!(
+                relax_refusal(true, env).is_some(),
+                "{marker} marks an agent session"
+            );
         }
     }
 }

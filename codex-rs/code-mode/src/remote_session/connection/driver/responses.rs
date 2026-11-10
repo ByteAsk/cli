@@ -41,7 +41,9 @@ impl ConnectionDriver {
             if !self.start_wait(
                 wait.session,
                 wait.request,
+                wait.max_output_tokens,
                 wait.caller_cancellation,
+                wait.yield_signal,
                 wait.response_tx,
             ) {
                 for wait in deferred {
@@ -153,15 +155,13 @@ impl ConnectionDriver {
         match pending {
             PendingRequest::OpenSession {
                 session,
-                delegate,
                 cleanup,
                 cancellation,
                 response_tx,
             } => match result {
                 Ok(HostResponse::SessionReady { session_id }) if session_id == session.id => {
                     let abandoned = cancellation.is_cancelled() || response_tx.is_closed();
-                    self.sessions
-                        .insert_ready(session.clone(), delegate, cleanup);
+                    self.sessions.insert_ready(session.clone(), cleanup);
                     if abandoned || response_tx.send(Ok(())).is_err() {
                         return self.shutdown_abandoned_session(session);
                     }
@@ -179,16 +179,18 @@ impl ConnectionDriver {
             },
             PendingRequest::Execute {
                 session,
+                delegate,
                 response_tx,
                 initial_response_tx,
                 initial_response_rx,
                 cancellation,
+                yield_observation,
             } => match result {
                 Ok(HostResponse::ExecutionStarted { cell_id }) => {
                     // The host owns a checked, never-reused ID sequence. Retain only live
                     // IDs so client memory scales with concurrency, not session lifetime.
                     let remote_cell_id = cell_id.clone();
-                    let public_id = match self.sessions.admit_cell(&session, cell_id) {
+                    let public_id = match self.sessions.admit_cell(&session, cell_id, delegate) {
                         Ok(public_id) => public_id,
                         Err(CellAdmissionError::MissingSession) => {
                             let _ = response_tx
@@ -212,6 +214,7 @@ impl ConnectionDriver {
                             generation: session.generation,
                             cell_id: remote_cell_id.clone(),
                             response_tx: initial_response_tx,
+                            _yield_observation: yield_observation,
                         },
                     );
                     let started = StartedCell::from_result_receiver(public_id, initial_response_rx);
@@ -248,6 +251,7 @@ impl ConnectionDriver {
                 session,
                 cell_id,
                 cancellation: _,
+                yield_observation: _,
                 response_tx,
             } => {
                 let result = match result {
@@ -363,6 +367,17 @@ impl ConnectionDriver {
         }
     }
 
+    pub(super) fn yield_request(&mut self, id: RequestId) -> bool {
+        let frame = match EncodedFrame::encode(&ClientToHost::YieldRequest { id }) {
+            Ok(frame) => frame,
+            Err(err) => {
+                self.fail(format!("failed to encode code-mode yield request: {err}"));
+                return false;
+            }
+        };
+        self.queue_frame(frame)
+    }
+
     fn send_cancel_request(&mut self, id: RequestId) -> bool {
         let message = ClientToHost::CancelRequest { id };
         let frame = match EncodedFrame::encode(&message) {
@@ -418,6 +433,7 @@ impl ConnectionDriver {
             HostRequest::Terminate {
                 session_id: session.id.clone(),
                 cell_id: cell_id.clone(),
+                max_output_tokens: None,
             },
             PendingRequest::Terminate {
                 session,

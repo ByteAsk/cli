@@ -54,7 +54,11 @@ impl SysrootPlan {
                 self.missing.len(),
                 if self.missing.len() == 1 { "y" } else { "ies" },
                 shown.join(", "),
-                if self.missing.len() > shown.len() { ", …" } else { "" }
+                if self.missing.len() > shown.len() {
+                    ", …"
+                } else {
+                    ""
+                }
             ));
         }
         line
@@ -67,7 +71,10 @@ pub fn mapped_files(core: &Path) -> Result<Vec<MappedFile>, String> {
     let mut file = File::open(core).map_err(|e| format!("cannot open {}: {e}", core.display()))?;
     let header = read_header(&mut file, core)?;
     if header.e_type != ET_CORE {
-        return Err(format!("{} is an ELF file but not a core dump", core.display()));
+        return Err(format!(
+            "{} is an ELF file but not a core dump",
+            core.display()
+        ));
     }
     let mut found = Vec::new();
     for ph in program_headers(&mut file, &header)? {
@@ -75,7 +82,10 @@ pub fn mapped_files(core: &Path) -> Result<Vec<MappedFile>, String> {
             continue;
         }
         if ph.filesz > MAX_NOTE_BYTES {
-            return Err(format!("a note segment in {} is implausibly large", core.display()));
+            return Err(format!(
+                "a note segment in {} is implausibly large",
+                core.display()
+            ));
         }
         let mut notes = vec![0u8; ph.filesz as usize];
         file.seek(SeekFrom::Start(ph.offset)).map_err(io_err)?;
@@ -88,7 +98,11 @@ pub fn mapped_files(core: &Path) -> Result<Vec<MappedFile>, String> {
 
 /// Match every shared object the core mapped with its copy under `sysroot`.
 /// `program` (the executable the debugger already loads) is skipped.
-pub fn sysroot_plan(core: &Path, sysroot: &Path, program: Option<&Path>) -> Result<SysrootPlan, String> {
+pub fn sysroot_plan(
+    core: &Path,
+    sysroot: &Path,
+    program: Option<&Path>,
+) -> Result<SysrootPlan, String> {
     let program = program.and_then(|p| p.canonicalize().ok());
     let mut plan = SysrootPlan::default();
     let mut seen = std::collections::BTreeSet::new();
@@ -110,7 +124,8 @@ pub fn sysroot_plan(core: &Path, sysroot: &Path, program: Option<&Path>) -> Resu
         let Ok(first_load) = first_load_address(&host) else {
             continue;
         };
-        plan.modules.push((host, mapped.base.wrapping_sub(first_load)));
+        plan.modules
+            .push((host, mapped.base.wrapping_sub(first_load)));
     }
     Ok(plan)
 }
@@ -125,7 +140,9 @@ pub fn lldb_load_commands(plan: &SysrootPlan) -> Vec<String> {
             continue;
         }
         commands.push(format!("target modules add \"{path}\""));
-        commands.push(format!("target modules load --file \"{path}\" --slide {slide:#x}"));
+        commands.push(format!(
+            "target modules load --file \"{path}\" --slide {slide:#x}"
+        ));
     }
     commands
 }
@@ -308,11 +325,34 @@ pub(crate) mod foreign_core {
         )
         .ok()?;
         let cc = |args: &[&str]| {
-            std::process::Command::new("cc").current_dir(&root).args(args).status().ok()?.success().then_some(())
+            std::process::Command::new("cc")
+                .current_dir(&root)
+                .args(args)
+                .status()
+                .ok()?
+                .success()
+                .then_some(())
         };
-        cc(&["-g", "-O0", "-fPIC", "-shared", "-o", "app/lib/libqueue.so", "q.c"])?;
+        cc(&[
+            "-g",
+            "-O0",
+            "-fPIC",
+            "-shared",
+            "-o",
+            "app/lib/libqueue.so",
+            "q.c",
+        ])?;
         let rpath = format!("-Wl,-rpath,{}", lib_dir.display());
-        cc(&["-g", "-O0", "-o", "trader", "m.c", "-Lapp/lib", "-lqueue", &rpath])?;
+        cc(&[
+            "-g",
+            "-O0",
+            "-o",
+            "trader",
+            "m.c",
+            "-Lapp/lib",
+            "-lqueue",
+            &rpath,
+        ])?;
         let core = root.join("core.trader");
         let status = std::process::Command::new("gdb")
             .args(["-q", "-nx", "-batch", "-ex", "run", "-ex"])
@@ -321,7 +361,10 @@ pub(crate) mod foreign_core {
             .output()
             .ok()?;
         if !core.is_file() {
-            eprintln!("skip: gdb made no core: {}", String::from_utf8_lossy(&status.stderr));
+            eprintln!(
+                "skip: gdb made no core: {}",
+                String::from_utf8_lossy(&status.stderr)
+            );
             return None;
         }
         // The library leaves its original path: only the sysroot has it now.
@@ -354,7 +397,8 @@ mod tests {
             .iter()
             .find(|m| m.path.ends_with("/app/lib/libqueue.so"))
             .expect("the core recorded the library");
-        let plan = sysroot_plan(&fixture.core, &fixture.sysroot, Some(&fixture.program)).expect("plan");
+        let plan =
+            sysroot_plan(&fixture.core, &fixture.sysroot, Some(&fixture.program)).expect("plan");
         let (path, slide) = plan
             .modules
             .iter()
@@ -363,7 +407,10 @@ mod tests {
         assert!(path.starts_with(&fixture.sysroot), "{}", path.display());
         // A shared object's first segment is linked at 0: the slide IS the base.
         assert_eq!(*slide, lib.base);
-        assert!(plan.modules.iter().all(|(p, _)| p != &fixture.program), "program skipped");
+        assert!(
+            plan.modules.iter().all(|(p, _)| p != &fixture.program),
+            "program skipped"
+        );
     }
 
     /// A minimal ELF core: header, one PT_NOTE, and a note holding `NT_FILE`.
@@ -428,8 +475,14 @@ mod tests {
         assert_eq!(
             mapped_files(&core).expect("parse"),
             vec![
-                MappedFile { path: "/opt/app/trader".to_string(), base: 0x5555_0000_0000 },
-                MappedFile { path: "/lib/libc.so.6".to_string(), base: 0x7f00_0000_0000 },
+                MappedFile {
+                    path: "/opt/app/trader".to_string(),
+                    base: 0x5555_0000_0000
+                },
+                MappedFile {
+                    path: "/lib/libc.so.6".to_string(),
+                    base: 0x7f00_0000_0000
+                },
             ]
         );
     }
@@ -456,7 +509,12 @@ mod tests {
             &core,
             synthetic_core(&[
                 (0x7f00_0000_0000, 0x7f00_0000_1000, 0, "/lib/libgone.so.1"),
-                (0x7f00_1000_0000, 0x7f00_1000_1000, 0, "/usr/lib/locale/locale-archive"),
+                (
+                    0x7f00_1000_0000,
+                    0x7f00_1000_1000,
+                    0,
+                    "/usr/lib/locale/locale-archive",
+                ),
             ]),
         )
         .expect("write");

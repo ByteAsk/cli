@@ -3,7 +3,9 @@
 //! (see `crate::byteask_context`).
 
 use super::ContextualUserFragment;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::input_text;
 
 const PACK_START_MARKER: &str = "<byteask_context>";
 const PACK_END_MARKER: &str = "</byteask_context>";
@@ -52,11 +54,11 @@ impl ContextualUserFragment for ContextPack {
         (PACK_START_MARKER, PACK_END_MARKER)
     }
 
-    fn body(&self) -> String {
-        format!(
+    fn body(&self) -> ContentItem {
+        input_text(format!(
             "\nByteAsk Context's answer for this task (find_code_for_task, called by ByteAsk with the task text):\n{}\n",
             self.answer.trim_end()
-        )
+        ))
     }
 }
 
@@ -82,9 +84,9 @@ impl ContextualUserFragment for ContextInstructions {
         ("", "")
     }
 
-    fn body(&self) -> String {
+    fn body(&self) -> ContentItem {
         // The host joins a developer message's parts with nothing in between.
-        format!("{}\n\n", self.0)
+        input_text(format!("{}\n\n", self.0))
     }
 }
 

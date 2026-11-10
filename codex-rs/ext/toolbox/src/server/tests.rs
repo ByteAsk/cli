@@ -28,7 +28,8 @@ const NEW_TOOLS_SNAPSHOT: &str =
 // cpp_spike_trace are not registered in 0.2.0 (their text stays pinned in cpp-tools);
 // cpp_finish_check is new in 0.2.0.
 const RUNTIME_SNAPSHOT: &str = include_str!("../../../cpp-tools/src/snapshots/runtime_tools.json");
-const FINISH_CHECK_SNAPSHOT: &str = include_str!("../../../cpp-tools/src/snapshots/finish_check.json");
+const FINISH_CHECK_SNAPSHOT: &str =
+    include_str!("../../../cpp-tools/src/snapshots/finish_check.json");
 const LIST_SNAPSHOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/snapshots/tool_list.json");
 
 async fn config_for(workspace: &Path, home: &Path, trusted: bool) -> Config {
@@ -239,7 +240,9 @@ async fn no_tool_can_skip_or_waive_a_check() {
         for tool in server.listed_tools() {
             let name = tool.name.to_ascii_lowercase();
             assert!(
-                !["skip", "waive", "approve", "override"].iter().any(|word| name.contains(word)),
+                !["skip", "waive", "approve", "override"]
+                    .iter()
+                    .any(|word| name.contains(word)),
                 "{name} looks like a way for the agent to skip a check"
             );
             let schema = serde_json::to_string(&tool.input_schema).expect("json");

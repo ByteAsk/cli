@@ -58,8 +58,11 @@ fn fold_runs(
         let run = &lines[i..j];
         if run.len() >= min_run && run.len() > keep * 2 {
             let dropped = &run[keep..run.len() - keep];
-            let kept: Vec<&str> =
-                run[..keep].iter().chain(run[run.len() - keep..].iter()).copied().collect();
+            let kept: Vec<&str> = run[..keep]
+                .iter()
+                .chain(run[run.len() - keep..].iter())
+                .copied()
+                .collect();
             if !guard || covered(dropped, &kept) {
                 out.extend(run[..keep].iter().map(|l| (*l).to_string()));
                 out.push(format!("[byteask: {} {what} omitted]", dropped.len()));
@@ -79,8 +82,10 @@ fn fold_runs(
 /// not a member line, so it always stays.
 pub fn cxx_templates(input: &str) -> Option<String> {
     let member = |l: &str| {
-        (l.contains("required from") || l.contains("in instantiation of")
-            || l.contains("instantiated from") || l.contains("required by substitution"))
+        (l.contains("required from")
+            || l.contains("in instantiation of")
+            || l.contains("instantiated from")
+            || l.contains("required by substitution"))
             && !l.contains(" error: ")
     };
     fold_runs(input, 3, 8, "template instantiation frames", &member, false)
@@ -135,7 +140,10 @@ pub fn cxx_candidates(input: &str) -> Option<String> {
 pub fn link_group(input: &str) -> Option<String> {
     const NEEDLE: &str = "undefined reference to ";
     let lines: Vec<&str> = input.split('\n').collect();
-    let symbol = |l: &str| l.find(NEEDLE).map(|i| l[i + NEEDLE.len()..].trim().to_string());
+    let symbol = |l: &str| {
+        l.find(NEEDLE)
+            .map(|i| l[i + NEEDLE.len()..].trim().to_string())
+    };
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for l in &lines {
         if let Some(s) = symbol(l) {
@@ -160,9 +168,10 @@ pub fn link_group(input: &str) -> Option<String> {
                 // A repeat: drop it, and the `in function` line just above it if present.
             }
             _ => {
-                let next_is_dropped = lines.get(idx + 1).and_then(|n| symbol(n)).is_some_and(|s| {
-                    counts[&s] > 2 && seen.contains(&s)
-                });
+                let next_is_dropped = lines
+                    .get(idx + 1)
+                    .and_then(|n| symbol(n))
+                    .is_some_and(|s| counts[&s] > 2 && seen.contains(&s));
                 if next_is_dropped && l.contains(": in function ") {
                     continue;
                 }
@@ -211,7 +220,10 @@ pub fn stack_fold(input: &str) -> Option<String> {
         }
         if j - i >= 5 {
             out.push(lines[i].to_string());
-            out.push(format!("[byteask: {} identical frames of {key} omitted]", j - i - 2));
+            out.push(format!(
+                "[byteask: {} identical frames of {key} omitted]",
+                j - i - 2
+            ));
             out.push(lines[j - 1].to_string());
             changed = true;
         } else {
@@ -244,7 +256,10 @@ pub fn json_array(input: &str) -> Option<String> {
     let dropped = &items[K..items.len() - K];
     let mut ranges: Vec<String> = Vec::new();
     for key in &shape {
-        let nums: Vec<f64> = dropped.iter().filter_map(|it| it.get(key)?.as_f64()).collect();
+        let nums: Vec<f64> = dropped
+            .iter()
+            .filter_map(|it| it.get(key)?.as_f64())
+            .collect();
         if nums.len() == dropped.len() {
             let lo = nums.iter().copied().fold(f64::INFINITY, f64::min);
             let hi = nums.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -262,7 +277,11 @@ pub fn json_array(input: &str) -> Option<String> {
         dropped.len(),
         items.len(),
         shape.join(", "),
-        if ranges.is_empty() { String::new() } else { format!("; omitted ranges: {}", ranges.join(", ")) }
+        if ranges.is_empty() {
+            String::new()
+        } else {
+            format!("; omitted ranges: {}", ranges.join(", "))
+        }
     ));
     for (n, it) in items[items.len() - K..].iter().enumerate() {
         out.push_str(&render(it));
@@ -275,15 +294,26 @@ pub fn json_array(input: &str) -> Option<String> {
 fn is_generated_path(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     const LOCKS: [&str; 12] = [
-        "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock",
-        "Pipfile.lock", "composer.lock", "Gemfile.lock", "go.sum", "flake.lock", "uv.lock",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "Cargo.lock",
+        "poetry.lock",
+        "Pipfile.lock",
+        "composer.lock",
+        "Gemfile.lock",
+        "go.sum",
+        "flake.lock",
+        "uv.lock",
         "bun.lockb",
     ];
     LOCKS.contains(&name)
         || name.ends_with(".min.js")
         || name.ends_with(".min.css")
         || name.ends_with(".map")
-        || path.split('/').any(|seg| matches!(seg, "node_modules" | "vendor" | "third_party"))
+        || path
+            .split('/')
+            .any(|seg| matches!(seg, "node_modules" | "vendor" | "third_party"))
 }
 
 /// In a unified diff, the hunks of files MATCHED as lockfiles, minified bundles, source
@@ -306,8 +336,14 @@ pub fn gen_diff(input: &str) -> Option<String> {
         let path = rest.split(" b/").next().unwrap_or(rest);
         if is_generated_path(path) {
             let body = &lines[i + 1..j];
-            let plus = body.iter().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
-            let minus = body.iter().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
+            let plus = body
+                .iter()
+                .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+                .count();
+            let minus = body
+                .iter()
+                .filter(|l| l.starts_with('-') && !l.starts_with("---"))
+                .count();
             if plus + minus > 6 {
                 out.push(lines[i].to_string());
                 out.push(format!(
@@ -326,7 +362,15 @@ pub fn gen_diff(input: &str) -> Option<String> {
 
 /// Children of dependency and build directories in listings -> counts.
 pub fn vendor_ls(input: &str) -> Option<String> {
-    const DIRS: [&str; 7] = ["node_modules", ".git", "target", "build", "dist", "__pycache__", ".venv"];
+    const DIRS: [&str; 7] = [
+        "node_modules",
+        ".git",
+        "target",
+        "build",
+        "dist",
+        "__pycache__",
+        ".venv",
+    ];
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     let root_of = |line: &str| -> Option<String> {
         let mut acc = String::new();
@@ -355,7 +399,10 @@ pub fn vendor_ls(input: &str) -> Option<String> {
         match root_of(line) {
             Some(root) if counts[&root] >= 5 => {
                 if emitted.insert(root.clone()) {
-                    out.push(format!("{root}/ [byteask: {} entries below omitted]", counts[&root]));
+                    out.push(format!(
+                        "{root}/ [byteask: {} entries below omitted]",
+                        counts[&root]
+                    ));
                 }
             }
             _ => out.push(line.to_string()),
@@ -366,7 +413,10 @@ pub fn vendor_ls(input: &str) -> Option<String> {
 
 /// HTML: drop `<script>`, `<style>`, `<svg>` bodies and data URIs.
 pub fn html_text(input: &str) -> Option<String> {
-    let head = input.trim_start().get(..200.min(input.trim_start().len()))?.to_ascii_lowercase();
+    let head = input
+        .trim_start()
+        .get(..200.min(input.trim_start().len()))?
+        .to_ascii_lowercase();
     if !(head.starts_with("<!doctype html") || head.starts_with("<html")) {
         return None;
     }
@@ -377,7 +427,9 @@ pub fn html_text(input: &str) -> Option<String> {
         let close = format!("</{tag}>");
         let mut from = 0;
         while let Some(s) = find_ci(&text, &open, from) {
-            let Some(e) = find_ci(&text, &close, s) else { break };
+            let Some(e) = find_ci(&text, &close, s) else {
+                break;
+            };
             let end = e + close.len();
             dropped += end - s;
             let marker = format!("<{tag}>[byteask: {} bytes omitted]</{tag}>", end - s);
@@ -415,7 +467,10 @@ pub fn blob_line(input: &str) -> Option<String> {
                 cut -= 1;
             }
             out.push(line[..cut].to_string());
-            out.push(format!("[byteask: the line above continues for {} more bytes, omitted]", line.len() - cut));
+            out.push(format!(
+                "[byteask: the line above continues for {} more bytes, omitted]",
+                line.len() - cut
+            ));
             changed = true;
         } else {
             out.push(line.to_string());
@@ -500,7 +555,9 @@ mod tests {
     fn candidate_lists_keep_five() {
         let mut input = String::from("x.cc:1:1: error: no matching function for call to 'f'\n");
         for i in 0..9 {
-            input.push_str(&format!("h.h:{i}:1: note: candidate: 'void f(T{i})'\n  no known conversion\n"));
+            input.push_str(&format!(
+                "h.h:{i}:1: note: candidate: 'void f(T{i})'\n  no known conversion\n"
+            ));
         }
         let got = cxx_candidates(&input).unwrap();
         assert!(got.contains("void f(T4)"));
@@ -535,7 +592,9 @@ mod tests {
 
     #[test]
     fn homogeneous_arrays_shrink_and_mixed_documents_do_not() {
-        let items: Vec<String> = (0..40).map(|i| format!("{{\"id\": {i}, \"name\": \"n{i}\"}}")).collect();
+        let items: Vec<String> = (0..40)
+            .map(|i| format!("{{\"id\": {i}, \"name\": \"n{i}\"}}"))
+            .collect();
         let input = format!("[{}]", items.join(",\n  "));
         let got = json_array(&input).unwrap();
         assert!(got.contains("30 of 40 array elements omitted"));
@@ -548,13 +607,19 @@ mod tests {
 
     #[test]
     fn only_generated_files_lose_their_hunks() {
-        let mut input = String::from("diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/package-lock.json b/package-lock.json\n@@ -1,9 +1,9 @@\n");
+        let mut input = String::from(
+            "diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/package-lock.json b/package-lock.json\n@@ -1,9 +1,9 @@\n",
+        );
         for i in 0..8 {
             input.push_str(&format!("-  \"v\": {i}\n+  \"v\": {}\n", i + 1));
         }
         let got = gen_diff(&input).unwrap();
         assert!(got.contains("-old\n+new"));
-        assert!(got.contains("[byteask: package-lock.json: generated file, +8 -8 lines, hunks omitted]"));
+        assert!(
+            got.contains(
+                "[byteask: package-lock.json: generated file, +8 -8 lines, hunks omitted]"
+            )
+        );
         assert!(!got.contains("\"v\": 3"));
     }
 
@@ -599,9 +664,13 @@ mod tests {
         let rows: Vec<String> = (0..100).map(|i| format!("{i},a{i},b{i}")).collect();
         let got = table(&rows.join("\n")).unwrap();
         assert!(got.contains("[byteask: 70 of 100 table rows omitted]"));
-        let logs: Vec<String> = (0..30).map(|i| format!("2026-09-19T10:00:{i:02} INFO msg {i}")).collect();
+        let logs: Vec<String> = (0..30)
+            .map(|i| format!("2026-09-19T10:00:{i:02} INFO msg {i}"))
+            .collect();
         let got = log_prefix(&logs.join("\n")).unwrap();
-        assert!(got.starts_with("[byteask: every line below began with \"2026-09-19T\", removed]\n10:00:00 INFO msg 0"));
+        assert!(got.starts_with(
+            "[byteask: every line below began with \"2026-09-19T\", removed]\n10:00:00 INFO msg 0"
+        ));
     }
 
     #[test]

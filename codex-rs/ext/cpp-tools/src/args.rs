@@ -53,8 +53,14 @@ mod tests {
 
     #[test]
     fn a_whole_valued_float_is_accepted_and_a_fraction_is_explained() {
-        assert_eq!(parse(r#"{"timeout_sec":30.0}"#).unwrap().timeout_sec, Some(30));
-        assert_eq!(parse(r#"{"timeout_sec":30}"#).unwrap().timeout_sec, Some(30));
+        assert_eq!(
+            parse(r#"{"timeout_sec":30.0}"#).unwrap().timeout_sec,
+            Some(30)
+        );
+        assert_eq!(
+            parse(r#"{"timeout_sec":30}"#).unwrap().timeout_sec,
+            Some(30)
+        );
         assert_eq!(parse(r#"{"repeat":5.0}"#).unwrap().repeat, Some(5));
         assert_eq!(parse("{}").unwrap().timeout_sec, None);
         let err = parse(r#"{"timeout_sec":2.5}"#).err().unwrap();

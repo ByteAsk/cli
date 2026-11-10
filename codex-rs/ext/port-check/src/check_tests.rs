@@ -24,7 +24,10 @@ fn tool(name: &str) {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
-    assert!(ok, "{name} is required for the port_check end-to-end tests and was not found on PATH");
+    assert!(
+        ok,
+        "{name} is required for the port_check end-to-end tests and was not found on PATH"
+    );
 }
 
 /// Build the C++ port, optionally with planted defects (`-DPLANT_...`).
@@ -32,17 +35,28 @@ fn build_cpp(dir: &Path, defines: &[&str]) -> PathBuf {
     tool("g++");
     let out = dir.join(format!("imbalance{}", defines.join("_").replace('=', "-")));
     let mut cmd = std::process::Command::new("g++");
-    cmd.args(["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic"])
-        .arg("-I")
-        .arg(manifest().join("adapters"))
-        .arg(manifest().join("tests/fixtures/imbalance.cpp"))
-        .arg("-o")
-        .arg(&out);
+    cmd.args([
+        "-std=c++17",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pedantic",
+    ])
+    .arg("-I")
+    .arg(manifest().join("adapters"))
+    .arg(manifest().join("tests/fixtures/imbalance.cpp"))
+    .arg("-o")
+    .arg(&out);
     for d in defines {
         cmd.arg(format!("-D{d}"));
     }
     let o = cmd.output().expect("run g++");
-    assert!(o.status.success(), "g++ failed: {}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        o.status.success(),
+        "g++ failed: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     out
 }
 
@@ -78,7 +92,11 @@ fn write_recording(dir: &Path, events: usize, seed: u64) -> PathBuf {
         }
         let s = rnd(2) as usize;
         let book = &mut books[s];
-        let op = if book.len() < 6 || i < 20 { 0 } else { rnd(100) };
+        let op = if book.len() < 6 || i < 20 {
+            0
+        } else {
+            rnd(100)
+        };
         let line = if op < 42 {
             let buy = rnd(2) == 0;
             let mut px = 1000 + rnd(9) as i64 - 4;
@@ -91,7 +109,12 @@ fn write_recording(dir: &Path, events: usize, seed: u64) -> PathBuf {
             }
             let qty = 1 + rnd(20) as i64;
             next_id += 1;
-            book.push(Live { id: next_id, buy, px, qty });
+            book.push(Live {
+                id: next_id,
+                buy,
+                px,
+                qty,
+            });
             json!({"ts": ts, "type": "add", "sym": syms[s], "id": next_id, "side": if buy {"B"} else {"S"}, "px": px, "qty": qty})
         } else if op < 56 {
             let k = rnd(book.len() as u64) as usize;
@@ -111,7 +134,10 @@ fn write_recording(dir: &Path, events: usize, seed: u64) -> PathBuf {
             // Execute against the best order of a random side.
             let buy = rnd(2) == 0;
             let Some(px) = best(book, buy) else { continue };
-            let k = book.iter().position(|o| o.buy == buy && o.px == px).unwrap_or(0);
+            let k = book
+                .iter()
+                .position(|o| o.buy == buy && o.px == px)
+                .unwrap_or(0);
             let q = 1 + rnd(book[k].qty as u64) as i64;
             let q = q.min(book[k].qty);
             book[k].qty -= q;
@@ -162,13 +188,22 @@ fn request(dir: &Path, recording: &Path, cpp: &Path, params: &[(&str, &str)]) ->
         harness.params.insert((*k).to_string(), (*v).to_string());
     }
     let mut py_env = BTreeMap::new();
-    py_env.insert("PYTHONPATH".to_string(), manifest().join("adapters").display().to_string());
+    py_env.insert(
+        "PYTHONPATH".to_string(),
+        manifest().join("adapters").display().to_string(),
+    );
     PortCheckRequest {
         recording: recording.to_path_buf(),
         recording_format: Default::default(),
         initial_book: None,
         python: ProcessSpec {
-            argv: vec!["python3".into(), manifest().join("tests/fixtures/imbalance.py").display().to_string()],
+            argv: vec![
+                "python3".into(),
+                manifest()
+                    .join("tests/fixtures/imbalance.py")
+                    .display()
+                    .to_string(),
+            ],
             env: py_env,
             cwd: None,
             launch: None,
@@ -198,11 +233,19 @@ fn step_of_nth_ioc(transcript: &Path, n: usize) -> (u64, i64) {
     let mut seen = 0;
     for line in text.lines() {
         let row: Value = serde_json::from_str(line).expect("row");
-        for a in row.pointer("/out/actions").and_then(Value::as_array).into_iter().flatten() {
+        for a in row
+            .pointer("/out/actions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             if a["op"] == "new" && a["tif"] == "ioc" {
                 seen += 1;
                 if seen == n {
-                    return (row["step"].as_u64().expect("step"), a["qty"].as_i64().expect("qty"));
+                    return (
+                        row["step"].as_u64().expect("step"),
+                        a["qty"].as_i64().expect("qty"),
+                    );
                 }
             }
         }
@@ -216,21 +259,56 @@ fn an_honest_port_passes_and_says_exactly_what_was_exercised() {
     let rec = write_recording(dir.path(), 600, 7);
     let cpp = build_cpp(dir.path(), &[]);
     let r = port_check(&request(dir.path(), &rec, &cpp, &[]));
-    assert_eq!(r.status, Status::Pass, "{}\n{}", r.sentence, serde_json::to_string_pretty(&r.evidence).unwrap_or_default());
-    assert!(r.sentence.starts_with("PASS: on all 600 records of market.jsonl"), "{}", r.sentence);
+    assert_eq!(
+        r.status,
+        Status::Pass,
+        "{}\n{}",
+        r.sentence,
+        serde_json::to_string_pretty(&r.evidence).unwrap_or_default()
+    );
+    assert!(
+        r.sentence
+            .starts_with("PASS: on all 600 records of market.jsonl"),
+        "{}",
+        r.sentence
+    );
     let cov = &r.evidence["coverage"];
-    for k in ["orders", "fills", "rejects", "cancels", "timers", "decisions"] {
+    for k in [
+        "orders",
+        "fills",
+        "rejects",
+        "cancels",
+        "timers",
+        "decisions",
+    ] {
         assert!(cov[k].as_u64().unwrap_or(0) > 0, "{k} not exercised: {cov}");
     }
-    assert_eq!(r.evidence["self_check"]["python"], json!("reproduced exactly in 2 runs"));
-    assert_eq!(r.evidence["self_check"]["cpp"], json!("reproduced exactly in 2 runs"));
+    assert_eq!(
+        r.evidence["self_check"]["python"],
+        json!("reproduced exactly in 2 runs")
+    );
+    assert_eq!(
+        r.evidence["self_check"]["cpp"],
+        json!("reproduced exactly in 2 runs")
+    );
     assert_eq!(r.evidence["recording"]["records"], json!(600));
-    assert_eq!(r.evidence["cpp"]["executable_sha256"].as_str().map(str::len), Some(64));
-    assert_eq!(r.evidence["python"]["script_sha256"].as_str().map(str::len), Some(64));
+    assert_eq!(
+        r.evidence["cpp"]["executable_sha256"]
+            .as_str()
+            .map(str::len),
+        Some(64)
+    );
+    assert_eq!(
+        r.evidence["python"]["script_sha256"].as_str().map(str::len),
+        Some(64)
+    );
     let runs = r.evidence["python"]["runs"].as_array().expect("runs");
     assert_eq!(runs[0]["varied"]["PYTHONHASHSEED"], json!("0"));
     assert_eq!(runs[1]["varied"]["PYTHONHASHSEED"], json!("1234567"));
-    assert_eq!(r.evidence["cpp"]["runs"][1]["varied"]["MALLOC_PERTURB_"], json!("165"));
+    assert_eq!(
+        r.evidence["cpp"]["runs"][1]["varied"]["MALLOC_PERTURB_"],
+        json!("165")
+    );
     assert_eq!(r.perf["status"], json!("NOT RUN"));
 }
 
@@ -248,7 +326,11 @@ fn a_planted_order_divergence_is_found_at_the_exact_step_and_field() {
     assert_eq!(d["difference"]["path"], json!("/out/actions/0/qty"));
     assert_eq!(d["difference"]["a"], json!(py_qty));
     assert_eq!(d["difference"]["b"], json!(py_qty + 1));
-    assert!(r.sentence.contains(&format!("at step {step} (md event")), "{}", r.sentence);
+    assert!(
+        r.sentence.contains(&format!("at step {step} (md event")),
+        "{}",
+        r.sentence
+    );
     assert!(r.sentence.contains("recording record"), "{}", r.sentence);
 }
 
@@ -258,10 +340,17 @@ fn no_tolerance_reaches_orders_however_large_the_diag_tolerance() {
     let rec = write_recording(dir.path(), 600, 7);
     let cpp = build_cpp(dir.path(), &["PLANT_QTY_AT=3"]);
     let mut req = request(dir.path(), &rec, &cpp, &[]);
-    req.diag_tolerance = DiagTolerance { abs: 1e12, rel: 0.5, ulps: 1 << 40 };
+    req.diag_tolerance = DiagTolerance {
+        abs: 1e12,
+        rel: 0.5,
+        ulps: 1 << 40,
+    };
     let r = port_check(&req);
     assert_eq!(r.status, Status::Fail, "{}", r.sentence);
-    assert_eq!(diff_of(&r)["difference"]["path"], json!("/out/actions/0/qty"));
+    assert_eq!(
+        diff_of(&r)["difference"]["path"],
+        json!("/out/actions/0/qty")
+    );
 }
 
 #[test]
@@ -278,7 +367,11 @@ fn a_one_ulp_diagnostic_difference_fails_exact_and_passes_within_one_ulp() {
     req.workdir = Some(dir.path().join("work2"));
     let r = port_check(&req);
     assert_eq!(r.status, Status::Pass, "{}", r.sentence);
-    assert!(r.sentence.contains("diagnostics compared within 1 ulps"), "{}", r.sentence);
+    assert!(
+        r.sentence.contains("diagnostics compared within 1 ulps"),
+        "{}",
+        r.sentence
+    );
 }
 
 #[test]
@@ -286,13 +379,25 @@ fn python_that_depends_on_hash_order_is_not_reproducible_so_nothing_is_claimed()
     let dir = tempfile::tempdir().expect("tempdir");
     let rec = write_recording(dir.path(), 100, 3);
     let cpp = build_cpp(dir.path(), &[]);
-    let r = port_check(&request(dir.path(), &rec, &cpp, &[("variant", "hash_order")]));
+    let r = port_check(&request(
+        dir.path(),
+        &rec,
+        &cpp,
+        &[("variant", "hash_order")],
+    ));
     assert_eq!(r.status, Status::NotRun, "{}", r.sentence);
     assert!(r.sentence.contains("not reproducible"), "{}", r.sentence);
     assert!(r.sentence.contains("PYTHONHASHSEED"), "{}", r.sentence);
     assert_eq!(diff_of(&r)["comparison"], json!("python-1 vs python-2"));
-    assert_eq!(diff_of(&r)["difference"]["key"], json!(0), "it decides at init (step 0)");
-    assert!(r.evidence.get("cpp").and_then(|c| c.get("runs")).is_none(), "C++ never ran");
+    assert_eq!(
+        diff_of(&r)["difference"]["key"],
+        json!(0),
+        "it decides at init (step 0)"
+    );
+    assert!(
+        r.evidence.get("cpp").and_then(|c| c.get("runs")).is_none(),
+        "C++ never ran"
+    );
 }
 
 #[test]
@@ -300,7 +405,12 @@ fn python_that_reads_the_wall_clock_is_not_reproducible() {
     let dir = tempfile::tempdir().expect("tempdir");
     let rec = write_recording(dir.path(), 100, 3);
     let cpp = build_cpp(dir.path(), &[]);
-    let r = port_check(&request(dir.path(), &rec, &cpp, &[("variant", "wall_clock")]));
+    let r = port_check(&request(
+        dir.path(),
+        &rec,
+        &cpp,
+        &[("variant", "wall_clock")],
+    ));
     assert_eq!(r.status, Status::NotRun, "{}", r.sentence);
     assert!(r.sentence.contains("wall-clock"), "{}", r.sentence);
 }
@@ -312,8 +422,17 @@ fn a_port_that_reads_uninitialised_memory_fails_its_own_reproducibility_check() 
     let cpp = build_cpp(dir.path(), &["PLANT_UNINIT"]);
     let r = port_check(&request(dir.path(), &rec, &cpp, &[]));
     assert_eq!(r.status, Status::Fail, "{}", r.sentence);
-    assert_eq!(diff_of(&r)["comparison"], json!("cpp-1 vs cpp-2"), "{}", r.sentence);
-    assert!(r.sentence.contains("uninitialised memory"), "{}", r.sentence);
+    assert_eq!(
+        diff_of(&r)["comparison"],
+        json!("cpp-1 vs cpp-2"),
+        "{}",
+        r.sentence
+    );
+    assert!(
+        r.sentence.contains("uninitialised memory"),
+        "{}",
+        r.sentence
+    );
 }
 
 #[test]
@@ -337,7 +456,11 @@ fn a_port_that_stops_answering_is_not_run_not_a_mismatch() {
     req.limits.response_timeout_ms = Some(500);
     let r = port_check(&req);
     assert_eq!(r.status, Status::NotRun, "{}", r.sentence);
-    assert!(r.sentence.contains("timed out at step 30"), "{}", r.sentence);
+    assert!(
+        r.sentence.contains("timed out at step 30"),
+        "{}",
+        r.sentence
+    );
 }
 
 #[test]
@@ -345,9 +468,18 @@ fn a_strategy_that_never_trades_is_no_claim() {
     let dir = tempfile::tempdir().expect("tempdir");
     let rec = write_recording(dir.path(), 150, 7);
     let cpp = build_cpp(dir.path(), &[]);
-    let r = port_check(&request(dir.path(), &rec, &cpp, &[("variant", "no_orders")]));
+    let r = port_check(&request(
+        dir.path(),
+        &rec,
+        &cpp,
+        &[("variant", "no_orders")],
+    ));
     assert_eq!(r.status, Status::NoClaim, "{}", r.sentence);
-    assert!(r.sentence.contains("neither sent a single order"), "{}", r.sentence);
+    assert!(
+        r.sentence.contains("neither sent a single order"),
+        "{}",
+        r.sentence
+    );
 }
 
 #[test]
@@ -362,8 +494,17 @@ fn an_inconsistent_recording_is_refused_before_anything_runs() {
     let req = request(dir.path(), &rec, Path::new("/nonexistent"), &[]);
     let r = port_check(&req);
     assert_eq!(r.status, Status::NotRun);
-    assert!(r.sentence.contains("record 1: order id 2 is not in the book"), "{}", r.sentence);
-    assert!(r.sentence.contains("initial_book"), "the fix is named: {}", r.sentence);
+    assert!(
+        r.sentence
+            .contains("record 1: order id 2 is not in the book"),
+        "{}",
+        r.sentence
+    );
+    assert!(
+        r.sentence.contains("initial_book"),
+        "the fix is named: {}",
+        r.sentence
+    );
     assert!(!dir.path().join("work").exists(), "nothing ran");
 }
 
@@ -375,14 +516,23 @@ fn one_python_run_is_refused_because_reproduction_comes_first() {
     req.python_runs = 1;
     let r = port_check(&req);
     assert_eq!(r.status, Status::NotRun);
-    assert!(r.sentence.contains("python_runs must be 2-5"), "{}", r.sentence);
+    assert!(
+        r.sentence.contains("python_runs must be 2-5"),
+        "{}",
+        r.sentence
+    );
 }
 
 #[test]
 fn a_cpp_binary_that_cannot_start_is_not_run() {
     let dir = tempfile::tempdir().expect("tempdir");
     let rec = write_recording(dir.path(), 50, 7);
-    let r = port_check(&request(dir.path(), &rec, Path::new("/nonexistent/strategy"), &[]));
+    let r = port_check(&request(
+        dir.path(),
+        &rec,
+        Path::new("/nonexistent/strategy"),
+        &[],
+    ));
     assert_eq!(r.status, Status::NotRun, "{}", r.sentence);
     assert!(r.sentence.contains("could not start"), "{}", r.sentence);
 }
@@ -410,7 +560,11 @@ fn an_honest_port_passes_on_the_hft_pack_itch_fixture() {
     let r = port_check(&req);
     assert_eq!(r.status, Status::Pass, "{}", r.sentence);
     assert_eq!(r.evidence["recording"]["format"], json!("itch50"));
-    assert!(r.evidence["coverage"]["fills"].as_u64().unwrap_or(0) > 0, "{}", r.evidence["coverage"]);
+    assert!(
+        r.evidence["coverage"]["fills"].as_u64().unwrap_or(0) > 0,
+        "{}",
+        r.evidence["coverage"]
+    );
     // The same capture through the planted port fails, at the step of its third IOC order.
     let bad = build_cpp(dir.path(), &["PLANT_QTY_AT=3"]);
     let mut req = request(dir.path(), &itch, &bad, &[("max_pos", "900")]);
@@ -443,18 +597,25 @@ fn an_initial_book_is_applied_before_the_first_event_and_shown_as_a_snapshot() {
     let mut req = request(dir.path(), &rec, &cpp, &[]);
     let refused = port_check(&req);
     assert_eq!(refused.status, Status::NotRun, "{}", refused.sentence);
-    assert!(refused.sentence.contains("record 0: order id 1 is not in the book"), "{}", refused.sentence);
+    assert!(
+        refused
+            .sentence
+            .contains("record 0: order id 1 is not in the book"),
+        "{}",
+        refused.sentence
+    );
     req.initial_book = Some(book);
     req.workdir = Some(dir.path().join("work-book"));
     let r = port_check(&req);
     assert_eq!(r.status, Status::Pass, "{}", r.sentence);
     assert_eq!(r.evidence["recording"]["records"], json!(201));
-    let first_rows: Vec<Value> = std::fs::read_to_string(dir.path().join("work-book/python-1.transcript.jsonl"))
-        .expect("transcript")
-        .lines()
-        .take(3)
-        .map(|l| serde_json::from_str(l).expect("row"))
-        .collect();
+    let first_rows: Vec<Value> =
+        std::fs::read_to_string(dir.path().join("work-book/python-1.transcript.jsonl"))
+            .expect("transcript")
+            .lines()
+            .take(3)
+            .map(|l| serde_json::from_str(l).expect("row"))
+            .collect();
     assert_eq!(first_rows[1]["in"]["kind"], json!("snapshot"));
     assert_eq!(first_rows[1]["in"]["sym"], json!("AAA"));
     assert_eq!(first_rows[1]["in"]["bids"], json!([[990, 7]]));
@@ -480,7 +641,11 @@ fn the_adapters_own_unit_tests_pass() {
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .output()
         .expect("run python3");
-    assert!(py.status.success(), "{}", String::from_utf8_lossy(&py.stderr));
+    assert!(
+        py.status.success(),
+        "{}",
+        String::from_utf8_lossy(&py.stderr)
+    );
     tool("g++");
     let dir = tempfile::tempdir().expect("tempdir");
     let exe = dir.path().join("tph");
@@ -491,9 +656,17 @@ fn the_adapters_own_unit_tests_pass() {
         .arg(&exe)
         .output()
         .expect("run g++");
-    assert!(cc.status.success(), "{}", String::from_utf8_lossy(&cc.stderr));
+    assert!(
+        cc.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cc.stderr)
+    );
     let run = std::process::Command::new(&exe).output().expect("run");
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
 }
 
 #[test]
@@ -522,13 +695,19 @@ fn the_host_launch_command_is_started_and_argv_is_reported() {
     req.cpp.launch = Some(vec!["/usr/bin/env".to_string(), cpp.display().to_string()]);
     let r = port_check(&req);
     assert_eq!(r.status, Status::Pass, "{}", r.sentence);
-    assert_eq!(r.evidence["cpp"]["argv"], json!(["/nonexistent/strategy"]), "{}", r.evidence);
+    assert_eq!(
+        r.evidence["cpp"]["argv"],
+        json!(["/nonexistent/strategy"]),
+        "{}",
+        r.evidence
+    );
 }
 
 /// A request can never choose the launch command: only the host sets it.
 #[test]
 fn a_request_cannot_set_the_launch_command() {
-    let text = r#"{"recording":"r","python":{"argv":["python3"],"launch":["sh"]},"cpp":{"argv":["x"]}}"#;
+    let text =
+        r#"{"recording":"r","python":{"argv":["python3"],"launch":["sh"]},"cpp":{"argv":["x"]}}"#;
     let r = crate::tool::run_request_json(text);
     assert_eq!(r.status, Status::NotRun, "{}", r.sentence);
     assert!(r.sentence.contains("launch"), "{}", r.sentence);

@@ -92,6 +92,7 @@ use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadInjectItemsParams;
 use codex_app_server_protocol::ThreadItemsListParams;
+use codex_app_server_protocol::ThreadItemsReadParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadMemoryModeSetParams;
@@ -104,7 +105,6 @@ use codex_app_server_protocol::ThreadRealtimeListVoicesParams;
 use codex_app_server_protocol::ThreadRealtimeStartParams;
 use codex_app_server_protocol::ThreadRealtimeStopParams;
 use codex_app_server_protocol::ThreadResumeParams;
-use codex_app_server_protocol::ThreadRollbackParams;
 use codex_app_server_protocol::ThreadSearchOccurrencesParams;
 use codex_app_server_protocol::ThreadSearchParams;
 use codex_app_server_protocol::ThreadSectionMoveParams;
@@ -185,6 +185,7 @@ impl TestAppServer {
             env_overrides: Vec::new(),
             args: vec![DISABLE_PLUGIN_STARTUP_TASKS_ARG.to_string()],
             exec_server_delay: None,
+            mock_chatgpt_backend: false,
         }
     }
 
@@ -192,10 +193,33 @@ impl TestAppServer {
         self.process.wait().await
     }
 
+    #[cfg(unix)]
+    pub fn send_sigterm(&self) -> anyhow::Result<()> {
+        let pid = self.process.id().context("app-server has no pid")?;
+        let status = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()?;
+        ensure!(status.success(), "failed to signal app-server: {status}");
+        Ok(())
+    }
+
+    /// Waits for output without consuming it, for transport backpressure tests.
+    pub async fn peek_stdout(&mut self) -> std::io::Result<&[u8]> {
+        self.stdout.fill_buf().await
+    }
+
     /// Closes stdio and waits for app-server's graceful thread teardown to finish.
     pub async fn shutdown_gracefully(&mut self) -> std::io::Result<ExitStatus> {
         drop(self.stdin.take());
-        self.process.wait().await
+        // Drain final notifications so a full stdout pipe cannot block runtime shutdown.
+        let mut sink = tokio::io::sink();
+        tokio::select! {
+            status = self.process.wait() => status,
+            drained = tokio::io::copy(&mut self.stdout, &mut sink) => {
+                drained?;
+                self.process.wait().await
+            }
+        }
     }
 
     /// Returns the automatically selected test environment retained by this server.
@@ -220,12 +244,30 @@ impl TestAppServer {
         })
     }
 
-    /// Waits for a JSON stderr event whose structured `event.name` field matches.
+    /// Waits up to `timeout` for a JSON stderr event whose structured `event.name` field matches.
     pub async fn wait_for_json_log_event(
         &self,
         event_name: &str,
+        timeout: Duration,
     ) -> anyhow::Result<serde_json::Value> {
-        self.json_logs.wait_for_event(event_name).await
+        self.wait_for_matching_json_log_event(
+            &format!("named `{event_name}`"),
+            |event| event["fields"]["event.name"].as_str() == Some(event_name),
+            timeout,
+        )
+        .await
+    }
+
+    /// Waits for a JSON stderr event matching a predicate, including its request span.
+    pub async fn wait_for_matching_json_log_event(
+        &self,
+        description: &str,
+        predicate: impl Fn(&serde_json::Value) -> bool,
+        timeout: Duration,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.json_logs
+            .wait_for_event(description, predicate, timeout)
+            .await
     }
 
     async fn new_with_program_env_and_args(
@@ -270,7 +312,7 @@ impl TestAppServer {
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::ExecutableFileBusy)
                 || retries == 2
             {
-                break process.context("codex-mcp-server proc should start")?;
+                break process.context("codex app-server proc should start")?;
             }
             retries += 1;
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -636,15 +678,6 @@ impl TestAppServer {
         self.send_request("thread/shellCommand", params).await
     }
 
-    /// Send a `thread/rollback` JSON-RPC request.
-    pub async fn send_thread_rollback_request(
-        &mut self,
-        params: ThreadRollbackParams,
-    ) -> anyhow::Result<i64> {
-        let params = Some(serde_json::to_value(params)?);
-        self.send_request("thread/rollback", params).await
-    }
-
     /// Send a `thread/list` JSON-RPC request.
     pub async fn send_thread_list_request(
         &mut self,
@@ -706,6 +739,15 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/items/list", params).await
+    }
+
+    /// Send a `thread/items/read` JSON-RPC request.
+    pub async fn send_thread_items_read_request(
+        &mut self,
+        params: ThreadItemsReadParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/items/read", params).await
     }
 
     /// Send a `model/list` JSON-RPC request.
@@ -1843,6 +1885,7 @@ pub struct TestAppServerBuilder {
     env_overrides: Vec<(String, Option<String>)>,
     args: Vec<String>,
     exec_server_delay: Option<Duration>,
+    mock_chatgpt_backend: bool,
 }
 
 enum TestAppServerEnvironment {
@@ -1851,6 +1894,11 @@ enum TestAppServerEnvironment {
 }
 
 impl TestAppServerBuilder {
+    pub fn with_mock_chatgpt_backend(mut self) -> Self {
+        self.mock_chatgpt_backend = true;
+        self
+    }
+
     /// Uses this existing CODEX_HOME instead of a temporary one.
     pub fn with_codex_home(mut self, codex_home: &Path) -> Self {
         self.codex_home = Some(codex_home.to_path_buf());
@@ -1945,6 +1993,7 @@ impl TestAppServerBuilder {
             mut env_overrides,
             args,
             exec_server_delay,
+            mock_chatgpt_backend,
         } = self;
         let (codex_home, owned_codex_home) = match codex_home {
             Some(codex_home) => (codex_home, None),
@@ -1956,7 +2005,9 @@ impl TestAppServerBuilder {
                 )
             }
         };
-        let attribution_settings_server = if codex_home.join("auth.json").is_file() {
+        let attribution_settings_server = if mock_chatgpt_backend
+            || codex_home.join("auth.json").is_file()
+        {
             let config_path = codex_home.join("config.toml");
             let config = std::fs::read_to_string(&config_path)?;
             if config
@@ -1966,6 +2017,12 @@ impl TestAppServerBuilder {
                 None
             } else {
                 let settings_server = MockServer::start().await;
+                crate::mount_workspace_routing(&settings_server).await;
+                Mock::given(method("GET"))
+                    .and(path("/backend-api/wham/config/bundle"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+                    .mount(&settings_server)
+                    .await;
                 Mock::given(method("GET"))
                     .and(path("/backend-api/wham/settings/user"))
                     .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -2092,7 +2149,7 @@ impl TestAppServerBuilder {
                 (&code_mode_host_program, &staged_host),
             ] {
                 std::fs::hard_link(source, destination)
-                    .or_else(|_| std::fs::copy(source, destination).map(|_| ()))
+                    .or_else(|_| codex_utils_cargo_bin::copy_executable(source, destination))
                     .with_context(|| format!("stage executable {}", source.display()))?;
             }
             program = staged_program;

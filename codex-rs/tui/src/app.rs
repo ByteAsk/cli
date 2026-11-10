@@ -3,6 +3,7 @@
 //! This module owns the `App` struct, shared imports, and the high-level run loop that coordinates
 //! the focused app submodules.
 
+pub(crate) use self::agents_overview::PendingWorktree;
 use crate::AppServerTarget;
 use crate::app_backtrack::BacktrackState;
 use crate::app_command::AppCommand;
@@ -15,6 +16,7 @@ use crate::app_event::PluginLocation;
 use crate::app_event::PluginRemoteSectionError;
 use crate::app_event::RateLimitRefreshOrigin;
 use crate::app_event::RunningTaskExitAction;
+use crate::app_event::ThreadTitleDestination;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
@@ -31,6 +33,7 @@ use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::McpElicitationApprovalRequest;
 use crate::bottom_pane::McpServerElicitationFormRequest;
 use crate::bottom_pane::PermissionsApprovalRequest;
+use crate::bottom_pane::RestrictedInputMode;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
@@ -49,6 +52,7 @@ use crate::history_cell::HistoryCell;
 #[cfg(not(debug_assertions))]
 use crate::history_cell::UpdateAvailableHistoryCell;
 use crate::hooks_rpc::HookTrustUpdate;
+use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::KeyChordMatcher;
 use crate::keymap::RuntimeKeymap;
@@ -85,6 +89,7 @@ use crate::transcript_reflow::TranscriptReflowState;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
+use crate::version::CODEX_CLI_VERSION;
 use crate::workspace_command::AppServerWorkspaceCommandRunner;
 use crate::workspace_command::WorkspaceCommandRunner;
 use codex_ansi_escape::ansi_escape_line;
@@ -99,7 +104,6 @@ use codex_app_server_protocol::ConfigReadResponse;
 use codex_app_server_protocol::ConfigValueWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::FeedbackUploadParams;
-use codex_app_server_protocol::FeedbackUploadResponse;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::HooksListEntry;
 use codex_app_server_protocol::ListMcpServerStatusParams;
@@ -126,9 +130,10 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillErrorInfo;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadMemoryMode;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadStartSource;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError as AppServerTurnError;
@@ -139,21 +144,14 @@ use codex_config::LoaderOverrides;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::MemoriesToml;
 use codex_config::types::ModelAvailabilityNuxConfig;
-#[cfg(target_os = "windows")]
-use codex_config::types::WindowsToml;
 use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
 use codex_features::FeaturesToml;
-use codex_model_provider::create_model_provider;
-use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
 use codex_otel::SessionTelemetry;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
-use codex_protocol::config_types::Personality;
-#[cfg(target_os = "windows")]
-use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::PermissionProfile;
@@ -161,8 +159,6 @@ use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
-#[cfg(target_os = "windows")]
-use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_rollout::StateDbHandle;
 use codex_terminal_detection::user_agent;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -173,7 +169,6 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
-use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::layout::Size;
 use ratatui::style::Stylize;
@@ -184,7 +179,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -198,46 +192,88 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use uuid::Uuid;
+mod account_status;
 mod agent_message_consolidation;
 mod agent_navigation;
 mod agent_picker;
 mod agent_status_feed;
+#[cfg(any(unix, windows))]
 mod agents_overview;
+mod agents_overview_actions;
+mod agents_overview_details;
+pub(crate) mod agents_overview_discovery;
 mod agents_overview_threads;
+mod agents_overview_usage;
 mod agents_overview_view;
 pub(crate) use agents_overview::AGENTS_OVERVIEW_VIEW_ID;
+mod activity_groups;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;
+mod app_server_thread_ownership;
 mod backend_banner_fallback;
+mod backend_events;
+mod backend_selection;
+pub(crate) mod backend_sessions;
 mod background_requests;
+mod composer_hints;
+mod config_panel;
 mod config_persistence;
 mod connector_mentions;
+mod daemon_menu;
+mod daybreak;
+mod empty_state_policy;
 mod event_dispatch;
 mod exit_summary;
+mod experimental_features;
+mod feedback_upload;
 mod file_change_approvals;
 mod history_pagination;
 mod history_ui;
 mod input;
+mod link_hover;
 mod loaded_threads;
+mod managed_worktree_creation;
+mod misalignment_policy;
+mod model_defaults;
+mod new_session;
+mod quick_dials;
+mod turn_tips;
+pub(crate) use new_session::has_launch_setting;
+mod clipboard;
+mod footer_selection;
+mod native_history;
+mod owned_transcript;
 mod pending_interactive_replay;
 mod permission_shortcuts;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
 mod rate_limit_refresh;
+mod realtime_delivery;
+mod realtime_settings;
+mod reasoning_replay;
 mod recap;
 mod reconnect;
 mod replay_filter;
 mod resize_reflow;
 mod resume_config;
+mod resume_preparation;
+mod right_click_paste;
+pub(crate) use right_click_paste::PasteEnvironment;
 mod safety_buffering;
+mod safety_recourse;
+mod server_version_notice;
 mod session_lifecycle;
+mod session_picker;
 mod side;
 mod startup;
+pub(crate) mod startup_bootstrap;
 mod startup_prompts;
+mod startup_warnings;
 mod thread_event_buffer;
 mod thread_events;
 mod thread_goal_actions;
@@ -246,6 +282,15 @@ mod thread_session_state;
 mod thread_settings;
 mod thread_title;
 mod transcript_export;
+mod tui_mode_picker;
+mod user_turn_submission;
+mod user_verification;
+mod user_verification_errors;
+mod user_verification_requests;
+mod voice_owner;
+#[cfg(test)]
+#[path = "app/warnings_tests.rs"]
+mod warnings_tests;
 mod working_directory;
 
 use self::agent_navigation::AgentNavigationDirection;
@@ -253,6 +298,7 @@ use self::agent_navigation::AgentNavigationState;
 use self::app_server_requests::PendingAppServerRequests;
 use self::loaded_threads::find_loaded_subagent_threads_for_primary;
 use self::pending_interactive_replay::PendingInteractiveReplayState;
+pub(crate) use self::platform_actions::WindowsSandboxHost;
 use self::platform_actions::*;
 use self::side::SideParentStatus;
 use self::side::SideParentStatusChange;
@@ -267,6 +313,10 @@ enum ThreadInteractiveRequest {
     AppLink(AppLinkViewParams),
     Approval(ApprovalRequest),
     McpServerElicitation(McpServerElicitationFormRequest),
+    UserVerification {
+        thread_id: ThreadId,
+        request: crate::bottom_pane::user_verification::UserVerificationRequest,
+    },
 }
 
 /// Extracts `receiver_thread_ids` from collab agent tool-call notifications.
@@ -275,15 +325,15 @@ enum ThreadInteractiveRequest {
 /// receiver thread ids. All other notification variants return `None`.
 fn collab_receiver_thread_ids(notification: &ServerNotification) -> Option<&[String]> {
     match notification {
-        ServerNotification::ItemStarted(notification) => match &notification.item {
-            ThreadItem::CollabAgentToolCall {
+        ServerNotification::ItemStarted(notification) => match &notification.item.payload {
+            ThreadItemPayload::CollabAgentToolCall {
                 receiver_thread_ids,
                 ..
             } => Some(receiver_thread_ids),
             _ => None,
         },
-        ServerNotification::ItemCompleted(notification) => match &notification.item {
-            ThreadItem::CollabAgentToolCall {
+        ServerNotification::ItemCompleted(notification) => match &notification.item.payload {
+            ThreadItemPayload::CollabAgentToolCall {
                 receiver_thread_ids,
                 ..
             } => Some(receiver_thread_ids),
@@ -293,14 +343,14 @@ fn collab_receiver_thread_ids(notification: &ServerNotification) -> Option<&[Str
     }
 }
 
-fn sub_agent_activity_item(notification: &ServerNotification) -> Option<&ThreadItem> {
+fn sub_agent_activity_item(notification: &ServerNotification) -> Option<&ThreadItemPayload> {
     match notification {
-        ServerNotification::ItemStarted(notification) => match &notification.item {
-            ThreadItem::SubAgentActivity { .. } => Some(&notification.item),
+        ServerNotification::ItemStarted(notification) => match &notification.item.payload {
+            ThreadItemPayload::SubAgentActivity { .. } => Some(&notification.item.payload),
             _ => None,
         },
-        ServerNotification::ItemCompleted(notification) => match &notification.item {
-            ThreadItem::SubAgentActivity { .. } => Some(&notification.item),
+        ServerNotification::ItemCompleted(notification) => match &notification.item.payload {
+            ThreadItemPayload::SubAgentActivity { .. } => Some(&notification.item.payload),
             _ => None,
         },
         _ => None,
@@ -312,8 +362,8 @@ fn collab_receiver_is_not_found(
     receiver_thread_id: &str,
 ) -> bool {
     match notification {
-        ServerNotification::ItemCompleted(notification) => match &notification.item {
-            ThreadItem::CollabAgentToolCall { agents_states, .. } => {
+        ServerNotification::ItemCompleted(notification) => match &notification.item.payload {
+            ThreadItemPayload::CollabAgentToolCall { agents_states, .. } => {
                 agents_states.get(receiver_thread_id).is_some_and(|state| {
                     matches!(
                         &state.status,
@@ -406,14 +456,6 @@ impl AutoReviewMode {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn managed_filesystem_sandbox_is_restricted(permission_profile: &PermissionProfile) -> bool {
-    matches!(
-        permission_profile.file_system_sandbox_policy().kind,
-        FileSystemSandboxKind::Restricted
-    )
-}
-
 /// Baseline cadence for periodic stream commit animation ticks.
 ///
 /// Smooth-mode streaming drains one line per tick, so this interval controls
@@ -455,30 +497,8 @@ pub(crate) enum AppRunControl {
 #[derive(Debug, Clone)]
 pub enum ExitReason {
     UserRequested,
-    Archived(ThreadId),
     TurnInterrupted,
-    /// The current thread was deleted, rather than disconnected.
-    ThreadRemoved,
     Fatal(String),
-}
-
-fn session_summary(
-    token_usage: TokenUsage,
-    thread_id: Option<ThreadId>,
-    thread_name: Option<String>,
-    rollout_path: Option<&Path>,
-) -> Option<SessionSummary> {
-    let usage_line = (!token_usage.is_zero()).then(|| token_usage.to_string());
-    let resume_hint = resume_hint_for_resumable_thread(thread_id, thread_name, rollout_path);
-
-    if usage_line.is_none() && resume_hint.is_none() {
-        return None;
-    }
-
-    Some(SessionSummary {
-        usage_line,
-        resume_hint,
-    })
 }
 
 fn resumable_thread(
@@ -494,15 +514,6 @@ fn resumable_thread(
     })
 }
 
-fn resume_hint_for_resumable_thread(
-    thread_id: Option<ThreadId>,
-    thread_name: Option<String>,
-    rollout_path: Option<&Path>,
-) -> Option<String> {
-    let thread = resumable_thread(thread_id, thread_name, rollout_path)?;
-    codex_utils_cli::resume_hint(thread.thread_name.as_deref(), Some(thread.thread_id))
-}
-
 fn rollout_path_is_resumable(rollout_path: &Path) -> bool {
     std::fs::metadata(rollout_path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
 }
@@ -516,12 +527,6 @@ fn errors_for_cwd(cwd: &Path, response: &SkillsListResponse) -> Vec<SkillErrorIn
         .unwrap_or_default()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionSummary {
-    usage_line: Option<String>,
-    resume_hint: Option<String>,
-}
-
 #[derive(Debug, Default)]
 struct InitialHistoryReplayBuffer {
     retained_lines: VecDeque<crate::terminal_hyperlinks::HyperlinkLine>,
@@ -530,42 +535,61 @@ struct InitialHistoryReplayBuffer {
 }
 
 pub(crate) struct App {
+    feature_write_lock: Arc<tokio::sync::Mutex<()>>,
+    config_notification_test_generation: u64,
+    config_notification_test_pending: Option<u64>,
     model_catalog: Arc<ModelCatalog>,
     pub(crate) session_telemetry: SessionTelemetry,
+    terminal_size_tags: crate::terminal_size_telemetry::LaunchTags,
     pub(crate) app_event_tx: AppEventSender,
     pub(crate) chat_widget: ChatWidget,
     workspace_command_runner: Option<WorkspaceCommandRunner>,
-    /// Config is stored here so we can recreate ChatWidgets as needed.
+    /// Legacy bootstrap and server-setting inputs; local preferences live in `local_settings`.
     pub(crate) config: Config,
+    pub(crate) local_settings: crate::local_settings::LocalSettings,
     launch_cwd: PathBuf,
     /// Resume anchor selected by `/cd`; ordinary resumes retain the immutable launch cwd.
     runtime_working_directory_override: Option<PathBuf>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retain the state runtime for the app lifetime")
+    )]
     pub(crate) state_db: Option<StateDbHandle>,
     cli_kv_overrides: Vec<(String, TomlValue)>,
     harness_overrides: ConfigOverrides,
     loader_overrides: LoaderOverrides,
     cloud_config_bundle: CloudConfigBundleLoader,
     runtime_approval_policy_override: Option<RuntimeApprovalPolicyOverride>,
+    runtime_approvals_reviewer_override: Option<ApprovalsReviewer>,
     runtime_permission_profile_override: Option<RuntimePermissionProfileOverride>,
+    /// In-flight remote selections; confirmed settings live in each task's server snapshot.
+    pending_server_profiles: HashMap<ThreadId, PermissionProfileSelection>,
 
     pub(crate) file_search: FileSearchManager,
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
+    native_history: native_history::NativeHistory,
+    turn_tips: turn_tips::TurnTips,
+    pub(crate) transcript_view: crate::transcript_view::TranscriptView,
+    conversation_frame: owned_transcript::ConversationFrame,
     last_rendered_history_tail: Option<history_ui::RenderedHistoryTail>,
     last_thread_usage_status_cell: Option<history_ui::ThreadUsageStatusHistory>,
     pub(crate) pending_thread_usage_history_refresh: bool,
 
-    // Pager overlay state (Transcript or Static like Diff)
+    // Alternate-screen overlays: transcript, diff, and analytics.
     pub(crate) overlay: Option<Overlay>,
+    pub(crate) retained_analytics: Option<Box<crate::analytics::AnalyticsView>>,
     pub(crate) deferred_history_lines: Vec<crate::terminal_hyperlinks::HyperlinkLine>,
     has_emitted_history_lines: bool,
     transcript_reflow: TranscriptReflowState,
     initial_history_replay_buffer: Option<InitialHistoryReplayBuffer>,
+    pending_thread_switch_resets: usize,
     pub(crate) scrollback_has_older_history: bool,
 
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) keymap: RuntimeKeymap,
     pub(crate) key_chord_matcher: KeyChordMatcher,
+    routed_key_activation: Option<KeyBinding>,
 
     /// The foreground loop owns stream pacing; stopped animations have no timer.
     pub(crate) commit_animation: Option<tokio::time::Interval>,
@@ -580,16 +604,20 @@ pub(crate) struct App {
     pub(crate) backtrack: crate::app_backtrack::BacktrackState,
     /// When set, the next draw rebuilds terminal scrollback from the retained transcript cells.
     ///
-    /// This is used after a confirmed thread rollback to ensure scrollback reflects the trimmed
-    /// transcript cells.
+    /// This keeps scrollback consistent with the retained transcript after backtracking.
     pub(crate) backtrack_render_pending: bool,
     pub(crate) feedback: codex_feedback::CodexFeedback,
     feedback_audience: FeedbackAudience,
     environment_manager: Arc<EnvironmentManager>,
     app_server_target: AppServerTarget,
     reconnect: reconnect::ReconnectState,
+    pending_right_click_paste: Option<right_click_paste::PendingPaste>,
+    right_click_paste_environment: right_click_paste::PasteEnvironment,
     /// Set when the user confirms an update; propagated on exit.
+    daemon_cli_executable: Option<AbsolutePathBuf>,
     pub(crate) pending_update_action: Option<UpdateAction>,
+    /// Retained through all loop exits so shutdown cannot interrupt stop followed by start.
+    daemon_restart: Option<JoinHandle<anyhow::Result<codex_app_server_daemon::LifecycleOutput>>>,
 
     /// Tracks the thread we intentionally shut down while exiting the app.
     ///
@@ -604,7 +632,15 @@ pub(crate) struct App {
     windows_sandbox: WindowsSandboxState,
 
     thread_event_channels: HashMap<ThreadId, ThreadEventChannel>,
+    pending_realtime_speech_replay: HashMap<ThreadId, Vec<(String, ThreadItemPayload)>>,
+    pending_realtime_transcript_replay:
+        HashMap<ThreadId, VecDeque<crate::chatwidget::RealtimeTranscriptRecord>>,
+    realtime_replay_order: VecDeque<ThreadId>,
+    background_voice: Option<Box<ChatWidget>>,
+    background_voice_error: Option<(ThreadId, String)>,
     temporary_structured_requests: HashMap<ThreadId, mpsc::UnboundedSender<ServerNotification>>,
+    /// Track title generation across thread switches and deduplicate automatic requests.
+    pending_thread_titles: HashMap<(ThreadId, ThreadTitleDestination), CancellationToken>,
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     agent_navigation: AgentNavigationState,
     agents_overview: agents_overview::AgentsOverviewState,
@@ -621,13 +657,32 @@ pub(crate) struct App {
         tokio::sync::broadcast::Sender<codex_app_server_protocol::ThreadStatusChangedNotification>,
     dynamic_tool_tasks: HashMap<codex_app_server_protocol::RequestId, (String, JoinHandle<()>)>,
     pending_startup_thread_start: bool,
+    pending_server_version_notice: Option<crate::status::remote_connection::ServerVersionNotice>,
+    /// Opens the session picker after event dispatch returns, with a fresh stack.
+    pending_open_resume_picker: bool,
+    /// Runs a requested /cd after event dispatch returns, with a fresh stack.
+    pending_working_directory_change: Option<working_directory::PendingWorkingDirectoryChange>,
+    /// Starts worktree setup after the event handler returns, with a fresh stack.
+    pending_start_managed_worktree: Option<(crate::app_event::ManagedWorktreeMode, Option<String>)>,
+    pending_managed_worktree_creation: bool,
+    /// Defers checkout completion and config loading until the event handler returns.
+    pending_managed_worktree_created: Option<Box<crate::app_event::ManagedWorktreeCreated>>,
+    /// Defers the saved-history fork until the event handler has returned.
+    pending_managed_worktree_transition: Option<Box<crate::app_event::ManagedWorktreeTransition>>,
+    /// Holds notifications until the new widget is attached on a fresh loop iteration.
+    pending_managed_worktree_attach: Option<Box<working_directory::ManagedWorktreeAttach>>,
     /// Keeps protected screens quarantined until initialized chat receives genuine user input.
     startup_protected_input_boundary: bool,
-    /// Keeps that boundary armed while a startup approval waits for the typing-idle timer.
+    /// Keeps that boundary armed while an approval waits for the typing-idle timer or a visible
+    /// modal's terminal input has not settled.
     startup_pending_protected_request: bool,
     /// Invalidates in-flight full rate-limit reads when a newer rolling hard stop arrives.
+    account_email_request_id: Option<uuid::Uuid>,
     rate_limit_hard_stop_generation: u64,
     rate_limit_refresh_state: rate_limit_refresh::RateLimitRefreshState,
+    pending_mcp_login_start: Option<PendingMcpLoginStart>,
+    // Latest accepted attempt per server; stale retry completions must not update the UI.
+    active_mcp_login_ids: HashMap<String, String>,
     // Serialize plugin enablement writes per plugin so stale completions cannot
     // overwrite a newer toggle, even if the plugin is toggled from different
     // cwd contexts.
@@ -636,6 +691,16 @@ pub(crate) struct App {
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
     recap: recap::RecapState,
+    // App fixtures keep their home alive across widget replacement; drop it last.
+    #[cfg(test)]
+    _test_codex_home: Option<tempfile::TempDir>,
+}
+
+struct PendingMcpLoginStart {
+    request_id: String,
+    name: String,
+    thread_id: ThreadId,
+    completions: Vec<codex_app_server_protocol::McpServerOauthLoginCompletedNotification>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -643,7 +708,6 @@ struct RuntimePermissionProfileOverride {
     permission_profile: PermissionProfile,
     active_permission_profile: Option<ActivePermissionProfile>,
     network: Option<crate::legacy_core::config::NetworkProxySpec>,
-    approvals_reviewer: ApprovalsReviewer,
     turn_override: RuntimePermissionProfileTurnOverride,
 }
 
@@ -680,7 +744,6 @@ impl RuntimePermissionProfileOverride {
             permission_profile: config.permissions.permission_profile().clone(),
             active_permission_profile: config.permissions.active_permission_profile(),
             network: config.permissions.network.clone(),
-            approvals_reviewer: config.approvals_reviewer,
             turn_override: RuntimePermissionProfileTurnOverride::LegacySandbox,
         }
     }
@@ -696,7 +759,6 @@ impl RuntimePermissionProfileOverride {
         self.permission_profile == *config.permissions.permission_profile()
             && self.active_permission_profile == config.permissions.active_permission_profile()
             && self.network == config.permissions.network
-            && self.approvals_reviewer == config.approvals_reviewer
     }
 
     fn turn_permission_profile(&self) -> Option<&PermissionProfile> {
@@ -778,6 +840,7 @@ impl App {
         initial_user_message: Option<crate::chatwidget::UserMessage>,
     ) -> crate::chatwidget::ChatWidgetInit {
         crate::chatwidget::ChatWidgetInit {
+            local_settings: self.local_settings.clone(),
             config: cfg,
             frame_requester: tui.frame_requester(),
             app_event_tx: self.app_event_tx.clone(),
@@ -785,15 +848,12 @@ impl App {
             initial_user_message,
             enhanced_keys_supported: self.enhanced_keys_supported,
             has_chatgpt_account: self.chat_widget.has_chatgpt_account(),
+            requires_openai_auth: self.chat_widget.requires_openai_auth,
             has_codex_backend_auth: self.chat_widget.has_codex_backend_auth(),
             model_catalog: self.model_catalog.clone(),
             feedback: self.feedback.clone(),
             is_first_run: false,
             status_account_display: self.chat_widget.status_account_display().cloned(),
-            runtime_model_provider_base_url: self
-                .chat_widget
-                .runtime_model_provider_base_url()
-                .map(str::to_string),
             initial_plan_type: self.chat_widget.current_plan_type(),
             model: Some(self.chat_widget.current_model().to_string()),
             startup_tooltip_override: None,
@@ -809,7 +869,82 @@ impl App {
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        self.transcript_view
+            .sync_patch_approval(self.chat_widget.current_patch_approval());
+        tui.link_hover.observe(&event);
+        self.refresh_link_hover(tui)?;
+        self.invalidate_right_click_paste(&event);
+        self.finish_clipboard(tui, &event);
+        let event = self.finish_right_click_paste(tui, event);
+        if self.startup_protected_input_boundary
+            && self.startup_pending_protected_request
+            && self.chat_widget.has_active_modal()
+            && matches!(
+                &event,
+                TuiEvent::Key(_) | TuiEvent::Paste(_) | TuiEvent::Mouse(_)
+            )
+        {
+            self.discard_startup_modal_input(tui)?;
+            return Ok(AppRunControl::Continue);
+        }
+        if matches!(&event, TuiEvent::Key(key) if key.kind != KeyEventKind::Release)
+            || matches!(&event, TuiEvent::Paste(text) if !text.is_empty())
+            || matches!(&event, TuiEvent::Mouse(mouse) if mouse.kind != crossterm::event::MouseEventKind::Moved)
+        {
+            self.chat_widget.acknowledge_program_status();
+        }
+        let idle_draw = matches!(event, TuiEvent::Draw);
+        if let TuiEvent::Key(key) = &event {
+            self.backtrack.observe_pending_select_exit_key(*key);
+        }
+        if let TuiEvent::Key(key) = &event
+            && let Some(binding) = self.backtrack.select_exit_key
+        {
+            if binding.parts() == crate::key_hint::KeyBinding::from_event(*key).parts() {
+                if key.kind == KeyEventKind::Release
+                    || !self.enhanced_keys_supported
+                    || !crate::tui::reports_key_releases()
+                {
+                    self.backtrack.select_exit_key = None;
+                }
+                return Ok(AppRunControl::Continue);
+            }
+            self.backtrack.select_exit_key = None;
+        }
+        if self.handle_rendered_selection_event(tui, &event)? {
+            return Ok(AppRunControl::Continue);
+        }
+        if matches!(&event, TuiEvent::Key(_))
+            && self.handle_composer_copy_event(tui, &event, |tui, text| {
+                tui.copy_transcript_selection(text, crate::clipboard_copy::CopyFormat::PlainText)
+            })
+        {
+            return Ok(AppRunControl::Continue);
+        }
+        // Resume arrives after suspension; retain the last painted phase across hidden owners.
+        if matches!(&event, TuiEvent::Resume) || !tui.is_owned_screen() || self.overlay.is_some() {
+            self.chat_widget
+                .empty_state_animation
+                .borrow_mut()
+                .pause_clock();
+        }
+        let transcript_owns_input = match (&event, &self.overlay) {
+            (TuiEvent::Key(key), Some(Overlay::Transcript(overlay))) => {
+                overlay.owns_interaction_key(*key)
+            }
+            (TuiEvent::Key(key), None) => {
+                tui.is_owned_screen()
+                    && self.chat_widget.no_modal_or_popup_active()
+                    && self.transcript_view.owns_interaction_key(*key)
+            }
+            _ => false,
+        };
         if self.reconnect.offline
+            && !transcript_owns_input
+            && !self.chat_widget.keymap_contexts().is_warnings()
+            && !self
+                .chat_widget
+                .active_view_accepts_input_when_disconnected()
             && let TuiEvent::Key(key) = &event
             && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
             && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -824,13 +959,45 @@ impl App {
         let screen_size = tui.screen_size_for_event(&event)?;
         if !matches!(
             &event,
-            TuiEvent::Key(_) | TuiEvent::Paste(_) | TuiEvent::FocusLost
+            TuiEvent::Key(_) | TuiEvent::Mouse(_) | TuiEvent::Paste(_) | TuiEvent::FocusLost
         ) {
             self.expire_pending_key_chord();
             self.handle_draw_pre_render(tui, screen_size)?;
         }
 
-        let event = if let TuiEvent::Key(key_event) = event {
+        if matches!(&event, TuiEvent::Paste(_) | TuiEvent::FocusLost)
+            || matches!(&event, TuiEvent::Mouse(mouse) if mouse.kind != crossterm::event::MouseEventKind::Moved)
+        {
+            self.cancel_pending_key_chord();
+        }
+        if matches!(&event, TuiEvent::FocusLost)
+            || matches!(&event, TuiEvent::Mouse(mouse) if mouse.kind != crossterm::event::MouseEventKind::Moved)
+        {
+            self.chat_widget.interrupt_config_editor_transition();
+        }
+
+        if self.overlay.is_none()
+            && self
+                .chat_widget
+                .handle_warning_event(&event, &self.transcript_cells)
+        {
+            self.cancel_primed_browsing_for_event(&event);
+            return Ok(AppRunControl::Continue);
+        }
+
+        let mut event = if let TuiEvent::Key(mut key_event) = event {
+            let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+            if self.should_recover_vim_insert_escape(key_event)
+                && !(tui.is_owned_screen()
+                    && crate::transcript_view::JumpTarget::from_key(key_event).is_some())
+            {
+                // Restore both strokes before chords or global shortcuts can consume them.
+                if let Some(escape) = self.route_key_chord_event(tui, escape) {
+                    self.handle_key_event(tui, app_server, escape).await;
+                }
+                key_event.modifiers.remove(KeyModifiers::ALT);
+            }
+
             let Some(key_event) = self.route_key_chord_event(tui, key_event) else {
                 return Ok(AppRunControl::Continue);
             };
@@ -839,19 +1006,120 @@ impl App {
             event
         };
 
-        if self.reconnect.offline
-            && let TuiEvent::Key(key) = &event
+        self.cancel_primed_browsing_for_event(&event);
+        let voice_toggle = |app: &Self, key: KeyEvent| {
+            key.kind == KeyEventKind::Press
+                && app
+                    .active_keymap_contexts()
+                    .contains_action(crate::keymap::KeymapActionId {
+                        context: crate::keymap::KeymapContext::Chat,
+                        action: "toggle_voice",
+                    })
+                && app.keymap.chat.toggle_voice.is_pressed(key)
+        };
+        // Transcript interactions consume otherwise-unhandled keys; let enabled voice controls
+        // reach App.
+        if !matches!(&event, TuiEvent::Key(key)
+            if voice_toggle(self, *key)
+                && (!self.transcript_view.owns_interaction_key(*key)
+                    || self.transcript_view.is_select_mode()))
+            && self.handle_owned_transcript_event(tui, app_server, &event)?
         {
-            if self.reconnect.presentation == reconnect::ReconnectPresentation::Overview {
-                self.chat_widget.handle_disconnected_view_key(*key);
+            return Ok(AppRunControl::Continue);
+        }
+        // Leave browsing before unhandled editing input reaches shortcuts or offline input.
+        // Offline Enter cannot confirm a rewind and leaves the preview available to read.
+        if tui.is_owned_screen()
+            && self.overlay.is_none()
+            && self.backtrack.overlay_preview_active
+            && (matches!(&event, TuiEvent::Key(key)
+                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                    && !(self.reconnect.offline && key.code == KeyCode::Enter))
+                || matches!(&event, TuiEvent::Paste(text) if !text.is_empty()))
+        {
+            self.cancel_transcript_browsing(tui);
+            // The first lookup used browsing contexts; retry after restoring composer contexts.
+            // Completed chords already identify an action and must not be matched again.
+            if let TuiEvent::Key(key) = event
+                && !crate::keymap::is_dispatch_token_event(key)
+            {
+                let Some(key) = self.route_key_chord_event(tui, key) else {
+                    return Ok(AppRunControl::Continue);
+                };
+                event = TuiEvent::Key(key);
+            }
+        }
+        if let TuiEvent::Key(key_event) = &event
+            && voice_toggle(self, *key_event)
+        {
+            self.cancel_transcript_browsing(tui);
+            if !self.chat_widget.handle_startup_submission_key(*key_event) {
+                self.control_voice(crate::app_event::VoiceControl::Toggle);
+            }
+            return Ok(AppRunControl::Continue);
+        }
+        if let TuiEvent::Key(key_event) = &event
+            && key_event.kind == KeyEventKind::Press
+            && self
+                .active_keymap_contexts()
+                .contains(crate::keymap::KeymapContext::Voice)
+            && self.keymap.chat.toggle_voice_mute.is_pressed(*key_event)
+        {
+            if !self.chat_widget.handle_startup_submission_key(*key_event) {
+                self.control_voice(crate::app_event::VoiceControl::Mute);
+            }
+            return Ok(AppRunControl::Continue);
+        }
+        if self.reconnect.offline
+            && !self.chat_widget.keymap_contexts().is_warnings()
+            && !matches!(&self.overlay, Some(Overlay::Transcript(_)))
+            && let TuiEvent::Key(key) = &event
+            && !(self.overlay.is_none()
+                && self.chat_widget.no_modal_or_popup_active()
+                && self.keymap.app.open_warnings.is_pressed(*key))
+        {
+            if self.overlay.is_none()
+                && self.chat_widget.no_modal_or_popup_active()
+                && self.chat_widget.is_external_writer_view()
+                && (crate::key_hint::plain(KeyCode::Esc).is_press(*key)
+                    || (crate::key_hint::plain(KeyCode::Left).is_press(*key)
+                        && self.chat_widget.agents_navigation_key_available()))
+            {
+                self.open_agents_overview(app_server);
+            } else if self
+                .chat_widget
+                .active_view_accepts_input_when_disconnected()
+                || (self.reconnect.presentation == reconnect::ReconnectPresentation::Overview
+                    && self
+                        .chat_widget
+                        .active_view_is(agents_overview::AGENTS_OVERVIEW_VIEW_ID))
+            {
+                let activation_key = self.routed_key_activation.take();
+                self.chat_widget
+                    .handle_disconnected_view_key(*key, activation_key);
+                if self.reconnect.presentation == reconnect::ReconnectPresentation::Overview
+                    && self
+                        .chat_widget
+                        .selected_index_for_present_view(agents_overview::AGENTS_OVERVIEW_VIEW_ID)
+                        .is_none()
+                {
+                    self.reconnect.presentation = reconnect::ReconnectPresentation::Conversation;
+                }
             } else {
-                self.chat_widget.handle_disconnected_key(*key);
+                if self.reconnect.presentation == reconnect::ReconnectPresentation::Overview {
+                    self.reconnect.presentation = reconnect::ReconnectPresentation::Conversation;
+                }
+                self.chat_widget
+                    .handle_restricted_key(*key, RestrictedInputMode::Disconnected);
             }
             return Ok(AppRunControl::Continue);
         }
 
         match &event {
             TuiEvent::FocusLost => {
+                app_server.focused_conversation = None;
+                self.chat_widget
+                    .set_sparkle_terminal_focus(/*focused*/ false);
                 let now = Instant::now();
                 let thread_id = self.current_displayed_thread_id();
 
@@ -867,6 +1135,10 @@ impl App {
             _ => {}
         }
 
+        let draws_history = matches!(
+            event,
+            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained
+        );
         if self.overlay.is_some() {
             let _ = self
                 .handle_backtrack_overlay_event(tui, app_server, event)
@@ -883,19 +1155,30 @@ impl App {
                     // [tui-textarea]: https://github.com/rhysd/tui-textarea/blob/4d18622eeac13b309e0ff6a55a46ac6706da68cf/src/textarea.rs#L782-L783
                     // [iTerm2]: https://github.com/gnachman/iTerm2/blob/5d0c0d9f68523cbd0494dad5422998964a2ecd8d/sources/iTermPasteHelper.m#L206-L216
                     let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
-                    self.chat_widget.handle_paste(pasted);
-                    if self.reconnect.offline
+                    if self.backtrack.primed && !pasted.is_empty() {
+                        if self.backtrack.overlay_preview_active {
+                            self.cancel_transcript_browsing(tui);
+                        } else {
+                            self.reset_backtrack_state();
+                        }
+                    }
+                    let restrict_disconnected_input = self.reconnect.offline
+                        && !self.chat_widget.keymap_contexts().is_warnings()
                         && self.reconnect.presentation
-                            == reconnect::ReconnectPresentation::Conversation
-                    {
-                        self.chat_widget.handle_disconnected_key(KeyEvent::new(
-                            KeyCode::Null,
-                            KeyModifiers::NONE,
-                        ));
+                            != reconnect::ReconnectPresentation::Overview
+                        && !self
+                            .chat_widget
+                            .active_view_accepts_input_when_disconnected();
+                    self.chat_widget.handle_paste(pasted);
+                    if restrict_disconnected_input {
+                        self.chat_widget.handle_restricted_key(
+                            KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
+                            RestrictedInputMode::Disconnected,
+                        );
                     }
                 }
                 TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
-                    if self.backtrack_render_pending {
+                    if self.backtrack_render_pending && !tui.is_owned_screen() {
                         self.rebuild_transcript_after_backtrack(tui, screen_size.into())?;
                         self.backtrack_render_pending = false;
                     }
@@ -908,23 +1191,27 @@ impl App {
                         return Ok(AppRunControl::Continue);
                     }
                     // Allow widgets to process any pending timers before rendering.
-                    let had_active_view = self.chat_widget.has_active_view();
+                    let had_active_modal = self.chat_widget.has_active_modal();
+                    if let Some(owner) = self.background_voice.as_mut() {
+                        owner.refresh_realtime_microphone_level();
+                    }
                     self.chat_widget.pre_draw_tick();
+                    self.refresh_agents_overview_usage(app_server, tui.frame_requester());
                     let rendered_area = self.render_chat_widget_frame(tui, screen_size)?;
-                    if !had_active_view
-                        && self.chat_widget.has_active_view()
+                    if tui.is_owned_screen()
+                        && self.transcript_view.history
+                            != crate::pager_overlay::TranscriptHistoryState::Failed
+                    {
+                        self.request_owned_history(tui, app_server);
+                    }
+                    if !had_active_modal
+                        && self.chat_widget.has_active_modal()
                         && self.startup_protected_input_boundary
                     {
-                        tui.discard_pending_input_before_interactive_screen()?;
-                        self.startup_pending_protected_request = false;
+                        self.discard_startup_modal_input(tui)?;
                     }
                     if self.chat_widget.ambient_pet_image_enabled() {
-                        let ambient_pet_area = Rect::new(
-                            /*x*/ 0,
-                            /*y*/ 0,
-                            screen_size.width,
-                            screen_size.height,
-                        );
+                        let ambient_pet_area = self.conversation_area(screen_size.into());
                         if let Err(err) = tui.draw_ambient_pet_image(
                             self.chat_widget
                                 .ambient_pet_draw(ambient_pet_area, rendered_area.bottom()),
@@ -947,8 +1234,53 @@ impl App {
                         self.app_event_tx.send(AppEvent::LaunchExternalEditor);
                     }
                 }
+                TuiEvent::Mouse(mouse) => self.start_right_click_paste(tui, mouse),
                 TuiEvent::FocusLost => {}
             }
+        }
+        if draws_history {
+            let frozen = self.chat_widget.is_external_writer_view();
+            let visible = self.current_displayed_thread_id().filter(|&id| {
+                tui.is_terminal_focused()
+                    && matches!(self.overlay, None | Some(Overlay::Transcript(_)))
+                    && self.chat_widget.no_modal_or_popup_active()
+                    && self.initial_history_replay_buffer.is_none()
+                    && (!self.thread_unavailable(id) || frozen)
+            });
+            let previous = std::mem::replace(&mut app_server.focused_conversation, visible);
+            if previous != visible {
+                app_server.attempted_revision = None;
+            }
+            // Opening a full view counts immediately. Within the same view a new result's
+            // receipt can arrive just before the terminal event that finishes rendering it.
+            if let Some(id) = visible
+                && (previous != visible || !self.chat_widget.is_agent_turn_running())
+                && let Some(revision) = app_server.viewed_revision(id, frozen)
+            {
+                // A read-only snapshot does not subscribe to receipt notifications.
+                let refresh = frozen.then(|| {
+                    (
+                        self.app_event_tx.clone(),
+                        AppEvent::RefreshViewedThread {
+                            backend_id: app_server.backend_id(),
+                            thread_id: id,
+                            revision: revision.clone(),
+                        },
+                    )
+                });
+                let update = app_server.acknowledge_read(id, revision);
+                tokio::spawn(async move {
+                    if let Err(error) = update.await {
+                        tracing::warn!(%id, %error, "Could not acknowledge viewed conversation");
+                    } else if let Some((tx, event)) = refresh {
+                        tx.send(event);
+                    }
+                });
+            }
+        }
+        // Both transcript owners must consume completions before automatic work advances.
+        if idle_draw {
+            tui.clipboard.advance(tui.frame_requester());
         }
         Ok(AppRunControl::Continue)
     }
@@ -963,16 +1295,42 @@ impl App {
         Ok(())
     }
 
+    fn prepare_frame_images(&mut self) -> Option<crate::pets::ImageProtocol> {
+        let protocol = self.chat_widget.pet_image_support().protocol().filter(|_| {
+            !self.app_server_target.uses_remote_workspace()
+                && crate::projectless::has_only_local_environments(&self.environment_manager)
+        });
+        self.chat_widget.prepare_composer_images(protocol);
+        protocol
+    }
+
     fn render_chat_widget_frame(&mut self, tui: &mut tui::Tui, screen_size: Size) -> Result<Rect> {
+        self.chat_widget
+            .set_sparkle_terminal_focus(tui.is_terminal_focused());
+        if tui.is_owned_screen() {
+            return self.render_owned_transcript(tui, screen_size);
+        }
+        self.prepare_frame_images();
+        self.chat_widget
+            .empty_state_animation
+            .borrow_mut()
+            .pause_clock();
+        self.chat_widget.sync_warnings(&self.transcript_cells);
         let dashboard_visible = self
             .chat_widget
             .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID)
             .is_some();
-        if std::mem::replace(
+        let dashboard_was_visible = std::mem::replace(
             &mut self.agents_overview.rendered_full_screen,
             dashboard_visible,
-        ) && !dashboard_visible
-        {
+        );
+        // Full-height inline overlays scroll history off screen without a terminal resize.
+        // Rebuild it once when returning to a content-height chat viewport.
+        let restoring_inline_viewport = !tui.is_alt_screen_active()
+            && tui.terminal.viewport_area.height == screen_size.height
+            && self.with_chat_widget_frame(screen_size.width, |height, _| height)
+                < screen_size.height;
+        if !dashboard_visible && (dashboard_was_visible || restoring_inline_viewport) {
             self.schedule_immediate_resize_reflow(tui);
             self.maybe_run_resize_reflow(tui, screen_size)?;
         }
@@ -987,6 +1345,9 @@ impl App {
                 let area = frame.area();
                 rendered_area = area;
                 chat_widget.render(area, frame.buffer);
+                if let Some(previews) = &self.chat_widget.composer_images {
+                    frame.image_placements = previews.placements.take();
+                }
                 self.chat_widget.note_rendered_width(area.width);
                 if let Some((x, y)) = chat_widget.cursor_pos(area) {
                     frame.set_cursor_style(chat_widget.cursor_style(area));

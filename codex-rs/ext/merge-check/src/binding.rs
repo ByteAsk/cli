@@ -180,7 +180,8 @@ impl Candidate {
             .and_then(|test| test.manifest.as_deref())
             .map(|path| git::blob_at(repo, &base_commit, path).unwrap_or_else(|| "missing".into()))
             .unwrap_or_else(|| "none".to_string());
-        let perf_rev = git::blob_at(repo, &base_commit, PERF_UT_PATH).unwrap_or_else(|| "none".into());
+        let perf_rev =
+            git::blob_at(repo, &base_commit, PERF_UT_PATH).unwrap_or_else(|| "none".into());
         let changed = if conflict.is_some() {
             git::changed_paths(repo, &base_commit, &head_commit)?
         } else {

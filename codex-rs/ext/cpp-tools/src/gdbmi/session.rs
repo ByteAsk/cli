@@ -245,7 +245,12 @@ impl GdbSession {
         let state = Arc::new(Mutex::new("starting".to_string()));
         let inferior_pid = Arc::new(AtomicI32::new(0));
         let (record_tx, record_rx) = mpsc::unbounded_channel();
-        tokio::spawn(reader_loop(stdout, record_tx, state.clone(), inferior_pid.clone()));
+        tokio::spawn(reader_loop(
+            stdout,
+            record_tx,
+            state.clone(),
+            inferior_pid.clone(),
+        ));
 
         // The program gets its own terminal (see `inferior_tty`). If one cannot
         // be opened, it shares gdb's stdio as before rather than failing.
@@ -284,7 +289,10 @@ impl GdbSession {
         if let Some(reason) = startup_failure(&first, &session.state_line()) {
             // Let gdb's last words reach the collector.
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let said = stderr_text.lock().map(|s| s.trim().to_string()).unwrap_or_default();
+            let said = stderr_text
+                .lock()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
             let said = if said.is_empty() {
                 String::new()
             } else {
@@ -305,7 +313,9 @@ impl GdbSession {
         }
         if let Some(root) = sysroot {
             // Before the core: its shared libraries are resolved when it loads.
-            let _ = session.command(&format!("set sysroot {}", root.display())).await;
+            let _ = session
+                .command(&format!("set sysroot {}", root.display()))
+                .await;
             let debug = root.join("usr/lib/debug");
             if debug.is_dir() {
                 let _ = session
@@ -314,7 +324,9 @@ impl GdbSession {
             }
         }
         if let Some(core) = core {
-            let _ = session.command(&format!("core-file {}", core.display())).await;
+            let _ = session
+                .command(&format!("core-file {}", core.display()))
+                .await;
         }
         // Never over an `ended`/`exited` the reader has already recorded.
         if let Ok(mut state) = session.state.lock()
@@ -521,7 +533,10 @@ async fn run_exchange(
         format!("{token} {command}\n")
     };
     if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
-        return ("gdb session is not responding (write failed).".to_string(), false);
+        return (
+            "gdb session is not responding (write failed).".to_string(),
+            false,
+        );
     }
 
     let mut body = String::new();
@@ -616,7 +631,10 @@ async fn run_exchange(
 
     // The log repeats an error's own message; show it once, as the error.
     for line in log.lines() {
-        if error.as_deref().is_some_and(|msg| msg.trim() == line.trim()) {
+        if error
+            .as_deref()
+            .is_some_and(|msg| msg.trim() == line.trim())
+        {
             continue;
         }
         append_line(&mut body, line);
@@ -670,7 +688,14 @@ async fn reader_loop(
                 set(&state, "running");
             } else if class == "stopped" {
                 let reason = payload.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-                set(&state, if reason.starts_with("exited") { "exited" } else { "stopped" });
+                set(
+                    &state,
+                    if reason.starts_with("exited") {
+                        "exited"
+                    } else {
+                        "stopped"
+                    },
+                );
             }
         }
         if tx.send(rec).is_err() {
@@ -704,8 +729,8 @@ fn compose(stop_summary: Option<String>, body: String) -> String {
 
 /// First words of the CLI commands that resume the program.
 const EXECUTION_COMMANDS: [&str; 22] = [
-    "run", "r", "start", "starti", "continue", "c", "fg", "next", "n", "step", "s", "stepi",
-    "si", "nexti", "ni", "finish", "fin", "until", "u", "advance", "jump", "signal",
+    "run", "r", "start", "starti", "continue", "c", "fg", "next", "n", "step", "s", "stepi", "si",
+    "nexti", "ni", "finish", "fin", "until", "u", "advance", "jump", "signal",
 ];
 
 /// Run an execution command in the background (`continue` -> `continue&`).
@@ -737,7 +762,10 @@ fn starts_a_program(command: &str) -> bool {
 
 /// Commands whose result is a stop that arrives after their `^done`.
 fn stops_the_program(command: &str) -> bool {
-    matches!(command.split_whitespace().next(), Some("interrupt" | "-exec-interrupt"))
+    matches!(
+        command.split_whitespace().next(),
+        Some("interrupt" | "-exec-interrupt")
+    )
 }
 
 /// Program output shown with one command, beyond gdb's own [`OUTPUT_CAP`]:
@@ -840,7 +868,14 @@ mod tests {
         ] {
             assert_eq!(in_background(sent), want, "{sent}");
         }
-        for sent in ["bt", "print n", "break main", "info locals", "-exec-continue", "interrupt"] {
+        for sent in [
+            "bt",
+            "print n",
+            "break main",
+            "info locals",
+            "-exec-continue",
+            "interrupt",
+        ] {
             assert_eq!(in_background(sent), sent, "{sent}");
         }
         assert!(stops_the_program("interrupt") && stops_the_program("-exec-interrupt"));
@@ -865,7 +900,11 @@ mod tests {
             .status()
             .unwrap();
         assert!(built.success());
-        Some(GdbSession::start(1, Some(&bin), None, &[], dir).await.expect("start"))
+        Some(
+            GdbSession::start(1, Some(&bin), None, &[], dir)
+                .await
+                .expect("start"),
+        )
     }
 
     #[cfg(target_os = "linux")]
@@ -988,10 +1027,12 @@ mod tests {
     /// actual MI actor path. Skips cleanly when gdb/gcc are unavailable.
     #[tokio::test]
     async fn drives_real_gdb_end_to_end() {
-        let Some(cc) = ["cc", "gcc"]
-            .into_iter()
-            .find(|c| std::process::Command::new(c).arg("--version").output().is_ok())
-        else {
+        let Some(cc) = ["cc", "gcc"].into_iter().find(|c| {
+            std::process::Command::new(c)
+                .arg("--version")
+                .output()
+                .is_ok()
+        }) else {
             eprintln!("skip: no C compiler");
             return;
         };
@@ -1022,7 +1063,10 @@ mod tests {
         };
 
         let brk = session.command("break add").await;
-        assert!(brk.to_lowercase().contains("breakpoint"), "break add: {brk}");
+        assert!(
+            brk.to_lowercase().contains("breakpoint"),
+            "break add: {brk}"
+        );
         // Execution command: leads with a one-line stop summary from render_stop.
         let run = session.command("run").await;
         assert!(
@@ -1073,7 +1117,9 @@ mod tests {
     #[test]
     fn a_first_reply_that_shows_no_mi_session_is_a_startup_failure() {
         assert!(startup_failure("gdb session has ended.", "ended").is_some());
-        assert!(startup_failure("gdb session is not responding (write failed).", "starting").is_some());
+        assert!(
+            startup_failure("gdb session is not responding (write failed).", "starting").is_some()
+        );
         assert!(startup_failure("(gdb did not respond within 15s)", "starting").is_some());
         assert!(startup_failure("(no output)", "starting").is_none());
     }
@@ -1107,7 +1153,10 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("did not start"), "{err}");
-        assert!(err.contains("unrecognized"), "gdb's own reason must reach the model: {err}");
+        assert!(
+            err.contains("unrecognized"),
+            "gdb's own reason must reach the model: {err}"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -1166,7 +1215,10 @@ mod tests {
         };
         let _ = session.command("break ready").await;
         let run = session.command("run").await;
-        assert!(run.contains("Breakpoint") || run.contains("stopped"), "{run}");
+        assert!(
+            run.contains("Breakpoint") || run.contains("stopped"),
+            "{run}"
+        );
         let pid: i32 = std::fs::read_to_string(&pid_file)
             .expect("the program wrote its pid")
             .trim()

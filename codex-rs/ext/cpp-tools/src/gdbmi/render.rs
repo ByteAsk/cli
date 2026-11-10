@@ -54,7 +54,10 @@ pub(crate) fn render_stop(payload: &Value) -> String {
             // SIGSEGV stop. It used to read "Program exited.", which a model
             // takes for a clean exit.
             ("exited-signalled", _) => {
-                let signal = payload.get("signal-name").and_then(Value::as_str).unwrap_or("a signal");
+                let signal = payload
+                    .get("signal-name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("a signal");
                 match payload.get("signal-meaning").and_then(Value::as_str) {
                     Some(meaning) if !meaning.is_empty() => {
                         format!("Program terminated by {signal} ({meaning}).")
@@ -89,7 +92,11 @@ pub(crate) fn render_stop(payload: &Value) -> String {
 /// The coarse state a `*stopped` record leaves the session in.
 pub(crate) fn state_after_stop(payload: &Value) -> &'static str {
     let reason = payload.get("reason").and_then(Value::as_str).unwrap_or("");
-    if reason.starts_with("exited") { "exited" } else { "stopped" }
+    if reason.starts_with("exited") {
+        "exited"
+    } else {
+        "stopped"
+    }
 }
 
 #[cfg(test)]
@@ -104,9 +111,15 @@ mod tests {
             "signal-name": "SIGSEGV",
             "signal-meaning": "Segmentation fault",
         });
-        assert_eq!(render_stop(&payload), "Program terminated by SIGSEGV (Segmentation fault).");
+        assert_eq!(
+            render_stop(&payload),
+            "Program terminated by SIGSEGV (Segmentation fault)."
+        );
         assert_eq!(state_after_stop(&payload), "exited");
-        assert_eq!(state_after_stop(&serde_json::json!({"reason": "breakpoint-hit"})), "stopped");
+        assert_eq!(
+            state_after_stop(&serde_json::json!({"reason": "breakpoint-hit"})),
+            "stopped"
+        );
     }
     use serde_json::json;
 

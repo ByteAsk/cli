@@ -54,7 +54,11 @@ fn add_order_bytes_decode_at_the_specified_offsets() {
     assert_eq!(
         m,
         Message::AddOrder {
-            h: Header { locate: 7, tracking: 2, ts: TS },
+            h: Header {
+                locate: 7,
+                tracking: 2,
+                ts: TS
+            },
             order_ref: 0x0102_0304_0506_0708,
             side: b'S',
             shares: 300,
@@ -82,7 +86,16 @@ fn execution_cancel_delete_replace_and_trade_bytes_decode_at_the_specified_offse
     e.extend_from_slice(&9_000_000_001u64.to_be_bytes());
     assert_eq!(
         decode(&e).expect("E"),
-        Message::OrderExecuted { h: Header { locate: 1, tracking: 1, ts: TS }, order_ref: 42, shares: 100, match_number: 9_000_000_001 }
+        Message::OrderExecuted {
+            h: Header {
+                locate: 1,
+                tracking: 1,
+                ts: TS
+            },
+            order_ref: 42,
+            shares: 100,
+            match_number: 9_000_000_001
+        }
     );
     // C §1.4.2: ... printable @31, price @32 = 36 bytes.
     let mut c = head(b'C', 1, 1, TS);
@@ -91,23 +104,50 @@ fn execution_cancel_delete_replace_and_trade_bytes_decode_at_the_specified_offse
     c.extend_from_slice(&7u64.to_be_bytes());
     c.push(b'N');
     c.extend_from_slice(&999_900u32.to_be_bytes());
-    assert!(matches!(decode(&c).expect("C"), Message::OrderExecutedWithPrice { shares: 50, printable: b'N', price: 999_900, .. }));
+    assert!(matches!(
+        decode(&c).expect("C"),
+        Message::OrderExecutedWithPrice {
+            shares: 50,
+            printable: b'N',
+            price: 999_900,
+            ..
+        }
+    ));
     // X §1.4.3: ref @11, cancelled shares @19 = 23 bytes.
     let mut x = head(b'X', 1, 1, TS);
     x.extend_from_slice(&42u64.to_be_bytes());
     x.extend_from_slice(&25u32.to_be_bytes());
-    assert!(matches!(decode(&x).expect("X"), Message::OrderCancel { order_ref: 42, shares: 25, .. }));
+    assert!(matches!(
+        decode(&x).expect("X"),
+        Message::OrderCancel {
+            order_ref: 42,
+            shares: 25,
+            ..
+        }
+    ));
     // D §1.4.4: ref @11 = 19 bytes.
     let mut d = head(b'D', 1, 1, TS);
     d.extend_from_slice(&42u64.to_be_bytes());
-    assert!(matches!(decode(&d).expect("D"), Message::OrderDelete { order_ref: 42, .. }));
+    assert!(matches!(
+        decode(&d).expect("D"),
+        Message::OrderDelete { order_ref: 42, .. }
+    ));
     // U §1.4.5: original @11, new @19, shares @27, price @31 = 35 bytes.
     let mut u = head(b'U', 1, 1, TS);
     u.extend_from_slice(&42u64.to_be_bytes());
     u.extend_from_slice(&43u64.to_be_bytes());
     u.extend_from_slice(&700u32.to_be_bytes());
     u.extend_from_slice(&1_000_100u32.to_be_bytes());
-    assert!(matches!(decode(&u).expect("U"), Message::OrderReplace { original_ref: 42, new_ref: 43, shares: 700, price: 1_000_100, .. }));
+    assert!(matches!(
+        decode(&u).expect("U"),
+        Message::OrderReplace {
+            original_ref: 42,
+            new_ref: 43,
+            shares: 700,
+            price: 1_000_100,
+            ..
+        }
+    ));
     // P §1.5.1: ref @11, side @19, shares @20, stock @24, price @32, match @36 = 44 bytes.
     let mut p = head(b'P', 1, 1, TS);
     p.extend_from_slice(&0u64.to_be_bytes());
@@ -116,7 +156,15 @@ fn execution_cancel_delete_replace_and_trade_bytes_decode_at_the_specified_offse
     p.extend_from_slice(b"MSFT    ");
     p.extend_from_slice(&3_100_000u32.to_be_bytes());
     p.extend_from_slice(&5u64.to_be_bytes());
-    assert!(matches!(decode(&p).expect("P"), Message::Trade { shares: 200, price: 3_100_000, match_number: 5, .. }));
+    assert!(matches!(
+        decode(&p).expect("P"),
+        Message::Trade {
+            shares: 200,
+            price: 3_100_000,
+            match_number: 5,
+            ..
+        }
+    ));
     for bytes in [e, c, x, d, u, p] {
         let m = decode(&bytes).expect("decode");
         assert_eq!(encode(&m), Some(bytes), "{m:?}");
@@ -127,7 +175,10 @@ fn execution_cancel_delete_replace_and_trade_bytes_decode_at_the_specified_offse
 fn system_event_and_stock_directory_decode() {
     let mut s = head(b'S', 0, 0, TS);
     s.push(b'Q');
-    assert!(matches!(decode(&s).expect("S"), Message::SystemEvent { code: b'Q', .. }));
+    assert!(matches!(
+        decode(&s).expect("S"),
+        Message::SystemEvent { code: b'Q', .. }
+    ));
     // R §1.2.1: stock @11, market category @19, financial status @20, round lot @21 (4),
     // round lots only @25, issue class @26, subtype @27 (2), authenticity @29, short sale @30,
     // IPO @31, LULD tier @32, ETP flag @33, ETP leverage @34 (4), inverse @38 = 39 bytes.
@@ -140,7 +191,19 @@ fn system_event_and_stock_directory_decode() {
     r.push(b'N');
     assert_eq!(r.len(), 39);
     let m = decode(&r).expect("R");
-    assert!(matches!(m, Message::StockDirectory { round_lot_size: 100, etp_flag: b'Y', etp_leverage: 3, luld_tier: b'1', .. }), "{m:?}");
+    assert!(
+        matches!(
+            m,
+            Message::StockDirectory {
+                round_lot_size: 100,
+                etp_flag: b'Y',
+                etp_leverage: 3,
+                luld_tier: b'1',
+                ..
+            }
+        ),
+        "{m:?}"
+    );
     assert_eq!(encode(&m), Some(r));
     assert_eq!(to_json(&m)["stock"], json!("QQQ"));
 }
@@ -152,7 +215,10 @@ fn wrong_lengths_are_errors_and_unknown_types_are_kept_not_guessed() {
     let err = decode(&a).expect_err("37 bytes");
     assert!(err.contains("must be 36 bytes"), "{err}");
     assert!(decode(&[]).is_err());
-    assert_eq!(decode(b"Hxyz").expect("other"), Message::Other { kind: b'H', len: 4 });
+    assert_eq!(
+        decode(b"Hxyz").expect("other"),
+        Message::Other { kind: b'H', len: 4 }
+    );
 }
 
 #[test]
@@ -169,7 +235,11 @@ fn a_truncated_capture_is_an_error_that_names_the_message() {
 #[test]
 fn normalization_maps_every_book_message_and_checks_the_directory() {
     let mut n = normalize::Normalizer::new();
-    let h = Header { locate: 1, tracking: 0, ts: 10 };
+    let h = Header {
+        locate: 1,
+        tracking: 0,
+        ts: 10,
+    };
     let dir = decode(&{
         let mut r = head(b'R', 1, 0, 1);
         r.extend_from_slice(b"AAA     QN");
@@ -181,28 +251,77 @@ fn normalization_maps_every_book_message_and_checks_the_directory() {
     })
     .expect("R");
     assert_eq!(n.push(&dir).expect("dir"), None);
-    let add = Message::AddOrder { h, order_ref: 5, side: b'B', shares: 100, stock: itch50::stock_field("AAA"), price: 999_900, attribution: None };
+    let add = Message::AddOrder {
+        h,
+        order_ref: 5,
+        side: b'B',
+        shares: 100,
+        stock: itch50::stock_field("AAA"),
+        price: 999_900,
+        attribution: None,
+    };
     assert_eq!(
         n.push(&add).expect("add"),
-        Some(json!({"ts":10,"type":"add","sym":"AAA","id":5,"side":"B","px":999_900,"qty":100,"msg":"A"}))
+        Some(
+            json!({"ts":10,"type":"add","sym":"AAA","id":5,"side":"B","px":999_900,"qty":100,"msg":"A"})
+        )
     );
-    let wrong = Message::AddOrder { h, order_ref: 9, side: b'B', shares: 100, stock: itch50::stock_field("BBB"), price: 999_900, attribution: None };
-    assert!(n.push(&wrong).expect_err("mismatch").contains("disagrees with the stock directory"));
-    let c = Message::OrderExecutedWithPrice { h, order_ref: 5, shares: 40, match_number: 1, printable: b'Y', price: 1_000_000 };
-    assert_eq!(n.push(&c).expect("C"), Some(json!({"ts":10,"type":"exec","id":5,"qty":40,"px":1_000_000,"msg":"C"})));
-    let u = Message::OrderReplace { h, original_ref: 5, new_ref: 6, shares: 10, price: 3 };
-    assert_eq!(n.push(&u).expect("U"), Some(json!({"ts":10,"type":"replace","id":5,"new_id":6,"px":3,"qty":10,"msg":"U"})));
-    assert_eq!(n.push(&Message::SystemEvent { h, code: b'O' }).expect("S"), None);
+    let wrong = Message::AddOrder {
+        h,
+        order_ref: 9,
+        side: b'B',
+        shares: 100,
+        stock: itch50::stock_field("BBB"),
+        price: 999_900,
+        attribution: None,
+    };
+    assert!(
+        n.push(&wrong)
+            .expect_err("mismatch")
+            .contains("disagrees with the stock directory")
+    );
+    let c = Message::OrderExecutedWithPrice {
+        h,
+        order_ref: 5,
+        shares: 40,
+        match_number: 1,
+        printable: b'Y',
+        price: 1_000_000,
+    };
+    assert_eq!(
+        n.push(&c).expect("C"),
+        Some(json!({"ts":10,"type":"exec","id":5,"qty":40,"px":1_000_000,"msg":"C"}))
+    );
+    let u = Message::OrderReplace {
+        h,
+        original_ref: 5,
+        new_ref: 6,
+        shares: 10,
+        price: 3,
+    };
+    assert_eq!(
+        n.push(&u).expect("U"),
+        Some(json!({"ts":10,"type":"replace","id":5,"new_id":6,"px":3,"qty":10,"msg":"U"}))
+    );
+    assert_eq!(
+        n.push(&Message::SystemEvent { h, code: b'O' }).expect("S"),
+        None
+    );
     assert_eq!(n.stats.skipped_by_type.get(&'S'), Some(&1));
 }
 
 fn golden(name: &str) -> Vec<Value> {
-    let f = std::fs::File::open(fixtures().join(name)).expect("golden file (regenerate with BYTEASK_UPDATE_FIXTURES=1)");
-    JsonLines::new(std::io::BufReader::new(f)).map(|r| r.expect("golden line")).collect()
+    let f = std::fs::File::open(fixtures().join(name))
+        .expect("golden file (regenerate with BYTEASK_UPDATE_FIXTURES=1)");
+    JsonLines::new(std::io::BufReader::new(f))
+        .map(|r| r.expect("golden line"))
+        .collect()
 }
 
 fn decoded_messages(bytes: &[u8]) -> Vec<Value> {
-    read_messages(bytes).map(|m| to_json(&m.expect("message"))).collect()
+    read_messages(bytes)
+        .map(|m| to_json(&m.expect("message")))
+        .collect()
 }
 
 fn decoded_events(bytes: &[u8]) -> Vec<Value> {
@@ -217,13 +336,28 @@ fn the_checked_in_fixture_is_exactly_what_the_seeded_generator_produces() {
         std::fs::create_dir_all(fixtures()).expect("dir");
         std::fs::write(fixtures().join(format!("{name}.itch")), &bytes).expect("write");
         let lines = |vs: Vec<Value>| vs.iter().map(|v| format!("{v}\n")).collect::<String>();
-        std::fs::write(fixtures().join(format!("{name}.messages.jsonl")), lines(decoded_messages(&bytes))).expect("write");
-        std::fs::write(fixtures().join(format!("{name}.events.jsonl")), lines(decoded_events(&bytes))).expect("write");
+        std::fs::write(
+            fixtures().join(format!("{name}.messages.jsonl")),
+            lines(decoded_messages(&bytes)),
+        )
+        .expect("write");
+        std::fs::write(
+            fixtures().join(format!("{name}.events.jsonl")),
+            lines(decoded_events(&bytes)),
+        )
+        .expect("write");
         eprintln!("fixture sha256 {}", sha256_hex(&bytes));
     }
     let on_disk = std::fs::read(fixtures().join(format!("{name}.itch"))).expect("fixture");
-    assert_eq!(sha256_hex(&on_disk), FIXTURE_SHA256, "the checked-in fixture changed");
-    assert!(on_disk == bytes, "the generator no longer reproduces the checked-in fixture");
+    assert_eq!(
+        sha256_hex(&on_disk),
+        FIXTURE_SHA256,
+        "the checked-in fixture changed"
+    );
+    assert!(
+        on_disk == bytes,
+        "the generator no longer reproduces the checked-in fixture"
+    );
 }
 
 #[test]
@@ -236,10 +370,15 @@ fn the_fixture_decodes_to_its_golden_files_under_the_replay_library() {
         (decoded_events(&bytes), format!("{name}.events.jsonl")),
     ] {
         let c = compare_records(&golden(&file), &got, &exact).expect("compare");
-        assert!(c.same, "{file}: {}", byteask_replay::report::sentence(&c, "golden", "decoded"));
+        assert!(
+            c.same,
+            "{file}: {}",
+            byteask_replay::report::sentence(&c, "golden", "decoded")
+        );
     }
     // Decoding is a pure function of the bytes: twice gives the same records.
-    let again = compare_records(&decoded_events(&bytes), &decoded_events(&bytes), &exact).expect("compare");
+    let again =
+        compare_records(&decoded_events(&bytes), &decoded_events(&bytes), &exact).expect("compare");
     assert!(again.same);
     // Every book message type is in the fixture, so the golden files cover each mapping.
     let kinds: std::collections::BTreeSet<String> = decoded_messages(&bytes)
@@ -247,7 +386,10 @@ fn the_fixture_decodes_to_its_golden_files_under_the_replay_library() {
         .filter_map(|m| m["type"].as_str().map(str::to_string))
         .collect();
     for k in ["S", "R", "A", "F", "E", "C", "X", "D", "U", "P"] {
-        assert!(kinds.contains(k), "the fixture has no {k} message: {kinds:?}");
+        assert!(
+            kinds.contains(k),
+            "the fixture has no {k} message: {kinds:?}"
+        );
     }
 }
 
@@ -263,8 +405,12 @@ fn a_one_byte_change_in_the_fixture_is_found_at_the_right_message() {
     }
     let len = usize::from(u16::from_be_bytes([bytes[offset], bytes[offset + 1]]));
     bytes[offset + 2 + len - 1] ^= 0x01;
-    let c = compare_records(&golden(&format!("{name}.messages.jsonl")), &decoded_messages(&bytes), &Rules::exact())
-        .expect("compare");
+    let c = compare_records(
+        &golden(&format!("{name}.messages.jsonl")),
+        &decoded_messages(&bytes),
+        &Rules::exact(),
+    )
+    .expect("compare");
     let d = c.first_difference.expect("a difference");
     assert_eq!(d.index_a, Some(50), "{d:?}");
 }

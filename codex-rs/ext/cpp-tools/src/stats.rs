@@ -276,7 +276,11 @@ pub fn render_verdict(
             gate_pct,
             floor_bound,
         } => {
-            let resolve = if *floor_bound { floor_hint } else { resolve_hint };
+            let resolve = if *floor_bound {
+                floor_hint
+            } else {
+                resolve_hint
+            };
             format!(
                 "A and B differ by {delta_pct:.1}% which is INSIDE the measurement noise \
                  (gate {gate_pct:.1}%). Do NOT claim a speedup from this data. \
@@ -339,7 +343,9 @@ mod tests {
         let mut wins = 0;
         for _ in 0..TRIALS {
             let a: Vec<f64> = (0..n).map(|_| 100.0 + sd_a * rng.normal()).collect();
-            let b: Vec<f64> = (0..n).map(|_| 100.0 + shift_b + sd_b * rng.normal()).collect();
+            let b: Vec<f64> = (0..n)
+                .map(|_| 100.0 + shift_b + sd_b * rng.normal())
+                .collect();
             let verdict = compare(
                 &Measurement::from_samples(&a, 0),
                 &Measurement::from_samples(&b, 0),
@@ -408,8 +414,14 @@ mod tests {
 
     #[test]
     fn missing_noise_on_either_side_is_no_estimate() {
-        assert_eq!(compare(&m(2.0, None), &m(1.0, Some(0.01)), 0.01), Verdict::NoNoiseEstimate);
-        assert_eq!(compare(&m(2.0, Some(0.01)), &m(1.0, None), 0.01), Verdict::NoNoiseEstimate);
+        assert_eq!(
+            compare(&m(2.0, None), &m(1.0, Some(0.01)), 0.01),
+            Verdict::NoNoiseEstimate
+        );
+        assert_eq!(
+            compare(&m(2.0, Some(0.01)), &m(1.0, None), 0.01),
+            Verdict::NoNoiseEstimate
+        );
     }
 
     #[test]
@@ -477,7 +489,10 @@ mod tests {
 
     #[test]
     fn non_positive_mean_is_no_estimate() {
-        assert_eq!(compare(&m(0.0, Some(0.1)), &m(1.0, Some(0.1)), 0.01), Verdict::NoNoiseEstimate);
+        assert_eq!(
+            compare(&m(0.0, Some(0.1)), &m(1.0, Some(0.1)), 0.01),
+            Verdict::NoNoiseEstimate
+        );
     }
 
     #[test]
@@ -626,7 +641,10 @@ mod tests {
     #[test]
     fn summary_with_and_without_noise() {
         let a = Measurement::from_summary(0.0123, Some(0.0001), 5, 0);
-        assert_eq!(a.summary("A", "s", 4), "A: mean 0.0123s over 5 run(s) (±0.0001s stderr)");
+        assert_eq!(
+            a.summary("A", "s", 4),
+            "A: mean 0.0123s over 5 run(s) (±0.0001s stderr)"
+        );
         let b = Measurement::from_summary(0.5, None, 1, 0);
         assert_eq!(b.summary("B", "s", 4), "B: mean 0.5000s over 1 run(s)");
     }

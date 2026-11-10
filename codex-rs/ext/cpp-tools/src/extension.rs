@@ -16,16 +16,16 @@ use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
-use codex_features::Feature;
-use codex_features::Features;
-use codex_utils_redacted_string::RedactedString;
 use codex_extension_api::ToolStartInput;
 use codex_extension_api::TurnGateContributor;
 use codex_extension_api::TurnGateFragments;
 use codex_extension_api::TurnGateInput;
-use codex_protocol::protocol::SessionSource;
 use codex_extension_api::WorldStateContributionInput;
 use codex_extension_api::WorldStateSectionContribution;
+use codex_features::Feature;
+use codex_features::Features;
+use codex_protocol::protocol::SessionSource;
+use codex_utils_redacted_string::RedactedString;
 
 use crate::detect;
 use crate::envnote::EnvNote;
@@ -39,8 +39,8 @@ use crate::session_head::SessionHead;
 use crate::testsel::jobs::Jobs;
 use crate::tools::AttachState;
 use crate::tools::BenchTool;
-use crate::tools::CheckStatusTool;
 use crate::tools::BinaryTool;
+use crate::tools::CheckStatusTool;
 use crate::tools::ClangTidyTool;
 use crate::tools::ClangdNavTool;
 use crate::tools::CompileDbTool;
@@ -62,8 +62,8 @@ use crate::tools::RecordTool;
 use crate::tools::RepoHistoryTool;
 use crate::tools::SanitizeTool;
 use crate::tools::SymbolizeTool;
-use crate::workflow::Workflow;
 use crate::tools::TestSelectTool;
+use crate::workflow::Workflow;
 
 /// Should this thread see none of our tools and none of our guidance?
 ///
@@ -264,9 +264,12 @@ impl ThreadLifecycleContributor<Config> for CppToolsExtension {
             let full_access = crate::trust::full_access(input.config);
             // The relax setting is read from the protected policy
             // file only, never from the repository.
-            let relaxed = byteask_policy::load(input.config.codex_home.as_path(), std::slice::from_ref(&cwd))
-                .policy
-                .is_relaxed(&cwd);
+            let relaxed = byteask_policy::load(
+                input.config.codex_home.as_path(),
+                std::slice::from_ref(&cwd),
+            )
+            .policy
+            .is_relaxed(&cwd);
             let sandbox = Arc::new(crate::sandbox::Settings {
                 helper: input.config.codex_linux_sandbox_exe.clone(),
                 workspace: cwd.clone(),
@@ -288,7 +291,10 @@ impl ThreadLifecycleContributor<Config> for CppToolsExtension {
                     .with_fast(codex_core::byteask_harness::flag(input.config, "fast"))
                     .is_off("env_note")
             {
-                EnvNote::spawn(cwd.clone(), Some(input.config.codex_home.as_path().join("cache")))
+                EnvNote::spawn(
+                    cwd.clone(),
+                    Some(input.config.codex_home.as_path().join("cache")),
+                )
             } else {
                 EnvNote::none()
             };
@@ -386,9 +392,14 @@ impl ToolContributor for CppToolsExtension {
         // `BYTEASK_CPP_ABLATE` removes single tools.
         let ablation = crate::ablation::Ablation::from_env().with_fast(fast(thread_store));
         // cpp_perf_lab only exists when a perf lab is configured.
-        let perf_lab = crate::tools::perf_lab_tool(&cwd, native_exec, crate::tools::LabTarget::from_env());
+        let perf_lab =
+            crate::tools::perf_lab_tool(&cwd, native_exec, crate::tools::LabTarget::from_env());
         let mut tools: Vec<
-            Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>,
+            Arc<
+                dyn for<'call> codex_extension_api::ToolExecutor<
+                        codex_extension_api::ToolCall<'call>,
+                    >,
+            >,
         > = vec![
             Arc::new(CppCheckTool { cwd: cwd.clone() }),
             Arc::new(ClangTidyTool { cwd: cwd.clone() }),
@@ -497,9 +508,12 @@ impl ToolContributor for CppToolsExtension {
 /// The layers every ByteAsk C/C++ tool of a thread gets, whichever contributor offers it
 /// (the main list above, and `crate::runtime_extension`).
 pub(crate) fn wrap_thread_tools(
-    tools: Vec<Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>>,
+    tools: Vec<
+        Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>,
+    >,
     thread_store: &ExtensionData,
-) -> Vec<Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>> {
+) -> Vec<Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>>
+{
     let Some(state) = thread_store.get::<CppToolsState>() else {
         return Vec::new();
     };
@@ -528,37 +542,42 @@ pub(crate) fn test_extension() -> impl ToolContributor {
 }
 
 fn thread_tool_layers(
-    tools: Vec<Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>>,
+    tools: Vec<
+        Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>,
+    >,
     state: &CppToolsState,
     ablation: &crate::ablation::Ablation,
     thread_store: &ExtensionData,
-) -> Vec<Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>> {
-        // Every error a tool returns carries a NOT RUN result line. Every
-        // program a tool starts runs in its sandbox profile. `BYTEASK_CPP_ABLATE`
-        // removes single tools. Specs and every other property
-        // are delegated unchanged.
-        let local_only = state.local_only;
-        let hidden = thread_store.get::<HideMissing>();
-        tools
-            .into_iter()
-            .filter(|tool| !ablation.tool_off(&tool.tool_name().name))
-            .filter(|tool| {
-                hidden
-                    .as_ref()
-                    .is_none_or(|hidden| !hidden.0.contains(&tool.tool_name().name.as_str()))
-            })
-            .filter(|tool| offered_here(&tool.tool_name().name))
-            // In a local-only home the tools that send code or a question
-            // off this machine answer NOT RUN (offline) and send nothing.
-            .map(|tool| match crate::offline::destination(&tool.tool_name().name) {
+) -> Vec<Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>>
+{
+    // Every error a tool returns carries a NOT RUN result line. Every
+    // program a tool starts runs in its sandbox profile. `BYTEASK_CPP_ABLATE`
+    // removes single tools. Specs and every other property
+    // are delegated unchanged.
+    let local_only = state.local_only;
+    let hidden = thread_store.get::<HideMissing>();
+    tools
+        .into_iter()
+        .filter(|tool| !ablation.tool_off(&tool.tool_name().name))
+        .filter(|tool| {
+            hidden
+                .as_ref()
+                .is_none_or(|hidden| !hidden.0.contains(&tool.tool_name().name.as_str()))
+        })
+        .filter(|tool| offered_here(&tool.tool_name().name))
+        // In a local-only home the tools that send code or a question
+        // off this machine answer NOT RUN (offline) and send nothing.
+        .map(
+            |tool| match crate::offline::destination(&tool.tool_name().name) {
                 Some(destination) if local_only => crate::offline::Offline::wrap(tool, destination),
                 _ => tool,
-            })
-            .map(|tool| crate::sandbox::Sandboxed::wrap(tool, state.sandbox.clone()))
-            .map(crate::results::WithResult::wrap)
-            // The result line goes into the local results store.
-            .map(|tool| results_store::Recorded::wrap(tool, thread_store))
-            .collect()
+            },
+        )
+        .map(|tool| crate::sandbox::Sandboxed::wrap(tool, state.sandbox.clone()))
+        .map(crate::results::WithResult::wrap)
+        // The result line goes into the local results store.
+        .map(|tool| results_store::Recorded::wrap(tool, thread_store))
+        .collect()
 }
 
 impl ToolLifecycleContributor for CppToolsExtension {
@@ -635,8 +654,8 @@ impl ContextContributor for CppToolsExtension {
             };
             // `BYTEASK_CPP_GUIDANCE_FILE` (see `crate::ablation`): another
             // guidance text for this process. The environment note below is unaffected.
-            let guidance = crate::ablation::guidance_override(|key| std::env::var_os(key))
-                .unwrap_or(guidance);
+            let guidance =
+                crate::ablation::guidance_override(|key| std::env::var_os(key)).unwrap_or(guidance);
             let mut fragments = vec![PromptFragment::developer_capability(
                 // The same guidance text, byte for byte, whatever the workflow enforces
                 // (there is no variant per enforcement).
@@ -672,7 +691,10 @@ impl ContextContributor for CppToolsExtension {
 }
 
 impl TurnGateContributor for CppToolsExtension {
-    fn after_step<'a>(&'a self, input: TurnGateInput<'a>) -> ExtensionFuture<'a, TurnGateFragments> {
+    fn after_step<'a>(
+        &'a self,
+        input: TurnGateInput<'a>,
+    ) -> ExtensionFuture<'a, TurnGateFragments> {
         Box::pin(async move {
             let Some(workflow) = input
                 .thread_store
@@ -685,7 +707,10 @@ impl TurnGateContributor for CppToolsExtension {
         })
     }
 
-    fn before_stop<'a>(&'a self, input: TurnGateInput<'a>) -> ExtensionFuture<'a, TurnGateFragments> {
+    fn before_stop<'a>(
+        &'a self,
+        input: TurnGateInput<'a>,
+    ) -> ExtensionFuture<'a, TurnGateFragments> {
         Box::pin(async move {
             let Some(workflow) = input
                 .thread_store
@@ -701,8 +726,14 @@ impl TurnGateContributor for CppToolsExtension {
                     .get::<CppToolsState>()
                     .map(|state| (state.cwd.clone(), state.native_exec, state.sandbox.clone()))
             {
-                let review =
-                    crate::tools::finish_review(&cwd, native_exec, sandbox, &workflow, input.turn_id).await;
+                let review = crate::tools::finish_review(
+                    &cwd,
+                    native_exec,
+                    sandbox,
+                    &workflow,
+                    input.turn_id,
+                )
+                .await;
                 if !review.is_empty() {
                     return review;
                 }
@@ -837,7 +868,10 @@ mod tests {
         assert_eq!(tools.len(), ALL_TOOLS);
         for tool in tools {
             let name = tool.tool_name().name;
-            assert!(crate::sandbox::profile_for(&name).is_some(), "{name} has no sandbox profile");
+            assert!(
+                crate::sandbox::profile_for(&name).is_some(),
+                "{name} has no sandbox profile"
+            );
         }
     }
 
@@ -913,8 +947,14 @@ mod tests {
         let fragments = guidance_fragments(&thread_store).await;
         assert_eq!(fragments.len(), 2);
         // No workflow in this thread: nothing is enforced, so the prose variant.
-        assert_eq!(fragments[0].text(), paragraph(cpp_guidance(Enforcement::NONE)));
-        assert_eq!(fragments[1].text(), "C/C++ environment (probed at session start):\n\n");
+        assert_eq!(
+            fragments[0].text(),
+            paragraph(cpp_guidance(Enforcement::NONE))
+        );
+        assert_eq!(
+            fragments[1].text(),
+            "C/C++ environment (probed at session start):\n\n"
+        );
         assert_eq!(fragments[1].content_kind().0, "cpp_tools.environment");
 
         let gated = thread_store_for(/*ephemeral*/ true, /*shell*/ false);
@@ -957,7 +997,10 @@ mod tests {
         let thread_store = ExtensionData::new("thread");
         thread_store.insert(state(true));
         let fragments = guidance_fragments(&thread_store).await;
-        assert_eq!(fragments[0].text(), paragraph(crate::guidance::CPP_GUIDANCE));
+        assert_eq!(
+            fragments[0].text(),
+            paragraph(crate::guidance::CPP_GUIDANCE)
+        );
 
         let thread_store = ExtensionData::new("thread");
         thread_store.insert(state(false));
@@ -984,7 +1027,10 @@ mod tests {
             ..state(true)
         });
         let fragments = guidance_fragments(&thread_store).await;
-        assert_eq!(fragments[0].text(), paragraph(cpp_guidance(Enforcement::NONE)));
+        assert_eq!(
+            fragments[0].text(),
+            paragraph(cpp_guidance(Enforcement::NONE))
+        );
     }
 
     /// Pins `shell_enabled` to `ShellTool` alone. `UnifiedExec` is force-enabled by
@@ -1047,7 +1093,10 @@ mod tests {
             started_unix: 0,
             full_access: false,
         });
-        assert_eq!(extension.tools(&session_store, &thread_store).len(), ALL_TOOLS);
+        assert_eq!(
+            extension.tools(&session_store, &thread_store).len(),
+            ALL_TOOLS
+        );
     }
 
     #[test]
@@ -1123,7 +1172,9 @@ mod tests {
                         tool_name: tool.tool_name(),
                         model: "m".to_string(),
                         codex_turn_metadata: None,
-                        truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(1 << 20),
+                        truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(
+                            1 << 20,
+                        ),
                         source: ToolCallSource::Direct,
                         conversation_history: ConversationHistory::default(),
                         turn_item_emitter: Arc::new(NoopTurnItemEmitter),
@@ -1135,9 +1186,18 @@ mod tests {
                     Err(codex_extension_api::FunctionCallError::RespondToModel(text))
                     | Err(codex_extension_api::FunctionCallError::Fatal(text)) => {
                         let result = check_result::CheckResult::from_tool_text(&name, &text)
-                            .unwrap_or_else(|| panic!("{name} {args}: error without a result line: {text}"));
-                        assert_eq!(result.verdict, check_result::Verdict::NotRun, "{name} {args}: {text}");
-                        assert!(result.fix.is_some_and(|fix| !fix.is_empty()), "{name}: {text}");
+                            .unwrap_or_else(|| {
+                                panic!("{name} {args}: error without a result line: {text}")
+                            });
+                        assert_eq!(
+                            result.verdict,
+                            check_result::Verdict::NotRun,
+                            "{name} {args}: {text}"
+                        );
+                        assert!(
+                            result.fix.is_some_and(|fix| !fix.is_empty()),
+                            "{name}: {text}"
+                        );
                     }
                     Ok(output) => {
                         let text = match output.to_response_item("c", &payload) {
@@ -1154,7 +1214,9 @@ mod tests {
                             other => panic!("{name}: unexpected item {other:?}"),
                         };
                         let result = check_result::CheckResult::from_tool_text(&name, &text)
-                            .unwrap_or_else(|| panic!("{name} {args}: output without a result line: {text}"));
+                            .unwrap_or_else(|| {
+                                panic!("{name} {args}: output without a result line: {text}")
+                            });
                         assert_eq!(output.success_for_logging(), result.is_pass(), "{name}");
                     }
                 }
@@ -1192,36 +1254,36 @@ mod tests {
             .map(|tool| tool.tool_name())
             .collect::<Vec<_>>();
         let expected: Vec<ToolName> = vec![
-                ToolName::plain("cpp_check"),
-                ToolName::plain("cpp_tidy"),
-                ToolName::plain("cpp_sanitize"),
-                ToolName::plain("cpp_fix_verify"),
-                ToolName::plain("cpp_symbolize"),
-                ToolName::plain("cpp_compile_db"),
-                ToolName::plain("cpp_kdb"),
-                ToolName::plain("debug"),
-                ToolName::plain("debug_session"),
-                ToolName::plain("debug_attach"),
-                ToolName::plain("cpp_perf"),
-                ToolName::plain("cpp_insights"),
-                ToolName::plain("cpp_nav"),
-                ToolName::plain("cpp_impact"),
-                ToolName::plain("cpp_format"),
-                ToolName::plain("cpp_binary"),
-                ToolName::plain("cpp_bench"),
-                ToolName::plain("debug_record"),
-                ToolName::plain("cpp_layout"),
-                ToolName::plain("cpp_decompile"),
-                ToolName::plain("cpp_godbolt"),
-                ToolName::plain("cpp_intrinsic"),
-                ToolName::plain("cpp_test_select"),
-                ToolName::plain("cpp_repo_history"),
-                ToolName::plain("cpp_finish_check"),
-                ToolName::plain("check_status"),
-            ]
-            .into_iter()
-            .filter(|name| offered_here(&name.name))
-            .collect();
+            ToolName::plain("cpp_check"),
+            ToolName::plain("cpp_tidy"),
+            ToolName::plain("cpp_sanitize"),
+            ToolName::plain("cpp_fix_verify"),
+            ToolName::plain("cpp_symbolize"),
+            ToolName::plain("cpp_compile_db"),
+            ToolName::plain("cpp_kdb"),
+            ToolName::plain("debug"),
+            ToolName::plain("debug_session"),
+            ToolName::plain("debug_attach"),
+            ToolName::plain("cpp_perf"),
+            ToolName::plain("cpp_insights"),
+            ToolName::plain("cpp_nav"),
+            ToolName::plain("cpp_impact"),
+            ToolName::plain("cpp_format"),
+            ToolName::plain("cpp_binary"),
+            ToolName::plain("cpp_bench"),
+            ToolName::plain("debug_record"),
+            ToolName::plain("cpp_layout"),
+            ToolName::plain("cpp_decompile"),
+            ToolName::plain("cpp_godbolt"),
+            ToolName::plain("cpp_intrinsic"),
+            ToolName::plain("cpp_test_select"),
+            ToolName::plain("cpp_repo_history"),
+            ToolName::plain("cpp_finish_check"),
+            ToolName::plain("check_status"),
+        ]
+        .into_iter()
+        .filter(|name| offered_here(&name.name))
+        .collect();
         assert_eq!(names, expected);
     }
 }
@@ -1311,9 +1373,13 @@ mod description_snapshot_tests {
             std::fs::write(path, now).expect("write snapshot");
             return;
         }
-        let pinned = std::fs::read_to_string(path)
-            .unwrap_or_else(|_| panic!("{path} missing: run once with BYTEASK_UPDATE_TOOL_SNAPSHOT=1"));
-        assert_eq!(pinned, now, "model-facing text in {path} changed; see the module comment");
+        let pinned = std::fs::read_to_string(path).unwrap_or_else(|_| {
+            panic!("{path} missing: run once with BYTEASK_UPDATE_TOOL_SNAPSHOT=1")
+        });
+        assert_eq!(
+            pinned, now,
+            "model-facing text in {path} changed; see the module comment"
+        );
     }
 
     #[test]
@@ -1339,12 +1405,17 @@ mod description_snapshot_tests {
         )
         .await;
         let guidance = fragments[0].text().to_string();
-        assert_eq!(guidance, paragraph(crate::guidance::full_access_guidance(CPP_GUIDANCE)));
+        assert_eq!(
+            guidance,
+            paragraph(crate::guidance::full_access_guidance(CPP_GUIDANCE))
+        );
         let tools = tools_named(&thread_store, &["debug_attach"]);
         let now = format!(
             "{}\n",
-            serde_json::to_string_pretty(&serde_json::json!({ "guidance": guidance, "tools": tools }))
-                .expect("json")
+            serde_json::to_string_pretty(
+                &serde_json::json!({ "guidance": guidance, "tools": tools })
+            )
+            .expect("json")
         );
         check_or_update(FULL_ACCESS_SNAPSHOT, &now);
         // The default thread keeps the approved text.
@@ -1389,11 +1460,15 @@ mod description_snapshot_tests {
             std::fs::write(NEW_TOOLS_SNAPSHOT, &now).expect("write snapshot");
             return;
         }
-        let pinned = std::fs::read_to_string(NEW_TOOLS_SNAPSHOT).expect("new-tools snapshot missing");
+        let pinned =
+            std::fs::read_to_string(NEW_TOOLS_SNAPSHOT).expect("new-tools snapshot missing");
         assert_eq!(pinned, now, "model-facing text of a new tool changed");
         // Every new tool is really there, so the split cannot hide a missing one.
         for name in NEW_TOOLS {
-            assert!(now.contains(&format!("\"name\": \"{name}\"")), "{name} is not pinned");
+            assert!(
+                now.contains(&format!("\"name\": \"{name}\"")),
+                "{name} is not pinned"
+            );
         }
     }
 
@@ -1522,7 +1597,9 @@ mod local_only_tests {
     }
 
     async fn answer(
-        tool: &Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>,
+        tool: &Arc<
+            dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>,
+        >,
         args: serde_json::Value,
     ) -> String {
         let payload = ToolPayload::Function {
@@ -1560,24 +1637,42 @@ mod local_only_tests {
         let args = serde_json::json!({"source": "int main(){}", "code": "int main(){}",
             "path": "a.cpp", "name": "_mm_add_ps", "query": "_mm_add_ps"});
         for name in ["cpp_godbolt", "cpp_insights", "cpp_bench", "cpp_intrinsic"] {
-            let tool = local.iter().find(|tool| tool.tool_name().name == name).expect(name);
-            let unwrapped = normal.iter().find(|tool| tool.tool_name().name == name).expect(name);
+            let tool = local
+                .iter()
+                .find(|tool| tool.tool_name().name == name)
+                .expect(name);
+            let unwrapped = normal
+                .iter()
+                .find(|tool| tool.tool_name().name == name)
+                .expect(name);
             assert_eq!(
                 serde_json::to_value(tool.spec()).expect("spec"),
                 serde_json::to_value(unwrapped.spec()).expect("spec"),
                 "{name}: the spec is unchanged"
             );
             let text = answer(tool, args.clone()).await;
-            let result = check_result::CheckResult::from_tool_text(name, &text).expect("result line");
-            assert_eq!(result.reason, Some(check_result::NotRunReason::Offline), "{name}: {text}");
+            let result =
+                check_result::CheckResult::from_tool_text(name, &text).expect("result line");
+            assert_eq!(
+                result.reason,
+                Some(check_result::NotRunReason::Offline),
+                "{name}: {text}"
+            );
             assert!(text.contains("local only"), "{text}");
             assert!(
-                result.fix.as_deref().unwrap_or_default().contains("byteask policy local-only off"),
+                result
+                    .fix
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("byteask policy local-only off"),
                 "{text}"
             );
         }
         // A tool that works on this machine is not touched.
-        let check = local.iter().find(|tool| tool.tool_name().name == "cpp_check").expect("cpp_check");
+        let check = local
+            .iter()
+            .find(|tool| tool.tool_name().name == "cpp_check")
+            .expect("cpp_check");
         let text = answer(check, serde_json::json!({"path": "missing.cpp"})).await;
         assert!(!text.contains("local only"), "{text}");
     }

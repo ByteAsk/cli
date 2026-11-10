@@ -31,24 +31,31 @@ fn main() -> ExitCode {
             };
             match serde_json::to_string_pretty(&result) {
                 Ok(s) => println!("{s}"),
-                Err(e) => println!("{{\"tool\":\"port_check\",\"status\":\"NOT RUN\",\"reason\":\"{e}\"}}"),
+                Err(e) => println!(
+                    "{{\"tool\":\"port_check\",\"status\":\"NOT RUN\",\"reason\":\"{e}\"}}"
+                ),
             }
             ExitCode::from(tool::exit_code(result.status))
         }
-        [cmd, dir] if cmd == "adapters" => match byteask_port_check::write_adapters(&PathBuf::from(dir)) {
-            Ok(paths) => {
-                for p in paths {
-                    println!("{}", p.display());
+        [cmd, dir] if cmd == "adapters" => {
+            match byteask_port_check::write_adapters(&PathBuf::from(dir)) {
+                Ok(paths) => {
+                    for p in paths {
+                        println!("{}", p.display());
+                    }
+                    ExitCode::SUCCESS
                 }
-                ExitCode::SUCCESS
+                Err(e) => {
+                    eprintln!("cannot write the adapters into {dir}: {e}");
+                    ExitCode::from(2)
+                }
             }
-            Err(e) => {
-                eprintln!("cannot write the adapters into {dir}: {e}");
-                ExitCode::from(2)
-            }
-        },
+        }
         [cmd] if cmd == "describe" => {
-            println!("{}", serde_json::to_string_pretty(&tool::tool_spec()).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&tool::tool_spec()).unwrap_or_default()
+            );
             ExitCode::SUCCESS
         }
         _ => {

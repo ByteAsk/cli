@@ -10,10 +10,10 @@ use codex_extension_api::ToolName;
 use codex_extension_api::ToolOutput;
 use codex_extension_api::ToolSpec;
 use codex_login::default_client::create_client;
-use codex_utils_redacted_string::RedactedString;
 use codex_tools::AdditionalProperties;
 use codex_tools::JsonSchema;
 use codex_tools::ToolExposure;
+use codex_utils_redacted_string::RedactedString;
 use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
@@ -104,13 +104,24 @@ impl<'call> ToolExecutor<ToolCall<'call>> for IntrinsicTool {
 }
 
 impl IntrinsicTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: IntrinsicArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
 
-        let name = args.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let query = args.query.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let name = args
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let query = args
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
         let (body, is_search, label) = build_request(name, query)?;
 
@@ -153,7 +164,10 @@ impl IntrinsicTool {
         };
 
         let result = if rendered.starts_with("no matching intrinsic") {
-            check_result::CheckResult::no_claim(TOOL_NAME, "No intrinsic matched in the Intel Intrinsics Guide data.")
+            check_result::CheckResult::no_claim(
+                TOOL_NAME,
+                "No intrinsic matched in the Intel Intrinsics Guide data.",
+            )
         } else {
             check_result::CheckResult::pass(TOOL_NAME, "Looked up the Intel Intrinsics Guide data.")
         };
@@ -347,7 +361,10 @@ mod tests {
             Err(FunctionCallError::RespondToModel(msg)) => {
                 assert!(msg.contains("provide either"), "unexpected message: {msg}");
             }
-            other => panic!("expected RespondToModel error, got a different result: {:?}", other.is_ok()),
+            other => panic!(
+                "expected RespondToModel error, got a different result: {:?}",
+                other.is_ok()
+            ),
         }
     }
 
@@ -446,7 +463,10 @@ mod tests {
     #[test]
     fn shape_lookup_output_handles_missing_result_key() {
         // Body without a `result` key at all → treated as no match.
-        assert_eq!(shape_lookup_output(&json!({})), "no matching intrinsic found");
+        assert_eq!(
+            shape_lookup_output(&json!({})),
+            "no matching intrinsic found"
+        );
     }
 
     #[test]
@@ -519,7 +539,8 @@ mod tests {
             shape_search_output(&sample),
             "2 matching intrinsic(s):\n\
              {empty}\n\
-             _mm_add_ps".replace("{empty}", &format!("{:<28} ", ""))
+             _mm_add_ps"
+                .replace("{empty}", &format!("{:<28} ", ""))
         );
     }
 }

@@ -106,7 +106,8 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ClangdNavTool {
         properties.insert(
             "line".to_string(),
             JsonSchema::integer(Some(
-                "1-based line of the symbol (required for hover/definition/references).".to_string(),
+                "1-based line of the symbol (required for hover/definition/references)."
+                    .to_string(),
             )),
         );
         properties.insert(
@@ -153,7 +154,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ClangdNavTool {
 }
 
 impl ClangdNavTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: NavArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -168,17 +172,18 @@ impl ClangdNavTool {
         // A regular file only: reading a FIFO blocked here, outside the
         // OVERALL_TIMEOUT that covers the clangd exchange.
         if !file_abs.is_file() {
-            let what = if file_abs.exists() { "not a regular file" } else { "no such file" };
+            let what = if file_abs.exists() {
+                "not a regular file"
+            } else {
+                "no such file"
+            };
             return Err(FunctionCallError::RespondToModel(format!(
                 "{what}: {} (pass a C/C++ source file). Nothing was analyzed.",
                 file_abs.display()
             )));
         }
         let text = std::fs::read_to_string(&file_abs).map_err(|err| {
-            FunctionCallError::RespondToModel(format!(
-                "cannot read {}: {err}",
-                file_abs.display()
-            ))
+            FunctionCallError::RespondToModel(format!("cannot read {}: {err}", file_abs.display()))
         })?;
         let root_abs = std::fs::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone());
 
@@ -234,18 +239,12 @@ impl ClangdNavTool {
         })?;
         let clangd_pid = child.id();
 
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| {
-                FunctionCallError::RespondToModel("clangd stdin unavailable".to_string())
-            })?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| {
-                FunctionCallError::RespondToModel("clangd stdout unavailable".to_string())
-            })?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            FunctionCallError::RespondToModel("clangd stdin unavailable".to_string())
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            FunctionCallError::RespondToModel("clangd stdout unavailable".to_string())
+        })?;
         let mut reader = BufReader::new(stdout);
 
         let deadline = Instant::now() + OVERALL_TIMEOUT;
@@ -334,9 +333,15 @@ where
 
     match action {
         Action::Diagnostics => {
-            let diag_deadline =
-                (Instant::now() + DIAGNOSTICS_TIMEOUT).min(deadline);
-            let (body, result) = match collect_diagnostics(reader, diag_deadline, file_uri, file_abs).await? {
+            let diag_deadline = (Instant::now() + DIAGNOSTICS_TIMEOUT).min(deadline);
+            let (body, result) = match collect_diagnostics(
+                reader,
+                diag_deadline,
+                file_uri,
+                file_abs,
+            )
+            .await?
+            {
                 Some(findings) => (
                     render_findings(&findings, FINDINGS_CAP),
                     crate::results::findings_result(TOOL_NAME, &findings, false),
@@ -487,8 +492,7 @@ where
             Err(fail) => return Err(fail.into_error()),
         };
 
-        if msg.get("method").and_then(JsonValue::as_str)
-            == Some("textDocument/publishDiagnostics")
+        if msg.get("method").and_then(JsonValue::as_str) == Some("textDocument/publishDiagnostics")
         {
             let params = msg.get("params").unwrap_or(&JsonValue::Null);
             let uri = params.get("uri").and_then(JsonValue::as_str).unwrap_or("");
@@ -782,7 +786,10 @@ mod tests {
     #[test]
     fn resolves_relative_and_absolute_paths() {
         let cwd = Path::new("/work");
-        assert_eq!(resolve_path(cwd, "src/a.cpp"), PathBuf::from("/work/src/a.cpp"));
+        assert_eq!(
+            resolve_path(cwd, "src/a.cpp"),
+            PathBuf::from("/work/src/a.cpp")
+        );
         assert_eq!(resolve_path(cwd, "/abs/b.cpp"), PathBuf::from("/abs/b.cpp"));
     }
 
@@ -1066,7 +1073,10 @@ mod tests {
             );
             assert_eq!(uri_to_path(&uri), path);
         }
-        assert_eq!(path_to_uri(Path::new("/w/sp ace/a.cpp")), "file:///w/sp%20ace/a.cpp");
+        assert_eq!(
+            path_to_uri(Path::new("/w/sp ace/a.cpp")),
+            "file:///w/sp%20ace/a.cpp"
+        );
         assert_eq!(
             uri_to_path("file:///usr/include/c%2B%2B/12/vector"),
             "/usr/include/c++/12/vector"
@@ -1104,7 +1114,10 @@ mod tests {
         )
         .await
         .expect("must not block on a FIFO");
-        assert!(matches!(out, Err(FunctionCallError::RespondToModel(_))), "{out:?}");
+        assert!(
+            matches!(out, Err(FunctionCallError::RespondToModel(_))),
+            "{out:?}"
+        );
     }
 
     #[tokio::test]
@@ -1118,12 +1131,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sub = dir.path().join("my src é");
         std::fs::create_dir(&sub).unwrap();
-        std::fs::write(sub.join("bad.cpp"), "int main() { return undeclared_name; }\n").unwrap();
+        std::fs::write(
+            sub.join("bad.cpp"),
+            "int main() { return undeclared_name; }\n",
+        )
+        .unwrap();
         let out = nav(dir.path(), json!({"file": "my src é/bad.cpp"}))
             .await
             .expect("a report");
         assert!(out.contains("undeclared_name"), "{out}");
-        assert!(!out.contains("No findings") && !out.contains("NO ANSWER"), "{out}");
+        assert!(
+            !out.contains("No findings") && !out.contains("NO ANSWER"),
+            "{out}"
+        );
         assert!(
             !dir.path().join(".cache").exists(),
             "the background indexer must not write into the project"
@@ -1142,8 +1162,13 @@ mod tests {
         let line = "const char *s = \"日本語\"; int y = undeclared_thing;";
         std::fs::write(dir.path().join("u.cpp"), format!("{line}\n")).unwrap();
         let byte_col = line.find("undeclared_thing").unwrap() + 1;
-        let out = nav(dir.path(), json!({"file": "u.cpp"})).await.expect("a report");
-        assert!(out.contains(&format!("u.cpp:1:{byte_col}")), "want byte column {byte_col}: {out}");
+        let out = nav(dir.path(), json!({"file": "u.cpp"}))
+            .await
+            .expect("a report");
+        assert!(
+            out.contains(&format!("u.cpp:1:{byte_col}")),
+            "want byte column {byte_col}: {out}"
+        );
     }
 
     #[tokio::test]
@@ -1154,10 +1179,17 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("r.cpp"), "int v;\nint main() { return v; }\n").unwrap();
-        let out = nav(dir.path(), json!({"file": "r.cpp", "action": "references", "line": 1, "column": 5}))
-            .await
-            .expect("a report");
+        std::fs::write(
+            dir.path().join("r.cpp"),
+            "int v;\nint main() { return v; }\n",
+        )
+        .unwrap();
+        let out = nav(
+            dir.path(),
+            json!({"file": "r.cpp", "action": "references", "line": 1, "column": 5}),
+        )
+        .await
+        .expect("a report");
         assert!(out.contains("r.cpp:2:"), "{out}");
         assert!(out.contains("translation unit only"), "{out}");
     }

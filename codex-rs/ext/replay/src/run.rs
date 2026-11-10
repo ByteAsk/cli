@@ -107,7 +107,9 @@ impl RunStatus {
         match self {
             RunStatus::Exited { code } => format!("exited with code {code}"),
             RunStatus::Signaled { signal } => format!("was killed by signal {signal}"),
-            RunStatus::TimedOut { after_ms } => format!("was stopped after {after_ms} ms (time limit)"),
+            RunStatus::TimedOut { after_ms } => {
+                format!("was stopped after {after_ms} ms (time limit)")
+            }
             RunStatus::OutputLimit { bytes } => {
                 format!("was stopped after printing {bytes} bytes (output limit)")
             }
@@ -219,7 +221,13 @@ fn read_tail(path: &Path) -> String {
     let _ = file.read_to_end(&mut buf);
     String::from_utf8_lossy(&buf)
         .chars()
-        .map(|c| if c.is_control() && c != '\n' && c != '\t' { '?' } else { c })
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '?'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -237,7 +245,10 @@ pub fn run_subject(subject: &Subject, input: &Path, workdir: &Path, limits: &Lim
     };
     if !valid_name(&subject.name) {
         return failed(
-            format!("subject name {:?} must be 1-64 letters, digits, '.', '_' or '-'", subject.name),
+            format!(
+                "subject name {:?} must be 1-64 letters, digits, '.', '_' or '-'",
+                subject.name
+            ),
             stdout_path,
         );
     }
@@ -257,7 +268,12 @@ pub fn run_subject(subject: &Subject, input: &Path, workdir: &Path, limits: &Lim
     })();
     let (out, err, stdin) = match files {
         Ok(f) => f,
-        Err(e) => return failed(format!("cannot set up input/output files: {e}"), stdout_path),
+        Err(e) => {
+            return failed(
+                format!("cannot set up input/output files: {e}"),
+                stdout_path,
+            );
+        }
     };
     cmd.stdin(stdin).stdout(out).stderr(err);
     let start = Instant::now();
@@ -293,7 +309,9 @@ pub fn run_subject(subject: &Subject, input: &Path, workdir: &Path, limits: &Lim
                 after_ms: elapsed.as_millis() as u64,
             };
         }
-        let printed = std::fs::metadata(&stdout_path).map(|m| m.len()).unwrap_or(0);
+        let printed = std::fs::metadata(&stdout_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
         if printed > limits.max_output_bytes {
             stop_group(pid);
             let _ = child.kill();
@@ -306,7 +324,9 @@ pub fn run_subject(subject: &Subject, input: &Path, workdir: &Path, limits: &Lim
     // Anything the program left running in its group goes too.
     stop_group(pid);
     let elapsed_ms = start.elapsed().as_millis() as u64;
-    let stdout_bytes = std::fs::metadata(&stdout_path).map(|m| m.len()).unwrap_or(0);
+    let stdout_bytes = std::fs::metadata(&stdout_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
     // A program can print past the limit in its final moments, after our last size check.
     let status = if status.completed() && stdout_bytes > limits.max_output_bytes {
         RunStatus::OutputLimit {
@@ -417,7 +437,9 @@ pub fn replay_and_compare(spec: &ReplaySpec, workdir: &Path) -> ReplayReport {
         }
     };
     let limits = Limits {
-        timeout: spec.timeout_ms.map_or(DEFAULT_TIMEOUT, Duration::from_millis),
+        timeout: spec
+            .timeout_ms
+            .map_or(DEFAULT_TIMEOUT, Duration::from_millis),
         max_output_bytes: spec.max_output_bytes.unwrap_or(DEFAULT_MAX_OUTPUT),
     };
     let (ra, rb) = std::thread::scope(|s| {
@@ -481,8 +503,7 @@ fn finish(
             report.reason = Some(reason);
         }
         Ok(c) => {
-            let exit_differs =
-                spec.compare_exit_status.unwrap_or(true) && ra.status != rb.status;
+            let exit_differs = spec.compare_exit_status.unwrap_or(true) && ra.status != rb.status;
             report.outcome = if c.same && !exit_differs {
                 Outcome::Same
             } else {
@@ -551,22 +572,26 @@ mod tests {
     #[test]
     fn two_programs_fed_the_same_input_compare_same() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let s = spec(dir.path(), sh("old", "cat"), sh("new", "while read l; do echo \"$l\"; done"));
+        let s = spec(
+            dir.path(),
+            sh("old", "cat"),
+            sh("new", "while read l; do echo \"$l\"; done"),
+        );
         let r = replay_and_compare(&s, dir.path());
         assert_eq!(r.outcome, Outcome::Same, "{}", r.sentence);
         assert_eq!(r.comparison.as_ref().map(|c| c.records_a), Some(2));
         assert_eq!(r.input_sha256.as_ref().map(String::len), Some(64));
-        assert!(r.sentence.starts_with("Same output: 2 records"), "{}", r.sentence);
+        assert!(
+            r.sentence.starts_with("Same output: 2 records"),
+            "{}",
+            r.sentence
+        );
     }
 
     #[test]
     fn the_first_difference_names_the_subjects() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let s = spec(
-            dir.path(),
-            sh("old", "cat"),
-            sh("new", "sed 's/101/102/'"),
-        );
+        let s = spec(dir.path(), sh("old", "cat"), sh("new", "sed 's/101/102/'"));
         let r = replay_and_compare(&s, dir.path());
         assert_eq!(r.outcome, Outcome::Different);
         assert_eq!(
@@ -578,9 +603,15 @@ mod tests {
     #[test]
     fn the_environment_is_fixed_unless_a_subject_asks_for_more() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut a = sh("a", "printf '{\"tz\":\"%s\",\"lc\":\"%s\",\"home\":\"%s\"}\\n' \"$TZ\" \"$LC_ALL\" \"$HOME\"");
+        let mut a = sh(
+            "a",
+            "printf '{\"tz\":\"%s\",\"lc\":\"%s\",\"home\":\"%s\"}\\n' \"$TZ\" \"$LC_ALL\" \"$HOME\"",
+        );
         a.env.insert("EXTRA".to_string(), "1".to_string());
-        let b = sh("b", "printf '{\"tz\":\"UTC\",\"lc\":\"C\",\"home\":\"\"}\\n'");
+        let b = sh(
+            "b",
+            "printf '{\"tz\":\"UTC\",\"lc\":\"C\",\"home\":\"\"}\\n'",
+        );
         let r = replay_and_compare(&spec(dir.path(), a, b), dir.path());
         assert_eq!(r.outcome, Outcome::Same, "{}", r.sentence);
     }
@@ -604,7 +635,11 @@ mod tests {
         s.timeout_ms = Some(300);
         let r = replay_and_compare(&s, dir.path());
         assert_eq!(r.outcome, Outcome::NotRun);
-        assert!(r.sentence.starts_with("NOT RUN: slow was stopped after"), "{}", r.sentence);
+        assert!(
+            r.sentence.starts_with("NOT RUN: slow was stopped after"),
+            "{}",
+            r.sentence
+        );
         assert!(r.comparison.is_none(), "a run we stopped is never compared");
         std::thread::sleep(Duration::from_millis(2000));
         assert!(!marker.exists(), "the grandchild survived the timeout");
@@ -613,7 +648,11 @@ mod tests {
     #[test]
     fn output_limit_spawn_failure_bad_output_and_exit_status() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut s = spec(dir.path(), sh("big", "yes '{}' | head -c 100000"), sh("small", "cat"));
+        let mut s = spec(
+            dir.path(),
+            sh("big", "yes '{}' | head -c 100000"),
+            sh("small", "cat"),
+        );
         s.max_output_bytes = Some(1000);
         let r = replay_and_compare(&s, dir.path());
         assert_eq!(r.outcome, Outcome::NotRun);
@@ -623,28 +662,50 @@ mod tests {
         missing.argv = vec!["/nonexistent/program".to_string()];
         let r = replay_and_compare(&spec(dir.path(), missing, sh("b", "cat")), dir.path());
         assert_eq!(r.outcome, Outcome::NotRun);
-        assert!(r.sentence.contains("ghost could not start"), "{}", r.sentence);
+        assert!(
+            r.sentence.contains("ghost could not start"),
+            "{}",
+            r.sentence
+        );
 
         let r = replay_and_compare(
-            &spec(dir.path(), sh("a", "cat"), sh("b", "echo '{\"seq\":0,\"px\":100}'; echo 'oops'")),
+            &spec(
+                dir.path(),
+                sh("a", "cat"),
+                sh("b", "echo '{\"seq\":0,\"px\":100}'; echo 'oops'"),
+            ),
             dir.path(),
         );
         assert_eq!(r.outcome, Outcome::NotRun);
-        assert!(r.sentence.contains("b's output could not be read: record 1 (line 2)"), "{}", r.sentence);
+        assert!(
+            r.sentence
+                .contains("b's output could not be read: record 1 (line 2)"),
+            "{}",
+            r.sentence
+        );
 
         let r = replay_and_compare(
             &spec(dir.path(), sh("a", "cat"), sh("b", "cat; exit 3")),
             dir.path(),
         );
         assert_eq!(r.outcome, Outcome::Different);
-        assert_eq!(r.sentence, "Same output, but a exited with code 0 and b exited with code 3.");
+        assert_eq!(
+            r.sentence,
+            "Same output, but a exited with code 0 and b exited with code 3."
+        );
         let mut s = spec(dir.path(), sh("a", "cat"), sh("b", "cat; exit 3"));
         s.compare_exit_status = Some(false);
         assert_eq!(replay_and_compare(&s, dir.path()).outcome, Outcome::Same);
 
-        let r = replay_and_compare(&spec(dir.path(), sh("x", "cat"), sh("x", "cat")), dir.path());
+        let r = replay_and_compare(
+            &spec(dir.path(), sh("x", "cat"), sh("x", "cat")),
+            dir.path(),
+        );
         assert!(r.sentence.contains("different names"), "{}", r.sentence);
-        let r = replay_and_compare(&spec(dir.path(), sh("../x", "cat"), sh("y", "cat")), dir.path());
+        let r = replay_and_compare(
+            &spec(dir.path(), sh("../x", "cat"), sh("y", "cat")),
+            dir.path(),
+        );
         assert_eq!(r.outcome, Outcome::NotRun);
     }
 
@@ -652,19 +713,35 @@ mod tests {
     fn a_crash_midway_is_a_difference_with_the_signal_named() {
         let dir = tempfile::tempdir().expect("tempdir");
         let r = replay_and_compare(
-            &spec(dir.path(), sh("a", "cat"), sh("b", "head -n 1; kill -SEGV $$")),
+            &spec(
+                dir.path(),
+                sh("a", "cat"),
+                sh("b", "head -n 1; kill -SEGV $$"),
+            ),
             dir.path(),
         );
         assert_eq!(r.outcome, Outcome::Different, "{}", r.sentence);
-        assert!(r.sentence.contains("b ended after 1 records"), "{}", r.sentence);
-        assert!(r.sentence.contains("b was killed by signal 11"), "{}", r.sentence);
+        assert!(
+            r.sentence.contains("b ended after 1 records"),
+            "{}",
+            r.sentence
+        );
+        assert!(
+            r.sentence.contains("b was killed by signal 11"),
+            "{}",
+            r.sentence
+        );
     }
 
     #[test]
     fn stderr_tail_is_kept_and_control_characters_are_replaced() {
         let dir = tempfile::tempdir().expect("tempdir");
         let r = replay_and_compare(
-            &spec(dir.path(), sh("a", "cat; printf 'warn \\033[31mred\\n' >&2"), sh("b", "cat")),
+            &spec(
+                dir.path(),
+                sh("a", "cat; printf 'warn \\033[31mred\\n' >&2"),
+                sh("b", "cat"),
+            ),
             dir.path(),
         );
         let tail = r.a.expect("a ran").stderr_tail;

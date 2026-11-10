@@ -84,7 +84,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for CheckStatusTool {
 }
 
 impl CheckStatusTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let _: Args = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -106,7 +109,10 @@ impl CheckStatusTool {
         let Some(newest) = entries.first() else {
             return (
                 format!("No automatic check has run for {} yet.", root.display()),
-                CheckResult::no_claim(TOOL_NAME, "No automatic check has run for this workspace yet."),
+                CheckResult::no_claim(
+                    TOOL_NAME,
+                    "No automatic check has run for this workspace yet.",
+                ),
             );
         };
         let now = results_store::now_unix();
@@ -120,7 +126,10 @@ impl CheckStatusTool {
                 results_store::describe(newest, Freshness::Stale, now)
             );
             for entry in entries.iter().skip(1).take(HISTORY) {
-                body.push_str(&format!("\n- {}", results_store::describe(entry, Freshness::Stale, now)));
+                body.push_str(&format!(
+                    "\n- {}",
+                    results_store::describe(entry, Freshness::Stale, now)
+                ));
             }
             return (
                 body,
@@ -131,12 +140,20 @@ impl CheckStatusTool {
             );
         }
         let freshness = results_store::freshness(newest, FRESHNESS_BUDGET).await;
-        let mut body = format!("latest: {}", results_store::describe(newest, freshness, now));
+        let mut body = format!(
+            "latest: {}",
+            results_store::describe(newest, freshness, now)
+        );
         let earlier: Vec<String> = entries
             .iter()
             .skip(1)
             .take(HISTORY)
-            .map(|entry| format!("- {}", results_store::describe(entry, Freshness::Stale, now)))
+            .map(|entry| {
+                format!(
+                    "- {}",
+                    results_store::describe(entry, Freshness::Stale, now)
+                )
+            })
             .collect();
         if !earlier.is_empty() {
             body.push_str("\nearlier (older versions of the code):\n");
@@ -159,7 +176,10 @@ fn own_result(stored: &CheckResult, freshness: Freshness) -> CheckResult {
             },
         );
     }
-    let summary = format!("The latest automatic check, for the code as it is now: {}", stored.summary);
+    let summary = format!(
+        "The latest automatic check, for the code as it is now: {}",
+        stored.summary
+    );
     match stored.verdict {
         Verdict::Pass => CheckResult::pass(TOOL_NAME, &summary),
         Verdict::Fail => CheckResult::fail(TOOL_NAME, &summary),
@@ -186,7 +206,19 @@ mod tests {
         std::fs::write(dir.path().join("a.cpp"), "int a() { return 1; }\n").ok()?;
         (git(dir.path(), &["init", "-q"])
             && git(dir.path(), &["add", "-A"])
-            && git(dir.path(), &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "b"]))
+            && git(
+                dir.path(),
+                &[
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "user.name=t",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "b",
+                ],
+            ))
         .then_some(dir)
     }
 
@@ -206,11 +238,14 @@ mod tests {
         let (text, result) = tool.status().await;
         assert_eq!(result.verdict, Verdict::NoClaim, "{text}");
 
-        let fresh = results_store::fingerprint(&root, Duration::from_secs(10)).await.unwrap();
+        let fresh = results_store::fingerprint(&root, Duration::from_secs(10))
+            .await
+            .unwrap();
         results_store::record(
             home.path(),
             results_store::Entry {
-                result: CheckResult::pass(crate::gate::CHECK, "every target built").with_content_key("k"),
+                result: CheckResult::pass(crate::gate::CHECK, "every target built")
+                    .with_content_key("k"),
                 root: root.clone(),
                 at: results_store::now_unix(),
                 fresh,
@@ -224,7 +259,11 @@ mod tests {
 
         std::fs::write(root.join("a.cpp"), "int a() { return 2; }\n").unwrap();
         let (text, result) = tool.status().await;
-        assert_eq!(result.verdict, Verdict::NoClaim, "a stale PASS must not read as PASS: {text}");
+        assert_eq!(
+            result.verdict,
+            Verdict::NoClaim,
+            "a stale PASS must not read as PASS: {text}"
+        );
         assert!(text.contains("STALE"), "{text}");
     }
 
@@ -237,12 +276,15 @@ mod tests {
         };
         let home = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
-        let fresh = results_store::fingerprint(&root, Duration::from_secs(10)).await.unwrap();
+        let fresh = results_store::fingerprint(&root, Duration::from_secs(10))
+            .await
+            .unwrap();
         let at = results_store::now_unix();
         results_store::record(
             home.path(),
             results_store::Entry {
-                result: CheckResult::fail(crate::gate::CHECK, "1 problem(s) open").with_content_key("k"),
+                result: CheckResult::fail(crate::gate::CHECK, "1 problem(s) open")
+                    .with_content_key("k"),
                 root: root.clone(),
                 at: at - 100,
                 fresh,

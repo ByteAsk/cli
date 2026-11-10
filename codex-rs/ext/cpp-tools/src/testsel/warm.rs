@@ -85,7 +85,11 @@ impl WarmHandle {
         let (_tx, done) = watch::channel(Some(outcome));
         let (_plan_tx, plan) = watch::channel(Some(None));
         let (cancel, _) = watch::channel(false);
-        Self { done, plan, cancel: Arc::new(cancel) }
+        Self {
+            done,
+            plan,
+            cancel: Arc::new(cancel),
+        }
     }
 
     /// The build has ended (finished, failed, was cancelled or never started).
@@ -161,14 +165,20 @@ pub fn start_warm_build_for(
     };
     let Some(root) = crate::gitx::repo_roots_sync(workspace).into_iter().next() else {
         return WarmHandle::finished(WarmOutcome {
-            summary: format!("not started: {} is not in a git repository", workspace.display()),
+            summary: format!(
+                "not started: {} is not in a git repository",
+                workspace.display()
+            ),
             ..WarmOutcome::default()
         });
     };
     let root = canonical(&root);
     if !root.join("CMakeLists.txt").is_file() || !crate::tools::binary_on_path("cmake") {
         return WarmHandle::finished(WarmOutcome {
-            summary: format!("not started: {} is not a CMake project (or cmake is missing)", root.display()),
+            summary: format!(
+                "not started: {} is not a CMake project (or cmake is missing)",
+                root.display()
+            ),
             ..WarmOutcome::default()
         });
     }
@@ -388,9 +398,9 @@ pub(crate) fn map_programs(model: &Model, programs: &[String]) -> (Vec<String>, 
             .or_else(|| {
                 model.targets.iter().find(|t| {
                     t.is_exe
-                        && t.artifacts.iter().any(|a| {
-                            a.file_name().is_some_and(|f| f.to_string_lossy() == file)
-                        })
+                        && t.artifacts
+                            .iter()
+                            .any(|a| a.file_name().is_some_and(|f| f.to_string_lossy() == file))
                 })
             })
             .or_else(|| {

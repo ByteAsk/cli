@@ -159,7 +159,9 @@ impl IncludeGraph {
         let walker = walkdir::WalkDir::new(root)
             .follow_links(false)
             .into_iter()
-            .filter_entry(|e| !(e.file_type().is_dir() && e.depth() > 0 && super::skip_dir(e.path())));
+            .filter_entry(|e| {
+                !(e.file_type().is_dir() && e.depth() > 0 && super::skip_dir(e.path()))
+            });
         for entry in walker.flatten() {
             if !entry.file_type().is_file() || !is_cpp_file(entry.path()) {
                 continue;
@@ -272,12 +274,23 @@ pub(crate) async fn dep_edges(model: &Model, headers: &[PathBuf]) -> Vec<(PathBu
     let wanted: BTreeSet<PathBuf> = headers.iter().map(|h| canonical(h)).collect();
     let mut out: BTreeSet<(PathBuf, String)> = BTreeSet::new();
     if model.ninja {
-        let args = vec!["-C".to_string(), model.build_dir.display().to_string(), "-t".to_string(), "deps".to_string()];
+        let args = vec![
+            "-C".to_string(),
+            model.build_dir.display().to_string(),
+            "-t".to_string(),
+            "deps".to_string(),
+        ];
         if let Ok(RunOutcome::Finished {
             success: true,
             stdout,
             ..
-        }) = run_capped("ninja", &args, &model.build_dir, std::time::Duration::from_secs(60)).await
+        }) = run_capped(
+            "ninja",
+            &args,
+            &model.build_dir,
+            std::time::Duration::from_secs(60),
+        )
+        .await
         {
             for (obj, deps) in parse_ninja_deps(&stdout) {
                 let Some(target) = object_target(model, &obj) else {
@@ -311,8 +324,15 @@ pub(crate) async fn dep_edges(model: &Model, headers: &[PathBuf]) -> Vec<(PathBu
                 };
                 for (_, deps) in parse_make_deps(&text) {
                     for dep in deps {
-                        for candidate in [normalize(&base, Path::new(&dep)), normalize(&model.build_dir, Path::new(&dep))] {
-                            let candidate = if wanted.contains(&candidate) { candidate } else { canonical(&candidate) };
+                        for candidate in [
+                            normalize(&base, Path::new(&dep)),
+                            normalize(&model.build_dir, Path::new(&dep)),
+                        ] {
+                            let candidate = if wanted.contains(&candidate) {
+                                candidate
+                            } else {
+                                canonical(&candidate)
+                            };
                             if wanted.contains(&candidate) {
                                 out.insert((candidate, target.clone()));
                                 break;
@@ -334,7 +354,10 @@ pub(crate) fn cmake_target_dirs(build: &Path) -> Vec<(PathBuf, String)> {
         .into_iter()
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
-            !(e.file_type().is_dir() && (name == "Testing" || name == ".cmake" || name.starts_with('.') && e.depth() > 0))
+            !(e.file_type().is_dir()
+                && (name == "Testing"
+                    || name == ".cmake"
+                    || name.starts_with('.') && e.depth() > 0))
         });
     for entry in walker.flatten() {
         if !entry.file_type().is_dir() {
@@ -358,10 +381,17 @@ pub(crate) fn cmake_target_dirs(build: &Path) -> Vec<(PathBuf, String)> {
 
 fn depfiles_in(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for entry in walkdir::WalkDir::new(dir).max_depth(8).into_iter().flatten() {
+    for entry in walkdir::WalkDir::new(dir)
+        .max_depth(8)
+        .into_iter()
+        .flatten()
+    {
         let name = entry.file_name().to_string_lossy();
         if entry.file_type().is_file()
-            && (name == "depend.make" || name == "compiler_depend.make" || name.ends_with(".o.d") || name.ends_with(".obj.d"))
+            && (name == "depend.make"
+                || name == "compiler_depend.make"
+                || name.ends_with(".o.d")
+                || name.ends_with(".obj.d"))
         {
             out.push(entry.path().to_path_buf());
         }
@@ -385,7 +415,11 @@ fn object_target(model: &Model, obj: &str) -> Option<String> {
             return model
                 .targets
                 .iter()
-                .find(|t| t.artifacts.iter().any(|a| a.file_name().is_some_and(|n| n == output)))
+                .find(|t| {
+                    t.artifacts
+                        .iter()
+                        .any(|a| a.file_name().is_some_and(|n| n == output))
+                })
                 .map(|t| t.name.clone());
         }
     }
@@ -402,7 +436,10 @@ pub(crate) fn parse_make_deps(text: &str) -> Vec<(String, Vec<String>)> {
             continue;
         }
         // `C:\x` style drive colons do not occur on the platforms this runs on.
-        let Some(colon) = line.find(": ").or_else(|| line.strip_suffix(':').map(str::len)) else {
+        let Some(colon) = line
+            .find(": ")
+            .or_else(|| line.strip_suffix(':').map(str::len))
+        else {
             continue;
         };
         let obj = line[..colon].trim().to_string();
@@ -473,7 +510,10 @@ mod tests {
             parse_ninja_deps(ninja),
             vec![(
                 "CMakeFiles/core.dir/src/core.cpp.o".to_string(),
-                vec!["../src/core.cpp".to_string(), "../include/fx/core.h".to_string()]
+                vec![
+                    "../src/core.cpp".to_string(),
+                    "../include/fx/core.h".to_string()
+                ]
             )]
         );
     }
@@ -502,8 +542,14 @@ mod tests {
         let root = canonical(dir.path());
         for (path, text) in [
             ("include/fx/core.h", "int twice(int);\n"),
-            ("include/fx/util.h", "#include \"core.h\"\ninline int clampi(int x) { return x; }\n"),
-            ("src/core.cpp", "#include \"fx/core.h\"\nint twice(int x) { return 2 * x; }\n"),
+            (
+                "include/fx/util.h",
+                "#include \"core.h\"\ninline int clampi(int x) { return x; }\n",
+            ),
+            (
+                "src/core.cpp",
+                "#include \"fx/core.h\"\nint twice(int x) { return 2 * x; }\n",
+            ),
             ("src/util.cpp", "#include <fx/util.h>\n"),
             ("src/other.cpp", "int other() { return 0; }\n"),
             ("tests/api_test.cpp", "#include \"fx/util.h\"\n"),
@@ -531,12 +577,21 @@ mod tests {
         );
         // A source change: its target and what links it.
         let a = affected(&m, &[root.join("src/core.cpp")]).await;
-        assert_eq!(a.targets, ["core", "core_test"].iter().map(|s| s.to_string()).collect());
+        assert_eq!(
+            a.targets,
+            ["core", "core_test"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        );
         // A header change: every TU including it, transitively, plus dependents.
         let a = affected(&m, &[root.join("include/fx/core.h")]).await;
         assert_eq!(
             a.targets,
-            ["api_test", "core", "core_test", "util"].iter().map(|s| s.to_string()).collect()
+            ["api_test", "core", "core_test", "util"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         );
         assert!(a.unmapped.is_empty());
         // A file nothing compiles is reported.

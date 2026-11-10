@@ -60,8 +60,14 @@ const KEYS: &[(&str, &str)] = &[
     ("BYTEASK_REPRO_MAX_STEPS", "repro_max_steps"),
     ("BYTEASK_SUBAGENT_DEADLINE_SECS", "subagent_deadline_secs"),
     ("BYTEASK_SUBAGENT_MAX_PARALLEL", "subagent_max_parallel"),
-    ("BYTEASK_SUBAGENT_BUILD_TIMEOUT_SECS", "subagent_build_timeout_secs"),
-    ("BYTEASK_SUBAGENT_TEST_TIMEOUT_SECS", "subagent_test_timeout_secs"),
+    (
+        "BYTEASK_SUBAGENT_BUILD_TIMEOUT_SECS",
+        "subagent_build_timeout_secs",
+    ),
+    (
+        "BYTEASK_SUBAGENT_TEST_TIMEOUT_SECS",
+        "subagent_test_timeout_secs",
+    ),
     ("BYTEASK_SUBAGENT_BUILD_CMD", "subagent_build_cmd"),
     ("BYTEASK_SUBAGENT_SCRATCH", "subagent_scratch"),
 ];
@@ -187,9 +193,11 @@ mod tests {
             let s = from(&[("repro_tests", off)]);
             assert!(!s.repro_tests && !s.any_enabled(), "{off}");
         }
-        let env_on = Settings::resolve(|env, _| (env == "BYTEASK_REPRO_TESTS").then(|| "1".to_string()));
+        let env_on =
+            Settings::resolve(|env, _| (env == "BYTEASK_REPRO_TESTS").then(|| "1".to_string()));
         assert!(env_on.any_enabled());
-        let env_off = Settings::resolve(|env, _| (env == "BYTEASK_REPRO_TESTS").then(|| "0".to_string()));
+        let env_off =
+            Settings::resolve(|env, _| (env == "BYTEASK_REPRO_TESTS").then(|| "0".to_string()));
         assert!(!env_off.any_enabled());
     }
 
@@ -214,9 +222,10 @@ mod tests {
 
     #[test]
     fn config_table_is_read() {
-        let table: Value =
-            toml::from_str("repro_tests = true\nrepro_max_steps = 30\nsubagent_deadline_secs = 900\n")
-                .unwrap_or(Value::Boolean(false));
+        let table: Value = toml::from_str(
+            "repro_tests = true\nrepro_max_steps = 30\nsubagent_deadline_secs = 900\n",
+        )
+        .unwrap_or(Value::Boolean(false));
         let s = Settings::resolve(|_env, key| table.get(key).and_then(toml_to_string));
         assert!(s.repro_tests);
         assert_eq!(s.repro_max_steps, 30);

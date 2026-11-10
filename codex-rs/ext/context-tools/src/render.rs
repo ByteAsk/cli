@@ -86,11 +86,13 @@ fn banner(tool: &str, raw_args: &str) -> String {
     let target = serde_json::from_str::<serde_json::Value>(raw_args)
         .ok()
         .and_then(|args| {
-            ["name", "query", "path", "task", "code"].iter().find_map(|key| {
-                args.get(*key)
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            })
+            ["name", "query", "path", "task", "code"]
+                .iter()
+                .find_map(|key| {
+                    args.get(*key)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
         })
         .unwrap_or_default();
     let collapsed = target.split_whitespace().collect::<Vec<_>>().join(" ");

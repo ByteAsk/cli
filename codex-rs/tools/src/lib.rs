@@ -1,12 +1,16 @@
 //! Shared tool definitions and Responses API tool primitives that can live
 //! outside `codex-core`.
 
+mod catalog_tool_message;
 mod code_mode;
 mod dynamic_tool;
 mod function_call_error;
+mod functions_namespace_function_prefixes;
 mod image_detail;
+mod indirect_namespace_prefixes;
 mod json_schema;
 mod mcp_tool;
+mod output_schema;
 mod request_plugin_install;
 mod response_history;
 mod responses_api;
@@ -20,6 +24,7 @@ mod tool_payload;
 mod tool_search;
 mod tool_spec;
 
+pub use catalog_tool_message::with_catalog_tool_message;
 pub use code_mode::augment_tool_spec_for_code_mode;
 pub use code_mode::code_mode_name_for_tool_name;
 pub use code_mode::collect_code_mode_exec_prompt_tool_definitions;
@@ -28,18 +33,23 @@ pub use code_mode::tool_spec_to_code_mode_tool_definition;
 pub use codex_protocol::ToolName;
 pub use dynamic_tool::parse_dynamic_tool;
 pub use function_call_error::FunctionCallError;
+pub use functions_namespace_function_prefixes::FunctionsNamespaceFunctionPrefixes;
 pub use image_detail::can_request_original_image_detail;
 pub use image_detail::normalize_output_image_detail;
 pub use image_detail::sanitize_original_image_detail;
+pub use indirect_namespace_prefixes::IndirectNamespacePrefixConflict;
+pub use indirect_namespace_prefixes::IndirectNamespacePrefixes;
 pub use json_schema::AdditionalProperties;
 pub use json_schema::JsonSchema;
 pub use json_schema::JsonSchemaPrimitiveType;
 pub use json_schema::JsonSchemaType;
+pub use json_schema::parse_catalog_tool_parameters;
 pub use json_schema::parse_tool_input_schema;
 pub use json_schema::parse_tool_input_schema_without_compaction;
 pub use mcp_tool::mcp_call_tool_result_output_schema;
 pub use mcp_tool::parse_agent_plugin_mcp_tool;
 pub use mcp_tool::parse_mcp_tool;
+pub use output_schema::ToolOutputSchema;
 pub use request_plugin_install::REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE;
 pub use request_plugin_install::REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE;
 pub use request_plugin_install::REQUEST_PLUGIN_INSTALL_PERSIST_KEY;
@@ -73,9 +83,6 @@ pub use tool_call::ToolEnvironment;
 pub use tool_call::TurnItemEmissionFuture;
 pub use tool_call::TurnItemEmitter;
 pub use tool_config::ToolEnvironmentMode;
-pub use tool_config::ToolUserShellType;
-pub use tool_config::UnifiedExecShellMode;
-pub use tool_config::ZshForkConfig;
 pub use tool_config::request_user_input_available_modes;
 pub use tool_definition::ToolDefinition;
 pub use tool_discovery::DiscoverablePluginInfo;

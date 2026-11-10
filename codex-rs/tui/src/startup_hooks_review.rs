@@ -1,3 +1,5 @@
+//! Startup hook consent using the shared picker while retaining explicit trust confirmation.
+
 use color_eyre::eyre::Result;
 use crossterm::event::KeyEventKind;
 use ratatui::buffer::Buffer;
@@ -18,13 +20,13 @@ use crate::bottom_pane::BottomPaneView;
 use crate::bottom_pane::ListSelectionView;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
-use crate::bottom_pane::popup_consts::standard_popup_hint_line_for_keymap;
 use crate::config_update::format_config_error;
 use crate::hooks_rpc::HookTrustUpdate;
+use crate::hooks_rpc::HooksListTarget;
 use crate::hooks_rpc::fetch_hooks_list;
 use crate::hooks_rpc::hook_needs_review;
-use crate::hooks_rpc::hooks_list_entry_for_cwd;
 use crate::hooks_rpc::write_hook_trusts;
+use crate::keymap::ListAction;
 use crate::keymap::RuntimeKeymap;
 use crate::legacy_core::config::Config;
 use crate::render::renderable::ColumnRenderable;
@@ -51,19 +53,18 @@ pub(crate) async fn load_startup_hooks_review_entry(
     request_handle: AppServerRequestHandle,
     cwd: PathBuf,
 ) -> HooksListEntry {
-    let response = match fetch_hooks_list(request_handle, cwd.clone()).await {
-        Ok(response) => response,
+    match fetch_hooks_list(request_handle, &HooksListTarget::Cwd(cwd.clone())).await {
+        Ok(entry) => entry,
         Err(err) => {
             tracing::warn!("failed to load startup hook review state: {err:#}");
-            return HooksListEntry {
+            HooksListEntry {
                 cwd,
                 hooks: Vec::new(),
                 warnings: Vec::new(),
                 errors: Vec::new(),
-            };
+            }
         }
-    };
-    hooks_list_entry_for_cwd(response, &cwd)
+    }
 }
 
 pub(crate) async fn maybe_run_startup_hooks_review(
@@ -86,7 +87,8 @@ async fn run_startup_hooks_review_app(
     config: &Config,
     entry: HooksListEntry,
 ) -> Result<StartupHooksReviewOutcome> {
-    let keymap = RuntimeKeymap::from_config(&config.tui_keymap)
+    let local_settings = crate::local_settings::LocalSettings::from(config);
+    let keymap = RuntimeKeymap::from_config(&local_settings.tui.keymap)
         .map_err(|err| color_eyre::eyre::eyre!(err))?;
     let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
     let app_event_tx = AppEventSender::new(tx_raw);
@@ -110,13 +112,17 @@ async fn run_startup_hooks_review_app(
             return Ok(StartupHooksReviewOutcome::Continue);
         };
         tui.screen_size_for_event(&event)?;
+        if matches!(&event, TuiEvent::Paste(_) | TuiEvent::FocusLost)
+            || matches!(&event, TuiEvent::Mouse(mouse) if mouse.kind != crossterm::event::MouseEventKind::Moved)
+        {
+            chord_matcher.cancel();
+        }
         match event {
             TuiEvent::Key(key_event) => {
                 let key_event = match chord_matcher.advance(
                     key_event,
                     &keymap.chords,
                     crate::keymap::KeymapContextSet::new(crate::keymap::KeymapContext::List),
-                    tokio::time::Instant::now(),
                 ) {
                     crate::keymap::KeyChordMatch::PassThrough => key_event,
                     crate::keymap::KeyChordMatch::Completed(dispatch_event) => dispatch_event,
@@ -181,7 +187,7 @@ async fn run_startup_hooks_review_app(
                     }
                 }
             }
-            TuiEvent::Paste(_) | TuiEvent::FocusLost => {}
+            TuiEvent::Paste(_) | TuiEvent::FocusLost | TuiEvent::Mouse(_) => {}
             TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
                 draw_view(tui, &view)?;
             }
@@ -229,18 +235,37 @@ fn selection_view_params(
     };
     let mut header = ColumnRenderable::new();
     header.push(Line::from("Hooks need review".bold()));
-    header.push(Line::from(count_line).yellow());
-    header.push(Line::from(
-        "Hooks can run outside the sandbox after you trust them.".dim(),
-    ));
+    header.push(Paragraph::new(Line::from(count_line).yellow()).wrap(Wrap { trim: false }));
+    header.push(
+        Paragraph::new(Line::from(
+            "Hooks can run outside the sandbox after you trust them.".dim(),
+        ))
+        .wrap(Wrap { trim: false }),
+    );
     if let Some(error) = trust_all_error {
         header.push(Paragraph::new(Line::from(error.to_string()).red()).wrap(Wrap { trim: false }));
     } else if trusting_all {
         header.push(Line::from("Trusting hooks...".dim()));
     }
 
+    let mut hints = Vec::new();
+    if !trusting_all {
+        for (action, label) in [
+            (ListAction::Accept, "confirm"),
+            (ListAction::Cancel, "skip"),
+        ] {
+            if let Some(hint) = keymap.list.primary_hint(action) {
+                if !hints.is_empty() {
+                    hints.push(" · ".dim());
+                }
+                hints.extend(hint.spans());
+                hints.push(format!(" {label}").dim());
+            }
+        }
+    }
+
     SelectionViewParams {
-        footer_hint: Some(standard_popup_hint_line_for_keymap(&keymap.list)),
+        footer_hint: Some(hints.into()),
         items: vec![
             selection_item("Review hooks", trusting_all),
             SelectionItem {
@@ -250,7 +275,7 @@ fn selection_view_params(
             selection_item("Continue without trusting (hooks won't run)", trusting_all),
         ],
         header: Box::new(header),
-        ..Default::default()
+        ..SelectionViewParams::picker()
     }
 }
 
@@ -323,6 +348,7 @@ mod tests {
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
     use insta::assert_snapshot;
+    use pretty_assertions::assert_eq;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use tokio::sync::mpsc::unbounded_channel;
@@ -343,6 +369,7 @@ mod tests {
             source_path: test_path_buf("/tmp/hooks.json").abs(),
             source: HookSource::User,
             plugin_id: None,
+            environment_id: None,
             display_order: 0,
             enabled: false,
             current_hash: format!("sha256:{key}"),
@@ -460,7 +487,7 @@ mod tests {
 
         assert_snapshot!(
             "startup_hooks_review_prompt",
-            render_lines(&view, /*width*/ 80)
+            render_lines(&view, /*width*/ 40)
         );
     }
 
@@ -481,6 +508,24 @@ mod tests {
         assert_snapshot!(
             "startup_hooks_review_prompt_with_trust_error",
             render_lines(&view, /*width*/ 62)
+        );
+    }
+
+    #[test]
+    fn picker_progress_blocks_selection() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let mut view = selection_view(
+            &entry(),
+            /*trust_all_error*/ None,
+            /*trusting_all*/ true,
+            AppEventSender::new(tx_raw),
+            &RuntimeKeymap::defaults(),
+        );
+        view.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(selected_choice(&mut view), None);
+        assert_snapshot!(
+            "startup_hooks_picker_progress_40",
+            render_lines(&view, /*width*/ 40)
         );
     }
 }

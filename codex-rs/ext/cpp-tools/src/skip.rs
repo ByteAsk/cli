@@ -96,7 +96,11 @@ mod tests {
             .env("GIT_COMMITTER_EMAIL", "t@t")
             .output()
             .expect("git");
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     /// A skip is NOT RUN (skipped: reason, who), only for the exact version it was made on.
@@ -111,17 +115,37 @@ mod tests {
         git(&root, &["commit", "-q", "-m", "b"]);
         std::fs::write(root.join("a.cpp"), "int a = 1;\n").unwrap();
         let home = dir.path().join("home");
-        assert!(record(&home, &root, crate::gate::CHECK, "  ", "alice").await.is_err());
-        let result = record(&home, &root, crate::gate::CHECK, "flaky rig; checked by hand", "alice")
-            .await
-            .unwrap();
+        assert!(
+            record(&home, &root, crate::gate::CHECK, "  ", "alice")
+                .await
+                .is_err()
+        );
+        let result = record(
+            &home,
+            &root,
+            crate::gate::CHECK,
+            "flaky rig; checked by hand",
+            "alice",
+        )
+        .await
+        .unwrap();
         assert!(!result.is_pass());
         assert_eq!(result.reason, Some(NotRunReason::Skipped));
-        assert_eq!(result.summary, "Skipped by alice: flaky rig; checked by hand");
+        assert_eq!(
+            result.summary,
+            "Skipped by alice: flaky rig; checked by hand"
+        );
         result.validate().unwrap();
         let canonical = std::fs::canonicalize(&root).unwrap();
-        assert_eq!(active(&home, &canonical, crate::gate::CHECK).await, Some(result));
-        assert_eq!(active(&home, &canonical, "cpp_sanitize").await, None, "another check");
+        assert_eq!(
+            active(&home, &canonical, crate::gate::CHECK).await,
+            Some(result)
+        );
+        assert_eq!(
+            active(&home, &canonical, "cpp_sanitize").await,
+            None,
+            "another check"
+        );
         // Any edit is a new version: the skip no longer applies.
         std::fs::write(root.join("a.cpp"), "int a = 2;\n").unwrap();
         assert_eq!(active(&home, &canonical, crate::gate::CHECK).await, None);

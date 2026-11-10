@@ -29,6 +29,7 @@ use tempfile::TempDir;
 
 fn stored_thread(cwd: &str, title: &str, first_user_message: &str) -> StoredThread {
     StoredThread {
+        originator: None,
         thread_id: ThreadId::new(),
         extra_config: None,
         rollout_path: Some(PathBuf::from("/tmp/rollout.jsonl")),
@@ -53,6 +54,7 @@ fn stored_thread(cwd: &str, title: &str, first_user_message: &str) -> StoredThre
             .expect("valid timestamp"),
         archived_at: None,
         project_id: None,
+        daybreak_enabled: None,
         section: None,
         section_position: None,
         section_entered_at: None,
@@ -79,6 +81,8 @@ fn stored_thread(cwd: &str, title: &str, first_user_message: &str) -> StoredThre
 
 fn message(role: &str, content: ContentItem) -> ResponseItem {
     ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: role.to_string(),
         content: vec![content],
@@ -92,7 +96,14 @@ fn user_message(text: impl Into<String>) -> ResponseItem {
 }
 
 fn assistant_message(text: impl Into<String>) -> ResponseItem {
-    message("assistant", ContentItem::OutputText { text: text.into() })
+    message(
+        "assistant",
+        ContentItem::OutputText {
+            annotations: None,
+            logprobs: None,
+            text: text.into(),
+        },
+    )
 }
 
 fn long_turn_text(index: usize) -> String {

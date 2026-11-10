@@ -31,7 +31,10 @@ fn a_full_profile_parses() {
     let profile = Profile::parse(FULL).expect("parses");
     assert_eq!(profile.build.as_ref().map(|b| b.run.len()), Some(2));
     let test = profile.test.as_ref().expect("test");
-    assert_eq!(test.manifest.as_deref(), Some(".byteask/required-tests.txt"));
+    assert_eq!(
+        test.manifest.as_deref(),
+        Some(".byteask/required-tests.txt")
+    );
     assert_eq!(profile.slow[0].name, "asan");
     assert_eq!(
         profile.merge.reviewer_may_approve,
@@ -43,7 +46,10 @@ fn a_full_profile_parses() {
 #[test]
 fn defaults_apply_when_sections_are_missing() {
     let profile = Profile::parse("schema = 1\n[build]\nrun = [\"make\"]\n").expect("parses");
-    assert_eq!(profile.merge.reviewer_may_approve, vec![NotRunReason::NoCodeChange]);
+    assert_eq!(
+        profile.merge.reviewer_may_approve,
+        vec![NotRunReason::NoCodeChange]
+    );
     assert_eq!(profile.merge.perf, PerfPolicy::Off);
     assert!(profile.test.is_none());
 }
@@ -55,21 +61,51 @@ fn bad_profiles_are_refused_with_a_reason() {
         ("schema = 2\n", "schema 2"),
         ("schema = 1\n[build]\nrun = []\n", "at least one"),
         ("schema = 1\n[build]\nrun = [\"  \"]\n", "at least one"),
-        ("schema = 1\n[build]\nrun = [\"make\"]\ntimout_secs = 5\n", "unknown field"),
+        (
+            "schema = 1\n[build]\nrun = [\"make\"]\ntimout_secs = 5\n",
+            "unknown field",
+        ),
         ("schema = 1\n[biuld]\nrun = [\"make\"]\n", "unknown field"),
-        ("schema = 1\n[build]\nrun = [\"make\"]\ntimeout_secs = 0\n", "timeout_secs"),
-        ("schema = 1\n[[slow]]\nname = \"Bad Name\"\nrun = [\"x\"]\n", "slow check name"),
-        ("schema = 1\n[[slow]]\nname = \"tests\"\nrun = [\"x\"]\n", "reserved"),
+        (
+            "schema = 1\n[build]\nrun = [\"make\"]\ntimeout_secs = 0\n",
+            "timeout_secs",
+        ),
+        (
+            "schema = 1\n[[slow]]\nname = \"Bad Name\"\nrun = [\"x\"]\n",
+            "slow check name",
+        ),
+        (
+            "schema = 1\n[[slow]]\nname = \"tests\"\nrun = [\"x\"]\n",
+            "reserved",
+        ),
         (
             "schema = 1\n[[slow]]\nname = \"a\"\nrun = [\"x\"]\n[[slow]]\nname = \"a\"\nrun = [\"y\"]\n",
             "used twice",
         ),
-        ("schema = 1\n[test]\nrun = [\"x\"]\nmanifest = \"../outside\"\n", "relative path"),
-        ("schema = 1\n[test]\nrun = [\"x\"]\njunit = \"/abs/junit.xml\"\n", "relative path"),
-        ("schema = 1\n[merge]\nreviewer_may_approve = [\"not_checked\"]\n", "not_checked"),
-        ("schema = 1\n[merge]\nreviewer_may_approve = [\"made_up\"]\n", "unknown variant"),
-        ("schema = 1\n[merge]\nperf = \"sometimes\"\n", "unknown variant"),
-        ("schema = 1\n[files]\nmarked = [\"src/[\"]\n", "bad file pattern"),
+        (
+            "schema = 1\n[test]\nrun = [\"x\"]\nmanifest = \"../outside\"\n",
+            "relative path",
+        ),
+        (
+            "schema = 1\n[test]\nrun = [\"x\"]\njunit = \"/abs/junit.xml\"\n",
+            "relative path",
+        ),
+        (
+            "schema = 1\n[merge]\nreviewer_may_approve = [\"not_checked\"]\n",
+            "not_checked",
+        ),
+        (
+            "schema = 1\n[merge]\nreviewer_may_approve = [\"made_up\"]\n",
+            "unknown variant",
+        ),
+        (
+            "schema = 1\n[merge]\nperf = \"sometimes\"\n",
+            "unknown variant",
+        ),
+        (
+            "schema = 1\n[files]\nmarked = [\"src/[\"]\n",
+            "bad file pattern",
+        ),
     ];
     for (text, wanted) in cases {
         let err = Profile::parse(text).expect_err(text);
@@ -135,7 +171,10 @@ fn a_profile_can_replace_non_code_but_never_unprotect_the_profile() {
     };
     let classes = FileClasses::new(&files).expect("classes");
     assert!(!classes.is_code("tests/data/expected.txt"));
-    assert!(classes.is_code("README.md"), "the default list was replaced");
+    assert!(
+        classes.is_code("README.md"),
+        "the default list was replaced"
+    );
     assert!(classes.is_code(".byteask/checks.toml"), "ALWAYS_CODE");
     assert!(classes.is_code("CMakeLists.txt"), "ALWAYS_CODE");
     assert!(classes.touches_marked(["docs/x.md", "src/hot/feed.cpp"]));
@@ -155,11 +194,17 @@ fn propose_reads_cmake_presets_first() {
     )
     .expect("write");
     let proposal = propose(dir.path());
-    assert!(proposal.source.contains("CMakePresets.json"), "{proposal:?}");
+    assert!(
+        proposal.source.contains("CMakePresets.json"),
+        "{proposal:?}"
+    );
     let profile = Profile::parse(&proposal.text).expect("the proposal itself parses");
     assert_eq!(
         profile.build.expect("build").run,
-        vec!["cmake --preset ci".to_string(), "cmake --build --preset ci".to_string()]
+        vec![
+            "cmake --preset ci".to_string(),
+            "cmake --build --preset ci".to_string()
+        ]
     );
     assert!(profile.test.expect("test").run[0].starts_with("ctest --preset ci --output-junit"));
 }
@@ -173,7 +218,10 @@ fn propose_uses_a_compile_database_build_tree_then_cmakelists() {
     std::fs::write(tree.join("CMakeCache.txt"), "").expect("write");
     let proposal = propose(dir.path());
     let profile = Profile::parse(&proposal.text).expect("parses");
-    assert_eq!(profile.build.expect("build").run, vec!["cmake --build build-rel".to_string()]);
+    assert_eq!(
+        profile.build.expect("build").run,
+        vec!["cmake --build build-rel".to_string()]
+    );
 
     let plain = tempfile::tempdir().expect("tmp");
     std::fs::write(plain.path().join("CMakeLists.txt"), "project(x)\n").expect("write");

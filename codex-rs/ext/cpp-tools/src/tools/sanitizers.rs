@@ -107,7 +107,9 @@ const PROJECT_BUILD_JOBS_MAX: usize = 2;
 
 /// Parallel jobs for a project build started now.
 fn project_build_jobs() -> String {
-    crate::resources::jobs().min(PROJECT_BUILD_JOBS_MAX).to_string()
+    crate::resources::jobs()
+        .min(PROJECT_BUILD_JOBS_MAX)
+        .to_string()
 }
 /// `make -n` only parses and prints the recipe lines; it must never inherit a
 /// ten-minute build budget.
@@ -404,7 +406,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for SanitizeTool {
 }
 
 impl SanitizeTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let mode: ModeProbe = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -436,8 +441,9 @@ impl SanitizeTool {
                 "unknown sanitizer {sanitizer:?}; expected \"asan_ubsan\", \"valgrind\", \"tsan\", or \"msan\""
             )));
         }
-        let run_args = crate::program_args::parse("run_args", args.run_args.as_deref().unwrap_or(""))
-            .map_err(FunctionCallError::RespondToModel)?;
+        let run_args =
+            crate::program_args::parse("run_args", args.run_args.as_deref().unwrap_or(""))
+                .map_err(FunctionCallError::RespondToModel)?;
         let mut plan = self.build_plan(&args)?;
         if sanitizer == "msan" {
             plan.compiler = msan_compiler(&plan.compiler, args.compiler.is_some())
@@ -447,8 +453,14 @@ impl SanitizeTool {
         let tmp_bin = unique_tmp_path("byteask-cpp-sanitize", "");
 
         let result = match sanitizer {
-            "valgrind" => self.run_valgrind(&plan, &tmp_bin, &run_args, args.timeout_sec).await,
-            "msan" => self.run_msan(&plan, &tmp_bin, &run_args, args.timeout_sec).await,
+            "valgrind" => {
+                self.run_valgrind(&plan, &tmp_bin, &run_args, args.timeout_sec)
+                    .await
+            }
+            "msan" => {
+                self.run_msan(&plan, &tmp_bin, &run_args, args.timeout_sec)
+                    .await
+            }
             "tsan" => {
                 self.run_tsan(&plan, &tmp_bin, &run_args, args.timeout_sec)
                     .await
@@ -463,7 +475,12 @@ impl SanitizeTool {
         let _ = std::fs::remove_file(&tmp_bin);
 
         let (text, verdict) = result?;
-        Ok(crate::report::report(TOOL_NAME, &args.source, text, verdict))
+        Ok(crate::report::report(
+            TOOL_NAME,
+            &args.source,
+            text,
+            verdict,
+        ))
     }
 
     /// The trust gate for this tool. Separate so a test can prove the
@@ -584,12 +601,19 @@ impl SanitizeTool {
             .filter(|s| !is_link_input(s))
             .all(|s| is_c_source(s));
         let compiler = explicit_compiler.unwrap_or_else(|| {
-            if all_c { DEFAULT_COMPILER_C } else { DEFAULT_COMPILER }.to_string()
+            if all_c {
+                DEFAULT_COMPILER_C
+            } else {
+                DEFAULT_COMPILER
+            }
+            .to_string()
         });
         let std_is_default = args.std.is_none() && db_std.is_none();
-        let std = args.std.clone().or(db_std).unwrap_or_else(|| {
-            if all_c { DEFAULT_STD_C } else { DEFAULT_STD }.to_string()
-        });
+        let std = args
+            .std
+            .clone()
+            .or(db_std)
+            .unwrap_or_else(|| if all_c { DEFAULT_STD_C } else { DEFAULT_STD }.to_string());
 
         let mut origin = describe_origin(
             db_path.as_deref(),
@@ -694,7 +718,9 @@ impl SanitizeTool {
                         "-o".to_string(),
                         object.display().to_string(),
                     ]);
-                    match run_capped(c_compiler_for(&plan.compiler), &argv, &self.cwd, timeout).await? {
+                    match run_capped(c_compiler_for(&plan.compiler), &argv, &self.cwd, timeout)
+                        .await?
+                    {
                         RunOutcome::TimedOut { secs } => {
                             return Ok(Err((
                                 compile_timeout_message(
@@ -713,7 +739,10 @@ impl SanitizeTool {
                             if i + 1 < c_stds.len() && std_rejected(&stderr, std) {
                                 continue;
                             }
-                            return Ok(Err((compile_failure(plan, &stderr), build_failed_result())));
+                            return Ok(Err((
+                                compile_failure(plan, &stderr),
+                                build_failed_result(),
+                            )));
                         }
                         RunOutcome::Finished { stderr, .. } => {
                             warnings.push_str(&stderr);
@@ -802,8 +831,15 @@ impl SanitizeTool {
         // so a seeded stack-buffer-overflow came back as a one-line "ubsan
         // error … insufficient space" instead of ASan's named bug class with a
         // frame table. Letting UBSan recover lets both checkers speak.
-        self.run_memory_checker(plan, "asan_ubsan", &sanitizer_env(), tmp_bin, run_args, timeout_sec)
-            .await
+        self.run_memory_checker(
+            plan,
+            "asan_ubsan",
+            &sanitizer_env(),
+            tmp_bin,
+            run_args,
+            timeout_sec,
+        )
+        .await
     }
 
     /// MemorySanitizer (clang only) with origin tracking: the report names the
@@ -1066,8 +1102,9 @@ impl SanitizeTool {
                     .to_string(),
             ));
         }
-        let run_args = crate::program_args::parse("run_args", args.run_args.as_deref().unwrap_or(""))
-            .map_err(FunctionCallError::RespondToModel)?;
+        let run_args =
+            crate::program_args::parse("run_args", args.run_args.as_deref().unwrap_or(""))
+                .map_err(FunctionCallError::RespondToModel)?;
         let plan = self.project_plan(&args, sanitizer)?;
         let banner = plan.banner_target();
 
@@ -1106,7 +1143,8 @@ impl SanitizeTool {
         // The workspace itself, or, when it has no build file of its own and is a parent of
         // the repository, the repository below it.
         let has_build_file = |dir: &Path| {
-            dir.join("CMakeLists.txt").is_file() || MAKEFILE_NAMES.iter().any(|n| dir.join(n).is_file())
+            dir.join("CMakeLists.txt").is_file()
+                || MAKEFILE_NAMES.iter().any(|n| dir.join(n).is_file())
         };
         let root = if has_build_file(&self.cwd) {
             self.cwd.clone()
@@ -1191,25 +1229,23 @@ impl SanitizeTool {
         // symbols — or fail `Text file busy`. One build+run per project root,
         // across every session of this user: the kept CMake tree is
         // shared too.
-        let _project = match crate::builds::project_lock(
-            &plan.root,
-            compile_timeout_from(args.timeout_sec),
-        )
-        .await
-        {
-            Ok(guard) => guard,
-            Err(busy) => {
-                return Ok((
-                    format!("{}\n{}", plan.origin(), busy.summary()),
-                    CheckResult::not_run(
-                        TOOL_NAME,
-                        NotRunReason::TimeLimit,
-                        &busy.summary(),
-                        crate::builds::ProjectBusy::FIX,
-                    ),
-                ));
-            }
-        };
+        let _project =
+            match crate::builds::project_lock(&plan.root, compile_timeout_from(args.timeout_sec))
+                .await
+            {
+                Ok(guard) => guard,
+                Err(busy) => {
+                    return Ok((
+                        format!("{}\n{}", plan.origin(), busy.summary()),
+                        CheckResult::not_run(
+                            TOOL_NAME,
+                            NotRunReason::TimeLimit,
+                            &busy.summary(),
+                            crate::builds::ProjectBusy::FIX,
+                        ),
+                    ));
+                }
+            };
         if crate::builds::is_stable_build_dir(&plan.build_dir) {
             // Old kept trees of OTHER projects are removed in the background;
             // cheap unless something is past its keep time.
@@ -1379,11 +1415,9 @@ impl SanitizeTool {
         )
         .await?;
         match build {
-            RunOutcome::TimedOut { secs } => Ok(BuildStep::aborted_timeout(project_timeout_message(
-                &origin,
-                "PROJECT BUILD",
-                secs,
-            ))),
+            RunOutcome::TimedOut { secs } => Ok(BuildStep::aborted_timeout(
+                project_timeout_message(&origin, "PROJECT BUILD", secs),
+            )),
             RunOutcome::Finished {
                 success: false,
                 stdout,
@@ -1487,11 +1521,9 @@ impl SanitizeTool {
         )
         .await?;
         match build {
-            RunOutcome::TimedOut { secs } => Ok(BuildStep::aborted_timeout(project_timeout_message(
-                &origin,
-                "PROJECT BUILD",
-                secs,
-            ))),
+            RunOutcome::TimedOut { secs } => Ok(BuildStep::aborted_timeout(
+                project_timeout_message(&origin, "PROJECT BUILD", secs),
+            )),
             RunOutcome::Finished {
                 success: false,
                 stdout,
@@ -1544,7 +1576,14 @@ impl SanitizeTool {
             plan.root.display().to_string(),
             "__byteask_print_database__".to_string(),
         ];
-        match run_capped("make", &argv, &plan.root, timeout_from(Some(MAKE_DRY_RUN_TIMEOUT_SECS))).await {
+        match run_capped(
+            "make",
+            &argv,
+            &plan.root,
+            timeout_from(Some(MAKE_DRY_RUN_TIMEOUT_SECS)),
+        )
+        .await
+        {
             Ok(RunOutcome::Finished { stdout, .. }) => makefile_flag_values(&stdout),
             _ => Vec::new(),
         }
@@ -1614,8 +1653,8 @@ impl SanitizeTool {
         .await?;
         let (stdout, stderr, exit_label, truncated) = match run {
             RunOutcome::TimedOut { secs } => {
-                    return Ok((run_timeout_message(preamble, secs), run_timeout_result()));
-                }
+                return Ok((run_timeout_message(preamble, secs), run_timeout_result()));
+            }
             RunOutcome::Finished {
                 code,
                 stdout,
@@ -2054,7 +2093,11 @@ fn makefile_flag_values(database: &str) -> Vec<(String, String)> {
             if value.is_empty() || out.iter().any(|(name, _)| name == var) {
                 continue;
             }
-            let value = if simple { value.replace('$', "$$") } else { value.to_string() };
+            let value = if simple {
+                value.replace('$', "$$")
+            } else {
+                value.to_string()
+            };
             out.push((var.to_string(), value));
         }
     }
@@ -2836,7 +2879,10 @@ fn msan_compiler(compiler: &str, explicit: bool) -> Result<String, String> {
 /// own (see [`discovered_symbolizer`]): `external_symbolizer_path` in every
 /// `*_OPTIONS`, plus `ASAN_SYMBOLIZER_PATH`. Unchanged when `symbolizer` is
 /// `None`, i.e. whenever `llvm-symbolizer` is already on PATH.
-fn with_symbolizer(mut env: Vec<(String, String)>, symbolizer: Option<&Path>) -> Vec<(String, String)> {
+fn with_symbolizer(
+    mut env: Vec<(String, String)>,
+    symbolizer: Option<&Path>,
+) -> Vec<(String, String)> {
     let Some(path) = symbolizer.map(|p| p.display().to_string()) else {
         return env;
     };
@@ -3096,7 +3142,10 @@ fn findings_run_result(
         );
     }
     if leaks_checked {
-        CheckResult::pass(TOOL_NAME, "The program ran to exit 0 with no sanitizer errors.")
+        CheckResult::pass(
+            TOOL_NAME,
+            "The program ran to exit 0 with no sanitizer errors.",
+        )
     } else {
         CheckResult::approximate(
             TOOL_NAME,
@@ -3153,7 +3202,9 @@ fn tsan_result(stderr: &str, exit_label: &str, truncated: bool) -> CheckResult {
 /// partial one can support it only for what it instrumented. Findings stay
 /// FAIL either way: what was instrumented was really checked.
 fn qualify_result(result: CheckResult, weakened: &[String], partial: &[String]) -> CheckResult {
-    if result.verdict != check_result::Verdict::Pass && result.verdict != check_result::Verdict::Approximate {
+    if result.verdict != check_result::Verdict::Pass
+        && result.verdict != check_result::Verdict::Approximate
+    {
         return result;
     }
     if !weakened.is_empty() {
@@ -3262,7 +3313,8 @@ fn built_project_libraries(cwd: &Path) -> Vec<String> {
 
 /// `libfoo.a`, `libfoo.so`, `libfoo.so.1.2`.
 fn is_library_name(name: &str) -> bool {
-    name.starts_with("lib") && (name.ends_with(".a") || name.ends_with(".so") || name.contains(".so."))
+    name.starts_with("lib")
+        && (name.ends_with(".a") || name.ends_with(".so") || name.contains(".so."))
 }
 
 /// A prebuilt library or object listed in `extra_sources`: linked as given,
@@ -3277,9 +3329,13 @@ fn is_link_input(path: &Path) -> bool {
 
 /// The linker could not resolve symbols (GNU ld, gold, lld, ld64 wording).
 fn has_unresolved_symbols(stderr: &str) -> bool {
-    ["undefined reference", "Undefined symbols", "undefined symbol"]
-        .iter()
-        .any(|marker| stderr.contains(marker))
+    [
+        "undefined reference",
+        "Undefined symbols",
+        "undefined symbol",
+    ]
+    .iter()
+    .any(|marker| stderr.contains(marker))
 }
 
 /// On unresolved symbols, name the libraries the project already built.
@@ -3300,9 +3356,12 @@ fn link_hint(libraries: &[String]) -> String {
 fn implicitly_declared(stderr: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for line in stderr.lines() {
-        let rest = ["implicit declaration of function", "call to undeclared function"]
-            .iter()
-            .find_map(|marker| line.find(marker).map(|at| &line[at + marker.len()..]));
+        let rest = [
+            "implicit declaration of function",
+            "call to undeclared function",
+        ]
+        .iter()
+        .find_map(|marker| line.find(marker).map(|at| &line[at + marker.len()..]));
         let Some(rest) = rest else {
             continue;
         };
@@ -3582,7 +3641,10 @@ fn db_flags_for(db_path: &Path, source: &Path) -> Option<DbFlags> {
     // source.
     let db_dir = db_path.parent().unwrap_or(Path::new("."));
     for entry in entries {
-        let directory = entry.get("directory").and_then(|v| v.as_str()).unwrap_or("");
+        let directory = entry
+            .get("directory")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let directory = resolve_path(db_dir, directory);
         let Some(file) = entry.get("file").and_then(|v| v.as_str()) else {
             continue;
@@ -3601,7 +3663,10 @@ fn db_flags_for(db_path: &Path, source: &Path) -> Option<DbFlags> {
 
 /// The `-I` directories and `-D` defines of `source`'s compile-DB entry, for
 /// tools that must pass them by hand (cppcheck < 2.0 has no `--file-filter`).
-pub(crate) fn db_includes_and_defines(db_path: &Path, source: &Path) -> Option<(Vec<String>, Vec<String>)> {
+pub(crate) fn db_includes_and_defines(
+    db_path: &Path,
+    source: &Path,
+) -> Option<(Vec<String>, Vec<String>)> {
     db_flags_for(db_path, source).map(|flags| (flags.include_dirs, flags.defines))
 }
 
@@ -3618,13 +3683,25 @@ fn db_is_readable(db_path: &Path) -> bool {
 /// may have copied from a command line. `["-DFOO"]` used to become `-D-DFOO`
 /// (a compile error naming no define) and `["-Iinc"]` the path `<cwd>/-Iinc`;
 /// an empty entry failed without saying which.
-fn arg_value<'a>(field: &str, index: usize, value: &'a str, flag: &str) -> Result<&'a str, FunctionCallError> {
+fn arg_value<'a>(
+    field: &str,
+    index: usize,
+    value: &'a str,
+    flag: &str,
+) -> Result<&'a str, FunctionCallError> {
     let value = value.trim();
-    let value = value.strip_prefix(flag).map(str::trim_start).unwrap_or(value);
+    let value = value
+        .strip_prefix(flag)
+        .map(str::trim_start)
+        .unwrap_or(value);
     if value.is_empty() {
         return Err(FunctionCallError::RespondToModel(format!(
             "{field}[{index}] is empty; pass the bare value ({})",
-            if flag == "-D" { "e.g. \"FOO\" or \"FOO=1\"" } else { "a directory, e.g. \"include\"" }
+            if flag == "-D" {
+                "e.g. \"FOO\" or \"FOO=1\""
+            } else {
+                "a directory, e.g. \"include\""
+            }
         )));
     }
     Ok(value)
@@ -3649,7 +3726,11 @@ fn std_rejected(stderr: &str, std: &str) -> bool {
 
 /// The C driver of the same family as `compiler`.
 fn c_compiler_for(compiler: &str) -> &'static str {
-    if compiler.starts_with("clang") { "clang" } else { "gcc" }
+    if compiler.starts_with("clang") {
+        "clang"
+    } else {
+        "gcc"
+    }
 }
 
 /// A C (not C++) translation unit, by extension.
@@ -3775,14 +3856,14 @@ fn extract_db_flags(tokens: &[String], directory: &Path) -> DbFlags {
                     i += 1;
                 }
             }
-            "-fwrapv" | "-fno-wrapv" | "-fsigned-char" | "-funsigned-char"
-            | "-fno-signed-char" | "-fno-unsigned-char"
+            "-fwrapv" | "-fno-wrapv" | "-fsigned-char" | "-funsigned-char" | "-fno-signed-char"
+            | "-fno-unsigned-char"
                 if !flags.semantics.iter().any(|f| f == token) =>
             {
                 flags.semantics.push(token.to_string());
             }
-            "-fwrapv" | "-fno-wrapv" | "-fsigned-char" | "-funsigned-char"
-            | "-fno-signed-char" | "-fno-unsigned-char" => {}
+            "-fwrapv" | "-fno-wrapv" | "-fsigned-char" | "-funsigned-char" | "-fno-signed-char"
+            | "-fno-unsigned-char" => {}
             _ if token.starts_with("-include") && token.len() > "-include".len() => {
                 let resolved = resolve_path(directory, &token["-include".len()..]);
                 flags.semantics.push("-include".to_string());
@@ -4016,7 +4097,11 @@ fn parse_asan_ubsan(stderr: &str) -> Reports {
             }
             leak_report = None;
             let location = stack_after(&lines, i + 1).and_then(|frames| report_location(&frames));
-            let source = if tool == "MemorySanitizer" { "msan" } else { "asan" };
+            let source = if tool == "MemorySanitizer" {
+                "msan"
+            } else {
+                "asan"
+            };
             reports
                 .findings
                 .push(located_finding(source, location, 0, asan_bug_class(rest)));
@@ -4479,11 +4564,7 @@ fn inner_text(body: &str, tag: &str) -> Option<String> {
     let start = body.find(&open)? + open.len();
     let end = body[start..].find(&close)? + start;
     let text = body[start..end].trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 /// The location of an error's first `<frame>` in user code, else in a
@@ -4549,7 +4630,14 @@ mod tests {
         // -march / -mavx2 / -mfma must survive so a SIMD TU compiles under
         // the sanitizer instead of failing "requires target feature 'avx'".
         let toks: Vec<String> = [
-            "c++", "-std=c++17", "-Iinc", "-mavx2", "-mfma", "-march=native", "-O2", "-c",
+            "c++",
+            "-std=c++17",
+            "-Iinc",
+            "-mavx2",
+            "-mfma",
+            "-march=native",
+            "-O2",
+            "-c",
             "dot.cpp",
         ]
         .iter()
@@ -4586,24 +4674,43 @@ mod tests {
         // (it can switch sanitizer instrumentation OFF) and takes its value as a
         // SEPARATE token, so copying it would also swallow our own -fsanitize.
         assert!(!is_safe_target_flag("-mllvm"));
-        assert!(!is_safe_target_flag("-mllvm=-tsan-instrument-memory-accesses=0"));
+        assert!(!is_safe_target_flag(
+            "-mllvm=-tsan-instrument-memory-accesses=0"
+        ));
         assert!(!is_safe_target_flag("-multiply_defined"));
         assert!(!is_safe_target_flag("-m"));
         assert!(!is_safe_target_flag("-fsanitize=address"));
         // …while the real ISA flags the allowlist exists for still pass.
         for ok in [
-            "-mavx2", "-mfma", "-msse4.2", "-mno-avx512f", "-mpopcnt", "-m64", "-march=native",
+            "-mavx2",
+            "-mfma",
+            "-msse4.2",
+            "-mno-avx512f",
+            "-mpopcnt",
+            "-m64",
+            "-march=native",
             "-mtune=skylake",
         ] {
             assert!(is_safe_target_flag(ok), "should be allowed: {ok}");
         }
         // end-to-end through the extractor
-        let toks: Vec<String> = ["clang++", "-mllvm", "-tsan-instrument-memory-accesses=0", "-mavx2", "-c", "a.cpp"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let toks: Vec<String> = [
+            "clang++",
+            "-mllvm",
+            "-tsan-instrument-memory-accesses=0",
+            "-mavx2",
+            "-c",
+            "a.cpp",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let f = extract_db_flags(&toks, Path::new("/proj"));
-        assert_eq!(f.march, vec!["-mavx2".to_string()], "only the ISA flag survives");
+        assert_eq!(
+            f.march,
+            vec!["-mavx2".to_string()],
+            "only the ISA flag survives"
+        );
     }
 
     #[test]
@@ -4614,9 +4721,13 @@ mod tests {
             classify_tsan(fatal),
             TsanOutcome::Fatal("unexpected memory mapping 0x55".to_string())
         );
-        assert!(parse_tsan_report(fatal).is_none(), "FATAL must not become a race finding");
+        assert!(
+            parse_tsan_report(fatal).is_none(),
+            "FATAL must not become a race finding"
+        );
         // A non-race TSan report keeps its own kind.
-        let lock = "==1==WARNING: ThreadSanitizer: lock-order-inversion (potential deadlock) (pid=1)\n";
+        let lock =
+            "==1==WARNING: ThreadSanitizer: lock-order-inversion (potential deadlock) (pid=1)\n";
         assert_eq!(
             classify_tsan(lock),
             TsanOutcome::Report("lock-order-inversion".to_string())
@@ -4957,7 +5068,10 @@ WRITE of size 4 at 0x602 thread T0
     #[test]
     fn gcc_note_severity_is_ignored() {
         // Only "error" and "warning" are recognised; "note" yields None.
-        assert_eq!(parse_gcc_line("a.cpp:1:1: note: in expansion of macro"), None);
+        assert_eq!(
+            parse_gcc_line("a.cpp:1:1: note: in expansion of macro"),
+            None
+        );
     }
 
     // ---- valgrind XML: more kinds, multiple errors, frame fallbacks --------
@@ -5155,10 +5269,16 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
             &findings,
             &prepare_trace(REAL_ASAN_REPORT),
         );
-        assert!(out.contains("ERROR: AddressSanitizer: heap-use-after-free"), "{out}");
+        assert!(
+            out.contains("ERROR: AddressSanitizer: heap-use-after-free"),
+            "{out}"
+        );
         assert!(out.contains("READ of size 4"), "{out}");
         assert!(out.contains("freed by thread T0 here:"), "{out}");
-        assert!(out.contains("previously allocated by thread T0 here:"), "{out}");
+        assert!(
+            out.contains("previously allocated by thread T0 here:"),
+            "{out}"
+        );
         assert!(out.contains("__interceptor_free"), "{out}");
         assert!(out.contains("SUMMARY: AddressSanitizer"), "{out}");
         assert!(out.contains("sanitizer report (raw stderr)"), "{out}");
@@ -5192,7 +5312,10 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         // that opens the next one, not run to EOF.
         let two = format!("{REAL_ASAN_REPORT}=====\n==9==ERROR: AddressSanitizer: bad-free\n");
         let trimmed = strip_shadow_block(&two);
-        assert!(trimmed.contains("bad-free"), "second report lost: {trimmed}");
+        assert!(
+            trimmed.contains("bad-free"),
+            "second report lost: {trimmed}"
+        );
         assert!(!trimmed.contains("Shadow byte legend"), "{trimmed}");
     }
 
@@ -5228,7 +5351,11 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
     #[test]
     fn program_stderr_before_the_report_cannot_push_it_out() {
         // 20 KB of the program's own logging, then the real report.
-        let noisy = format!("{}{}", "log line from the program\n".repeat(800), REAL_ASAN_REPORT);
+        let noisy = format!(
+            "{}{}",
+            "log line from the program\n".repeat(800),
+            REAL_ASAN_REPORT
+        );
         let trace = prepare_trace(&noisy);
         assert!(trace.contains("ERROR: AddressSanitizer"), "{trace}");
         assert!(trace.contains("before the report omitted"), "{trace}");
@@ -5360,7 +5487,10 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
             "a platform WITH LSan must keep the bare verdict"
         );
         let without = clean_verdict(false);
-        assert!(without.starts_with("clean: exit 0, no sanitizer errors"), "{without}");
+        assert!(
+            without.starts_with("clean: exit 0, no sanitizer errors"),
+            "{without}"
+        );
         assert!(without.contains("LEAKS WERE NOT CHECKED"), "{without}");
         // The remedy must be one the user can actually follow: there is no
         // LeakSanitizer to install on macOS, so pointing at a package would be
@@ -5479,7 +5609,10 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
             defines: vec![],
             march: vec![],
             semantics: Vec::new(),
-            sources: vec![PathBuf::from("/w/repro.cpp"), PathBuf::from("/w/src/core.cpp")],
+            sources: vec![
+                PathBuf::from("/w/repro.cpp"),
+                PathBuf::from("/w/src/core.cpp"),
+            ],
             origin: "build: test".to_string(),
         };
         let with = compile_timeout_message(&plan, 180, &libraries);
@@ -5488,9 +5621,14 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         assert!(with.contains("build/lib/libcore.a"), "{with}");
         assert!(with.contains("extra_sources"), "{with}");
         let without = compile_timeout_message(&plan, 180, &[]);
-        assert!(without.contains("build the project's library once"), "{without}");
+        assert!(
+            without.contains("build the project's library once"),
+            "{without}"
+        );
 
-        assert!(has_unresolved_symbols("a.cpp:(.text+0x5): undefined reference to `f()'"));
+        assert!(has_unresolved_symbols(
+            "a.cpp:(.text+0x5): undefined reference to `f()'"
+        ));
         assert!(!has_unresolved_symbols("error: expected ';'"));
         assert!(link_hint(&libraries).contains("build/lib/libcore.a"));
         assert_eq!(link_hint(&[]), "");
@@ -5511,7 +5649,10 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
                     .unwrap(),
             )
             .expect("plan");
-        assert_eq!((plan.compiler.as_str(), plan.std.as_str()), ("gcc", "gnu17"));
+        assert_eq!(
+            (plan.compiler.as_str(), plan.std.as_str()),
+            ("gcc", "gnu17")
+        );
         assert!(is_link_input(Path::new("build/libutil.a")));
         assert!(is_link_input(Path::new("libutil.so.1.2")));
         assert!(is_link_input(Path::new("obj/x.o")));
@@ -5538,10 +5679,19 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         let clang = "t.c:5:9: error: call to undeclared function 'popen'; ISO C99 and later do not support implicit function declarations";
         let stderr = format!("{gcc_ascii}\n{gcc_utf8}\n{clang}\n");
         assert_eq!(implicitly_declared(&stderr), vec!["popen", "pclose"]);
-        assert_eq!(implicitly_declared("t.c:1:1: warning: unused variable 'x'"), Vec::<String>::new());
+        assert_eq!(
+            implicitly_declared("t.c:1:1: warning: unused variable 'x'"),
+            Vec::<String>::new()
+        );
         let note = implicit_declaration_note(&implicitly_declared(&stderr));
-        assert!(note.contains("popen, pclose were called without a declaration"), "{note}");
-        assert!(note.contains("not a finding in the code under test"), "{note}");
+        assert!(
+            note.contains("popen, pclose were called without a declaration"),
+            "{note}"
+        );
+        assert!(
+            note.contains("not a finding in the code under test"),
+            "{note}"
+        );
         assert_eq!(implicit_declaration_note(&[]), "");
     }
 
@@ -5656,12 +5806,7 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         assert_eq!(flags.std.as_deref(), Some("c++23"));
         assert_eq!(
             flags.include_dirs,
-            vec![
-                canonical(dir.path())
-                    .join("include")
-                    .display()
-                    .to_string()
-            ]
+            vec![canonical(dir.path()).join("include").display().to_string()]
         );
     }
 
@@ -5694,8 +5839,12 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
             .expect("refused");
         assert!(err.to_string().contains("unknown field `args`"), "{err}");
         // The mode selector itself is still a field of both argument sets.
-        assert!(serde_json::from_str::<SanitizeArgs>(r#"{"source":"a.c","project":false}"#).is_ok());
-        assert!(serde_json::from_str::<ProjectArgs>(r#"{"project":true,"timeout_sec":90.0}"#).is_ok());
+        assert!(
+            serde_json::from_str::<SanitizeArgs>(r#"{"source":"a.c","project":false}"#).is_ok()
+        );
+        assert!(
+            serde_json::from_str::<ProjectArgs>(r#"{"project":true,"timeout_sec":90.0}"#).is_ok()
+        );
         let err = serde_json::from_str::<ProjectArgs>(r#"{"project":true,"source":"a.c"}"#)
             .err()
             .expect("project mode has no `source`");
@@ -5707,8 +5856,18 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         // Dropping -fwrapv / -funsigned-char / -include / -U
         // builds a different program (a false "signed integer overflow").
         let tokens: Vec<String> = [
-            "cc", "-fwrapv", "-funsigned-char", "-include", "forced.h", "-UNDEBUG", "-U", "X",
-            "-O2", "-fno-sanitize=address", "-c", "a.c",
+            "cc",
+            "-fwrapv",
+            "-funsigned-char",
+            "-include",
+            "forced.h",
+            "-UNDEBUG",
+            "-U",
+            "X",
+            "-O2",
+            "-fno-sanitize=address",
+            "-c",
+            "a.c",
         ]
         .iter()
         .map(|t| t.to_string())
@@ -5716,7 +5875,14 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         let flags = extract_db_flags(&tokens, Path::new("/proj"));
         assert_eq!(
             flags.semantics,
-            vec!["-fwrapv", "-funsigned-char", "-include", "/proj/forced.h", "-UNDEBUG", "-UX"]
+            vec![
+                "-fwrapv",
+                "-funsigned-char",
+                "-include",
+                "/proj/forced.h",
+                "-UNDEBUG",
+                "-UX"
+            ]
         );
         assert!(!flags.semantics.iter().any(|f| f.contains("sanitize")));
     }
@@ -5757,11 +5923,17 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         let plan = tool
             .build_plan(&serde_json::from_str(r#"{"source":"a.c"}"#).unwrap())
             .expect("plan");
-        assert_eq!((plan.compiler.as_str(), plan.std.as_str()), ("gcc", "gnu17"));
+        assert_eq!(
+            (plan.compiler.as_str(), plan.std.as_str()),
+            ("gcc", "gnu17")
+        );
         let plan = tool
             .build_plan(&serde_json::from_str(r#"{"source":"b.cpp"}"#).unwrap())
             .expect("plan");
-        assert_eq!((plan.compiler.as_str(), plan.std.as_str()), ("g++", "c++23"));
+        assert_eq!(
+            (plan.compiler.as_str(), plan.std.as_str()),
+            ("g++", "c++23")
+        );
         // An explicit choice still wins.
         let plan = tool
             .build_plan(&serde_json::from_str(r#"{"source":"a.c","compiler":"clang"}"#).unwrap())
@@ -5850,11 +6022,22 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         let args: SanitizeArgs = serde_json::from_str(r#"{"source":"main.cpp"}"#).unwrap();
         let plan = tool.build_plan(&args).expect("plan");
 
-        assert_eq!(plan.std, "c++20", "the DB's std wins over the c++23 default");
+        assert_eq!(
+            plan.std, "c++20",
+            "the DB's std wins over the c++23 default"
+        );
         assert_eq!(plan.defines, vec!["FROM_DB=1"]);
         assert!(plan.include_dirs[0].ends_with("include"));
-        assert!(plan.origin.contains("compile_commands.json"), "{}", plan.origin);
-        assert!(plan.origin.contains("entry for main.cpp"), "{}", plan.origin);
+        assert!(
+            plan.origin.contains("compile_commands.json"),
+            "{}",
+            plan.origin
+        );
+        assert!(
+            plan.origin.contains("entry for main.cpp"),
+            "{}",
+            plan.origin
+        );
         // -O2 is not ours to carry.
         assert!(!plan.compile_argv().iter().any(|a| a == "-O2"));
     }
@@ -5909,9 +6092,17 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         assert_eq!(plan.sources.len(), 2);
         let argv = plan.compile_argv();
         assert_eq!(argv[0], "-std=c++23");
-        assert!(argv.iter().any(|a| a.ends_with("include") && a.starts_with("-I")), "{argv:?}");
+        assert!(
+            argv.iter()
+                .any(|a| a.ends_with("include") && a.starts_with("-I")),
+            "{argv:?}"
+        );
         assert!(argv.contains(&"-DNDEBUG".to_string()), "{argv:?}");
-        assert!(plan.origin.contains("no compile_commands.json"), "{}", plan.origin);
+        assert!(
+            plan.origin.contains("no compile_commands.json"),
+            "{}",
+            plan.origin
+        );
     }
 
     #[test]
@@ -6018,7 +6209,9 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
         let out = compile_failure(&plan, stderr);
         assert!(out.contains("compile failed"), "{out}");
         assert!(
-            out.contains("gcc error include/pool.hpp:3:10 orderbook.hpp: No such file or directory"),
+            out.contains(
+                "gcc error include/pool.hpp:3:10 orderbook.hpp: No such file or directory"
+            ),
             "the fatal-error diagnostic must be parsed: {out}"
         );
         assert!(out.contains("compiler stderr:"), "{out}");
@@ -6089,8 +6282,7 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
             cwd: dir.path().to_path_buf(),
             native_exec: true,
         };
-        let args: SanitizeArgs =
-            serde_json::from_str(r#"{"source":"argv_recorder.c"}"#).unwrap();
+        let args: SanitizeArgs = serde_json::from_str(r#"{"source":"argv_recorder.c"}"#).unwrap();
         let plan = tool.build_plan(&args).expect("plan");
         // The recorder takes its output path from -DOUT; the plan compiles it
         // without one, so write a variant with the path baked in.
@@ -6100,8 +6292,8 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
             &format!("fopen(\"{}\",", dir.path().join("argv.out").display()),
         );
         std::fs::write(&source, text).unwrap();
-        let run_args = crate::program_args::parse("run_args", r#""" 'a b' x\"y '$HOME' 日本"#)
-            .expect("parse");
+        let run_args =
+            crate::program_args::parse("run_args", r#""" 'a b' x\"y '$HOME' 日本"#).expect("parse");
         let tmp_bin = unique_tmp_path("byteask-cpp-sanitize-live", "");
         let out = tool
             .run_asan_ubsan(&plan, &tmp_bin, &run_args, Some(120))
@@ -6159,7 +6351,10 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
             !out.contains("compile failed"),
             "-Iinclude must make the include/ + main.cpp layout build: {out}"
         );
-        assert!(out.contains("issue(s)"), "the seeded overflow must be found: {out}");
+        assert!(
+            out.contains("issue(s)"),
+            "the seeded overflow must be found: {out}"
+        );
         assert!(
             out.contains("sanitizer report (raw stderr)"),
             "the raw report must come back: {out}"
@@ -6168,7 +6363,10 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
             out.contains("stack-buffer-overflow") || out.contains("runtime error"),
             "{out}"
         );
-        assert!(!out.contains("Shadow byte legend"), "no shadow-byte legend in the output: {out}");
+        assert!(
+            !out.contains("Shadow byte legend"),
+            "no shadow-byte legend in the output: {out}"
+        );
     }
 
     #[tokio::test]
@@ -6217,7 +6415,10 @@ Shadow byte legend (one shadow byte represents 8 application bytes):
             .expect("run");
         let _ = std::fs::remove_file(&tmp_bin);
         assert!(out.contains("popen"), "{out}");
-        assert!(out.contains("not a finding in the code under test"), "{out}");
+        assert!(
+            out.contains("not a finding in the code under test"),
+            "{out}"
+        );
     }
 
     #[tokio::test]
@@ -6562,10 +6763,16 @@ done
             3,
             "InvalidWrite: Invalid write of size 4",
         )];
-        assert_eq!(valgrind_verdict(&one, "99", false, true), "1 issue(s) (exit 99)");
+        assert_eq!(
+            valgrind_verdict(&one, "99", false, true),
+            "1 issue(s) (exit 99)"
+        );
         // No complete XML report: nothing was checked, whatever the exit code.
         let none = valgrind_verdict(&[], "0", false, false);
-        assert!(none.contains("NO REPORT") && none.contains("NOT a clean result"), "{none}");
+        assert!(
+            none.contains("NO REPORT") && none.contains("NOT a clean result"),
+            "{none}"
+        );
         assert!(!xml_is_complete("") && xml_is_complete("<valgrindoutput></valgrindoutput>"));
     }
 
@@ -6800,7 +7007,9 @@ done
         let none: Option<String> = None;
         assert_eq!(none.as_deref().unwrap_or(DEFAULT_SANITIZER), "asan_ubsan");
         assert_eq!(
-            Some("tsan".to_string()).as_deref().unwrap_or(DEFAULT_SANITIZER),
+            Some("tsan".to_string())
+                .as_deref()
+                .unwrap_or(DEFAULT_SANITIZER),
             "tsan"
         );
     }
@@ -7265,7 +7474,11 @@ done
         };
         let args = project_args(r#"{"project":true,"allow_in_tree_build":true,"timeout_sec":120}"#);
         let plan = tool.project_plan(&args, "asan_ubsan").expect("plan");
-        let out = tool.run_project(&plan, &args, &[]).await.map(|(text, _)| text).expect("run");
+        let out = tool
+            .run_project(&plan, &args, &[])
+            .await
+            .map(|(text, _)| text)
+            .expect("run");
         assert!(out.contains("PARTIALLY CHECKED"), "{out}");
         assert!(out.contains("util.o"), "{out}");
         assert!(!out.contains("\nclean"), "{out}");
@@ -7321,7 +7534,11 @@ done
             "cmake_minimum_required(VERSION 3.16)\nproject(t5 CXX)\nadd_executable(app app.cpp util.cpp)\n",
         )
         .unwrap();
-        std::fs::write(root.join("app.cpp"), "int util();\nint main(){ return util(); }\n").unwrap();
+        std::fs::write(
+            root.join("app.cpp"),
+            "int util();\nint main(){ return util(); }\n",
+        )
+        .unwrap();
         std::fs::write(root.join("util.cpp"), "int util(){ return 0; }\n").unwrap();
         dir
     }
@@ -7357,14 +7574,24 @@ done
         };
         let args = project_args(r#"{"project":true,"target":"app","timeout_sec":300}"#);
         let plan = tool.project_plan(&args, "asan_ubsan").expect("plan");
-        let (text, result) = tool.run_project(&plan, &args, &[]).await.expect("first run");
+        let (text, result) = tool
+            .run_project(&plan, &args, &[])
+            .await
+            .expect("first run");
         assert!(result.is_pass(), "{text}");
-        let object = find_named(&plan.build_dir, "util.cpp.o").expect("util object in the kept tree");
+        let object =
+            find_named(&plan.build_dir, "util.cpp.o").expect("util object in the kept tree");
         let built = std::fs::metadata(&object).unwrap().modified().unwrap();
 
         let again = tool.project_plan(&args, "asan_ubsan").expect("plan");
-        assert_eq!(again.build_dir, plan.build_dir, "the same tree is used again");
-        let (text, result) = tool.run_project(&again, &args, &[]).await.expect("second run");
+        assert_eq!(
+            again.build_dir, plan.build_dir,
+            "the same tree is used again"
+        );
+        let (text, result) = tool
+            .run_project(&again, &args, &[])
+            .await
+            .expect("second run");
         assert!(result.is_pass(), "{text}");
         assert_eq!(
             std::fs::metadata(&object).unwrap().modified().unwrap(),
@@ -7391,7 +7618,10 @@ done
         };
         let args = project_args(r#"{"project":true,"target":"app","timeout_sec":300}"#);
         let plan = tool.project_plan(&args, "asan_ubsan").expect("plan");
-        let (text, result) = tool.run_project(&plan, &args, &[]).await.expect("first run");
+        let (text, result) = tool
+            .run_project(&plan, &args, &[])
+            .await
+            .expect("first run");
         assert!(result.is_pass(), "{text}");
 
         let cache = plan.build_dir.join("CMakeCache.txt");
@@ -7409,8 +7639,14 @@ done
             .join("\n");
         std::fs::write(&cache, stale).unwrap();
 
-        let (text, result) = tool.run_project(&plan, &args, &[]).await.expect("second run");
-        assert!(result.is_pass(), "a stale cache of ours became a verdict: {text}");
+        let (text, result) = tool
+            .run_project(&plan, &args, &[])
+            .await
+            .expect("second run");
+        assert!(
+            result.is_pass(),
+            "a stale cache of ours became a verdict: {text}"
+        );
         let _ = std::fs::remove_dir_all(plan.build_dir.parent().unwrap());
     }
 
@@ -7440,7 +7676,10 @@ done
             .expect("plan");
         plan.build_dir = dir.path().to_path_buf();
         assert_eq!(locate_executable(&plan, None).expect("found"), app);
-        assert!(plan.cmake_build_argv().ends_with(&["--target".to_string(), "app".to_string()]));
+        assert!(
+            plan.cmake_build_argv()
+                .ends_with(&["--target".to_string(), "app".to_string()])
+        );
     }
 
     #[test]
@@ -7721,10 +7960,16 @@ done
         );
         // From 13 the versioned name itself is accepted.
         std::fs::write(bin.join("llvm-symbolizer-15"), "").unwrap();
-        assert_eq!(find_symbolizer(&[bin.clone()], &lib), Some(bin.join("llvm-symbolizer-15")));
+        assert_eq!(
+            find_symbolizer(&[bin.clone()], &lib),
+            Some(bin.join("llvm-symbolizer-15"))
+        );
         // Nothing anywhere: nothing.
         let empty = tempfile::tempdir().unwrap();
-        assert_eq!(find_symbolizer(&[empty.path().to_path_buf()], empty.path()), None);
+        assert_eq!(
+            find_symbolizer(&[empty.path().to_path_buf()], empty.path()),
+            None
+        );
     }
 
     #[cfg(unix)]
@@ -7747,7 +7992,10 @@ done
     fn the_runtime_is_pointed_at_a_discovered_symbolizer() {
         let base = vec![
             ("ASAN_OPTIONS".to_string(), "symbolize=1".to_string()),
-            ("UBSAN_OPTIONS".to_string(), "print_stacktrace=1".to_string()),
+            (
+                "UBSAN_OPTIONS".to_string(),
+                "print_stacktrace=1".to_string(),
+            ),
         ];
         assert_eq!(with_symbolizer(base.clone(), None), base);
         let env = with_symbolizer(base, Some(Path::new("/usr/lib/llvm-9/bin/llvm-symbolizer")));
@@ -7755,7 +8003,11 @@ done
             env[0].1,
             "symbolize=1:external_symbolizer_path=/usr/lib/llvm-9/bin/llvm-symbolizer"
         );
-        assert!(env[1].1.ends_with(":external_symbolizer_path=/usr/lib/llvm-9/bin/llvm-symbolizer"));
+        assert!(
+            env[1]
+                .1
+                .ends_with(":external_symbolizer_path=/usr/lib/llvm-9/bin/llvm-symbolizer")
+        );
         assert!(env.contains(&(
             "ASAN_SYMBOLIZER_PATH".to_string(),
             "/usr/lib/llvm-9/bin/llvm-symbolizer".to_string()
@@ -7768,7 +8020,9 @@ done
         assert!(!has_unsymbolized_frames(
             "    #0 0x55d1 in main /tmp/a.c:3\n    #1 0x7f12 in __libc_start_main (/lib/libc.so.6+0x21b96)\n"
         ));
-        assert!(has_unsymbolized_frames("    #0 0x4011d6  (/tmp/app+0x11d6)\n"));
+        assert!(has_unsymbolized_frames(
+            "    #0 0x4011d6  (/tmp/app+0x11d6)\n"
+        ));
         assert!(!has_unsymbolized_frames("#include <x>\nclean run\n"));
     }
 
@@ -7812,12 +8066,19 @@ done
         let argv = plan.make_argv(false, &inherited);
         assert!(argv.contains(&format!("LDFLAGS=-lz {ours}")), "{argv:?}");
         assert!(argv.contains(&format!("CFLAGS={ours}")), "{argv:?}");
-        assert_eq!(plan.make_argv(true, &inherited).iter().filter(|a| a.starts_with("LDFLAGS=-lz ")).count(), 1);
+        assert_eq!(
+            plan.make_argv(true, &inherited)
+                .iter()
+                .filter(|a| a.starts_with("LDFLAGS=-lz "))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn live_a_makefile_that_links_its_own_libs_still_builds() {
-        if !crate::program_args::fixture::have("make") || !crate::program_args::fixture::have("cc") {
+        if !crate::program_args::fixture::have("make") || !crate::program_args::fixture::have("cc")
+        {
             eprintln!("skip: make/cc not installed");
             return;
         }
@@ -7879,12 +8140,21 @@ mod result_tests {
 
     #[test]
     fn a_truncated_capture_is_never_clean() {
-        assert_eq!(findings_run_result(&[], "0", true, true).verdict, Verdict::NotRun);
+        assert_eq!(
+            findings_run_result(&[], "0", true, true).verdict,
+            Verdict::NotRun
+        );
         assert!(verdict_line(&[], "0", true).contains("NOT a clean result"));
-        assert_eq!(valgrind_result(&[], "0", true, true).verdict, Verdict::NotRun);
+        assert_eq!(
+            valgrind_result(&[], "0", true, true).verdict,
+            Verdict::NotRun
+        );
         assert_eq!(tsan_result("", "0", true).verdict, Verdict::NotRun);
         // Findings read before the cut are still real.
-        assert_eq!(findings_run_result(&[finding()], "0", true, true).verdict, Verdict::Fail);
+        assert_eq!(
+            findings_run_result(&[finding()], "0", true, true).verdict,
+            Verdict::Fail
+        );
     }
 
     #[test]
@@ -7892,7 +8162,10 @@ mod result_tests {
         let result = findings_run_result(&[finding()], "signal", false, true);
         assert_eq!(result.verdict, Verdict::Fail);
         assert!(result.summary.contains("main.cpp:12"), "{}", result.summary);
-        assert_eq!(findings_run_result(&[], "3", false, true).verdict, Verdict::Fail);
+        assert_eq!(
+            findings_run_result(&[], "3", false, true).verdict,
+            Verdict::Fail
+        );
     }
 
     #[test]
@@ -7928,12 +8201,19 @@ mod result_tests {
         );
         assert!(qualify_result(clean, &[], &[]).is_pass());
         let failed = findings_run_result(&[finding()], "0", false, true);
-        assert_eq!(qualify_result(failed, &weakened, &[]).verdict, Verdict::Fail);
+        assert_eq!(
+            qualify_result(failed, &weakened, &[]).verdict,
+            Verdict::Fail
+        );
     }
 
     #[test]
     fn build_and_run_stops_are_not_run_with_fixes() {
-        for result in [build_failed_result(), build_timeout_result(), run_timeout_result()] {
+        for result in [
+            build_failed_result(),
+            build_timeout_result(),
+            run_timeout_result(),
+        ] {
             assert_eq!(result.verdict, Verdict::NotRun);
             assert!(result.fix.is_some_and(|fix| fix.contains("cpp_sanitize")));
         }

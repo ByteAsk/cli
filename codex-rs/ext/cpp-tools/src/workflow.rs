@@ -52,10 +52,6 @@ impl ContextualUserFragment for WorkflowFragment {
         ContentItemKind(format!("cpp_tools.{}", self.kind))
     }
 
-    fn requires_separate_message(&self) -> bool {
-        true
-    }
-
     fn markers(&self) -> (&'static str, &'static str) {
         Self::type_markers()
     }
@@ -64,8 +60,8 @@ impl ContextualUserFragment for WorkflowFragment {
         ("", "")
     }
 
-    fn body(&self) -> String {
-        self.text.clone()
+    fn body(&self) -> ContentItem {
+        codex_protocol::models::input_text(self.text.clone())
     }
 }
 
@@ -190,7 +186,9 @@ const CRASH_CUES: &[&str] = &[
 /// memory error; the crash stack is the first sanitizer report in the request or, failing
 /// that, in a tool output (the reproduction). `None` otherwise: a report that only shows up
 /// in an ordinary task's test run (say, a pre-existing leak) does not make it a crash fix.
-pub(crate) fn crash_context(history: &dyn ConversationHistorySnapshot) -> Option<gate::CrashContext> {
+pub(crate) fn crash_context(
+    history: &dyn ConversationHistorySnapshot,
+) -> Option<gate::CrashContext> {
     let mut crash_task = false;
     let mut functions: Option<Vec<String>> = None;
     let mut shown_elsewhere = String::new();
@@ -258,7 +256,7 @@ pub(crate) fn assistant_text_after_checklist(history: &dyn ConversationHistorySn
         let text: String = content
             .iter()
             .filter_map(|c| match c {
-                ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+                ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
                     Some(text.as_str())
                 }
                 _ => None,
@@ -532,7 +530,9 @@ impl Workflow {
     }
 
     /// `cpp_finish_check`'s state for this thread (one check at a time).
-    pub(crate) async fn finish_state(&self) -> tokio::sync::MutexGuard<'_, crate::tools::FinishState> {
+    pub(crate) async fn finish_state(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, crate::tools::FinishState> {
         self.finish.lock().await
     }
 
@@ -615,7 +615,13 @@ impl Workflow {
             let fresh = crate::results_store::fingerprint(&snapshot.root, FRESHNESS_BUDGET)
                 .await
                 .unwrap_or_default();
-            store_result(&snapshot, &changes.content_key, &result, fresh, self.session());
+            store_result(
+                &snapshot,
+                &changes.content_key,
+                &result,
+                fresh,
+                self.session(),
+            );
             inner
                 .notice
                 .insert(turn_id.to_string(), result.render_line());
@@ -643,9 +649,17 @@ impl Workflow {
             let fresh = crate::results_store::fingerprint(&snapshot.root, FRESHNESS_BUDGET)
                 .await
                 .unwrap_or_default();
-            store_result(&snapshot, &changes.content_key, &skipped, fresh, self.session());
+            store_result(
+                &snapshot,
+                &changes.content_key,
+                &skipped,
+                fresh,
+                self.session(),
+            );
             inner.last = Some((changes.content_key.clone(), skipped.clone()));
-            inner.notice.insert(turn_id.to_string(), skipped.render_line());
+            inner
+                .notice
+                .insert(turn_id.to_string(), skipped.render_line());
             return Vec::new();
         }
         let assistant_text = assistant_text_after_checklist(history.as_ref());
@@ -674,7 +688,9 @@ impl Workflow {
                 "carry on; its result is shown when it finishes (check_status shows it too).",
             );
             crate::report::log_tool_outcome(gate::CHECK, &verdict_label(&result));
-            inner.notice.insert(turn_id.to_string(), result.render_line());
+            inner
+                .notice
+                .insert(turn_id.to_string(), result.render_line());
             return Vec::new();
         }
         // The freshness fingerprint of the tree as the check starts.
@@ -688,7 +704,9 @@ impl Workflow {
             crate::report::log_tool_outcome(gate::CHECK, &verdict_label(&result));
             store_result(&snapshot, &key, &result, fresh, self.session());
             inner.last = Some((key, result.clone()));
-            inner.notice.insert(turn_id.to_string(), result.render_line());
+            inner
+                .notice
+                .insert(turn_id.to_string(), result.render_line());
             return Vec::new();
         }
         let finished = {
@@ -725,7 +743,9 @@ impl Workflow {
                 // runs in the same Build profile.
                 let sandboxed = async {
                     match self.sandbox.get() {
-                        Some(sandbox) => crate::sandbox::scope(gate::CHECK, sandbox.clone(), run).await,
+                        Some(sandbox) => {
+                            crate::sandbox::scope(gate::CHECK, sandbox.clone(), run).await
+                        }
                         None => run.await,
                     }
                 };
@@ -750,12 +770,16 @@ impl Workflow {
                 match ran {
                     Some(outcome) => outcome,
                     None => {
-                        let result =
-                            crate::cancel::cancelled(gate::CHECK, "`byteask checks cancel` was run");
+                        let result = crate::cancel::cancelled(
+                            gate::CHECK,
+                            "`byteask checks cancel` was run",
+                        );
                         crate::report::log_tool_outcome(gate::CHECK, &verdict_label(&result));
                         store_result(&snapshot, &key, &result, String::new(), self.session());
                         inner.last = Some((key, result.clone()));
-                        inner.notice.insert(turn_id.to_string(), result.render_line());
+                        inner
+                            .notice
+                            .insert(turn_id.to_string(), result.render_line());
                         return Vec::new();
                     }
                 }
@@ -765,7 +789,8 @@ impl Workflow {
         // If anything changed while the gate was building or testing, the result is bound to
         // neither version and says so; it is never reused.
         let after = gate::agent_changes(&snapshot).await;
-        let result = bound_to_checked_code(outcome.result(), &changes.content_key, &after.content_key);
+        let result =
+            bound_to_checked_code(outcome.result(), &changes.content_key, &after.content_key);
         // Feedback about a version that no longer exists would mislead: the turn ends with the
         // NOT RUN shown, and the next finish checks the final version.
         let moved = after.content_key != changes.content_key;
@@ -776,7 +801,14 @@ impl Workflow {
         // The log, the record and what the user is shown carry the real verdict; only a
         // PASS is remembered as passed.
         crate::report::log_tool_outcome(gate::CHECK, &verdict_label(&result));
-        write_gate_record(&snapshot, turn_id, rounds, &changes.content_key, &outcome, &result);
+        write_gate_record(
+            &snapshot,
+            turn_id,
+            rounds,
+            &changes.content_key,
+            &outcome,
+            &result,
+        );
         // The verdict goes to the results store, where check_status, the prompt hook and
         // the merge check read it (as current only while the tree still matches `fresh`).
         store_result(
@@ -852,7 +884,9 @@ pub(crate) fn ran_out_of_time(result: &check_result::CheckResult) -> bool {
 }
 
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Keep a verdict in the results store (with a session, also in its per-change log for
@@ -965,7 +999,11 @@ const MAX_REPOS: usize = 4;
 /// [`crate::gitx::repo_roots`]).
 async fn take_snapshots(cwd: &std::path::Path) -> Vec<Arc<gate::Snapshot>> {
     let mut out = Vec::new();
-    for root in crate::gitx::repo_roots(cwd).await.into_iter().take(MAX_REPOS) {
+    for root in crate::gitx::repo_roots(cwd)
+        .await
+        .into_iter()
+        .take(MAX_REPOS)
+    {
         if let Some(snapshot) = gate::take_snapshot(&root).await {
             out.push(Arc::new(snapshot));
         }
@@ -1044,7 +1082,10 @@ pub(crate) fn settings_from_env() -> GateSettings {
 /// Unless set explicitly, a non-interactive session's gate budget is [`gate::EXEC_BUDGET`], and
 /// `[byteask_harness] time_budget_secs` bounds the session cap so the gate ends before the
 /// caller's limit.
-pub(crate) fn settings_from(config: &codex_core::config::Config, non_interactive: bool) -> GateSettings {
+pub(crate) fn settings_from(
+    config: &codex_core::config::Config,
+    non_interactive: bool,
+) -> GateSettings {
     let table = config
         .config_layer_stack
         .effective_config()
@@ -1162,8 +1203,14 @@ mod tests {
         let round1 = text_of(&workflow.before_stop("turn", history.clone()).await);
         assert!(round1.contains("round 1 of 2"), "{round1}");
         assert!(round1.contains("GENERATED COPIES OUT OF SYNC"), "{round1}");
-        assert!(round1.contains("CHANGE-IMPACT ITEMS WITHOUT AN ANSWER"), "{round1}");
-        assert!(!round1.contains(" [1] "), "answered item re-asked: {round1}");
+        assert!(
+            round1.contains("CHANGE-IMPACT ITEMS WITHOUT AN ANSWER"),
+            "{round1}"
+        );
+        assert!(
+            !round1.contains(" [1] "),
+            "answered item re-asked: {round1}"
+        );
         assert!(round1.contains("build/tests: off"), "{round1}");
         // Second round: the copy is still stale; unanswered items are not asked twice.
         let round2 = text_of(&workflow.before_stop("turn", history.clone()).await);
@@ -1173,9 +1220,15 @@ mod tests {
         assert!(workflow.before_stop("turn", history).await.is_empty());
         // ...but the change is not "passed": the copy is still stale, so the turn
         // ends with FAIL shown to the user, once.
-        let notice = workflow.stop_notice("turn").await.expect("a verdict at the retry limit");
+        let notice = workflow
+            .stop_notice("turn")
+            .await
+            .expect("a verdict at the retry limit");
         assert!(notice.contains("Result: FAIL"), "{notice}");
-        assert!(notice.contains("Still failing after 2 round(s)"), "{notice}");
+        assert!(
+            notice.contains("Still failing after 2 round(s)"),
+            "{notice}"
+        );
         assert!(workflow.stop_notice("turn").await.is_none(), "shown once");
     }
 
@@ -1192,7 +1245,10 @@ mod tests {
         assert!(moved.validate().is_ok());
         // A FAIL for code that has since changed is not that code's verdict either.
         let fail = CheckResult::fail(gate::CHECK, "1 problem(s) open");
-        assert_eq!(bound_to_checked_code(fail, "k1", "k2").verdict, Verdict::NotRun);
+        assert_eq!(
+            bound_to_checked_code(fail, "k1", "k2").verdict,
+            Verdict::NotRun
+        );
     }
 
     #[test]
@@ -1212,7 +1268,10 @@ mod tests {
         assert_eq!(retry_limit_result(None, "k1", 2).verdict, Verdict::NotRun);
         // A verdict reached for this exact code is kept (a NOT RUN stays NOT RUN).
         let pass = CheckResult::pass(gate::CHECK, "ok");
-        assert_eq!(retry_limit_result(Some(&(key, pass)), "k1", 2).verdict, Verdict::Pass);
+        assert_eq!(
+            retry_limit_result(Some(&(key, pass)), "k1", 2).verdict,
+            Verdict::Pass
+        );
     }
 
     /// The workspace is a parent of the repository (`/app` holding `/app/<project>`): the
@@ -1233,7 +1292,10 @@ mod tests {
             ..GateSettings::enabled()
         };
         let workflow = Workflow::start(settings, false, true, parent.path().to_path_buf());
-        let snapshot = workflow.snapshot().await.expect("snapshot of the repository below");
+        let snapshot = workflow
+            .snapshot()
+            .await
+            .expect("snapshot of the repository below");
         assert_eq!(
             std::fs::canonicalize(&snapshot.root).ok(),
             std::fs::canonicalize(&repo).ok()
@@ -1276,17 +1338,23 @@ mod tests {
         crate::impact::tests::apply_edits(dir.path()).expect("edits");
         let round1 = text_of(&workflow.before_stop("t2", history.clone()).await);
         assert!(round1.contains("GENERATED COPIES OUT OF SYNC"), "{round1}");
-        assert!(round1.contains("COULD NOT CHECK (this does not block finishing)"), "{round1}");
+        assert!(
+            round1.contains("COULD NOT CHECK (this does not block finishing)"),
+            "{round1}"
+        );
         let round2 = text_of(&workflow.before_stop("t2", history).await);
         assert!(round2.contains("GENERATED COPIES OUT OF SYNC"), "{round2}");
         assert!(!round2.contains("COULD NOT CHECK"), "{round2}");
         // The run log keeps what could not be checked in every record (sub-agents' evidence).
         let snapshot = workflow.snapshot().await.expect("snapshot");
-        let log = std::fs::read_to_string(snapshot.scratch.join("gate-runs.jsonl")).expect("gate log");
+        let log =
+            std::fs::read_to_string(snapshot.scratch.join("gate-runs.jsonl")).expect("gate log");
         let last: serde_json::Value =
             serde_json::from_str(log.lines().last().expect("a record")).expect("json");
         assert!(
-            last["not_checked"].as_array().is_some_and(|a| !a.is_empty()),
+            last["not_checked"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty()),
             "{last}"
         );
         assert!(last["still_open"].is_array(), "{last}");
@@ -1328,15 +1396,23 @@ mod tests {
                 .filter_map(|l| {
                     let l = l.trim_start().strip_prefix('[')?;
                     let (n, rest) = l.split_once("] ")?;
-                    n.chars().all(|c| c.is_ascii_digit()).then(|| (rest.to_string(), n.to_string()))
+                    n.chars()
+                        .all(|c| c.is_ascii_digit())
+                        .then(|| (rest.to_string(), n.to_string()))
                 })
                 .collect()
         };
         let (auto_items, manual_items) = (numbered(&auto), numbered(&manual));
-        let common: Vec<&String> = auto_items.keys().filter(|k| manual_items.contains_key(*k)).collect();
+        let common: Vec<&String> = auto_items
+            .keys()
+            .filter(|k| manual_items.contains_key(*k))
+            .collect();
         assert!(!common.is_empty(), "{auto}\n---\n{manual}");
         for item in common {
-            assert_eq!(auto_items[item], manual_items[item], "{item:?} numbered differently");
+            assert_eq!(
+                auto_items[item], manual_items[item],
+                "{item:?} numbered differently"
+            );
         }
         // Answer every item by the manual list's numbers: nothing is re-asked at finish.
         let answers: String = answered_numbers(&manual)
@@ -1348,7 +1424,10 @@ mod tests {
             message("assistant", &answers),
         ]));
         let round1 = text_of(&workflow.before_stop("turn", history).await);
-        assert!(!round1.contains("CHANGE-IMPACT ITEMS WITHOUT AN ANSWER"), "{round1}");
+        assert!(
+            !round1.contains("CHANGE-IMPACT ITEMS WITHOUT AN ANSWER"),
+            "{round1}"
+        );
     }
 
     #[tokio::test]
@@ -1356,14 +1435,23 @@ mod tests {
         let Some(dir) = crate::impact::tests::fixture_base() else {
             return;
         };
-        let workflow = Workflow::start(GateSettings::enabled(), false, true, dir.path().to_path_buf());
+        let workflow = Workflow::start(
+            GateSettings::enabled(),
+            false,
+            true,
+            dir.path().to_path_buf(),
+        );
         let history: Arc<dyn ConversationHistorySnapshot> = Arc::new(History(Vec::new()));
         let first = text_of(&workflow.before_stop("t", history.clone()).await);
         assert!(first.contains("no changes"), "{first}");
         assert!(workflow.before_stop("t", history.clone()).await.is_empty());
         // Interactive sessions are never sent back for an empty change.
-        let interactive =
-            Workflow::start(GateSettings::enabled(), false, false, dir.path().to_path_buf());
+        let interactive = Workflow::start(
+            GateSettings::enabled(),
+            false,
+            false,
+            dir.path().to_path_buf(),
+        );
         assert!(interactive.before_stop("t", history).await.is_empty());
     }
 
@@ -1412,14 +1500,19 @@ mod tests {
             message("assistant", "Looking at it."),
         ]);
         let context = crash_context(&reported).expect("crash context");
-        assert_eq!(context.functions, vec!["use".to_string(), "main".to_string()]);
+        assert_eq!(
+            context.functions,
+            vec!["use".to_string(), "main".to_string()]
+        );
         assert!(context.shown_elsewhere.is_empty());
 
         // Named in words; the stack comes from the reproduction.
         let described = History(vec![
             message("user", "Parsing an empty file crashes the tool."),
             tool_output(report),
-            tool_output("patch-shape review (advisory, static): ...\n- [deleted-free] a.c:3 removes"),
+            tool_output(
+                "patch-shape review (advisory, static): ...\n- [deleted-free] a.c:3 removes",
+            ),
         ]);
         let context = crash_context(&described).expect("crash context");
         assert_eq!(context.functions.first().map(String::as_str), Some("use"));
@@ -1428,8 +1521,14 @@ mod tests {
         // An ordinary task whose test run printed a report is not a crash fix, and neither are
         // instruction blocks that mention sanitizers.
         let ordinary = History(vec![
-            message("user", "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nRun the tests under a sanitizer build.\n</INSTRUCTIONS>"),
-            message("user", "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>"),
+            message(
+                "user",
+                "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nRun the tests under a sanitizer build.\n</INSTRUCTIONS>",
+            ),
+            message(
+                "user",
+                "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>",
+            ),
             message("user", "Add an option to print the version."),
             tool_output(report),
         ]);
@@ -1445,9 +1544,10 @@ mod tests {
 
     #[test]
     fn settings_resolve_env_over_config() {
-        let config: std::collections::BTreeMap<&str, i64> = [("gate_budget_secs", 120), ("gate_max_loops", 1)]
-            .into_iter()
-            .collect();
+        let config: std::collections::BTreeMap<&str, i64> =
+            [("gate_budget_secs", 120), ("gate_max_loops", 1)]
+                .into_iter()
+                .collect();
         let settings = GateSettings::resolve(
             |key| (key == "finish_gate").then_some(false),
             |key| config.get(key).copied(),
@@ -1466,7 +1566,10 @@ mod tests {
             |_| None,
             |_| None,
         );
-        assert!(opted_in.gate && opted_in.impact, "the config switches still turn them on");
+        assert!(
+            opted_in.gate && opted_in.impact,
+            "the config switches still turn them on"
+        );
         let off = GateSettings::resolve(
             |_| None,
             |_| None,
@@ -1474,7 +1577,11 @@ mod tests {
         );
         assert!(!off.impact);
         assert!(defaults.critic);
-        let no_critic = GateSettings::resolve(|key| (key == "gate_critic").then_some(false), |_| None, |_| None);
+        let no_critic = GateSettings::resolve(
+            |key| (key == "gate_critic").then_some(false),
+            |_| None,
+            |_| None,
+        );
         assert!(!no_critic.critic && !no_critic.gate);
         let env_critic = GateSettings::resolve(
             |key| (key == "gate_critic").then_some(false),
@@ -1506,7 +1613,19 @@ mod tests {
         std::fs::write(root.join("src/t.cpp"), "int main() { return 0; }\n").unwrap();
         use crate::impact::tests::git;
         assert!(git(root, &["init", "-q"]) && git(root, &["add", "-A"]));
-        assert!(git(root, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "b"]));
+        assert!(git(
+            root,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "b"
+            ]
+        ));
 
         let settings = GateSettings {
             impact: false,
@@ -1517,20 +1636,33 @@ mod tests {
         };
         let workflow = Workflow::start(settings, true, false, root.to_path_buf());
         assert!(workflow.snapshot().await.is_some());
-        std::fs::write(root.join("src/t.cpp"), "int main() { return 0; } // edited\n").unwrap();
+        std::fs::write(
+            root.join("src/t.cpp"),
+            "int main() { return 0; } // edited\n",
+        )
+        .unwrap();
         let history: Arc<dyn ConversationHistorySnapshot> = Arc::new(History(Vec::new()));
 
-        assert!(workflow.before_stop("t1", history.clone()).await.is_empty(), "NOT RUN never loops");
+        assert!(
+            workflow.before_stop("t1", history.clone()).await.is_empty(),
+            "NOT RUN never loops"
+        );
         let notice = workflow.stop_notice("t1").await.expect("a verdict");
         assert!(notice.contains("NOT RUN (time limit)"), "{notice}");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
         while lock(&workflow.background_done).is_none() {
-            assert!(std::time::Instant::now() < deadline, "the background check never finished");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the background check never finished"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert!(workflow.before_stop("t2", history).await.is_empty());
         let notice = workflow.stop_notice("t2").await.expect("a verdict");
-        assert!(notice.contains("Result: PASS"), "the background result is this code's verdict: {notice}");
+        assert!(
+            notice.contains("Result: PASS"),
+            "the background result is this code's verdict: {notice}"
+        );
     }
 }

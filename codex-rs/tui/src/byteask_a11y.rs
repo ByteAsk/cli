@@ -315,7 +315,10 @@ mod tests {
         // `confirmation_line` is `screen_reader_source().map(line_for_source)`, and
         // `resolve_source` is pinned above, so this covers the composition: no source, no
         // line, and therefore nothing printed on an ordinary launch.
-        assert_eq!(resolve_source(false, None, None, false).map(line_for_source), None);
+        assert_eq!(
+            resolve_source(false, None, None, false).map(line_for_source),
+            None
+        );
     }
 
     /// The wording is a product surface, not an incidental string: it is the very
@@ -328,8 +331,14 @@ mod tests {
             ScreenReaderSource::Config,
         ] {
             let line = line_for_source(source);
-            assert!(line.is_ascii(), "{line:?} must survive a non-UTF-8 terminal");
-            assert!(!line.contains('!'), "{line:?} breaks the no-exclamation rule");
+            assert!(
+                line.is_ascii(),
+                "{line:?} must survive a non-UTF-8 terminal"
+            );
+            assert!(
+                !line.contains('!'),
+                "{line:?} breaks the no-exclamation rule"
+            );
             assert!(line.starts_with("[Screen reader mode: on via "));
             assert!(line.ends_with(']'));
         }
@@ -348,9 +357,8 @@ mod tests {
 
     #[test]
     fn a_utf8_locale_keeps_the_unicode_glyphs() {
-        let ascii = !locale_is_utf8_from(|name| {
-            (name == "LANG").then(|| "en_US.UTF-8".to_string())
-        });
+        let ascii =
+            !locale_is_utf8_from(|name| (name == "LANG").then(|| "en_US.UTF-8".to_string()));
         assert!(!ascii);
         assert_eq!(glyph_for("✓", ascii), "✓");
     }
@@ -388,7 +396,11 @@ mod tests {
             let ascii = glyph_for(g, true);
             assert!(!ascii.is_empty(), "{g} has an empty fallback");
             assert!(ascii.is_ascii(), "{g} falls back to {ascii:?}, not ASCII");
-            assert_eq!(glyph_for(g, false), g, "{g} must be itself when UTF-8 is fine");
+            assert_eq!(
+                glyph_for(g, false),
+                g,
+                "{g} must be itself when UTF-8 is fine"
+            );
         }
     }
 }

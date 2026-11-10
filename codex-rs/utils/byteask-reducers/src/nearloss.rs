@@ -9,8 +9,20 @@ use std::collections::BTreeMap;
 
 /// Words that mean "a person would want to read this line".
 const SIGNAL_WORDS: [&str; 14] = [
-    "error", "fail", "warn", "panic", "traceback", "exception", "fatal", "denied",
-    "not found", "cannot", "unable", "abort", "segfault", "undefined",
+    "error",
+    "fail",
+    "warn",
+    "panic",
+    "traceback",
+    "exception",
+    "fatal",
+    "denied",
+    "not found",
+    "cannot",
+    "unable",
+    "abort",
+    "segfault",
+    "undefined",
 ];
 
 pub(crate) fn is_signal(line: &str) -> bool {
@@ -36,7 +48,11 @@ fn drop_runs(
         .map(|(i, l)| {
             let lo = i.saturating_sub(GUARD);
             let hi = (i + GUARD + 1).min(lines.len());
-            if signal[lo..hi].iter().any(|s| *s) { None } else { kind_of(l) }
+            if signal[lo..hi].iter().any(|s| *s) {
+                None
+            } else {
+                kind_of(l)
+            }
         })
         .collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
@@ -58,7 +74,11 @@ fn drop_runs(
         }
         if j - i >= min_run {
             let detail: Vec<String> = counts.iter().map(|(k, n)| format!("{n} {k}")).collect();
-            out.push(format!("[byteask: {} lines omitted: {}]", j - i, detail.join(", ")));
+            out.push(format!(
+                "[byteask: {} lines omitted: {}]",
+                j - i,
+                detail.join(", ")
+            ));
             changed = true;
         } else {
             for line in &lines[i..j] {
@@ -80,11 +100,18 @@ fn progress_kind(line: &str) -> Option<&'static str> {
         return Some("build-step lines");
     }
     let has_pct = t.contains('%');
-    let bar = ["━", "█", "▓", "░", "#####", "=====", "-----", ">>>>>"].iter().any(|b| t.contains(b));
+    let bar = ["━", "█", "▓", "░", "#####", "=====", "-----", ">>>>>"]
+        .iter()
+        .any(|b| t.contains(b));
     if has_pct && bar {
         return Some("progress-bar lines");
     }
-    if ["MB/s", "kB/s", "KB/s", "MiB/s", "KiB/s", "GB/s", " eta ", " ETA "].iter().any(|s| t.contains(s)) {
+    if [
+        "MB/s", "kB/s", "KB/s", "MiB/s", "KiB/s", "GB/s", " eta ", " ETA ",
+    ]
+    .iter()
+    .any(|s| t.contains(s))
+    {
         return Some("transfer-rate lines");
     }
     let first = t.chars().next()?;
@@ -102,7 +129,10 @@ pub fn progress(input: &str) -> Option<String> {
 fn pkg_kind(line: &str) -> Option<&'static str> {
     let t = line.trim_start();
     const TABLE: [(&str, &str); 22] = [
-        ("Requirement already satisfied", "\"Requirement already satisfied\""),
+        (
+            "Requirement already satisfied",
+            "\"Requirement already satisfied\"",
+        ),
         ("Collecting ", "\"Collecting\""),
         ("Downloading ", "\"Downloading\""),
         ("Using cached ", "\"Using cached\""),
@@ -125,7 +155,10 @@ fn pkg_kind(line: &str) -> Option<&'static str> {
         ("==> Pouring", "brew \"Pouring\""),
         ("==> Downloading", "brew \"Downloading\""),
     ];
-    TABLE.iter().find(|(p, _)| t.starts_with(p)).map(|(_, k)| *k)
+    TABLE
+        .iter()
+        .find(|(p, _)| t.starts_with(p))
+        .map(|(_, k)| *k)
 }
 
 /// npm/pip/apt/cargo/brew install chatter -> summary.
@@ -144,7 +177,10 @@ fn cmake_kind(line: &str) -> Option<&'static str> {
         ("-- Checking ", "\"Checking\""),
         ("-- Check size of ", "\"Check size of\""),
     ];
-    PREFIXES.iter().find(|(p, _)| t.starts_with(p)).map(|(_, k)| *k)
+    PREFIXES
+        .iter()
+        .find(|(p, _)| t.starts_with(p))
+        .map(|(_, k)| *k)
 }
 
 /// `-- Looking for / Performing Test / Found` lines -> counts.
@@ -207,12 +243,16 @@ pub fn incl_chain(input: &str) -> Option<String> {
             continue;
         }
         let mut j = i + 1;
-        while j < lines.len() && is_chain(lines[j]) && !lines[j].trim_start().starts_with("In file") {
+        while j < lines.len() && is_chain(lines[j]) && !lines[j].trim_start().starts_with("In file")
+        {
             j += 1;
         }
         if j - i > 3 {
             out.push(lines[i].to_string());
-            out.push(format!("[byteask: {} intermediate include lines omitted]", j - i - 2));
+            out.push(format!(
+                "[byteask: {} intermediate include lines omitted]",
+                j - i - 2
+            ));
             out.push(lines[j - 1].to_string());
             changed = true;
         } else {
@@ -238,7 +278,9 @@ fn warning_header(line: &str) -> Option<(&str, &str)> {
 }
 
 fn is_diag_header(line: &str) -> bool {
-    [": warning: ", ": error: ", ": fatal error: "].iter().any(|m| line.contains(m))
+    [": warning: ", ": error: ", ": fatal error: "]
+        .iter()
+        .any(|m| line.contains(m))
 }
 
 /// The same warning at N locations -> the first 3 blocks verbatim, then one marker with
@@ -285,7 +327,11 @@ pub fn warn_group(input: &str) -> Option<String> {
         }
         let mut locs: Vec<&str> = dropped.iter().take(LIST).map(|id| blocks[*id].2).collect();
         let more = dropped.len().saturating_sub(LIST);
-        let tail = if more > 0 { format!(", and {more} more") } else { String::new() };
+        let tail = if more > 0 {
+            format!(", and {more} more")
+        } else {
+            String::new()
+        };
         locs.dedup();
         marker_at.insert(
             blocks[dropped[0]].0,
@@ -328,7 +374,10 @@ pub fn json_min(input: &str) -> Option<String> {
         if docs.len() < 2 || !docs.iter().all(|d| valid(d)) {
             return None;
         }
-        docs.iter().map(|d| strip_json_ws(d)).collect::<Vec<_>>().join("\n")
+        docs.iter()
+            .map(|d| strip_json_ws(d))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     (out.len() < input.len()).then_some(out)
 }
@@ -396,7 +445,9 @@ mod tests_mod {
     fn pip_chatter_is_counted_and_warnings_survive() {
         let mut input = String::new();
         for i in 0..5 {
-            input.push_str(&format!("Collecting pkg{i}\n  Downloading pkg{i}.whl (1 kB)\n"));
+            input.push_str(&format!(
+                "Collecting pkg{i}\n  Downloading pkg{i}.whl (1 kB)\n"
+            ));
         }
         input.push_str("WARNING: pip is old\nSuccessfully installed x\n");
         let got = pkg(&input).unwrap();
@@ -409,7 +460,9 @@ mod tests_mod {
     fn cmake_probe_lines_are_counted_but_a_miss_is_kept() {
         let mut input = String::new();
         for i in 0..6 {
-            input.push_str(&format!("-- Looking for h{i}.h\n-- Looking for h{i}.h - found\n"));
+            input.push_str(&format!(
+                "-- Looking for h{i}.h\n-- Looking for h{i}.h - found\n"
+            ));
         }
         input.push_str("-- Looking for zlib.h - not found\n-- Configuring done\n");
         let got = cmake_conf(&input).unwrap();
@@ -457,10 +510,17 @@ mod tests_mod {
     #[test]
     fn json_min_is_lexical() {
         // Duplicate keys, number lexemes and key order all survive.
-        let input = "{\n  \"a\": 1.0,\n  \"a\": 2e0,\n  \"s\": \"x  y\\\" z\",\n  \"l\": [ 1, 2 ]\n}\n";
-        assert_eq!(json_min(input).unwrap(), "{\"a\":1.0,\"a\":2e0,\"s\":\"x  y\\\" z\",\"l\":[1,2]}");
+        let input =
+            "{\n  \"a\": 1.0,\n  \"a\": 2e0,\n  \"s\": \"x  y\\\" z\",\n  \"l\": [ 1, 2 ]\n}\n";
+        assert_eq!(
+            json_min(input).unwrap(),
+            "{\"a\":1.0,\"a\":2e0,\"s\":\"x  y\\\" z\",\"l\":[1,2]}"
+        );
         assert_eq!(json_min("{ not json }"), None);
         assert_eq!(json_min("plain text"), None);
-        assert_eq!(json_min("{\"a\": 1}\n{\"b\": 2}\n").unwrap(), "{\"a\":1}\n{\"b\":2}");
+        assert_eq!(
+            json_min("{\"a\": 1}\n{\"b\": 2}\n").unwrap(),
+            "{\"a\":1}\n{\"b\":2}"
+        );
     }
 }

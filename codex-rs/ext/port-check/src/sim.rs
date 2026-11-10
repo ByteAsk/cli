@@ -158,7 +158,10 @@ impl HarnessConfig {
             }
         }
         if self.reject_ppm > 1_000_000 {
-            return Err(format!("reject_ppm must be at most 1000000 (got {})", self.reject_ppm));
+            return Err(format!(
+                "reject_ppm must be at most 1000000 (got {})",
+                self.reject_ppm
+            ));
         }
         for (k, v) in &self.params {
             if !valid_token(k) || !valid_token(v) {
@@ -299,11 +302,19 @@ pub fn apply_record(
     };
     let known = |order_sym: &BTreeMap<u64, String>, id: u64| order_sym.get(&id).cloned();
     match &r.kind {
-        MdKind::Add { sym, id, side, px, qty } => {
+        MdKind::Add {
+            sym,
+            id,
+            side,
+            px,
+            qty,
+        } => {
             let book = books.entry(sym.clone()).or_default();
             if strict || !book.contains(*id) {
                 if order_sym.contains_key(id) && !book.contains(*id) {
-                    return Err(format!("order id {id} is already resting in another symbol"));
+                    return Err(format!(
+                        "order id {id} is already resting in another symbol"
+                    ));
                 }
                 book.add(*id, *side, *px, *qty)?;
             }
@@ -353,7 +364,12 @@ pub fn apply_record(
             md.px = Some(touched.px);
             md.qty = Some(gone);
         }
-        MdKind::Replace { id, new_id, px, qty } => {
+        MdKind::Replace {
+            id,
+            new_id,
+            px,
+            qty,
+        } => {
             let Some(sym) = known(order_sym, *id) else {
                 return if strict {
                     Err(format!("order id {id} is not in the book"))
@@ -423,8 +439,10 @@ impl Sim {
         initial_book: &[MdRecord],
     ) -> Result<Self, String> {
         cfg.validate()?;
-        let mut books: BTreeMap<String, Book> =
-            symbols.iter().map(|s| (s.clone(), Book::default())).collect();
+        let mut books: BTreeMap<String, Book> = symbols
+            .iter()
+            .map(|s| (s.clone(), Book::default()))
+            .collect();
         let mut order_sym = BTreeMap::new();
         for (i, r) in initial_book.iter().enumerate() {
             if !matches!(r.kind, MdKind::Add { .. }) {
@@ -433,7 +451,10 @@ impl Sim {
             apply_record(&mut books, &mut order_sym, true, None, r)
                 .map_err(|e| format!("initial_book entry {i}: {e}"))?;
         }
-        let positions = books.keys().map(|s| (s.clone(), Position::default())).collect();
+        let positions = books
+            .keys()
+            .map(|s| (s.clone(), Position::default()))
+            .collect();
         let symbols = books.keys().cloned().collect();
         Ok(Self {
             cfg,
@@ -465,10 +486,7 @@ impl Sim {
         &self.counts
     }
 
-    fn peek(
-        &mut self,
-        rec: &mut RecordStream<'_>,
-    ) -> Result<(), SimError> {
+    fn peek(&mut self, rec: &mut RecordStream<'_>) -> Result<(), SimError> {
         if self.next_rec.is_some() {
             return Ok(());
         }
@@ -494,16 +512,16 @@ impl Sim {
 
     fn levels(&self, sym: &str) -> (Levels, Levels) {
         match self.books.get(sym) {
-            Some(b) => (b.top(Side::Buy, self.cfg.depth), b.top(Side::Sell, self.cfg.depth)),
+            Some(b) => (
+                b.top(Side::Buy, self.cfg.depth),
+                b.top(Side::Sell, self.cfg.depth),
+            ),
             None => (Vec::new(), Vec::new()),
         }
     }
 
     /// The next event to deliver, or `None` once the session is over.
-    pub fn next_event(
-        &mut self,
-        rec: &mut RecordStream<'_>,
-    ) -> Result<Option<Event>, SimError> {
+    pub fn next_event(&mut self, rec: &mut RecordStream<'_>) -> Result<Option<Event>, SimError> {
         let body = loop {
             match self.phase {
                 Phase::Init => {
@@ -552,7 +570,8 @@ impl Sim {
                 // timer would otherwise run forever in market time).
                 let end = self.last_rec_ts.unwrap_or(self.now);
                 self.exhausted_at = Some(end);
-                self.pending.retain(|(ts, class, _), _| !(*class == 2 && *ts > end));
+                self.pending
+                    .retain(|(ts, class, _), _| !(*class == 2 && *ts > end));
             }
             let md_key = self.next_rec.as_ref().map(|(i, r)| (r.ts, 0u8, *i));
             let pend_key = self.pending.keys().next().copied();
@@ -640,7 +659,15 @@ impl Sim {
         Ok(Some(EventBody::Md(md)))
     }
 
-    fn fill(&mut self, id: &str, sym: &str, side: Side, px: i64, qty: i64, liq: &'static str) -> Result<(), SimError> {
+    fn fill(
+        &mut self,
+        id: &str,
+        sym: &str,
+        side: Side,
+        px: i64,
+        qty: i64,
+        liq: &'static str,
+    ) -> Result<(), SimError> {
         let overflow = || SimError::Overflow(format!("fill of {qty} at {px} on {sym}"));
         let notional = px.checked_mul(qty).ok_or_else(overflow)?;
         let pos = self.positions.entry(sym.to_string()).or_default();
@@ -771,7 +798,14 @@ impl Sim {
 
     fn arrive(&mut self, p: Pending) -> Result<(), SimError> {
         match p {
-            Pending::New { id, sym, side, px, qty, tif } => {
+            Pending::New {
+                id,
+                sym,
+                side,
+                px,
+                qty,
+                tif,
+            } => {
                 self.new_orders += 1;
                 let reason = if self.seen_ids.contains(&id) {
                     Some("duplicate_id")
@@ -843,7 +877,10 @@ impl Sim {
                 }
                 Some(_) => {
                     self.counts.cancel_rejects += 1;
-                    self.outbox.push_back(EventBody::CancelReject { id, reason: "not_open" });
+                    self.outbox.push_back(EventBody::CancelReject {
+                        id,
+                        reason: "not_open",
+                    });
                 }
                 None => {
                     self.counts.cancel_rejects += 1;
@@ -865,7 +902,14 @@ impl Sim {
         let closed = matches!(self.phase, Phase::Ended | Phase::Done);
         for action in &response.actions {
             match action {
-                Action::New { id, sym, side, px, qty, tif } => {
+                Action::New {
+                    id,
+                    sym,
+                    side,
+                    px,
+                    qty,
+                    tif,
+                } => {
                     self.counts.orders += 1;
                     if closed {
                         self.seen_ids.insert(id.clone());
@@ -901,7 +945,8 @@ impl Sim {
                         continue;
                     }
                     let at = self.now.saturating_add(self.cfg.latency_ns);
-                    self.pending.insert((at, 1, self.seq), Pending::Cancel { id: id.clone() });
+                    self.pending
+                        .insert((at, 1, self.seq), Pending::Cancel { id: id.clone() });
                     self.seq += 1;
                 }
                 Action::Timer { at, tag } => {
@@ -909,7 +954,8 @@ impl Sim {
                     if closed || self.exhausted_at.is_some_and(|end| at > end) {
                         continue;
                     }
-                    self.pending.insert((at, 2, self.seq), Pending::Timer { tag: tag.clone() });
+                    self.pending
+                        .insert((at, 2, self.seq), Pending::Timer { tag: tag.clone() });
                     self.seq += 1;
                 }
             }

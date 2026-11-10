@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 use crate::HooksToml;
@@ -17,12 +18,13 @@ use crate::types::AuthCredentialsStoreMode;
 use crate::types::FeedbackConfigToml;
 use crate::types::History;
 use crate::types::MarketplaceConfig;
+use crate::types::McpEnterpriseManagedAuthConfig;
 use crate::types::McpServerConfig;
 use crate::types::MemoriesToml;
 use crate::types::Notice;
 use crate::types::OAuthCredentialsStoreMode;
 use crate::types::OtelConfigToml;
-use crate::types::PluginConfig;
+use crate::types::PluginsConfigToml;
 use crate::types::SandboxWorkspaceWrite;
 use crate::types::ShellEnvironmentPolicyToml;
 use crate::types::SkillsConfig;
@@ -33,6 +35,7 @@ use crate::types::WindowsToml;
 use codex_features::FeaturesToml;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
+use codex_model_provider_info::GCP_PROVIDER_ID;
 use codex_model_provider_info::LEGACY_OLLAMA_CHAT_PROVIDER_ID;
 use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
@@ -54,7 +57,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path::normalize_for_path_comparison;
+use codex_utils_path_uri::Platform;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Deserializer;
@@ -62,9 +65,10 @@ use serde::Serialize;
 use serde::de::Error as SerdeError;
 use serde_json::Value as JsonValue;
 
-const RESERVED_MODEL_PROVIDER_IDS: [&str; 5] = [
+const RESERVED_MODEL_PROVIDER_IDS: [&str; 6] = [
     AMAZON_BEDROCK_PROVIDER_ID,
     AMAZON_BEDROCK_RUNTIME_PROVIDER_ID,
+    GCP_PROVIDER_ID,
     OPENAI_PROVIDER_ID,
     OLLAMA_OSS_PROVIDER_ID,
     LMSTUDIO_OSS_PROVIDER_ID,
@@ -138,14 +142,23 @@ of strings; comma-separated strings are not supported. Use \
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct OrchestratorToml {
-    pub skills: Option<OrchestratorFeatureToml>,
-    pub mcp: Option<OrchestratorFeatureToml>,
+    /// Legacy no-op setting retained for compatibility. Use `cloud.skills` to configure cloud skills.
+    pub skills: Option<FeatureToggleToml>,
+    pub mcp: Option<FeatureToggleToml>,
 }
 
-/// Settings for a feature owned by the orchestrator.
+/// Cloud-owned feature settings.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
-pub struct OrchestratorFeatureToml {
+pub struct CloudToml {
+    /// Cloud skills are permitted by default; the host must supply a cloud provider.
+    pub skills: Option<FeatureToggleToml>,
+}
+
+/// Optional enablement of a configured feature.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct FeatureToggleToml {
     pub enabled: Option<bool>,
 }
 
@@ -155,6 +168,8 @@ pub struct OrchestratorFeatureToml {
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
+    /// Default Daybreak preference for new threads and non-interactive turns.
+    pub daybreak: Option<bool>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
 
@@ -170,6 +185,12 @@ pub struct ConfigToml {
     /// Controls whether the auto-compaction limit applies to the full context or
     /// only to tokens after the carried prefix in the current compaction window.
     pub model_auto_compact_token_limit_scope: Option<AutoCompactTokenLimitScope>,
+
+    /// Percentage of the usable context window that triggers compaction after a final
+    /// response. Existing auto-compaction limits still apply. Omitted or zero disables
+    /// turn-end compaction; valid values are 0–100.
+    #[schemars(range(min = 0, max = 100))]
+    pub model_post_turn_compact_threshold_percent: Option<u8>,
 
     /// Default approval policy for executing commands.
     #[schemars(with = "Option<crate::schema::ConfigAskForApproval>")]
@@ -203,6 +224,13 @@ pub struct ConfigToml {
 
     /// Sandbox mode to use.
     pub sandbox_mode: Option<SandboxMode>,
+
+    /// Allow macOS sandbox writable roots at or beneath CODEX_HOME to traverse
+    /// symlinks. Read only from the host's user config at startup; defaults to false.
+    /// This grants no write access by itself, but trusts symlink targets even if
+    /// they change between commands or lie outside CODEX_HOME.
+    /// This setting has no effect on Linux or Windows.
+    pub allow_symlinked_codex_home: Option<bool>,
 
     /// Sandbox configuration to apply if `sandbox` is `WorkspaceWrite`.
     pub sandbox_workspace_write: Option<SandboxWorkspaceWrite>,
@@ -239,6 +267,9 @@ pub struct ConfigToml {
     /// Whether to inject the `<environment_context>` user block.
     pub include_environment_context: Option<bool>,
 
+    /// Whether environment context includes the current date and timezone.
+    pub include_environment_context_time: Option<bool>,
+
     /// Optional path to a file containing model instructions that will override
     /// the built-in instructions for the selected model. Users are STRONGLY
     /// DISCOURAGED from using this field, as deviating from the instructions
@@ -268,6 +299,10 @@ pub struct ConfigToml {
     // Uses the raw MCP input shape (custom deserialization) rather than `McpServerConfig`.
     #[schemars(schema_with = "crate::schema::mcp_servers_schema")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
+
+    /// Trusted enterprise IdP shared by EMA-enabled MCP servers and plugins.
+    #[serde(default)]
+    pub mcp_enterprise_managed_auth: Option<McpEnterpriseManagedAuthConfig>,
 
     /// Preferred backend for storing MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
@@ -313,6 +348,11 @@ pub struct ConfigToml {
     /// Default: `300000` (5 minutes).
     pub background_terminal_max_timeout: Option<u64>,
 
+    /// Seconds a thread must have no subscribers and no activity before app-server
+    /// unloads it. Defaults to 60 (1 minute); zero unloads immediately.
+    /// Resolved when each thread is loaded; request config overrides apply per thread.
+    pub thread_unload_delay_secs: Option<u64>,
+
     /// Deprecated: ignored.
     #[schemars(skip)]
     pub js_repl_node_path: Option<AbsolutePathBuf>,
@@ -336,9 +376,11 @@ pub struct ConfigToml {
     /// Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`.
     pub sqlite_home: Option<AbsolutePathBuf>,
 
-    /// Directory where Codex writes log files. Setting this value explicitly
-    /// also enables the TUI text log in this directory.
-    /// Defaults to `$CODEX_HOME/log`.
+    /// Directory for log files. Setting this value explicitly also routes the
+    /// SQLite logs database here and enables the TUI text log in this directory.
+    /// When unset, log files use `$CODEX_HOME/log` and SQLite logs use `sqlite_home`.
+    /// Existing SQLite logs in `sqlite_home` are not migrated automatically.
+    /// A managed `sqlite_home` requirement keeps SQLite logs in that required directory.
     pub log_dir: Option<AbsolutePathBuf>,
 
     /// Optional URI-based file opener. If set, citations to files in the model
@@ -367,7 +409,7 @@ pub struct ConfigToml {
     /// Per-thread `config` overrides are accepted but do not reapply this (no-ops).
     pub model_catalog_json: Option<AbsolutePathBuf>,
 
-    /// Optionally specify a personality for the model
+    /// Deprecated: `friendly` and `pragmatic` no longer select a style.
     pub personality: Option<Personality>,
 
     /// Optional explicit service tier request id for new turns (for example
@@ -385,6 +427,9 @@ pub struct ConfigToml {
 
     /// Orchestrator-owned feature settings.
     pub orchestrator: Option<OrchestratorToml>,
+
+    /// Cloud-owned feature settings.
+    pub cloud: Option<CloudToml>,
 
     /// Base URL override for the built-in `openai` model provider.
     pub openai_base_url: Option<String>,
@@ -455,9 +500,9 @@ pub struct ConfigToml {
     /// Lifecycle hooks configured inline in TOML plus user-level overrides.
     pub hooks: Option<HooksToml>,
 
-    /// User-level plugin config entries keyed by plugin name.
+    /// Default and per-plugin settings keyed by exact `<plugin>@<marketplace>` IDs.
     #[serde(default)]
-    pub plugins: HashMap<String, PluginConfig>,
+    pub plugins: PluginsConfigToml,
 
     /// User-level marketplace entries keyed by marketplace name.
     #[serde(default)]
@@ -490,8 +535,9 @@ pub struct ConfigToml {
     /// Legacy fallback for `tui.disable_paste_burst`. Prefer the setting under `[tui]`.
     pub disable_paste_burst: Option<bool>,
 
-    /// When `false`, disables analytics across Codex product surfaces in this machine.
-    /// Defaults to `true`.
+    /// When `enabled` is `false`, disables OpenAI analytics across Codex product surfaces on this machine.
+    /// Custom OTLP metrics exporters are controlled by `otel.metrics_exporter`.
+    /// When unset, the default depends on the client.
     pub analytics: Option<AnalyticsConfigToml>,
 
     /// When `false`, disables feedback collection across Codex product surfaces.
@@ -535,8 +581,36 @@ pub enum ThreadStoreToml {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 pub struct AutoReviewToml {
+    /// Overall Guardian review budget in milliseconds, including setup and retries.
+    /// Defaults to 90,000. Set to 0 to wait without a review deadline; cancellation
+    /// and independent transport timeouts still apply.
+    pub timeout_ms: Option<u32>,
+    /// Controls whether circuit-breaker interruptions include a structured error.
+    /// Strict mode writes structured errors that older clients may not
+    /// recognize when reading shared history. Defaults to `default`.
+    pub circuit_break_action: Option<CircuitBreakAction>,
     /// Additional policy instructions inserted into the guardian prompt.
     pub policy: Option<String>,
+    /// Additional policy text inserted into the Guardian template's `{{ extra_policy }}` slot.
+    pub extra_policy: Option<String>,
+    /// Experimental full Guardian prompt template containing the tenant policy placeholder.
+    pub experimental_policy_template: Option<String>,
+    /// Experimental replacement for the history-retrieval instructions when history tools
+    /// and Apps are enabled. Omitted or blank values use the built-in prompt.
+    pub experimental_conversation_history_prompt: Option<String>,
+    /// Maximum estimated tokens per Guardian history-tool response, before the standard
+    /// serialization allowance. Defaults to 4,000; stricter parent tool limits still apply.
+    pub conversation_history_max_output_tokens: Option<NonZeroUsize>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CircuitBreakAction {
+    /// Emit the warning and interrupt without structured error details.
+    #[default]
+    Default,
+    /// Emit the same warning and interruption, with structured error details.
+    Strict,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
@@ -555,8 +629,27 @@ impl ProjectConfig {
     }
 }
 
+/// Selected microphone inputs. Scalars preserve existing single-channel configuration.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(untagged)]
+pub enum MicrophoneChannels {
+    Single(std::num::NonZeroU16),
+    Multiple(Vec<std::num::NonZeroU16>),
+}
+
+impl MicrophoneChannels {
+    pub fn as_slice(&self) -> &[std::num::NonZeroU16] {
+        match self {
+            Self::Single(channel) => std::slice::from_ref(channel),
+            Self::Multiple(channels) => channels,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RealtimeAudioConfig {
+    /// One-based microphone channels to mix; unset mixes all input channels.
+    pub microphone_channel: Option<MicrophoneChannels>,
     pub microphone: Option<String>,
     pub speaker: Option<String>,
 }
@@ -604,6 +697,8 @@ pub struct RealtimeToml {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct RealtimeAudioToml {
+    /// One-based microphone channels to mix; unset mixes all input channels.
+    pub microphone_channel: Option<MicrophoneChannels>,
     pub microphone: Option<String>,
     pub speaker: Option<String>,
 }
@@ -731,8 +826,38 @@ pub struct GhostSnapshotToml {
     pub disable_warnings: Option<bool>,
 }
 
+/// Apply the executor's sandbox availability to an already selected sandbox mode.
+///
+/// Call this before resolving workspace-write settings so unused writable roots
+/// do not affect the read-only fallback. Named permission profiles are resolved
+/// separately and must not be downgraded through this helper.
+pub fn effective_sandbox_mode(
+    mode: SandboxMode,
+    platform: Platform,
+    windows_sandbox_level: WindowsSandboxLevel,
+) -> SandboxMode {
+    if platform == Platform::Windows
+        && windows_sandbox_level == WindowsSandboxLevel::Disabled
+        && mode == SandboxMode::WorkspaceWrite
+    {
+        SandboxMode::ReadOnly
+    } else {
+        mode
+    }
+}
+
+impl TryFrom<toml::Value> for ConfigToml {
+    type Error = toml::de::Error;
+
+    // Keep the generated TOML deserializer in this crate, shared by all callers.
+    #[inline(never)]
+    fn try_from(value: toml::Value) -> Result<Self, Self::Error> {
+        value.try_into()
+    }
+}
+
 impl ConfigToml {
-    /// Derive the effective permission profile from legacy sandbox config.
+    /// Derive the effective permission profile from sandbox config.
     ///
     /// Call this only after ruling out `default_permissions`: named
     /// `[permissions]` profiles must be compiled through the permissions
@@ -748,30 +873,17 @@ impl ConfigToml {
         let resolved_sandbox_mode = configured_sandbox_mode
             .or_else(|| {
                 // If no sandbox_mode is set but this directory has a trust decision,
-                // default to workspace-write except on unsandboxed Windows where we
-                // default to read-only.
+                // default to workspace-write before applying the platform fallback.
                 active_project
                     .filter(|project| project.is_trusted() || project.is_untrusted())
-                    .map(|_| {
-                        if cfg!(target_os = "windows")
-                            && windows_sandbox_level == WindowsSandboxLevel::Disabled
-                        {
-                            SandboxMode::ReadOnly
-                        } else {
-                            SandboxMode::WorkspaceWrite
-                        }
-                    })
+                    .map(|_| SandboxMode::WorkspaceWrite)
             })
             .unwrap_or_default();
-        let effective_sandbox_mode = if cfg!(target_os = "windows")
-            // If the experimental Windows sandbox is enabled, do not force a downgrade.
-            && windows_sandbox_level == WindowsSandboxLevel::Disabled
-            && matches!(resolved_sandbox_mode, SandboxMode::WorkspaceWrite)
-        {
-            SandboxMode::ReadOnly
-        } else {
-            resolved_sandbox_mode
-        };
+        let effective_sandbox_mode = effective_sandbox_mode(
+            resolved_sandbox_mode,
+            Platform::native(),
+            windows_sandbox_level,
+        );
 
         let permission_profile = match effective_sandbox_mode {
             SandboxMode::ReadOnly => PermissionProfile::read_only(),
@@ -820,70 +932,16 @@ impl ConfigToml {
         resolved_cwd: &Path,
         repo_root: Option<&Path>,
     ) -> Option<ProjectConfig> {
-        let projects = self.projects.as_ref()?;
-
-        for normalized_cwd in normalized_project_lookup_keys(resolved_cwd) {
-            if let Some(project_config) = project_config_for_lookup_key(projects, &normalized_cwd) {
-                return Some(project_config);
-            }
-        }
-
-        if let Some(repo_root) = repo_root {
-            for normalized_repo_root in normalized_project_lookup_keys(repo_root) {
-                if let Some(project_config_for_root) =
-                    project_config_for_lookup_key(projects, &normalized_repo_root)
-                {
-                    return Some(project_config_for_root);
-                }
-            }
-        }
-
-        None
+        self.projects.as_ref()?;
+        // Only canonicalize the repository root when neither cwd key matches.
+        std::iter::once(resolved_cwd)
+            .chain(repo_root)
+            .find_map(|path| {
+                self.get_active_project_for_lookup(&crate::ProjectTrustLookup::from_native_path(
+                    path,
+                ))
+            })
     }
-}
-
-/// Canonicalize the path and convert it to a string to be used as a key in the
-/// projects trust map. On Windows, strips UNC, when possible, to try to ensure
-/// that different paths that point to the same location have the same key.
-fn normalized_project_lookup_keys(path: &Path) -> Vec<String> {
-    let normalized_path = normalize_project_lookup_key(path.to_string_lossy().to_string());
-    let normalized_canonical_path = normalize_project_lookup_key(
-        normalize_for_path_comparison(path)
-            .unwrap_or_else(|_| path.to_path_buf())
-            .to_string_lossy()
-            .to_string(),
-    );
-    if normalized_path == normalized_canonical_path {
-        vec![normalized_canonical_path]
-    } else {
-        vec![normalized_canonical_path, normalized_path]
-    }
-}
-
-fn normalize_project_lookup_key(key: String) -> String {
-    if cfg!(windows) {
-        key.to_ascii_lowercase()
-    } else {
-        key
-    }
-}
-
-fn project_config_for_lookup_key(
-    projects: &HashMap<String, ProjectConfig>,
-    lookup_key: &str,
-) -> Option<ProjectConfig> {
-    if let Some(project_config) = projects.get(lookup_key) {
-        return Some(project_config.clone());
-    }
-
-    let mut normalized_matches: Vec<_> = projects
-        .iter()
-        .filter(|(key, _)| normalize_project_lookup_key((*key).clone()) == lookup_key)
-        .collect();
-    normalized_matches.sort_by_key(|(key, _)| *key);
-    normalized_matches
-        .first()
-        .map(|(_, project_config)| (**project_config).clone())
 }
 
 pub fn validate_reserved_model_provider_ids(
@@ -892,9 +950,17 @@ pub fn validate_reserved_model_provider_ids(
     let mut conflicts = model_providers
         .keys()
         .filter(|key| {
+            if key.as_str() == "openai" {
+                let provider = &model_providers[*key];
+                return provider
+                    != &ModelProviderInfo {
+                        model_catalog_url: provider.model_catalog_url.clone(),
+                        ..Default::default()
+                    };
+            }
             !matches!(
                 key.as_str(),
-                AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID
+                AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID | GCP_PROVIDER_ID
             ) && RESERVED_MODEL_PROVIDER_IDS.contains(&key.as_str())
         })
         .map(|key| format!("`{key}`"))
@@ -916,21 +982,33 @@ pub fn validate_model_providers(
 ) -> Result<(), String> {
     validate_reserved_model_provider_ids(model_providers)?;
     for (key, provider) in model_providers {
-        if !matches!(
+        if matches!(
             key.as_str(),
             AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID
         ) {
-            if provider.aws.is_some() {
-                return Err(format!(
-                    "model_providers.{key}: provider aws is only supported for \
+            provider
+                .validate_bedrock_override()
+                .map_err(|message| format!("model_providers.{key} {message}"))?;
+        } else if provider.aws.is_some() {
+            return Err(format!(
+                "model_providers.{key}: provider aws is only supported for \
 `{AMAZON_BEDROCK_PROVIDER_ID}` or `{AMAZON_BEDROCK_RUNTIME_PROVIDER_ID}`"
-                ));
-            }
-            if provider.name.trim().is_empty() {
-                return Err(format!(
-                    "model_providers.{key}: provider name must not be empty"
-                ));
-            }
+            ));
+        }
+        if !matches!(
+            key.as_str(),
+            AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID | GCP_PROVIDER_ID
+        ) && key != "openai"
+            && provider.name.trim().is_empty()
+        {
+            return Err(format!(
+                "model_providers.{key}: provider name must not be empty"
+            ));
+        }
+        if key == GCP_PROVIDER_ID {
+            provider
+                .validate_gcp_credential_file()
+                .map_err(|message| format!("model_providers.{key}: {message}"))?;
         }
         provider
             .validate()
@@ -977,6 +1055,47 @@ mod tests {
 
     const WORKSPACE_ID_A: &str = "123e4567-e89b-42d3-a456-426614174000";
     const WORKSPACE_ID_B: &str = "123e4567-e89b-42d3-a456-426614174001";
+
+    #[test]
+    fn sandbox_mode_uses_executor_platform_and_sandbox_level() {
+        use Platform::Linux;
+        use Platform::Macos;
+        use Platform::Unknown;
+        use Platform::Windows;
+        use SandboxMode::DangerFullAccess;
+        use SandboxMode::ReadOnly;
+        use SandboxMode::WorkspaceWrite;
+        use WindowsSandboxLevel::Disabled;
+        use WindowsSandboxLevel::Elevated;
+        use WindowsSandboxLevel::RestrictedToken;
+
+        for (mode, platform, level, expected) in [
+            (WorkspaceWrite, Windows, Disabled, ReadOnly),
+            (WorkspaceWrite, Windows, RestrictedToken, WorkspaceWrite),
+            (WorkspaceWrite, Windows, Elevated, WorkspaceWrite),
+            (WorkspaceWrite, Linux, Disabled, WorkspaceWrite),
+            (WorkspaceWrite, Macos, Disabled, WorkspaceWrite),
+            (WorkspaceWrite, Unknown, Disabled, WorkspaceWrite),
+            (ReadOnly, Windows, Disabled, ReadOnly),
+            (DangerFullAccess, Windows, Disabled, DangerFullAccess),
+        ] {
+            assert_eq!(
+                effective_sandbox_mode(mode, platform, level),
+                expected,
+                "{mode:?}, {platform:?}, {level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn thread_unload_delay_requires_nonnegative_seconds() {
+        for value in ["-1", "1.5", "\"60\""] {
+            let error =
+                toml::from_str::<ConfigToml>(&format!("thread_unload_delay_secs = {value}"))
+                    .expect_err("idle timeout must be a nonnegative integer");
+            assert!(error.to_string().contains("thread_unload_delay_secs"));
+        }
+    }
 
     #[test]
     fn forced_chatgpt_workspace_id_accepts_single_string() {
@@ -1037,5 +1156,48 @@ command = "   "
                 "model_providers.amazon-bedrock: provider auth.command must not be empty"
             )
         );
+    }
+
+    #[test]
+    fn gcp_provider_accepts_partial_endpoint_and_auth_overrides() {
+        let config = toml::from_str::<ConfigToml>(
+            r#"
+[model_providers.gcp]
+base_url = "https://vertex.example.com/v1"
+
+[model_providers.gcp.auth]
+command = "print-token"
+"#,
+        )
+        .expect("partial GCP provider overrides should deserialize");
+
+        let provider = config
+            .model_providers
+            .get(GCP_PROVIDER_ID)
+            .expect("GCP overrides should be retained");
+        assert_eq!(
+            (
+                provider.base_url.as_deref(),
+                provider.auth.as_ref().map(|auth| auth.command.as_str()),
+            ),
+            (Some("https://vertex.example.com/v1"), Some("print-token"))
+        );
+    }
+
+    #[test]
+    fn gcp_provider_rejects_relative_credential_file() {
+        for credential_file in ["", "adc.json", "../adc.json"] {
+            let error = toml::from_str::<ConfigToml>(&format!(
+                r#"
+[model_providers.gcp]
+credential_file = "{credential_file}"
+"#,
+            ))
+            .expect_err("GCP overrides must validate credential paths before merging defaults");
+
+            assert!(error.to_string().contains(
+                "model_providers.gcp: provider credential_file must be an absolute path"
+            ));
+        }
     }
 }

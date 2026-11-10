@@ -37,7 +37,11 @@ pub struct Site {
 impl Site {
     fn render(&self) -> String {
         match &self.location {
-            Some((file, line)) => format!("{} ({}:{line})", short_function(&self.function), basename(file)),
+            Some((file, line)) => format!(
+                "{} ({}:{line})",
+                short_function(&self.function),
+                basename(file)
+            ),
             None => short_function(&self.function),
         }
     }
@@ -68,7 +72,10 @@ pub struct Evidence {
 impl Evidence {
     /// The crash-stack functions (user code), innermost first.
     pub fn crash_functions(&self) -> Vec<String> {
-        self.crash.iter().map(|site| site.function.clone()).collect()
+        self.crash
+            .iter()
+            .map(|site| site.function.clone())
+            .collect()
     }
 }
 
@@ -105,7 +112,10 @@ fn report_header(line: &str) -> Option<(&'static str, String)> {
         "LeakSanitizer",
         "ThreadSanitizer",
     ] {
-        if let Some(after) = rest.strip_prefix(sanitizer).and_then(|r| r.strip_prefix(": ")) {
+        if let Some(after) = rest
+            .strip_prefix(sanitizer)
+            .and_then(|r| r.strip_prefix(": "))
+        {
             let bug = if sanitizer == "AddressSanitizer" {
                 asan_bug_class(after)
             } else {
@@ -213,7 +223,11 @@ fn stack_at(lines: &[&str], at: usize) -> (Vec<Site>, usize) {
     let owned = |wanted: FrameOwner| -> Vec<Site> {
         all.iter()
             .filter(|frame| {
-                let file = frame.location.as_ref().map(|(f, _)| f.as_str()).unwrap_or("");
+                let file = frame
+                    .location
+                    .as_ref()
+                    .map(|(f, _)| f.as_str())
+                    .unwrap_or("");
                 frame_owner(&frame.function, file) == wanted
                     && !frame.function.is_empty()
                     && !is_entry_point(&frame.function)
@@ -232,7 +246,10 @@ fn stack_at(lines: &[&str], at: usize) -> (Vec<Site>, usize) {
 /// The process entry point (`_start` and the libc start routines): below
 /// every stack, never where a bug is.
 fn is_entry_point(function: &str) -> bool {
-    matches!(function, "_start" | "__libc_start_main" | "__libc_start_call_main")
+    matches!(
+        function,
+        "_start" | "__libc_start_main" | "__libc_start_call_main"
+    )
 }
 
 fn site_of(frame: &crate::tools::Frame) -> Site {
@@ -247,7 +264,10 @@ pub(crate) fn strip_addresses(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while !rest.is_empty() {
-        if let Some(stripped) = rest.strip_prefix(" [0x").or_else(|| rest.strip_prefix(" (0x")) {
+        if let Some(stripped) = rest
+            .strip_prefix(" [0x")
+            .or_else(|| rest.strip_prefix(" (0x"))
+        {
             // Skip to the closing bracket of the group.
             match stripped.find([')', ']']) {
                 Some(close) => {
@@ -258,10 +278,7 @@ pub(crate) fn strip_addresses(text: &str) -> String {
             }
         }
         if rest.starts_with("0x") {
-            let len = rest[2..]
-                .bytes()
-                .take_while(u8::is_ascii_hexdigit)
-                .count();
+            let len = rest[2..].bytes().take_while(u8::is_ascii_hexdigit).count();
             if len > 0 {
                 rest = &rest[2 + len..];
                 continue;
@@ -400,7 +417,9 @@ pub fn render(evidence: &Evidence) -> String {
 
 /// [`parse`] + [`render`], or an empty string when `text` holds no report.
 pub fn render_from(text: &str) -> String {
-    parse(text).map(|evidence| render(&evidence)).unwrap_or_default()
+    parse(text)
+        .map(|evidence| render(&evidence))
+        .unwrap_or_default()
 }
 
 fn join_sites(sites: &[Site]) -> String {
@@ -486,13 +505,22 @@ SUMMARY: MemorySanitizer: use-of-uninitialized-value /tmp/e2/um2.c:6:7 in main
             Some("0 bytes inside of 16-byte region")
         );
         let labels: Vec<&str> = evidence.related.iter().map(|(l, _)| l.as_str()).collect();
-        assert_eq!(labels, vec!["freed by thread T0", "previously allocated by thread T0"]);
+        assert_eq!(
+            labels,
+            vec!["freed by thread T0", "previously allocated by thread T0"]
+        );
         // The interceptor frame is the runtime's, never shown.
         assert_eq!(evidence.related[0].1[0].function, "drop");
         assert_eq!(evidence.related[1].1[0].function, "make");
         let text = render(&evidence);
-        assert!(text.contains("- freed by thread T0: drop (uaf.c:6) <- main (uaf.c:8)"), "{text}");
-        assert!(text.contains("- previously allocated by thread T0: make (uaf.c:5)"), "{text}");
+        assert!(
+            text.contains("- freed by thread T0: drop (uaf.c:6) <- main (uaf.c:8)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- previously allocated by thread T0: make (uaf.c:5)"),
+            "{text}"
+        );
         assert!(text.contains("ownership"), "{text}");
     }
 
@@ -510,7 +538,13 @@ SUMMARY: MemorySanitizer: use-of-uninitialized-value /tmp/e2/um2.c:6:7 in main
             evidence.object.as_deref(),
             Some("in stack of thread T0 at offset 3600 in frame parse_header (reader.c:1025)")
         );
-        assert!(evidence.stack_object.as_deref().unwrap_or("").starts_with("[3728, 4752) 'buf3'"));
+        assert!(
+            evidence
+                .stack_object
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("[3728, 4752) 'buf3'")
+        );
         let text = render(&evidence);
         assert!(text.contains("the size or index was computed"), "{text}");
     }
@@ -545,7 +579,10 @@ SUMMARY: MemorySanitizer: use-of-uninitialized-value /tmp/e2/um2.c:6:7 in main
         let text = "==9==ERROR: LeakSanitizer: detected memory leaks\n\nDirect leak of 32 byte(s) in 1 object(s) allocated from:\n    #0 0x1 in __interceptor_malloc ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:69\n    #1 0x2 in make_node /src/p/tree.c:40\n\nSUMMARY: AddressSanitizer: 32 byte(s) leaked in 1 allocation(s).\n";
         let evidence = parse(text).expect("a report");
         assert_eq!(evidence.bug, "detected memory leaks");
-        assert_eq!(evidence.related[0].0, "Direct leak of 32 byte(s) in 1 object(s) allocated from");
+        assert_eq!(
+            evidence.related[0].0,
+            "Direct leak of 32 byte(s) in 1 object(s) allocated from"
+        );
         assert_eq!(evidence.related[0].1[0].function, "make_node");
     }
 
@@ -557,13 +594,24 @@ SUMMARY: MemorySanitizer: use-of-uninitialized-value /tmp/e2/um2.c:6:7 in main
     #[test]
     fn addresses_and_parameters_are_stripped() {
         assert_eq!(
-            strip_addresses("4 bytes to the right of global variable 'g' defined in 'f.c:3:5' (0x55d8) of size 40"),
+            strip_addresses(
+                "4 bytes to the right of global variable 'g' defined in 'f.c:3:5' (0x55d8) of size 40"
+            ),
             "4 bytes to the right of global variable 'g' defined in 'f.c:3:5' of size 40"
         );
-        assert_eq!(strip_params("ns::A::f(int, std::vector<int> const&) const"), "ns::A::f");
-        assert_eq!(strip_params("(anonymous namespace)::g(char*)"), "(anonymous namespace)::g");
+        assert_eq!(
+            strip_params("ns::A::f(int, std::vector<int> const&) const"),
+            "ns::A::f"
+        );
+        assert_eq!(
+            strip_params("(anonymous namespace)::g(char*)"),
+            "(anonymous namespace)::g"
+        );
         assert_eq!(strip_params("S::operator()(int)"), "S::operator()");
-        assert_eq!(last_component("ns::Widget::rebuildTree(TreeNode*, std::set<unsigned int>&)"), "rebuildTree");
+        assert_eq!(
+            last_component("ns::Widget::rebuildTree(TreeNode*, std::set<unsigned int>&)"),
+            "rebuildTree"
+        );
         assert_eq!(last_component("tpl<int>"), "tpl");
     }
 }

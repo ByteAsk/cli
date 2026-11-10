@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::io;
 
 use codex_exec_server::CapabilityRootDiscovery;
-use codex_exec_server::ExecutorFileSystem;
+use codex_exec_server::EnvironmentAccess;
+use codex_exec_server::EnvironmentAccessExt;
 use codex_exec_server::GetMetadataOptions;
 use codex_exec_server::ReadFileOptions;
 use codex_protocol::protocol::Product;
@@ -23,12 +24,10 @@ use super::discovery::MAX_CONCURRENT_SKILL_LOADS;
 use super::discovery::SkillDiscoveryOptions;
 use super::discovery::SkillMetadataDiscovery;
 use super::discovery::discover_skills;
-use super::metadata::SkillMetadataFile;
-use super::metadata::resolve_dependencies;
-use super::metadata::resolve_policy;
 use super::metadata::sanitize_single_line;
 use super::metadata::validate_len;
 use super::namespace::SkillNamespaceResolver;
+use codex_skills::parse_skill_metadata;
 
 struct ParsedEnvironmentSkill {
     path_to_skills_md: PathUri,
@@ -54,7 +53,7 @@ pub struct EnvironmentSkillSnapshotOutcome {
 
 impl ParsedEnvironmentSkill {
     async fn load(
-        file_system: &dyn ExecutorFileSystem,
+        file_system: &dyn EnvironmentAccess,
         skill: &DiscoveredSkill,
     ) -> Result<Self, String> {
         let (contents, discovered_metadata) = match &skill.metadata {
@@ -110,7 +109,7 @@ pub struct EnvironmentSkillLoadOutcome {
     fields(skill_count = tracing::field::Empty)
 )]
 pub async fn load_environment_skills_from_root(
-    file_system: &dyn ExecutorFileSystem,
+    file_system: &dyn EnvironmentAccess,
     root: &PathUri,
     restriction_product: Option<Product>,
 ) -> EnvironmentSkillLoadOutcome {
@@ -268,7 +267,7 @@ pub fn load_environment_skills_from_discovery(
             .metadata
             .as_ref()
             .and_then(|metadata| {
-                serde_yaml::from_str::<SkillMetadataFile>(&metadata.contents)
+                parse_skill_metadata(&metadata.contents)
                     .map_err(|error| {
                         tracing::warn!(
                             path = %metadata.path,
@@ -277,12 +276,7 @@ pub fn load_environment_skills_from_discovery(
                     })
                     .ok()
             })
-            .map(|metadata| {
-                (
-                    resolve_dependencies(metadata.dependencies),
-                    resolve_policy(metadata.policy),
-                )
-            })
+            .map(|metadata| (metadata.dependencies, metadata.policy))
             .unwrap_or((None, None));
         let metadata = EnvironmentSkillMetadata {
             path_to_skills_md: skill.instructions.path.clone(),
@@ -324,29 +318,21 @@ fn nearest_plugin_namespace<'a>(
     None
 }
 async fn read_skill_contents(
-    file_system: &dyn ExecutorFileSystem,
+    file_system: &dyn EnvironmentAccess,
     skill_path: &PathUri,
 ) -> Result<String, String> {
     file_system
-        .read_file_text(
-            skill_path,
-            ReadFileOptions::default(),
-            /*sandbox*/ None,
-        )
+        .read_file_text(skill_path, ReadFileOptions::default())
         .await
         .map_err(|err| format!("failed to read file: {err}"))
 }
 
 async fn probe_skill_metadata(
-    file_system: &dyn ExecutorFileSystem,
+    file_system: &dyn EnvironmentAccess,
     metadata_path: &PathUri,
 ) -> (Option<SkillDependencies>, Option<SkillPolicy>) {
     match file_system
-        .get_metadata(
-            metadata_path,
-            GetMetadataOptions::default(),
-            /*sandbox*/ None,
-        )
+        .get_metadata(metadata_path, GetMetadataOptions::default())
         .await
     {
         Ok(metadata) if metadata.is_file => {}
@@ -361,15 +347,11 @@ async fn probe_skill_metadata(
 }
 
 async fn read_skill_metadata(
-    file_system: &dyn ExecutorFileSystem,
+    file_system: &dyn EnvironmentAccess,
     metadata_path: &PathUri,
 ) -> (Option<SkillDependencies>, Option<SkillPolicy>) {
     let contents = match file_system
-        .read_file_text(
-            metadata_path,
-            ReadFileOptions::default(),
-            /*sandbox*/ None,
-        )
+        .read_file_text(metadata_path, ReadFileOptions::default())
         .await
     {
         Ok(contents) => contents,
@@ -378,7 +360,7 @@ async fn read_skill_metadata(
             return (None, None);
         }
     };
-    let parsed: SkillMetadataFile = match serde_yaml::from_str(&contents) {
+    let parsed = match parse_skill_metadata(&contents) {
         Ok(parsed) => parsed,
         Err(error) => {
             tracing::warn!("ignoring {metadata_path}: invalid metadata: {error}");
@@ -386,10 +368,7 @@ async fn read_skill_metadata(
         }
     };
 
-    (
-        resolve_dependencies(parsed.dependencies),
-        resolve_policy(parsed.policy),
-    )
+    (parsed.dependencies, parsed.policy)
 }
 
 fn default_skill_name(path: &PathUri) -> String {

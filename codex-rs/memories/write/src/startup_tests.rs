@@ -24,6 +24,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
@@ -48,15 +50,20 @@ use core_test_support::responses::sse;
 use core_test_support::responses::sse_failed;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::time::Duration;
 use tokio::time::Instant;
+
+#[path = "startup_dual_write_tests.rs"]
+mod dual_write;
 
 #[tokio::test]
 async fn memories_startup_creates_memory_root() -> anyhow::Result<()> {
@@ -69,6 +76,35 @@ async fn memories_startup_creates_memory_root() -> anyhow::Result<()> {
     trigger_memories_startup(&test).await;
     wait_for_dir(&memory_root).await?;
 
+    shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn dual_write_prepares_both_roots_without_importing_old_notes() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let old_notes = home.path().join("memories/extensions/ad_hoc/notes");
+    tokio::fs::create_dir_all(&old_notes).await?;
+    tokio::fs::write(old_notes.join("old.md"), "old memory").await?;
+    let mut memories = startup_test_memories_config();
+    memories.dual_write = true;
+    let test = memory_test_codex(Arc::clone(&home), memories)
+        .build(&server)
+        .await?;
+    trigger_memories_startup(&test).await;
+    wait_for_dir(&home.path().join("memories/extensions/ad_hoc")).await?;
+    wait_for_dir(&home.path().join("memories_v2/extensions/ad_hoc")).await?;
+    assert_eq!(
+        tokio::fs::read_to_string(old_notes.join("old.md")).await?,
+        "old memory"
+    );
+    assert!(
+        !home
+            .path()
+            .join("memories_v2/extensions/ad_hoc/notes/old.md")
+            .exists()
+    );
     shutdown_test_codex(&test).await?;
     Ok(())
 }
@@ -112,7 +148,7 @@ async fn memories_startup_fails_consolidation_when_worker_creates_extension_syml
             ev_assistant_message("msg-phase2-complete", "phase2 complete"),
             ev_completed("resp-phase2-complete"),
         ]),
-        sse_failed("resp-phase2-failed", "server_error", "worker failed"),
+        sse_failed("resp-phase2-failed", "invalid_prompt", "worker failed"),
     ];
 
     for response in responses {
@@ -155,7 +191,7 @@ async fn memories_startup_fails_consolidation_when_worker_creates_extension_syml
         wait_for_single_request(&phase2).await;
 
         assert_eq!(
-            wait_for_phase2_job_to_finish(db.as_ref()).await?,
+            wait_for_phase2_job_to_finish(db.memories()).await?,
             Phase2JobClaimOutcome::SkippedRetryUnavailable
         );
         assert_eq!(tokio::fs::read_to_string(&target).await?, "outside content");
@@ -281,7 +317,7 @@ elif kind == "stop" and Path(json.load(sys.stdin)["cwd"]).name == "memories":
         wait_for_single_request(&phase2).await;
         if managed_response.is_some() {
             assert_eq!(
-                wait_for_phase2_job_to_finish(db.as_ref()).await?,
+                wait_for_phase2_job_to_finish(db.memories()).await?,
                 Phase2JobClaimOutcome::SkippedRetryUnavailable
             );
             assert_eq!(
@@ -289,7 +325,7 @@ elif kind == "stop" and Path(json.load(sys.stdin)["cwd"]).name == "memories":
                 "hook invoked\n"
             );
         } else {
-            wait_for_phase2_workspace_reset(db.as_ref(), &root).await?;
+            wait_for_phase2_workspace_reset(db.memories(), &root).await?;
         }
         phase2.single_request();
         assert!(
@@ -384,7 +420,7 @@ async fn memories_startup_phase2_tracks_workspace_diff_across_runs() -> anyhow::
         "expected workspace diff file in prompt: {prompt}"
     );
 
-    wait_for_phase2_workspace_reset(db.as_ref(), &memory_root).await?;
+    wait_for_phase2_workspace_reset(db.memories(), &memory_root).await?;
     let raw_memories = tokio::fs::read_to_string(memory_root.join("raw_memories.md")).await?;
     assert!(raw_memories.contains("raw memory B"));
     assert!(!raw_memories.contains("raw memory A"));
@@ -406,6 +442,46 @@ async fn memories_startup_phase2_tracks_workspace_diff_across_runs() -> anyhow::
             .all(|summary| !summary.contains("rollout summary A"))
     );
 
+    shutdown_test_codex(&test).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn phase2_replays_legacy_baseline_with_unchanged_inputs() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let db = init_state_db(&home).await?;
+    let root = home.path().join("memories");
+    db.memories()
+        .enqueue_global_consolidation(/*input_watermark*/ 1)
+        .await?;
+    sync_rollout_summaries_from_memories(&root, &[], /*max_raw_memories_for_consolidation*/ 0)
+        .await?;
+    rebuild_raw_memories_file_from_memories(
+        &root,
+        &[],
+        /*max_raw_memories_for_consolidation*/ 0,
+    )
+    .await?;
+    seed_extension_instructions(&root).await?;
+    seed_required_memory_artifacts(&root).await?;
+    reset_git_repository(&root).await?;
+    assert!(!diff_since_latest_init(&root).await?.has_changes());
+    tokio::fs::remove_file(root.join(".git/codex-baseline-version")).await?;
+
+    let phase2 = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-phase2-replay"),
+            ev_assistant_message("msg-phase2-replay", "phase2 complete"),
+            ev_completed("resp-phase2-replay"),
+        ]),
+    )
+    .await;
+    let test = build_test_codex(&server, home.clone()).await?;
+    trigger_memories_startup(&test).await;
+    wait_for_single_request(&phase2).await;
+    wait_for_phase2_workspace_reset(db.memories(), &root).await?;
     shutdown_test_codex(&test).await?;
     Ok(())
 }
@@ -449,7 +525,7 @@ async fn phase2_retries_when_clean_workspace_is_missing_artifacts() -> anyhow::R
     wait_for_single_request(&phase2).await;
 
     assert_eq!(
-        wait_for_phase2_job_to_finish(db.as_ref()).await?,
+        wait_for_phase2_job_to_finish(db.memories()).await?,
         Phase2JobClaimOutcome::SkippedRetryUnavailable
     );
     assert!(!memory_root.join("MEMORY.md").exists());
@@ -489,12 +565,12 @@ async fn memories_startup_phase2_prunes_old_extension_resources() -> anyhow::Res
     .await?;
     let old_file = chronicle_resources.join(format!(
         "{}-abcd-10min-old.md",
-        (now - chrono::Duration::days(8)).format("%Y-%m-%dT%H-%M-%S")
+        (now - chrono::Duration::days(15)).format("%Y-%m-%dT%H-%M-%S")
     ));
     tokio::fs::write(&old_file, "old resource").await?;
     let recent_file = chronicle_resources.join(format!(
         "{}-abcd-10min-recent.md",
-        (now - chrono::Duration::days(6)).format("%Y-%m-%dT%H-%M-%S")
+        (now - chrono::Duration::days(13)).format("%Y-%m-%dT%H-%M-%S")
     ));
     tokio::fs::write(&recent_file, "recent resource").await?;
     seed_required_memory_artifacts(&home.path().join("memories")).await?;
@@ -519,7 +595,7 @@ async fn memories_startup_phase2_prunes_old_extension_resources() -> anyhow::Res
         "expected workspace diff file in prompt: {prompt}"
     );
 
-    wait_for_phase2_workspace_reset(db.as_ref(), &home.path().join("memories")).await?;
+    wait_for_phase2_workspace_reset(db.memories(), &home.path().join("memories")).await?;
     wait_for_file_removed(&old_file).await?;
     assert!(
         !tokio::fs::try_exists(&old_file).await?,
@@ -555,7 +631,7 @@ async fn memories_startup_phase2_prunes_old_extension_resources_without_stage1_i
     .await?;
     let old_file = chronicle_resources.join(format!(
         "{}-abcd-10min-old.md",
-        (now - chrono::Duration::days(8)).format("%Y-%m-%dT%H-%M-%S")
+        (now - chrono::Duration::days(15)).format("%Y-%m-%dT%H-%M-%S")
     ));
     tokio::fs::write(&old_file, "old resource").await?;
     seed_required_memory_artifacts(&home.path().join("memories")).await?;
@@ -580,7 +656,7 @@ async fn memories_startup_phase2_prunes_old_extension_resources_without_stage1_i
         "expected workspace diff file in prompt: {prompt}"
     );
 
-    wait_for_phase2_workspace_reset(db.as_ref(), &home.path().join("memories")).await?;
+    wait_for_phase2_workspace_reset(db.memories(), &home.path().join("memories")).await?;
     wait_for_file_removed(&old_file).await?;
 
     shutdown_test_codex(&test).await?;
@@ -592,9 +668,10 @@ async fn memories_startup_phase1_uses_live_thread_service_tier_and_detached_meta
 -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
+    // Keep the fixture outside Git: workspace enrichment is best effort and can
+    // time out independently of the detached request metadata checked here.
     let test = build_test_codex(&server, home).await?;
     assert_eq!(test.config.service_tier, None);
-    reset_git_repository(&test.config.cwd).await?;
 
     core_test_support::submit_thread_settings(
         &test.codex,
@@ -652,7 +729,7 @@ async fn memories_startup_phase1_uses_live_thread_service_tier_and_detached_meta
     let request = wait_for_single_request(&stage_one).await;
     let metadata_header = request
         .header("x-codex-turn-metadata")
-        .expect("detached memory request should include workspace metadata");
+        .expect("detached memory request should include turn metadata");
     let metadata: serde_json::Value =
         serde_json::from_str(&metadata_header).expect("turn metadata json");
     let client_metadata: serde_json::Value = serde_json::from_str(
@@ -664,15 +741,30 @@ async fn memories_startup_phase1_uses_live_thread_service_tier_and_detached_meta
     assert_eq!(client_metadata, metadata);
     assert_eq!(metadata["request_kind"].as_str(), Some("memory"));
     assert_eq!(
+        metadata["turn_trigger"].as_str(),
+        Some("memory_consolidation")
+    );
+    assert_eq!(
         metadata["thread_source"].as_str(),
         Some("memory_consolidation")
     );
     assert_eq!(metadata["sandbox_mode"].as_str(), Some("workspace-write"));
     assert!(metadata.get("session_id").is_none());
     assert!(metadata.get("thread_id").is_none());
-    assert!(metadata.get("turn_id").is_none());
+    let turn_id = metadata["turn_id"].as_str().expect("memory turn ID");
+    uuid::Uuid::parse_str(turn_id).expect("memory turn ID is a UUID");
+    assert_eq!(metadata["root_turn_id"], metadata["turn_id"]);
+    let request_body = request.body_json();
+    assert_eq!(
+        request_body["client_metadata"]["turn_id"],
+        metadata["turn_id"]
+    );
+    assert_eq!(
+        request_body["client_metadata"]["root_turn_id"],
+        metadata["root_turn_id"]
+    );
     assert!(metadata.get("window_id").is_none());
-    assert!(metadata.get("workspaces").is_some());
+    assert!(metadata.get("workspaces").is_none());
 
     shutdown_test_codex(&test).await?;
     Ok(())
@@ -701,7 +793,7 @@ async fn memories_startup_phase1_provider_default_drives_request_model() -> anyh
 }
 
 #[tokio::test]
-async fn memories_startup_phase2_provider_default_drives_request_model() -> anyhow::Result<()> {
+async fn memories_startup_phase2_uses_provider_model_and_standard_tier() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
     let request =
@@ -712,6 +804,7 @@ async fn memories_startup_phase2_provider_default_drives_request_model() -> anyh
         request.body_json()["model"].as_str(),
         Some(MOCK_PROVIDER_PHASE_TWO_MODEL)
     );
+    assert_eq!(request.body_json().get("service_tier"), None);
 
     Ok(())
 }
@@ -755,7 +848,10 @@ async fn run_memory_phase_one_model_request_test(
     home: Arc<TempDir>,
     memories: MemoriesConfig,
 ) -> anyhow::Result<ResponsesRequest> {
-    let test = build_test_codex_with_memories_config(server, Arc::clone(&home), memories).await?;
+    let version = memories.version;
+    let test = memory_test_codex(Arc::clone(&home), memories)
+        .build(server)
+        .await?;
     let provider = Arc::new(MockMemoryModelProvider::new(
         test.config.model_provider.clone(),
         Some(test.thread_manager.auth_manager()),
@@ -764,21 +860,157 @@ async fn run_memory_phase_one_model_request_test(
         .codex
         .state_db()
         .ok_or_else(|| anyhow::anyhow!("state db should be enabled for memory startup test"))?;
-    seed_stage1_candidate(
+    let source_id = seed_stage1_candidate(
         db.as_ref(),
         home.path(),
         chrono::Utc::now() - chrono::Duration::hours(2),
         "startup-models",
     )
     .await?;
+    let path = home.path().join(format!("rollout-{source_id}.jsonl"));
+    let mut contents = tokio::fs::read_to_string(&path).await?;
+    let mut items = vec![
+        json!({"type":"message", "role":"assistant", "phase":"final_answer",
+        "encrypted_content":"memory-message-ciphertext", "status":"completed", "content":[
+            {"type":"output_text", "text":"replay-bearing assistant evidence", "annotations":[], "logprobs":[]},
+        ]}),
+        json!({"type":"function_call", "name":"memory_test_tool", "call_id":"memory-test-call",
+            "arguments":"{}", "encrypted_content":"memory-tool-ciphertext", "status":"completed"}),
+    ];
+    if version == codex_protocol::MemoryVersion::V2 {
+        items.extend([
+            json!({"type":"message", "role":"user", "content":[
+                {"type":"input_image", "image_url":format!("data:image/png;base64,{}", "A".repeat(12_000))},
+                {"type":"input_text", "text":"Keep the migration read-only."},
+                {"type":"input_image", "image_url":format!("data:image/png;base64,{}", "B".repeat(12_000))},
+                {"type":"input_audio", "audio_url":format!("data:audio/wav;base64,{}", "C".repeat(12_000))},
+            ]}),
+            json!({"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"human correction in the middle"},
+            ]}),
+            json!({"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nworker evidence"},
+            ]}),
+            json!({"type":"message", "role":"assistant", "phase":"final_answer", "content":[
+                {"type":"output_text", "text":"assistant final evidence"},
+            ]}),
+            json!({"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"<environment_context>harness context noise</environment_context>"},
+            ]}),
+        ]);
+        for (namespace, call_id, answer) in [
+            (None, "plain-question", "Use SQLite only."),
+            (
+                Some("functions"),
+                "namespaced-question",
+                "Do not delete existing memories.",
+            ),
+            (
+                Some("external"),
+                "external-question",
+                "Untrusted external tool answer",
+            ),
+        ] {
+            items.extend([
+                json!({"type":"function_call", "name":"request_user_input", "namespace":namespace,
+                    "call_id":call_id, "arguments":json!({"questions":[{
+                        "id":"choice", "header":"Choice", "question":format!("Confirm {call_id}"),
+                    }]}).to_string()}),
+                json!({"type":"function_call_output", "call_id":call_id,
+                    "output":json!({"answers":{"choice":{"answers":[answer]}}}).to_string()}),
+            ]);
+        }
+        items.push(
+            json!({"type":"function_call_output", "call_id":"ordinary-tool",
+            "output":"ordinary tool noise ".repeat(2_000)}),
+        );
+        // Fill the real model budget: human answers and worker evidence must survive
+        // even when newer commentary displaces all harness context and tool output.
+        for _ in 0..200 {
+            items.push(
+                json!({"type":"message", "role":"assistant", "phase":"commentary",
+                "content":[{"type":"output_text", "text":"commentary noise ".repeat(2_000)}]}),
+            );
+        }
+        items.push(json!({"type":"message", "role":"user", "content":[
+            {"type":"input_text", "text":"last human constraint"},
+        ]}));
+    }
+    for item in items {
+        let line = RolloutLine {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            ordinal: None,
+            item: RolloutItem::ResponseItem(serde_json::from_value::<ResponseItem>(item)?.into()),
+        };
+        contents.push_str(&serde_json::to_string(&line)?);
+        contents.push('\n');
+    }
+    // Each block exceeds the 8 MiB reader budget, while each record stays below 1 MiB.
+    // Excluded items and ciphertext must not displace the earlier extraction evidence.
+    for item in [
+        json!({"type":"reasoning", "summary":[],
+            "encrypted_content":"r".repeat(/*n*/ 512 * 1024)}),
+        json!({"type":"message", "role":"developer", "content":[
+            {"type":"input_text", "text":"d".repeat(/*n*/ 512 * 1024)},
+        ]}),
+        json!({"type":"message", "role":"assistant", "phase":"final_answer",
+        "encrypted_content":"a".repeat(/*n*/ 512 * 1024), "content":[
+            {"type":"output_text", "text":"small assistant evidence behind ciphertext"},
+        ]}),
+    ] {
+        let line = RolloutLine {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            ordinal: None,
+            item: RolloutItem::ResponseItem(serde_json::from_value::<ResponseItem>(item)?.into()),
+        };
+        let line = serde_json::to_string(&line)?;
+        for _ in 0..16 {
+            contents.push_str(&line);
+            contents.push('\n');
+        }
+    }
+    // Exercise bounded reading through the actual extraction request, for both memory versions.
+    contents.push_str(&"x".repeat(1024 * 1024 + 1));
+    contents.push('\n');
+    contents.push_str(
+        &json!({
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "newest correction after an oversized record"}
+            ]}
+        })
+        .to_string(),
+    );
+    contents.push('\n');
+    tokio::fs::write(&path, &contents).await?;
+    db.update_thread_git_info(
+        source_id,
+        /*git_sha*/ None,
+        Some(Some("feature/memory-source")),
+        /*git_origin_url*/ None,
+    )
+    .await?;
+    let secret = "synthetic-secret-value";
+    // The old middle cut removed `password:` but retained the complete value.
+    let summary = format!(
+        "{}\npassword: {secret}\n{}",
+        "x".repeat(4_999),
+        "y".repeat(4_500 - secret.len() - 1),
+    );
+    let output = match version {
+        codex_protocol::MemoryVersion::V1 => json!({
+            "raw_memory":"raw memory", "rollout_summary":summary, "rollout_slug":"startup-models",
+        }),
+        codex_protocol::MemoryVersion::V2 => json!({
+            "rollout_summary":summary, "rollout_slug":"startup-models",
+        }),
+    };
     let response = mount_sse_once(
         server,
         sse(vec![
             ev_response_created("resp-phase1"),
-            ev_assistant_message(
-                "msg-phase1",
-                r#"{"raw_memory":"raw memory","rollout_summary":"rollout summary","rollout_slug":"startup-models"}"#,
-            ),
+            ev_assistant_message("msg-phase1", &output.to_string()),
             ev_completed("resp-phase1"),
         ]),
     )
@@ -787,6 +1019,40 @@ async fn run_memory_phase_one_model_request_test(
     let (context, config) = memory_startup_context_with_provider(&test, provider).await;
     phase1::run(context, config).await;
     let request = wait_for_single_request(&response).await;
+    let evidence = request.message_input_texts("user").join("");
+    assert!(evidence.contains("replay-bearing assistant evidence"));
+    assert!(evidence.contains("small assistant evidence behind ciphertext"));
+    assert!(evidence.contains("newest correction after an oversized record"));
+    assert!(!evidence.contains("encrypted_content"));
+    if version == codex_protocol::MemoryVersion::V1 {
+        assert!(evidence.contains("memory_test_tool"));
+    }
+    assert_eq!(tokio::fs::read_to_string(&path).await?, contents);
+    if version == codex_protocol::MemoryVersion::V2 {
+        let outputs = db
+            .memories_for_version(version)
+            .await?
+            .list_stage1_outputs_for_global(/*n*/ 10)
+            .await?;
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].raw_memory, "");
+        assert!(
+            request.body_contains_text("rollout_primary_git_branch_hint: feature/memory-source")
+        );
+        assert!(
+            request
+                .instructions_text()
+                .contains("Write task history, not a user profile")
+        );
+        assert!(!outputs[0].rollout_summary.contains(secret));
+        assert!(outputs[0].rollout_summary.contains("[REDACTED_SECRET]"));
+        assert!(outputs[0].rollout_summary.contains("truncated"));
+        assert!(outputs[0].rollout_summary.len() < 10_000);
+        assert_eq!(
+            request.body_json()["text"]["format"]["schema"]["required"],
+            serde_json::json!(["rollout_summary", "rollout_slug"])
+        );
+    }
     shutdown_test_codex(&test).await?;
     Ok(request)
 }
@@ -796,7 +1062,28 @@ async fn run_memory_phase_two_model_request_test(
     home: Arc<TempDir>,
     memories: MemoriesConfig,
 ) -> anyhow::Result<ResponsesRequest> {
-    let test = build_test_codex_with_memories_config(server, home.clone(), memories).await?;
+    let version = memories.version;
+    // Both models support Ultrafast so an inherited tier would reach the wire.
+    let advertise_ultrafast = |model: &mut ModelInfo| {
+        model.service_tiers.push(ModelServiceTier {
+            id: "ultrafast".to_string(),
+            name: "Ultrafast".to_string(),
+            description: String::new(),
+        });
+        model.default_service_tier = Some("ultrafast".to_string());
+    };
+    let test = memory_test_codex(Arc::clone(&home), memories)
+        .with_model_info_override(MOCK_PROVIDER_PHASE_TWO_MODEL, advertise_ultrafast)
+        .with_model_info_override("mock.interactive", advertise_ultrafast)
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::UltrafastMode)
+                .expect("enable Ultrafast");
+            config.service_tier = Some("ultrafast".to_string());
+        })
+        .build_with_auto_env(server)
+        .await?;
     let provider = Arc::new(MockMemoryModelProvider::new(
         test.config.model_provider.clone(),
         Some(test.thread_manager.auth_manager()),
@@ -805,7 +1092,7 @@ async fn run_memory_phase_two_model_request_test(
         .codex
         .state_db()
         .ok_or_else(|| anyhow::anyhow!("state db should be enabled for memory startup test"))?;
-    seed_stage1_output(
+    let source_id = seed_stage1_output(
         db.as_ref(),
         home.path(),
         chrono::Utc::now(),
@@ -815,6 +1102,32 @@ async fn run_memory_phase_two_model_request_test(
     )
     .await?;
 
+    let store = db.memories_for_version(version).await?;
+    if version == codex_protocol::MemoryVersion::V2 {
+        let metadata = db.get_thread(source_id).await?.expect("source metadata");
+        let phase1_claim = store
+            .try_claim_stage1_job(
+                source_id,
+                source_id,
+                metadata.updated_at.timestamp(),
+                /*lease_seconds*/ 60,
+                /*max_running_jobs*/ 1,
+            )
+            .await?;
+        let codex_state::Stage1JobClaimOutcome::Claimed { ownership_token } = phase1_claim else {
+            panic!("claim v2 source")
+        };
+        store
+            .mark_stage1_job_succeeded(
+                source_id,
+                &ownership_token,
+                metadata.updated_at.timestamp(),
+                /*raw_memory*/ "",
+                "rollout summary for phase two",
+                Some("v2-source"),
+            )
+            .await?;
+    }
     let response = mount_sse_once(
         server,
         sse(vec![
@@ -826,19 +1139,30 @@ async fn run_memory_phase_two_model_request_test(
     .await;
 
     let (context, config) = memory_startup_context_with_provider(&test, provider).await;
-    let root = memory_root(&config.codex_home);
+    let root = config.codex_home.join(version.directory_name());
     tokio::fs::create_dir_all(&root).await?;
     seed_extension_instructions(&root).await?;
-    seed_required_memory_artifacts(&root).await?;
+    match version {
+        codex_protocol::MemoryVersion::V1 => seed_required_memory_artifacts(&root).await?,
+        codex_protocol::MemoryVersion::V2 => {
+            tokio::fs::write(root.join("memory_summary.md"), "v1\n\n## User Profile\nTest user\n\n## User preferences\nTest preference\n\n## General Tips\nTest tip\n\n## What's in Memory\nTest source\n").await?
+        }
+    }
     let parent_permission_profile = config.permissions.effective_permission_profile();
     phase2::run(context, config, parent_permission_profile).await;
     let request = wait_for_single_request(&response).await;
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        request.body_json()["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .expect("consolidation turn metadata"),
+    )?;
+    assert_eq!(turn_metadata["turn_trigger"], "memory_consolidation");
     let consolidation_thread_id = ThreadId::from_string(
         request.body_json()["client_metadata"]["thread_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("phase-2 request should include the child thread id"))?,
     )?;
-    wait_for_phase2_workspace_reset(db.as_ref(), &home.path().join("memories")).await?;
+    wait_for_phase2_workspace_reset(&store, &root).await?;
     assert!(
         test.thread_manager
             .remove_thread(&consolidation_thread_id)
@@ -846,6 +1170,13 @@ async fn run_memory_phase_two_model_request_test(
             .is_none(),
         "phase-2 consolidation agent should be removed after shutdown"
     );
+    if version == codex_protocol::MemoryVersion::V2 {
+        assert!(!root.join("raw_memories.md").exists());
+        assert!(!root.join("MEMORY.md").exists());
+        assert!(!root.join("skills").exists());
+        assert_eq!(read_rollout_summary_bodies(&root).await?.len(), 1);
+        assert!(request.body_contains_text("Consolidate the supplied rollout summaries"));
+    }
     test.codex.shutdown_and_wait().await?;
     Ok(request)
 }
@@ -862,25 +1193,19 @@ async fn build_test_codex(
     server: &wiremock::MockServer,
     home: Arc<TempDir>,
 ) -> anyhow::Result<TestCodex> {
-    build_test_codex_with_memories_config(server, home, startup_test_memories_config()).await
-}
-
-async fn build_test_codex_with_memories_config(
-    server: &wiremock::MockServer,
-    home: Arc<TempDir>,
-    memories: MemoriesConfig,
-) -> anyhow::Result<TestCodex> {
-    test_codex()
-        .with_home(home)
-        .with_config(move |config| {
-            config
-                .features
-                .enable(Feature::Sqlite)
-                .expect("test config should allow feature update");
-            config.memories = memories;
-        })
+    memory_test_codex(home, startup_test_memories_config())
         .build(server)
         .await
+}
+
+fn memory_test_codex(home: Arc<TempDir>, memories: MemoriesConfig) -> TestCodexBuilder {
+    test_codex().with_home(home).with_config(move |config| {
+        config
+            .features
+            .enable(Feature::Sqlite)
+            .expect("test config should allow feature update");
+        config.memories = memories;
+    })
 }
 
 async fn init_state_db(home: &Arc<TempDir>) -> anyhow::Result<Arc<codex_state::StateRuntime>> {
@@ -1035,6 +1360,8 @@ async fn seed_stage1_candidate(
         ordinal: None,
         item: RolloutItem::ResponseItem(
             ResponseItem::Message {
+                status: None,
+                encrypted_content: None,
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::InputText {
@@ -1047,7 +1374,18 @@ async fn seed_stage1_candidate(
         ),
     };
     let jsonl = serde_json::to_string(&line)?;
-    tokio::fs::write(&rollout_path, format!("{jsonl}\n")).await?;
+    let meta = json!({
+        "timestamp": updated_at.to_rfc3339(),
+        "type": "session_meta",
+        "payload": codex_rollout::SessionMeta {
+            id: thread_id,
+            session_id: thread_id.into(),
+            timestamp: updated_at.to_rfc3339(),
+            cwd: codex_home.to_path_buf(),
+            ..Default::default()
+        }
+    });
+    tokio::fs::write(&rollout_path, format!("{meta}\n{jsonl}\n")).await?;
 
     let mut metadata_builder = codex_state::ThreadMetadataBuilder::new(
         thread_id,
@@ -1145,7 +1483,7 @@ fn phase2_prompt_text(request: &ResponsesRequest) -> String {
 }
 
 async fn wait_for_phase2_workspace_reset(
-    db: &codex_state::StateRuntime,
+    db: &codex_state::MemoryStore,
     memory_root: &Path,
 ) -> anyhow::Result<()> {
     assert_eq!(
@@ -1158,12 +1496,11 @@ async fn wait_for_phase2_workspace_reset(
 }
 
 async fn wait_for_phase2_job_to_finish(
-    db: &codex_state::StateRuntime,
+    db: &codex_state::MemoryStore,
 ) -> anyhow::Result<Phase2JobClaimOutcome> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let outcome = db
-            .memories()
             .try_claim_global_phase2_job(ThreadId::new(), /*lease_seconds*/ 3_600)
             .await?;
         if outcome != Phase2JobClaimOutcome::SkippedRunning {
@@ -1180,7 +1517,7 @@ async fn wait_for_phase2_job_to_finish(
 async fn seed_required_memory_artifacts(root: &Path) -> anyhow::Result<()> {
     tokio::fs::create_dir_all(root).await?;
     tokio::fs::write(root.join("MEMORY.md"), "memory\n").await?;
-    tokio::fs::write(root.join("memory_summary.md"), "v1\n\nsummary\n").await?;
+    tokio::fs::write(root.join("memory_summary.md"), "v1\n\n## User Profile\nTest user\n\n## User preferences\nTest preference\n\n## General Tips\nTest tip\n\n## What's in Memory\nTest source\n").await?;
     Ok(())
 }
 
@@ -1235,5 +1572,71 @@ async fn read_rollout_summary_bodies(memory_root: &Path) -> anyhow::Result<Vec<S
 async fn shutdown_test_codex(test: &TestCodex) -> anyhow::Result<()> {
     test.codex.submit(Op::Shutdown {}).await?;
     wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn memories_startup_phase1_v2_preserves_human_evidence_and_redacts_storage()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let mut memories = startup_test_memories_config();
+    memories.version = codex_protocol::MemoryVersion::V2;
+    let request = run_memory_phase_one_model_request_test(&server, home, memories).await?;
+    let input = request.message_input_texts("user").join("");
+    for marker in [
+        "Keep the migration read-only.",
+        "human correction in the middle",
+        "Confirm plain-question",
+        "Use SQLite only.",
+        "Confirm namespaced-question",
+        "Do not delete existing memories.",
+        "worker evidence",
+        "assistant final evidence",
+        "last human constraint",
+        "[image omitted]",
+        "[audio omitted]",
+        "[... response items omitted ...]",
+        "[human user]",
+        "[other agent]",
+        "[assistant final]",
+        "commentary noise",
+    ] {
+        assert!(input.contains(marker), "missing evidence: {marker}");
+    }
+    for noise in [
+        "base64,",
+        "harness context noise",
+        "ordinary tool noise",
+        "Untrusted external tool answer",
+    ] {
+        assert!(!input.contains(noise), "unexpected evidence: {noise}");
+    }
+    let chronology = [
+        "Keep the migration read-only.",
+        "human correction in the middle",
+        "worker evidence",
+        "Use SQLite only.",
+        "last human constraint",
+    ]
+    .map(|marker| input.find(marker).expect("retained evidence"));
+    assert!(chronology.windows(2).all(|pair| pair[0] < pair[1]));
+    for input in request.body_json()["input"].as_array().unwrap() {
+        for content in input["content"].as_array().unwrap() {
+            assert!(content["text"].as_str().unwrap().len() < 9_000);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn memories_startup_phase2_v2_consolidates_without_a_handbook() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let mut memories = startup_test_memories_config();
+    memories.version = codex_protocol::MemoryVersion::V2;
+    memories.consolidation_service_tier = "flex".to_string();
+    let request = run_memory_phase_two_model_request_test(&server, home, memories).await?;
+    assert_eq!(request.body_json()["service_tier"], "flex");
     Ok(())
 }

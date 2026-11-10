@@ -61,7 +61,10 @@ mod tests {
             !dir.path().join("cpp_tools_helper.py").exists(),
             "legacy cpp_tools_helper.py should be removed"
         );
-        assert!(dir.path().join(HELPER_FILENAME).exists(), "new bridge written");
+        assert!(
+            dir.path().join(HELPER_FILENAME).exists(),
+            "new bridge written"
+        );
     }
 
     #[test]

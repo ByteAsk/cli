@@ -1,5 +1,7 @@
 use super::*;
 use codex_app_server_protocol::AuthRecoveryNotification;
+use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload as AppServerThreadItemPayload;
 use codex_otel::set_parent_from_w3c_trace_context;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::ActivePermissionProfile;
@@ -437,6 +439,7 @@ async fn resume_lookup_model_providers_filters_only_last_lookup() {
 #[test]
 fn turn_items_for_thread_returns_matching_turn_items() {
     let thread = AppServerThread {
+        environments: None,
         id: "thread-1".to_string(),
         extra: None,
         session_id: "thread-1".to_string(),
@@ -447,6 +450,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         section: None,
         section_entered_at: None,
         project_id: None,
+        daybreak_enabled: None,
         history_mode: Default::default(),
         model_provider: "openai".to_string(),
         model: None,
@@ -458,6 +462,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         path: None,
         cwd: test_path_buf("/tmp/project").abs(),
         cli_version: "0.0.0-test".to_string(),
+        originator: None,
         source: codex_app_server_protocol::SessionSource::Exec,
         can_accept_direct_input: None,
         thread_source: None,
@@ -468,15 +473,18 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         turns: vec![
             codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![AppServerThreadItem::AgentMessage {
-                    id: "msg-1".to_string(),
-                    text: "hello".to_string(),
-                    phase: None,
-                    memory_citation: None,
-                    delivery: None,
-                    questions: None,
-                }],
+                items: vec![ThreadItem::untimed(
+                    AppServerThreadItemPayload::AgentMessage {
+                        id: "msg-1".to_string(),
+                        text: "hello".to_string(),
+                        phase: None,
+                        memory_citation: None,
+                        delivery: None,
+                        questions: None,
+                    },
+                )],
                 status: codex_app_server_protocol::TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -485,11 +493,12 @@ fn turn_items_for_thread_returns_matching_turn_items() {
             },
             codex_app_server_protocol::Turn {
                 id: "turn-2".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![AppServerThreadItem::Plan {
+                items: vec![ThreadItem::untimed(AppServerThreadItemPayload::Plan {
                     id: "plan-1".to_string(),
                     text: "ship it".to_string(),
-                }],
+                })],
                 status: codex_app_server_protocol::TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -501,14 +510,16 @@ fn turn_items_for_thread_returns_matching_turn_items() {
 
     assert_eq!(
         turn_items_for_thread(&thread, "turn-1"),
-        Some(vec![AppServerThreadItem::AgentMessage {
-            id: "msg-1".to_string(),
-            text: "hello".to_string(),
-            phase: None,
-            memory_citation: None,
-            delivery: None,
-            questions: None,
-        }])
+        Some(vec![ThreadItem::untimed(
+            AppServerThreadItemPayload::AgentMessage {
+                id: "msg-1".to_string(),
+                text: "hello".to_string(),
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            }
+        )])
     );
     assert_eq!(turn_items_for_thread(&thread, "missing-turn"), None);
 }
@@ -520,6 +531,7 @@ fn should_backfill_turn_completed_items_backfills_persisted_summaries_only() {
             thread_id: "thread-1".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Summary,
                 items: Vec::new(),
                 status: codex_app_server_protocol::TurnStatus::Completed,
@@ -542,7 +554,14 @@ fn should_backfill_turn_completed_items_backfills_persisted_summaries_only() {
 
 #[test]
 fn canceled_mcp_server_elicitation_response_uses_cancel_action() {
-    let value = canceled_mcp_server_elicitation_response()
+    let request = serde_json::from_value(serde_json::json!({
+        "mode": "form",
+        "message": "Allow the tool call?",
+        "requestedSchema": { "type": "object", "properties": {} },
+        "_meta": { APPROVAL_KIND_KEY: APPROVAL_KIND_MCP_TOOL_CALL },
+    }))
+    .expect("valid MCP tool approval request");
+    let value = canceled_mcp_server_elicitation_response(&request)
         .expect("mcp elicitation cancel response should serialize");
     let response: McpServerElicitationRequestResponse =
         serde_json::from_value(value).expect("cancel response should deserialize");
@@ -552,7 +571,9 @@ fn canceled_mcp_server_elicitation_response_uses_cancel_action() {
         McpServerElicitationRequestResponse {
             action: McpServerElicitationAction::Cancel,
             content: None,
-            meta: None,
+            meta: Some(serde_json::json!({
+                CANCELLATION_REASON_KEY: McpApprovalCancellationReason::NonInteractive,
+            })),
         }
     );
 }
@@ -926,7 +947,10 @@ async fn session_configured_from_thread_response_preserves_parent_thread_id() {
 
 fn sample_thread_start_response() -> ThreadStartResponse {
     ThreadStartResponse {
+        disabled_plugin_ids: Vec::new(),
         thread: codex_app_server_protocol::Thread {
+            originator: None,
+            environments: None,
             id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
             extra: None,
             session_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
@@ -937,6 +961,7 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             section: None,
             section_entered_at: None,
             project_id: None,
+            daybreak_enabled: None,
             history_mode: Default::default(),
             model_provider: "openai".to_string(),
             model: None,

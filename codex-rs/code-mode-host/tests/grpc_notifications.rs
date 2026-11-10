@@ -113,6 +113,7 @@ fn text_response(
         content_items: vec![FunctionCallOutputContentItem::InputText {
             text: value.to_string(),
         }],
+        result_buffered_for: Duration::ZERO,
         error_text: None,
     }
 }
@@ -120,10 +121,11 @@ fn text_response(
 async fn execute(
     session: &Arc<dyn CodeModeSession>,
     request: ExecuteRequest,
+    delegate: Arc<dyn CodeModeSessionDelegate>,
 ) -> Result<RuntimeResponse> {
     timeout(TEST_TIMEOUT, async {
         session
-            .execute(request)
+            .execute(request, delegate.clone(), /*preempt*/ None)
             .await
             .map_err(anyhow::Error::msg)?
             .initial_response()
@@ -140,13 +142,19 @@ async fn completed_cells_drain_pending_notifications_before_completion() -> Resu
     let provider = GrpcCodeModeSessionProvider::new(host.endpoint);
     let delegate = Arc::new(BlockingNotificationDelegate::new());
     let session = provider
-        .create_session(delegate.clone())
+        .create_session()
         .await
         .map_err(anyhow::Error::msg)?;
 
     let executing = Arc::clone(&session);
+    let execution_delegate = delegate.clone();
     let completion = tokio::spawn(async move {
-        execute(&executing, request(r#"notify("notice"); text("done");"#)).await
+        execute(
+            &executing,
+            request(r#"notify("notice"); text("done");"#),
+            execution_delegate,
+        )
+        .await
     });
     timeout(TEST_TIMEOUT, delegate.started.acquire())
         .await
@@ -171,7 +179,12 @@ async fn completed_cells_drain_pending_notifications_before_completion() -> Resu
         .context("completed cell was not retired")??
         .forget();
 
-    let actual = execute(&session, request(r#"text("still alive");"#)).await?;
+    let actual = execute(
+        &session,
+        request(r#"text("still alive");"#),
+        delegate.clone(),
+    )
+    .await?;
     assert_eq!(
         actual,
         text_response("2", "still alive", actual.code_mode_host_duration())
@@ -187,11 +200,14 @@ async fn completed_waits_drain_pending_notifications_before_returning() -> Resul
     let provider = GrpcCodeModeSessionProvider::new(host.endpoint);
     let delegate = Arc::new(BlockingNotificationDelegate::new());
     let session = provider
-        .create_session(delegate.clone())
+        .create_session()
         .await
         .map_err(anyhow::Error::msg)?;
     let pending = request(r#"yield_control(); notify("notice"); text("done");"#);
-    let cell = session.execute(pending).await.map_err(anyhow::Error::msg)?;
+    let cell = session
+        .execute(pending, delegate.clone(), /*preempt*/ None)
+        .await
+        .map_err(anyhow::Error::msg)?;
     let actual = cell.initial_response().await.map_err(anyhow::Error::msg)?;
     assert_eq!(
         actual,
@@ -205,10 +221,14 @@ async fn completed_waits_drain_pending_notifications_before_returning() -> Resul
     let waiting = Arc::clone(&session);
     let completion = tokio::spawn(async move {
         waiting
-            .wait(WaitRequest {
-                cell_id: cell_id("1"),
-                yield_time_ms: 5_000,
-            })
+            .wait(
+                WaitRequest {
+                    cell_id: cell_id("1"),
+                    yield_time_ms: 5_000,
+                    max_output_tokens: None,
+                },
+                /*preempt*/ None,
+            )
             .await
             .map_err(anyhow::Error::msg)
     });
@@ -229,6 +249,7 @@ async fn completed_waits_drain_pending_notifications_before_returning() -> Resul
             content_items: vec![FunctionCallOutputContentItem::InputText {
                 text: "done".to_string(),
             }],
+            result_buffered_for: actual.result_buffered_for().unwrap(),
             error_text: None,
         })
     );
@@ -248,12 +269,15 @@ async fn termination_cancels_pending_notifications() -> Result<()> {
     let provider = GrpcCodeModeSessionProvider::new(host.endpoint);
     let delegate = Arc::new(BlockingNotificationDelegate::new());
     let session = provider
-        .create_session(delegate.clone())
+        .create_session()
         .await
         .map_err(anyhow::Error::msg)?;
     let mut pending = request(r#"notify("notice"); await new Promise(() => {});"#);
     pending.yield_time_ms = Some(/*value*/ 1);
-    let cell = session.execute(pending).await.map_err(anyhow::Error::msg)?;
+    let cell = session
+        .execute(pending, delegate.clone(), /*preempt*/ None)
+        .await
+        .map_err(anyhow::Error::msg)?;
 
     timeout(TEST_TIMEOUT, delegate.started.acquire())
         .await
@@ -269,7 +293,7 @@ async fn termination_cancels_pending_notifications() -> Result<()> {
         }
     );
     let actual = session
-        .terminate(cell_id("1"))
+        .terminate(cell_id("1").into())
         .await
         .map_err(anyhow::Error::msg)?;
     assert_eq!(
@@ -299,13 +323,14 @@ async fn oversized_notification_text_is_delivered_unchanged() -> Result<()> {
     let provider = GrpcCodeModeSessionProvider::new(host.endpoint);
     let delegate = Arc::new(RecordingDelegate::default());
     let session = provider
-        .create_session(delegate.clone())
+        .create_session()
         .await
         .map_err(anyhow::Error::msg)?;
 
     let actual = execute(
         &session,
         request(r#"notify("🦀".repeat(512)); text("done");"#),
+        delegate.clone(),
     )
     .await?;
     assert_eq!(

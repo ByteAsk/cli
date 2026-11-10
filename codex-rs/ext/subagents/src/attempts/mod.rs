@@ -234,8 +234,12 @@ impl Orchestration {
     /// Stop the attempts phase: cancel its work and interrupt running attempt/judge children.
     pub(crate) async fn stop_attempt_children(&self) {
         self.attempts.cancel.cancel();
-        let live: Vec<Arc<dyn ChildHandle>> =
-            self.attempts.live.lock().map(|l| l.clone()).unwrap_or_default();
+        let live: Vec<Arc<dyn ChildHandle>> = self
+            .attempts
+            .live
+            .lock()
+            .map(|l| l.clone())
+            .unwrap_or_default();
         for h in live {
             h.interrupt().await;
             h.shutdown().await;
@@ -243,14 +247,19 @@ impl Orchestration {
     }
 
     /// Let a still-running independent test writer finish within a short grace, then stop it.
-    async fn settle_writer(&self, budget: &Budget, settings: &AttemptsSettings) -> Option<ReproOutcome> {
+    async fn settle_writer(
+        &self,
+        budget: &Budget,
+        settings: &AttemptsSettings,
+    ) -> Option<ReproOutcome> {
         let launcher = self.inner.lock().await.launcher.take();
         if let Some(l) = launcher {
             let _ = l.await;
         }
         let task = self.inner.lock().await.repro_task.take();
         if let Some(mut task) = task {
-            let grace = Duration::from_secs(settings.writer_grace_secs).min(budget.left(Instant::now()) / 4);
+            let grace = Duration::from_secs(settings.writer_grace_secs)
+                .min(budget.left(Instant::now()) / 4);
             let outcome = match tokio::time::timeout(grace, &mut task).await {
                 Ok(result) => result.unwrap_or_default(),
                 Err(_) => {
@@ -298,7 +307,8 @@ impl Orchestration {
 
         // Attempt 1: the root's change in the real tree.
         let tmp = self.scratch.join("tmp");
-        let root_tree = match gitops::capture_tree(&self.p.repo, &self.snapshot.commit, &tmp).await {
+        let root_tree = match gitops::capture_tree(&self.p.repo, &self.snapshot.commit, &tmp).await
+        {
             Ok(tree) => tree,
             Err(e) => {
                 rep.stopped = format!("cannot read the root's change ({e}); it is kept");
@@ -350,7 +360,8 @@ impl Orchestration {
         } else if root_diff.is_empty() {
             TestEvidence::NotRun("the change is empty".to_string())
         } else {
-            self.open_bench(&mut bench, reuse.clone(), &budget, jobs).await;
+            self.open_bench(&mut bench, reuse.clone(), &budget, jobs)
+                .await;
             match bench.as_mut() {
                 None => TestEvidence::NotRun("no evaluation worktree".to_string()),
                 Some(b) => {
@@ -372,7 +383,9 @@ impl Orchestration {
                     } else if !failed.is_empty() {
                         TestEvidence::Failed(failed)
                     } else {
-                        TestEvidence::NotRun("the qualified tests could not be built or run".to_string())
+                        TestEvidence::NotRun(
+                            "the qualified tests could not be built or run".to_string(),
+                        )
                     }
                 }
             }
@@ -428,7 +441,9 @@ impl Orchestration {
                         break;
                     }
                 };
-                let (run, cand, test) = self.run_attempt(k, child_deadline, &settings, &root_tree, &noise).await;
+                let (run, cand, test) = self
+                    .run_attempt(k, child_deadline, &settings, &root_tree, &noise)
+                    .await;
                 rep.attempts.push(run);
                 cands.push(cand);
                 if let Some(t) = test {
@@ -439,8 +454,18 @@ impl Orchestration {
                     .iter()
                     .filter_map(|a| a.report.clone().map(|r| (a.attempt, r)))
                     .collect();
-                self.evaluate_pool(&mut bench, reuse.clone(), &budget, jobs, &cands, &tests, &mut evals, &repro, &reports)
-                    .await;
+                self.evaluate_pool(
+                    &mut bench,
+                    reuse.clone(),
+                    &budget,
+                    jobs,
+                    &cands,
+                    &tests,
+                    &mut evals,
+                    &repro,
+                    &reports,
+                )
+                .await;
                 if self.attempts.cancel.is_cancelled() {
                     rep.stopped = "cancelled".to_string();
                     break;
@@ -450,10 +475,15 @@ impl Orchestration {
                     break;
                 }
                 if mode == AttemptsMode::Adaptive {
-                    let pooled = bench.as_ref().map(|b| b.pooled(&tests, &list(&evals))).unwrap_or_default();
+                    let pooled = bench
+                        .as_ref()
+                        .map(|b| b.pooled(&tests, &list(&evals)))
+                        .unwrap_or_default();
                     let (disagree, reason) = selector::disagreement(&list(&evals), &pooled);
-                    self.event(format!("attempts: after attempt {k}: disagree = {disagree} ({reason})"))
-                        .await;
+                    self.event(format!(
+                        "attempts: after attempt {k}: disagree = {disagree} ({reason})"
+                    ))
+                    .await;
                     rep.escalations.push(Escalation {
                         after_attempt: k,
                         disagree,
@@ -471,8 +501,12 @@ impl Orchestration {
         // Select and apply (only when there is more than one candidate).
         if cands.len() > 1 && !self.attempts.cancel.is_cancelled() {
             let evals_list = list(&evals);
-            let pooled = bench.as_ref().map(|b| b.pooled(&tests, &evals_list)).unwrap_or_default();
-            let diffs: BTreeMap<usize, Vec<u8>> = cands.iter().map(|c| (c.attempt, c.diff.clone())).collect();
+            let pooled = bench
+                .as_ref()
+                .map(|b| b.pooled(&tests, &evals_list))
+                .unwrap_or_default();
+            let diffs: BTreeMap<usize, Vec<u8>> =
+                cands.iter().map(|c| (c.attempt, c.diff.clone())).collect();
             let use_judge = settings.judge && budget.left(Instant::now()) > Duration::from_secs(60);
             let judge = RealJudge {
                 orch: self.clone(),
@@ -496,8 +530,11 @@ impl Orchestration {
                 rep.applied = applied;
                 rep.apply_note = note;
             }
-            self.event(format!("attempts: applied attempt {}: {}", rep.applied, rep.apply_note))
-                .await;
+            self.event(format!(
+                "attempts: applied attempt {}: {}",
+                rep.applied, rep.apply_note
+            ))
+            .await;
             rep.selection = Some(selection);
             rep.pooled = pooled;
         } else if rep.apply_note.is_empty() {
@@ -526,10 +563,17 @@ impl Orchestration {
             .iter()
             .map(|a| {
                 let state = a.state.as_ref().map_or_else(
-                    || a.spawn_error.clone().unwrap_or_else(|| "not started".to_string()),
+                    || {
+                        a.spawn_error
+                            .clone()
+                            .unwrap_or_else(|| "not started".to_string())
+                    },
                     short_state,
                 );
-                format!("{}: {state}, {}s, {} tokens", a.attempt, a.elapsed_secs, a.tokens)
+                format!(
+                    "{}: {state}, {}s, {} tokens",
+                    a.attempt, a.elapsed_secs, a.tokens
+                )
             })
             .collect();
         rep.summary = format!(
@@ -543,7 +587,9 @@ impl Orchestration {
                 .as_ref()
                 .and_then(|s| s.winner)
                 .map_or_else(|| "-".to_string(), |w| w.to_string()),
-            rep.selection.as_ref().map_or("no selection", |s| s.reason.as_str()),
+            rep.selection
+                .as_ref()
+                .map_or("no selection", |s| s.reason.as_str()),
             rep.applied,
             rep.apply_note,
             rep.tokens_total,
@@ -556,11 +602,26 @@ impl Orchestration {
         }
     }
 
-    async fn open_bench(&self, bench: &mut Option<Bench>, reuse: Option<std::path::PathBuf>, budget: &Budget, jobs: usize) {
+    async fn open_bench(
+        &self,
+        bench: &mut Option<Bench>,
+        reuse: Option<std::path::PathBuf>,
+        budget: &Budget,
+        jobs: usize,
+    ) {
         if bench.is_some() {
             return;
         }
-        match Bench::open(&self.p.repo, &self.snapshot, &self.scratch, reuse, self.attempts_ctx(budget), jobs).await {
+        match Bench::open(
+            &self.p.repo,
+            &self.snapshot,
+            &self.scratch,
+            reuse,
+            self.attempts_ctx(budget),
+            jobs,
+        )
+        .await
+        {
             Ok(b) => {
                 self.event(format!(
                     "attempts: evaluation worktree {} (writer's reused: {})",
@@ -571,7 +632,8 @@ impl Orchestration {
                 *bench = Some(b);
             }
             Err(e) => {
-                self.event(format!("attempts: no evaluation worktree ({e})")).await;
+                self.event(format!("attempts: no evaluation worktree ({e})"))
+                    .await;
             }
         }
     }
@@ -583,12 +645,18 @@ impl Orchestration {
         }
         let used = meter::sum(&self.attempts.children());
         if used >= settings.max_tokens {
-            return Err(format!("token cap reached ({used} of {})", settings.max_tokens));
+            return Err(format!(
+                "token cap reached ({used} of {})",
+                settings.max_tokens
+            ));
         }
         if let Some(free) = meter::free_bytes(&self.scratch)
             && free < MIN_FREE_BYTES
         {
-            return Err(format!("only {} MB of free disk for a new worktree", free >> 20));
+            return Err(format!(
+                "only {} MB of free disk for a new worktree",
+                free >> 20
+            ));
         }
         for _ in 0..12 {
             match meter::mem_headroom() {
@@ -655,7 +723,8 @@ impl Orchestration {
         let handle = match spawned {
             Ok(h) => h,
             Err(e) => {
-                self.event(format!("attempts: attempt {k} failed to start: {e}")).await;
+                self.event(format!("attempts: attempt {k} failed to start: {e}"))
+                    .await;
                 run.spawn_error = Some(e);
                 cand.disqualified = Some("could not start".to_string());
                 gitops::worktree_remove(&self.p.repo, &dir).await;
@@ -670,10 +739,18 @@ impl Orchestration {
         }
         self.attempts.add_live(handle.clone());
         let counter = self.counters.register(&id);
-        self.event(format!("attempts: attempt {k} started ({id}, high effort: {high_effort})"))
-            .await;
+        self.event(format!(
+            "attempts: attempt {k} started ({id}, high effort: {high_effort})"
+        ))
+        .await;
         let (state, stopped) = self
-            .wait_child_capped(&handle, deadline, &counter, settings.child_max_steps, settings.max_tokens)
+            .wait_child_capped(
+                &handle,
+                deadline,
+                &counter,
+                settings.child_max_steps,
+                settings.max_tokens,
+            )
             .await;
         self.counters.unregister(&id);
         handle.shutdown().await;
@@ -684,7 +761,10 @@ impl Orchestration {
         self.event(format!(
             "attempts: attempt {k} finished: {}{}",
             short_state(&state),
-            stopped.as_deref().map(|s| format!(" ({s})")).unwrap_or_default()
+            stopped
+                .as_deref()
+                .map(|s| format!(" ({s})"))
+                .unwrap_or_default()
         ))
         .await;
         run.state = Some(state);
@@ -692,7 +772,9 @@ impl Orchestration {
 
         // Its change: the fix (new tests split off) and its tests.
         let tmp = self.scratch.join("tmp");
-        let full = gitops::candidate_diff(&dir, &self.snapshot, &tmp).await.unwrap_or_default();
+        let full = gitops::candidate_diff(&dir, &self.snapshot, &tmp)
+            .await
+            .unwrap_or_default();
         let (fix, split_off) = patches::split_tests(&patches::drop_paths(&full, noise));
         let saved = std::fs::read(&tests_patch).unwrap_or_default();
         let test_patch = if saved.is_empty() { split_off } else { saved };
@@ -705,14 +787,16 @@ impl Orchestration {
         }
         gitops::worktree_remove(&self.p.repo, &dir).await;
         let test = run.report.as_ref().and_then(|r| {
-            (!test_patch.is_empty() && !r.run.trim().is_empty() && !r.build.trim().is_empty()).then(|| TestPatch {
-                id: format!("attempt-{k}"),
-                author: Author::Attempt(k),
-                patch: test_patch.clone(),
-                build: r.build.clone(),
-                run: r.run.clone(),
-                prequalified: false,
-            })
+            (!test_patch.is_empty() && !r.run.trim().is_empty() && !r.build.trim().is_empty()).then(
+                || TestPatch {
+                    id: format!("attempt-{k}"),
+                    author: Author::Attempt(k),
+                    patch: test_patch.clone(),
+                    build: r.build.clone(),
+                    run: r.run.clone(),
+                    prequalified: false,
+                },
+            )
         });
         run.elapsed_secs = started.elapsed().as_secs();
         (run, cand, test)
@@ -768,13 +852,22 @@ impl Orchestration {
     /// Attempts must not touch the real repository. If the real tree changed on paths the
     /// attempt's change touches (or the attempt left its worktree unchanged), the real tree is
     /// restored and the attempt disqualified. Returns why.
-    async fn guard_real_tree(&self, root_tree: &str, attempt_diff: &[u8], noise: &BTreeSet<String>) -> Option<String> {
+    async fn guard_real_tree(
+        &self,
+        root_tree: &str,
+        attempt_diff: &[u8],
+        noise: &BTreeSet<String>,
+    ) -> Option<String> {
         let tmp = self.scratch.join("tmp");
-        let now = gitops::capture_tree(&self.p.repo, &self.snapshot.commit, &tmp).await.ok()?;
+        let now = gitops::capture_tree(&self.p.repo, &self.snapshot.commit, &tmp)
+            .await
+            .ok()?;
         if now == root_tree {
             return None;
         }
-        let delta = gitops::diff_trees(&self.p.repo, root_tree, &now).await.ok()?;
+        let delta = gitops::diff_trees(&self.p.repo, root_tree, &now)
+            .await
+            .ok()?;
         let changed: BTreeSet<String> = gitops::changed_paths(&delta)
             .into_iter()
             .map(|(p, _)| p)
@@ -783,7 +876,10 @@ impl Orchestration {
         if changed.is_empty() {
             return None;
         }
-        let own: BTreeSet<String> = gitops::changed_paths(attempt_diff).into_iter().map(|(p, _)| p).collect();
+        let own: BTreeSet<String> = gitops::changed_paths(attempt_diff)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
         if !attempt_diff.is_empty() && changed.is_disjoint(&own) {
             self.event(format!(
                 "attempts: the real tree changed outside the attempt's files ({}); left as is",
@@ -792,8 +888,12 @@ impl Orchestration {
             .await;
             return None;
         }
-        let back = gitops::diff_trees(&self.p.repo, &now, root_tree).await.ok()?;
-        let restored = gitops::apply(&self.p.repo, &back, false, false).await.is_ok();
+        let back = gitops::diff_trees(&self.p.repo, &now, root_tree)
+            .await
+            .ok()?;
+        let restored = gitops::apply(&self.p.repo, &back, false, false)
+            .await
+            .is_ok();
         let why = format!(
             "changed the real repository ({}); restored: {restored}",
             changed.iter().cloned().collect::<Vec<_>>().join(", ")
@@ -804,7 +904,13 @@ impl Orchestration {
 
     /// Build recipes in order of trust: explicit settings, the independent writer's report,
     /// the attempts' reports, detection from the layout.
-    fn recipes(&self, repro: &Option<ReproOutcome>, cands: &[Cand], reports: &BTreeMap<usize, SubagentReport>, root: &Path) -> Vec<Recipe> {
+    fn recipes(
+        &self,
+        repro: &Option<ReproOutcome>,
+        cands: &[Cand],
+        reports: &BTreeMap<usize, SubagentReport>,
+        root: &Path,
+    ) -> Vec<Recipe> {
         let s = &self.p.settings;
         let mut out: Vec<Recipe> = Vec::new();
         let from_report = |r: &SubagentReport, source: String| Recipe {
@@ -819,7 +925,11 @@ impl Orchestration {
                 source: "settings".to_string(),
             });
         }
-        if let Some(r) = repro.as_ref().and_then(|r| r.report.as_ref()).filter(|r| r.has_recipe()) {
+        if let Some(r) = repro
+            .as_ref()
+            .and_then(|r| r.report.as_ref())
+            .filter(|r| r.has_recipe())
+        {
             out.push(from_report(r, "independent test writer".to_string()));
         }
         for c in cands {
@@ -914,21 +1024,43 @@ impl Orchestration {
     /// Put the winner's change into the real tree in place of the root's: one `git apply` of
     /// the difference between the current tree and "snapshot + winner", built without a work
     /// tree. On any failure the root's change stays.
-    async fn apply_winner(&self, winner: usize, diffs: &BTreeMap<usize, Vec<u8>>, noise: &BTreeSet<String>) -> (usize, String) {
+    async fn apply_winner(
+        &self,
+        winner: usize,
+        diffs: &BTreeMap<usize, Vec<u8>>,
+        noise: &BTreeSet<String>,
+    ) -> (usize, String) {
         if winner == 1 {
             return (1, "the root's own change is kept".to_string());
         }
         let Some(diff) = diffs.get(&winner) else {
-            return (1, "the winner has no change; the root's is kept".to_string());
+            return (
+                1,
+                "the winner has no change; the root's is kept".to_string(),
+            );
         };
         let tmp = self.scratch.join("tmp");
-        let target = match patches::tree_with_patch(&self.p.repo, &self.snapshot.tree, diff, &tmp).await {
+        let target = match patches::tree_with_patch(&self.p.repo, &self.snapshot.tree, diff, &tmp)
+            .await
+        {
             Ok(t) => t,
-            Err(e) => return (1, format!("the winner's change does not apply to the snapshot ({e}); the root's is kept")),
+            Err(e) => {
+                return (
+                    1,
+                    format!(
+                        "the winner's change does not apply to the snapshot ({e}); the root's is kept"
+                    ),
+                );
+            }
         };
         let current = match gitops::capture_tree(&self.p.repo, &self.snapshot.commit, &tmp).await {
             Ok(t) => t,
-            Err(e) => return (1, format!("cannot read the real tree ({e}); the root's change is kept")),
+            Err(e) => {
+                return (
+                    1,
+                    format!("cannot read the real tree ({e}); the root's change is kept"),
+                );
+            }
         };
         // Files untracked at session start keep whatever state the session left them in.
         let delta = match gitops::diff_trees(&self.p.repo, &current, &target).await {
@@ -936,13 +1068,23 @@ impl Orchestration {
             Err(e) => return (1, format!("cannot diff ({e}); the root's change is kept")),
         };
         if let Err(e) = gitops::apply(&self.p.repo, &delta, false, true).await {
-            return (1, format!("the switch does not apply cleanly ({e}); the root's change is kept"));
+            return (
+                1,
+                format!("the switch does not apply cleanly ({e}); the root's change is kept"),
+            );
         }
         if let Err(e) = gitops::apply(&self.p.repo, &delta, false, false).await {
-            return (1, format!("applying the switch failed ({e}); the root's change is kept"));
+            return (
+                1,
+                format!("applying the switch failed ({e}); the root's change is kept"),
+            );
         }
-        let after = gitops::capture_tree(&self.p.repo, &self.snapshot.commit, &tmp).await.unwrap_or_default();
-        let rest = gitops::diff_trees(&self.p.repo, &after, &target).await.unwrap_or_default();
+        let after = gitops::capture_tree(&self.p.repo, &self.snapshot.commit, &tmp)
+            .await
+            .unwrap_or_default();
+        let rest = gitops::diff_trees(&self.p.repo, &after, &target)
+            .await
+            .unwrap_or_default();
         let matches = patches::drop_paths(&rest, noise).is_empty();
         (
             winner,
@@ -1023,10 +1165,16 @@ impl RealJudge {
 }
 
 impl Judge for RealJudge {
-    fn compare<'a>(&'a self, first: &'a CandidateEval, second: &'a CandidateEval) -> JudgeFuture<'a> {
+    fn compare<'a>(
+        &'a self,
+        first: &'a CandidateEval,
+        second: &'a CandidateEval,
+    ) -> JudgeFuture<'a> {
         Box::pin(async move {
             let orch = &self.orch;
-            if orch.attempts.cancel.is_cancelled() || meter::sum(&orch.attempts.children()) >= self.max_tokens {
+            if orch.attempts.cancel.is_cancelled()
+                || meter::sum(&orch.attempts.children()) >= self.max_tokens
+            {
                 return None;
             }
             let deadline = (Instant::now() + JUDGE_BUDGET).min(self.budget.attempts_end());
@@ -1060,7 +1208,13 @@ impl Judge for RealJudge {
             orch.attempts.add_live(handle.clone());
             let counter = orch.counters.register(&id);
             let (state, _) = orch
-                .wait_child_capped(&handle, deadline, &counter, JUDGE_MAX_STEPS, self.max_tokens)
+                .wait_child_capped(
+                    &handle,
+                    deadline,
+                    &counter,
+                    JUDGE_MAX_STEPS,
+                    self.max_tokens,
+                )
                 .await;
             orch.counters.unregister(&id);
             handle.shutdown().await;

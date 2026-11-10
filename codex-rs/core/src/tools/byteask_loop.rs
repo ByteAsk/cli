@@ -56,7 +56,13 @@ pub(crate) fn stable_part(output: &str) -> String {
 
 /// Record one finished call. Returns how many times IN A ROW this exact call has now
 /// returned this exact output (1 for the first time).
-fn record(state: &mut HashMap<String, Last>, thread: &str, tool: &str, args: &str, output: &str) -> u32 {
+fn record(
+    state: &mut HashMap<String, Last>,
+    thread: &str,
+    tool: &str,
+    args: &str,
+    output: &str,
+) -> u32 {
     if state.len() >= MAX_THREADS && !state.contains_key(thread) {
         state.clear();
     }
@@ -66,7 +72,11 @@ fn record(state: &mut HashMap<String, Last>, thread: &str, tool: &str, args: &st
     if last.key == key && last.output == out {
         last.count += 1;
     } else {
-        *last = Last { key, output: out, count: 1 };
+        *last = Last {
+            key,
+            output: out,
+            count: 1,
+        };
     }
     last.count
 }
@@ -99,10 +109,14 @@ pub(crate) fn observe(thread: &str, tool: &str, args: &str, item: &mut ResponseI
     if tool == "write_stdin" || !byteask_output_reducers::policy::active().flag("loop_nudge") {
         return;
     }
-    let Some(text) = output_text(item) else { return };
+    let Some(text) = output_text(item) else {
+        return;
+    };
     static STATE: OnceLock<Mutex<HashMap<String, Last>>> = OnceLock::new();
     let count = {
-        let Ok(mut state) = STATE.get_or_init(Default::default).lock() else { return };
+        let Ok(mut state) = STATE.get_or_init(Default::default).lock() else {
+            return;
+        };
         record(&mut state, thread, tool, args, &stable_part(&text))
     };
     if count >= NUDGE_FROM {
@@ -114,13 +128,19 @@ pub(crate) fn observe(thread: &str, tool: &str, args: &str, item: &mut ResponseI
 /// get the two terminal-equivalent transforms and nothing else; the original is spilled
 /// under the call id. Built-in tools, file reads, patches, images and ByteAsk's own
 /// extension tools have no namespace and are never touched here.
-pub(crate) fn reduce_namespaced_output(namespace: Option<&str>, call_id: &str, item: &mut ResponseItem) {
+pub(crate) fn reduce_namespaced_output(
+    namespace: Option<&str>,
+    call_id: &str,
+    item: &mut ResponseItem,
+) {
     let Some(namespace) = namespace else { return };
     if namespace == "collaboration" {
         return;
     }
     let policy = byteask_output_reducers::policy::active();
-    let ResponseItem::FunctionCallOutput { output, .. } = item else { return };
+    let ResponseItem::FunctionCallOutput { output, .. } = item else {
+        return;
+    };
     // MCP results arrive as a LIST of text parts, not one string (the shape that made an
     // earlier project compress nothing on real traffic). Handle both.
     match &mut output.body {
@@ -137,10 +157,13 @@ pub(crate) fn reduce_namespaced_output(namespace: Option<&str>, call_id: &str, i
             let mut fired: Vec<&'static str> = Vec::new();
             let mut replaced: Vec<(usize, String)> = Vec::new();
             for (index, part) in items.iter().enumerate() {
-                let FunctionCallOutputContentItem::InputText { text } = part else { continue };
+                let FunctionCallOutputContentItem::InputText { text } = part else {
+                    continue;
+                };
                 original.push_str(text);
                 original.push('\n');
-                let reduced = byteask_output_reducers::reduce_terminal(text, policy.ansi, policy.cr);
+                let reduced =
+                    byteask_output_reducers::reduce_terminal(text, policy.ansi, policy.cr);
                 if reduced.changed() {
                     for name in reduced.fired {
                         if !fired.contains(&name) {
@@ -170,11 +193,15 @@ fn namespaced_footer(notes: &str, call_id: &str, original: &[u8]) -> String {
 }
 
 fn append(item: &mut ResponseItem, line: &str) {
-    let ResponseItem::FunctionCallOutput { output, .. } = item else { return };
+    let ResponseItem::FunctionCallOutput { output, .. } = item else {
+        return;
+    };
     match &mut output.body {
         FunctionCallOutputBody::Text(t) => t.push_str(line),
         FunctionCallOutputBody::ContentItems(items) => {
-            items.push(FunctionCallOutputContentItem::InputText { text: line.trim_start().to_string() });
+            items.push(FunctionCallOutputContentItem::InputText {
+                text: line.trim_start().to_string(),
+            });
         }
     }
 }
@@ -192,13 +219,25 @@ mod tests {
         assert_eq!(record(&mut s, "t", "exec", "{\"cmd\":\"make\"}", "err"), 3);
         assert_eq!(record(&mut s, "t", "exec", "{\"cmd\":\"make\"}", "err"), 4);
         // The output changed: progress was made, start again.
-        assert_eq!(record(&mut s, "t", "exec", "{\"cmd\":\"make\"}", "different"), 1);
+        assert_eq!(
+            record(&mut s, "t", "exec", "{\"cmd\":\"make\"}", "different"),
+            1
+        );
         // Any other call in between resets it (it may have changed state).
-        assert_eq!(record(&mut s, "t", "exec", "{\"cmd\":\"make\"}", "different"), 2);
+        assert_eq!(
+            record(&mut s, "t", "exec", "{\"cmd\":\"make\"}", "different"),
+            2
+        );
         assert_eq!(record(&mut s, "t", "apply_patch", "p", "ok"), 1);
-        assert_eq!(record(&mut s, "t", "exec", "{\"cmd\":\"make\"}", "different"), 1);
+        assert_eq!(
+            record(&mut s, "t", "exec", "{\"cmd\":\"make\"}", "different"),
+            1
+        );
         // Threads are independent.
-        assert_eq!(record(&mut s, "other", "exec", "{\"cmd\":\"make\"}", "different"), 1);
+        assert_eq!(
+            record(&mut s, "other", "exec", "{\"cmd\":\"make\"}", "different"),
+            1
+        );
     }
 
     fn output_item(text: &str) -> ResponseItem {
@@ -217,10 +256,17 @@ mod tests {
 
     #[test]
     fn only_namespaced_tools_are_reduced_and_only_terminal_equivalently() {
-        let coloured = format!("\u{1b}[32mok\u{1b}[0m done\n{}", "row of plain text\n".repeat(60));
+        let coloured = format!(
+            "\u{1b}[32mok\u{1b}[0m done\n{}",
+            "row of plain text\n".repeat(60)
+        );
         let mut builtin = output_item(&coloured);
         reduce_namespaced_output(None, "call_a", &mut builtin);
-        assert_eq!(output_text(&builtin).unwrap(), coloured, "no namespace: untouched");
+        assert_eq!(
+            output_text(&builtin).unwrap(),
+            coloured,
+            "no namespace: untouched"
+        );
 
         let mut mcp = output_item(&coloured);
         reduce_namespaced_output(Some("github"), "call_b", &mut mcp);
@@ -236,8 +282,12 @@ mod tests {
             namespace: None,
             output: codex_protocol::models::FunctionCallOutputPayload {
                 body: FunctionCallOutputBody::ContentItems(vec![
-                    FunctionCallOutputContentItem::InputText { text: "Wall time: 0.01 seconds\nOutput:".to_string() },
-                    FunctionCallOutputContentItem::InputText { text: coloured.clone() },
+                    FunctionCallOutputContentItem::InputText {
+                        text: "Wall time: 0.01 seconds\nOutput:".to_string(),
+                    },
+                    FunctionCallOutputContentItem::InputText {
+                        text: coloured.clone(),
+                    },
                 ]),
                 success: Some(true),
             },
@@ -245,7 +295,10 @@ mod tests {
         };
         reduce_namespaced_output(Some("colour"), "call_d", &mut listed);
         let text = output_text(&listed).unwrap();
-        assert!(!text.contains('\u{1b}'), "escape codes survived in a list-shaped output");
+        assert!(
+            !text.contains('\u{1b}'),
+            "escape codes survived in a list-shaped output"
+        );
         assert!(text.contains("ok done"));
         assert!(byteask_output_reducers::is_reduced(&text));
 
@@ -260,11 +313,17 @@ mod tests {
         let a = "Chunk ID: 11cf70\nWall time: 0.0012 seconds\nProcess exited with code 1\nOutput:\ncat: x: No such file";
         let b = "Chunk ID: 9a02be\nWall time: 0.0034 seconds\nProcess exited with code 1\nOutput:\ncat: x: No such file";
         assert_eq!(stable_part(a), stable_part(b));
-        assert_eq!(stable_part("[exit 1 | 0.0s]\nboom"), stable_part("[exit 1 | 0.3s]\nboom"));
+        assert_eq!(
+            stable_part("[exit 1 | 0.0s]\nboom"),
+            stable_part("[exit 1 | 0.3s]\nboom")
+        );
         // A different exit code or different text is a different result.
         let c = a.replace("code 1", "code 0");
         assert_ne!(stable_part(a), stable_part(&c));
-        assert_ne!(stable_part(a), stable_part(&a.replace("No such file", "Permission denied")));
+        assert_ne!(
+            stable_part(a),
+            stable_part(&a.replace("No such file", "Permission denied"))
+        );
     }
 
     #[test]

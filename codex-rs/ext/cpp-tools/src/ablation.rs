@@ -35,7 +35,9 @@ pub(crate) const GUIDANCE_FILE_ENV: &str = "BYTEASK_CPP_GUIDANCE_FILE";
 
 /// The guidance text from [`GUIDANCE_FILE_ENV`], read from the environment `env` describes:
 /// `None` when it is unset, empty, or not a readable UTF-8 file.
-pub(crate) fn guidance_override(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<String> {
+pub(crate) fn guidance_override(
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<String> {
     let path = env(GUIDANCE_FILE_ENV).filter(|path| !path.is_empty())?;
     std::fs::read_to_string(path).ok()
 }
@@ -112,7 +114,11 @@ impl Ablation {
     pub(crate) fn parse(value: &str) -> (Self, Vec<String>) {
         let mut off = BTreeSet::new();
         let mut unknown = Vec::new();
-        for name in value.split(',').map(str::trim).filter(|name| !name.is_empty()) {
+        for name in value
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
             match PARTS.iter().find(|part| **part == name) {
                 Some(part) => {
                     off.insert(*part);
@@ -208,10 +214,21 @@ mod tests {
             guidance_override(env(Some(file.clone()))).as_deref(),
             Some("Alternative guidance for an eval arm.")
         );
-        assert_eq!(guidance_override(env(None)), None, "unset = the approved text");
-        assert_eq!(guidance_override(env(Some(dir.path().join("missing")))), None);
+        assert_eq!(
+            guidance_override(env(None)),
+            None,
+            "unset = the approved text"
+        );
+        assert_eq!(
+            guidance_override(env(Some(dir.path().join("missing")))),
+            None
+        );
         std::fs::write(&file, [0xff_u8, 0xfe, 0x00]).expect("write");
-        assert_eq!(guidance_override(env(Some(file))), None, "not UTF-8 = the approved text");
+        assert_eq!(
+            guidance_override(env(Some(file))),
+            None,
+            "not UTF-8 = the approved text"
+        );
     }
 
     #[test]
@@ -223,7 +240,10 @@ mod tests {
         ablation.apply(&mut settings);
         assert_eq!(settings, GateSettings::default());
         assert!(!ablation.tool_off("cpp_test_select"));
-        assert_eq!(ablation.guidance("a\ncpp_test_select b"), "a\ncpp_test_select b");
+        assert_eq!(
+            ablation.guidance("a\ncpp_test_select b"),
+            "a\ncpp_test_select b"
+        );
     }
 
     #[test]
@@ -261,6 +281,9 @@ mod tests {
             assert!(PARTS.contains(part) && PARTS.contains(needs));
         }
         let (gate_off, _) = Ablation::parse("gate");
-        assert_eq!(gate_off.implied(), vec!["gate_tests", "critic", "checklist"]);
+        assert_eq!(
+            gate_off.implied(),
+            vec!["gate_tests", "critic", "checklist"]
+        );
     }
 }

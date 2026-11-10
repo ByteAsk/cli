@@ -30,7 +30,10 @@ pub(crate) fn search_result(tool: &str, text: &str) -> CheckResult {
             "No confident match in the indexed documents, so nothing is claimed from them.",
         )
     } else {
-        CheckResult::pass(tool, "Returned page-cited excerpts from the indexed documents.")
+        CheckResult::pass(
+            tool,
+            "Returned page-cited excerpts from the indexed documents.",
+        )
     }
 }
 
@@ -48,7 +51,9 @@ pub(crate) fn error_result(tool: &str, message: &str) -> CheckResult {
     let (reason, fix) = if lower.contains("timed out") || lower.contains("did not answer within") {
         (
             NotRunReason::TimeLimit,
-            format!("call {tool} again in a moment; if it keeps timing out, answer without it and say so."),
+            format!(
+                "call {tool} again in a moment; if it keeps timing out, answer without it and say so."
+            ),
         )
     } else if lower.contains("unreachable")
         || lower.contains("lookup failed")
@@ -57,7 +62,9 @@ pub(crate) fn error_result(tool: &str, message: &str) -> CheckResult {
     {
         (
             NotRunReason::ServiceUnavailable,
-            format!("check the network, then call {tool} again; until then, say the answer is not from the documents."),
+            format!(
+                "check the network, then call {tool} again; until then, say the answer is not from the documents."
+            ),
         )
     } else if lower.contains("missing field")
         || lower.contains("unknown field")
@@ -66,12 +73,19 @@ pub(crate) fn error_result(tool: &str, message: &str) -> CheckResult {
     {
         (
             NotRunReason::BadArguments,
-            format!("call {tool} again with the arguments its schema lists; the message above names the wrong one."),
+            format!(
+                "call {tool} again with the arguments its schema lists; the message above names the wrong one."
+            ),
         )
     } else {
         (NotRunReason::ToolError, String::new())
     };
-    CheckResult::not_run(tool, reason, "The lookup stopped with the message above; nothing was retrieved.", &fix)
+    CheckResult::not_run(
+        tool,
+        reason,
+        "The lookup stopped with the message above; nothing was retrieved.",
+        &fix,
+    )
 }
 
 fn with_result(tool: &str, err: FunctionCallError) -> FunctionCallError {
@@ -170,7 +184,10 @@ mod tests {
             "missing field `query` at line 1 column 2",
             "something nobody anticipated",
         ] {
-            let err = with_result("hft_ref", FunctionCallError::RespondToModel(message.to_string()));
+            let err = with_result(
+                "hft_ref",
+                FunctionCallError::RespondToModel(message.to_string()),
+            );
             let FunctionCallError::RespondToModel(text) = err else {
                 panic!("stays model-facing");
             };

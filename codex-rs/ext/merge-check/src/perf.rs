@@ -102,7 +102,10 @@ pub fn result(ut: &Value) -> CheckResult {
             CHECK_PERF,
             &format!(
                 "Measured regression on the bench machine: {}",
-                reasons.first().cloned().unwrap_or_else(|| "see the perf card".to_string())
+                reasons
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "see the perf card".to_string())
             ),
         )
         .with_evidence(reasons),
@@ -111,7 +114,10 @@ pub fn result(ut: &Value) -> CheckResult {
             NotRunReason::ServiceUnavailable,
             &format!(
                 "The bench machine did not measure it: {}",
-                reasons.first().cloned().unwrap_or_else(|| "no reason given".to_string())
+                reasons
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "no reason given".to_string())
             ),
             "fix what the bench names (host checks, build) and run the perf check again.",
         ),
@@ -159,7 +165,11 @@ fn cell(report: &Value, name: &str) -> String {
 /// The card, in Markdown (GitHub check output, GitLab note, Jenkins summary).
 pub fn card(ut: &Value) -> String {
     let tests = ut["tests"].as_array().cloned().unwrap_or_default();
-    let first = tests.first().map(|t| &t["report"]).cloned().unwrap_or(Value::Null);
+    let first = tests
+        .first()
+        .map(|t| &t["report"])
+        .cloned()
+        .unwrap_or(Value::Null);
     let host = &first["host"];
     let confidence = first["confidence"].as_f64().unwrap_or(0.99);
     let gate = match ut["gate"].as_str() {
@@ -179,7 +189,9 @@ pub fn card(ut: &Value) -> String {
             .map_or("?".to_string(), |c| c.to_string()),
         host["freq_ghz"]
             .as_f64()
-            .map_or("frequency unknown".to_string(), |f| format!("{f:.2} GHz pinned")),
+            .map_or("frequency unknown".to_string(), |f| format!(
+                "{f:.2} GHz pinned"
+            )),
         short(ut["base"]["commit"].as_str().unwrap_or("?")),
         first["rounds"].as_u64().unwrap_or(0),
         confidence * 100.0,
@@ -204,7 +216,11 @@ pub fn card(ut: &Value) -> String {
             let primary = report["primary_metric"].as_str().unwrap_or("p50_ns");
             let detectable = metric(report, primary)
                 .and_then(|m| m["min_detectable_pct"].as_f64())
-                .map(|pct| format!("; this run would have caught a change of {pct:.1}% or more in {primary}"))
+                .map(|pct| {
+                    format!(
+                        "; this run would have caught a change of {pct:.1}% or more in {primary}"
+                    )
+                })
                 .unwrap_or_default();
             notes.push(format!("- {name}: no significant change{detectable}."));
         }

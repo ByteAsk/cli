@@ -190,7 +190,11 @@ fn writable_roots(profile: Profile, workspace: &Path) -> Vec<PathBuf> {
 /// Outside a tool call (a unit test of one tool, helper code) there is no
 /// context and the command is returned unchanged: every production call goes
 /// through [`Sandboxed`], which sets one.
-pub(crate) fn wrap(program: &str, args: &[String], cwd: &Path) -> Result<Wrapped, FunctionCallError> {
+pub(crate) fn wrap(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+) -> Result<Wrapped, FunctionCallError> {
     let Ok(call) = CALL.try_with(Call::clone) else {
         return Ok(unchanged(program, args));
     };
@@ -304,7 +308,10 @@ pub(crate) fn decide(
     if settings.relaxed {
         return Ok((
             unchanged(program, args),
-            Some("sandbox: off for this project (you relaxed it with `byteask policy relax`).".to_string()),
+            Some(
+                "sandbox: off for this project (you relaxed it with `byteask policy relax`)."
+                    .to_string(),
+            ),
         ));
     }
     match profile {
@@ -354,7 +361,13 @@ pub(crate) fn decide(
             ));
         }
         Backend::Unavailable(why) => {
-            return no_sandbox(tool, settings, program, args, &format!("no sandbox could start: {why}"));
+            return no_sandbox(
+                tool,
+                settings,
+                program,
+                args,
+                &format!("no sandbox could start: {why}"),
+            );
         }
     };
     // The helper takes these as UTF-8 strings and aborts on anything else.
@@ -368,7 +381,13 @@ pub(crate) fn decide(
         );
     }
     let Some(helper) = settings.helper.as_deref() else {
-        return no_sandbox(tool, settings, program, args, "the sandbox helper was not found");
+        return no_sandbox(
+            tool,
+            settings,
+            program,
+            args,
+            "the sandbox helper was not found",
+        );
     };
     // Resolve the program here, outside the sandbox, so a missing compiler is
     // still reported as "not installed" by the caller's own spawn error (the
@@ -377,10 +396,14 @@ pub(crate) fn decide(
         return Ok((unchanged(program, args), None));
     };
     let note = match (profile, legacy) {
-        (Profile::Build, false) => "sandbox: on (bubblewrap) — may write only the workspace, temp \
-            dirs and build caches; network allowed.",
-        (Profile::Build, true) => "sandbox: on (landlock) — may write only the workspace, temp \
-            dirs and build caches; network allowed.",
+        (Profile::Build, false) => {
+            "sandbox: on (bubblewrap) — may write only the workspace, temp \
+            dirs and build caches; network allowed."
+        }
+        (Profile::Build, true) => {
+            "sandbox: on (landlock) — may write only the workspace, temp \
+            dirs and build caches; network allowed."
+        }
         (_, false) => "sandbox: on (bubblewrap) — read-only except temp dirs; no network.",
         (_, true) => "sandbox: on (landlock) — read-only except temp dirs; no network.",
     };
@@ -486,7 +509,8 @@ fn resolve_program(program: &str, cwd: &Path) -> Option<PathBuf> {
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
@@ -518,7 +542,10 @@ fn build_writable_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-fn permission_profile(profile: Profile, workspace: &Path) -> codex_protocol::models::PermissionProfile {
+fn permission_profile(
+    profile: Profile,
+    workspace: &Path,
+) -> codex_protocol::models::PermissionProfile {
     use codex_protocol::models::PermissionProfile;
     use codex_protocol::permissions::FileSystemAccessMode;
     use codex_protocol::permissions::FileSystemPath;
@@ -534,8 +561,9 @@ fn permission_profile(profile: Profile, workspace: &Path) -> codex_protocol::mod
                 .iter()
                 .filter_map(|dir| AbsolutePathBuf::from_absolute_path(dir).ok())
                 .collect();
-            let roots: Vec<AbsolutePathBuf> =
-                AbsolutePathBuf::from_absolute_path(workspace).into_iter().collect();
+            let roots: Vec<AbsolutePathBuf> = AbsolutePathBuf::from_absolute_path(workspace)
+                .into_iter()
+                .collect();
             PermissionProfile::workspace_write_with(
                 &extra,
                 NetworkSandboxPolicy::Enabled,
@@ -574,7 +602,7 @@ fn helper_args(
         &permission_profile(profile, workspace),
         workspace,
         legacy_landlock,
-        /*allow_network_for_proxy*/ false,
+        /*managed_network*/ None,
     )
 }
 
@@ -660,7 +688,9 @@ pub(crate) async fn scope<F: std::future::Future>(
 
 /// `future` with the current call's sandbox context, for work a tool hands to a spawned task
 /// (a task does not inherit task-locals, so its programs would otherwise run unsandboxed).
-pub(crate) fn inherit<F: std::future::Future>(future: F) -> impl std::future::Future<Output = F::Output> {
+pub(crate) fn inherit<F: std::future::Future>(
+    future: F,
+) -> impl std::future::Future<Output = F::Output> {
     let call = CALL.try_with(Call::clone).ok();
     async move {
         match call {

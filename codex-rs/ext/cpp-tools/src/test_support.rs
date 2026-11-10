@@ -147,9 +147,16 @@ pub(crate) fn sorted_keys(value: serde_json::Value) -> serde_json::Value {
         serde_json::Value::Object(map) => {
             let mut entries: Vec<(String, serde_json::Value)> = map.into_iter().collect();
             entries.sort_by(|a, b| a.0.cmp(&b.0));
-            serde_json::Value::Object(entries.into_iter().map(|(k, v)| (k, sorted_keys(v))).collect())
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k, sorted_keys(v)))
+                    .collect(),
+            )
         }
-        serde_json::Value::Array(items) => serde_json::Value::Array(items.into_iter().map(sorted_keys).collect()),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(sorted_keys).collect())
+        }
         other => other,
     }
 }

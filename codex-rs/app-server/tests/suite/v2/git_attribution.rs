@@ -23,7 +23,6 @@ use codex_features::Feature;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_rollout::RolloutItem;
-use codex_rollout::RolloutLine;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -82,9 +81,14 @@ fn write_catalog(path: &Path, switch: Option<&Value>) -> Result<String> {
         .and_then(|models| models.first())
         .cloned()
         .context("bundled models.json has no models")?;
-    let slug = first["slug"].as_str().context("model without a slug")?.to_string();
+    let slug = first["slug"]
+        .as_str()
+        .context("model without a slug")?
+        .to_string();
     catalog["models"] = json!([first]);
-    let object = catalog.as_object_mut().context("catalog is not an object")?;
+    let object = catalog
+        .as_object_mut()
+        .context("catalog is not an object")?;
     object.remove("byteask_attribution");
     if let Some(switch) = switch {
         object.insert("byteask_attribution".to_string(), switch.clone());
@@ -233,7 +237,10 @@ async fn cold_resume_replaces_an_upstream_attribution_fragment(
         .path
         .context("initial thread should have a rollout path")?;
     let status = timeout(DEFAULT_READ_TIMEOUT, app_server.shutdown_gracefully()).await??;
-    anyhow::ensure!(status.success(), "initial app-server did not exit successfully");
+    anyhow::ensure!(
+        status.success(),
+        "initial app-server did not exit successfully"
+    );
     replace_attribution_fragment_with_legacy(&rollout_path, legacy_attribution)?;
     // The switch is read once per process, so the resumed process sees the new value.
     write_catalog(&catalog, Some(&json!({"enabled": resumed_on})))?;
@@ -279,7 +286,7 @@ fn replace_attribution_fragment_with_legacy(
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            let mut line = serde_json::from_str::<RolloutLine>(line)?;
+            let mut line = codex_rollout::parse_rollout_line(line)?;
             if let RolloutItem::ResponseItem(response_item) = &mut line.item
                 && let ResponseItem::Message { role, content, .. } = &mut response_item.item
                 && role == "developer"

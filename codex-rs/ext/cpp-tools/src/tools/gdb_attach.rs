@@ -34,10 +34,10 @@ use codex_tools::ToolExposure;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::gdb_common::OUTPUT_CAP;
 use crate::gdb_common::Verdict;
 use crate::gdb_common::classify;
 use crate::gdb_common::truncate;
-use crate::gdb_common::OUTPUT_CAP;
 use crate::report::report;
 
 const TOOL_NAME: &str = "debug_attach";
@@ -219,8 +219,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GdbAttachTool {
         properties.insert(
             "approved".to_string(),
             JsonSchema::boolean(Some(if self.full_access {
-                "cmd: not needed while full access is on (every command runs directly)."
-                    .to_string()
+                "cmd: not needed while full access is on (every command runs directly).".to_string()
             } else {
                 "cmd: set true ONLY after the user explicitly approves a command you \
                  previously proposed (bypasses the read-only allowlist for that call)."
@@ -281,7 +280,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GdbAttachTool {
 }
 
 impl GdbAttachTool {
-    async fn handle_call(&self, call: ToolCall<'_>) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let args: AttachArgs = serde_json::from_str(arguments)
             .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
@@ -299,7 +301,10 @@ impl GdbAttachTool {
                     TOOL_NAME,
                     &format!("{} history", target.session_id),
                     keep_tail(reply, OUTPUT_CAP),
-                    check_result::CheckResult::pass(TOOL_NAME, "Read the session's recent history."),
+                    check_result::CheckResult::pass(
+                        TOOL_NAME,
+                        "Read the session's recent history.",
+                    ),
                 ))
             }
             Action::Interrupt => self.meta(args, "__interrupt__", "interrupt").await,
@@ -414,7 +419,12 @@ impl GdbAttachTool {
             .map_err(FunctionCallError::RespondToModel)?;
         let label = format!("{} {}", target.session_id, first_token(&command));
         let result = cut_or_pass(reply.len(), "The command ran in the user's gdb.");
-        Ok(report(TOOL_NAME, &label, truncate(reply, OUTPUT_CAP), result))
+        Ok(report(
+            TOOL_NAME,
+            &label,
+            truncate(reply, OUTPUT_CAP),
+            result,
+        ))
     }
 
     async fn meta(
@@ -452,7 +462,12 @@ impl GdbAttachTool {
             }
             out
         };
-        report(TOOL_NAME, "", body, check_result::CheckResult::pass(TOOL_NAME, "Listed the armed gdb sessions."))
+        report(
+            TOOL_NAME,
+            "",
+            body,
+            check_result::CheckResult::pass(TOOL_NAME, "Listed the armed gdb sessions."),
+        )
     }
 
     /// Pick a session for `attach`: explicit id, else the only one, else error
@@ -531,7 +546,11 @@ fn agent_dir() -> Option<PathBuf> {
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".byteask")))?;
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".byteask"))
+        })?;
     Some(home.join("gdb-agent"))
 }
 
@@ -600,7 +619,10 @@ fn discover_in(dir: &Path) -> Vec<Session> {
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             continue;
         };
-        let socket = value.get("socket").and_then(|v| v.as_str()).map(PathBuf::from);
+        let socket = value
+            .get("socket")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
         let Some(socket) = socket else { continue };
         if !socket.exists() {
             continue; // the descriptor outlived its socket — skip
@@ -633,8 +655,10 @@ fn discover_in(dir: &Path) -> Vec<Session> {
 /// reports that it is unsupported there.
 #[cfg(not(unix))]
 async fn send_to_bridge(_socket: &Path, _message: &str) -> Result<String, String> {
-    Err("debug_attach (gdb pair-debugging over a Unix socket) is only available on Linux/macOS."
-        .to_string())
+    Err(
+        "debug_attach (gdb pair-debugging over a Unix socket) is only available on Linux/macOS."
+            .to_string(),
+    )
 }
 
 /// Send one line to the bridge and read its reply. Framing mirrors the Python
@@ -718,16 +742,20 @@ mod tests {
         let out = keep_tail(text, 200);
         assert!(out.contains("entry 0499"), "{out}");
         assert!(!out.contains("entry 0000"), "{out}");
-        assert!(out.starts_with('(') && out.contains("older lines omitted"), "{out}");
+        assert!(
+            out.starts_with('(') && out.contains("older lines omitted"),
+            "{out}"
+        );
         assert_eq!(keep_tail("short".to_string(), 200), "short");
     }
 
     #[test]
     fn a_misnamed_field_is_an_error_not_silently_ignored() {
         // A field outside the schema used to be dropped without a word.
-        let err = serde_json::from_str::<AttachArgs>(r#"{"action":"cmd","command":"bt","approve":true}"#)
-            .err()
-            .expect("unknown field refused");
+        let err =
+            serde_json::from_str::<AttachArgs>(r#"{"action":"cmd","command":"bt","approve":true}"#)
+                .err()
+                .expect("unknown field refused");
         assert!(err.to_string().contains("unknown field `approve`"), "{err}");
     }
 
@@ -965,16 +993,23 @@ mod tests {
     /// panics instead of skipping.
     #[cfg(unix)]
     async fn start_live_gdb(test: &str) -> Option<LiveGdb> {
-        let Some(cc) = ["cc", "gcc", "clang"]
-            .into_iter()
-            .find(|c| std::process::Command::new(c).arg("--version").output().is_ok())
-        else {
+        let Some(cc) = ["cc", "gcc", "clang"].into_iter().find(|c| {
+            std::process::Command::new(c)
+                .arg("--version")
+                .output()
+                .is_ok()
+        }) else {
             eprintln!("skip: no C compiler");
             return None;
         };
         // `-nx` everywhere: a developer's own ~/.gdbinit must not perturb this.
         match std::process::Command::new("gdb")
-            .args(["--batch", "-nx", "-ex", "python print('byteask-gdb-python-ok')"])
+            .args([
+                "--batch",
+                "-nx",
+                "-ex",
+                "python print('byteask-gdb-python-ok')",
+            ])
             .output()
         {
             Err(err) => {
@@ -1041,7 +1076,14 @@ mod tests {
             // this gdb could genuinely carry out (see the positive control in
             // `live_bridge_proposes_state_changing_commands`). Arming last means
             // the run/stop already happened and the bridge starts at "stopped".
-            .args(["-ex", "break byteask_add", "-ex", "run", "-ex", "byteask-bridge"])
+            .args([
+                "-ex",
+                "break byteask_add",
+                "-ex",
+                "run",
+                "-ex",
+                "byteask-bridge",
+            ])
             .arg(&bin)
             // Keep gdb's stdin an open pipe we never write to and never close:
             // gdb then sits at its prompt servicing the bridge thread's posted
@@ -1168,7 +1210,12 @@ mod tests {
 
         // 1. Discovery sees exactly OUR gdb — pid-matched, not just "a session".
         let sessions = discover_in(&live.agent);
-        assert_eq!(sessions.len(), 1, "expected one armed session in {:?}", live.agent);
+        assert_eq!(
+            sessions.len(),
+            1,
+            "expected one armed session in {:?}",
+            live.agent
+        );
         assert_eq!(sessions[0].session_id, live.session_id);
         assert_eq!(sessions[0].pid, u64::from(live.child.id()));
         assert!(
@@ -1320,7 +1367,9 @@ mod tests {
         //     flag is the model's own word, not proof the human agreed.
         let refused = tool.cmd(cmd_args("set var byteask_marker = 7", true)).await;
         assert!(refused.is_err(), "an unproposed command must not run");
-        let marker = send_to_bridge(&live.socket, "print byteask_marker").await.unwrap();
+        let marker = send_to_bridge(&live.socket, "print byteask_marker")
+            .await
+            .unwrap();
         assert!(!marker.trim().ends_with("= 7"), "{marker:?}");
 
         // (e) With the user's approval the proposed command goes through — so
@@ -1342,7 +1391,11 @@ mod tests {
             "approved=true must actually change the live process, got {marker:?}"
         );
         // A proposal is used once.
-        assert!(tool.cmd(cmd_args("set var byteask_marker = 99", true)).await.is_err());
+        assert!(
+            tool.cmd(cmd_args("set var byteask_marker = 99", true))
+                .await
+                .is_err()
+        );
 
         let _ = std::fs::remove_file(&log);
     }
@@ -1365,9 +1418,17 @@ mod tests {
             .expect("runs directly");
         let text = output_text(out.as_ref());
         assert!(!text.contains("Proposed"), "{text}");
-        assert!(text.contains("Ran without asking (full access is on)"), "{text}");
-        let marker = send_to_bridge(&live.socket, "print byteask_marker").await.unwrap();
-        assert!(marker.trim().ends_with("= 77"), "the command must have run: {marker:?}");
+        assert!(
+            text.contains("Ran without asking (full access is on)"),
+            "{text}"
+        );
+        let marker = send_to_bridge(&live.socket, "print byteask_marker")
+            .await
+            .unwrap();
+        assert!(
+            marker.trim().ends_with("= 77"),
+            "the command must have run: {marker:?}"
+        );
         let _ = std::fs::remove_file(&log);
     }
 
@@ -1384,9 +1445,15 @@ mod tests {
                 .expect("spec")
         };
         let normal = text(false);
-        assert!(normal.contains("PROPOSED for the user to approve"), "{normal}");
+        assert!(
+            normal.contains("PROPOSED for the user to approve"),
+            "{normal}"
+        );
         let full = text(true);
-        assert!(!full.contains("PROPOSED") && !full.contains("approve a command"), "{full}");
+        assert!(
+            !full.contains("PROPOSED") && !full.contains("approve a command"),
+            "{full}"
+        );
         assert!(full.contains("do not stop to ask the user"), "{full}");
     }
 

@@ -20,7 +20,7 @@ use codex_agent_checks::CHECKS_OUT_ENV_VAR;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use tokio::sync::mpsc;
 
 /// Exit code after SIGTERM (same as `timeout(1)`).
@@ -82,26 +82,26 @@ impl AgentRun {
         };
         match notification {
             ServerNotification::ItemStarted(started) => {
-                if let ThreadItem::CommandExecution {
+                if let ThreadItemPayload::CommandExecution {
                     id,
                     command,
                     cwd,
                     source,
                     ..
-                } = &started.item
+                } = &started.item.payload
                     && is_agent_command(source)
                     && let Some(recorder) = state.recorder.as_mut()
                 {
                     recorder.command_started(id, command, Path::new(cwd.as_str()));
                 }
             }
-            ServerNotification::ItemCompleted(completed) => match &completed.item {
-                ThreadItem::AgentMessage { text, .. }
+            ServerNotification::ItemCompleted(completed) => match &completed.item.payload {
+                ThreadItemPayload::AgentMessage { text, .. }
                     if completed.thread_id == primary_thread_id && !text.trim().is_empty() =>
                 {
                     state.last_agent_message = Some(text.clone());
                 }
-                ThreadItem::CommandExecution {
+                ThreadItemPayload::CommandExecution {
                     id,
                     command,
                     cwd,

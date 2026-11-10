@@ -18,6 +18,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::error::CodexErr;
 pub use codex_protocol::error::CodexErrKind;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
@@ -32,6 +33,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
+use codex_utils_path_uri::PathUri;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -43,6 +45,7 @@ pub struct TrackEventsContext {
     pub thread_id: String,
     pub turn_id: String,
     pub product_client_id: String,
+    pub turn_metadata: Option<Arc<dyn TurnAnalyticsMetadata>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -137,12 +140,14 @@ pub fn build_track_events_context(
     thread_id: String,
     turn_id: String,
     product_client_id: String,
+    turn_metadata: Option<Arc<dyn TurnAnalyticsMetadata>>,
 ) -> TrackEventsContext {
     TrackEventsContext {
         model_slug,
         thread_id,
         turn_id,
         product_client_id,
+        turn_metadata,
     }
 }
 
@@ -187,6 +192,8 @@ pub struct TurnResolvedConfigFact {
     pub turn_id: String,
     pub thread_id: String,
     pub turn_metadata: Arc<dyn TurnAnalyticsMetadata>,
+    /// Observed active plugin inventory. None is unknown; Some([]) is observed empty.
+    pub active_plugin_ids_at_turn_start: Option<Vec<String>>,
     pub num_input_images: usize,
     pub submission_type: Option<TurnSubmissionType>,
     pub ephemeral: bool,
@@ -201,6 +208,7 @@ pub struct TurnResolvedConfigFact {
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
     pub guardian_v2_enabled: bool,
+    pub multi_agent_version: codex_protocol::protocol::MultiAgentVersion,
     pub sandbox_network_access: bool,
     pub collaboration_mode: ModeKind,
     pub personality: Option<Personality>,
@@ -238,6 +246,7 @@ pub struct TurnTokenUsageFact {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TurnProfile {
+    pub critical_path: crate::TurnCriticalPath,
     pub before_first_sampling_ms: u64,
     pub sampling_ms: u64,
     pub compaction_ms: u64,
@@ -246,6 +255,7 @@ pub struct TurnProfile {
     pub after_last_sampling_ms: u64,
     pub sampling_request_count: u32,
     pub sampling_retry_count: u32,
+    pub tools_change_count: u32,
 }
 
 #[derive(Clone)]
@@ -275,6 +285,7 @@ impl TurnCodexErrorFact {
 pub(crate) struct TurnCodexError {
     pub(crate) kind: CodexErrKind,
     pub(crate) http_status_code: Option<u16>,
+    pub(crate) usage_limit_window_minutes: Option<u16>,
 }
 
 impl TurnCodexError {
@@ -282,6 +293,10 @@ impl TurnCodexError {
         Self {
             kind: error.into(),
             http_status_code: error.http_status_code_value(),
+            usage_limit_window_minutes: match error.details() {
+                CodexErrorDetails::UsageLimitReached(error) => error.limit_window_minutes,
+                _ => None,
+            },
         }
     }
 }
@@ -374,7 +389,7 @@ pub struct SkillInvocation {
 #[derive(Clone, Debug)]
 pub enum SkillInvocationLocation {
     Host {
-        path: PathBuf,
+        path: PathUri,
         scope: SkillScope,
     },
     Resource {
@@ -391,10 +406,31 @@ pub enum InvocationType {
     Implicit,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ElicitationType {
+    /// Authentication or account linking blocked the original attempt, as reported
+    /// by trusted connector auth-failure metadata. Both are treated the same when
+    /// identifying elicitation-only usage. This does not imply that an
+    /// authentication prompt was shown or completed.
+    AuthOrLink,
+    Approval,
+}
+
 pub struct AppInvocation {
     pub connector_id: Option<String>,
     pub app_name: Option<String>,
     pub invocation_type: Option<InvocationType>,
+}
+
+/// A known classification, queued before the corresponding item completion.
+/// Ordinary calls do not send this fact; their emitted classification stays null.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct McpToolCallElicitation {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub elicitation_type: ElicitationType,
 }
 
 #[derive(Clone)]
@@ -410,6 +446,7 @@ pub struct SubAgentThreadStartedInput {
     pub ephemeral: bool,
     pub thread_source: Option<ThreadSource>,
     pub subagent_source: SubAgentSource,
+    pub initialization_mode: ThreadInitializationMode,
     pub created_at: u64,
 }
 
@@ -434,7 +471,6 @@ pub enum CompactionReason {
 pub enum CompactionImplementation {
     Responses,
     ResponsesCompactionV2,
-    ResponsesCompact,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -443,6 +479,7 @@ pub enum CompactionPhase {
     StandaloneTurn,
     PreTurn,
     MidTurn,
+    PostTurn,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -472,6 +509,7 @@ pub struct CodexCompactionEvent {
     pub status: CompactionStatus,
     pub codex_error_kind: Option<CodexErrKind>,
     pub codex_error_http_status_code: Option<u16>,
+    pub usage_limit_window_minutes: Option<u16>,
     pub active_context_tokens_before: i64,
     pub active_context_tokens_after: i64,
     pub retained_image_count: Option<usize>,
@@ -553,6 +591,22 @@ pub(crate) enum AnalyticsFact {
         completed_at_ms: u64,
         request_id: RequestId,
     },
+    RealtimeHandoffRequested {
+        thread_id: String,
+    },
+    RealtimeSessionStarted {
+        thread_id: String,
+        realtime_session_id: Option<String>,
+        started_at: u64,
+    },
+    RealtimeSessionUpdated {
+        thread_id: String,
+        realtime_session_id: String,
+    },
+    RealtimeSessionClosed {
+        thread_id: String,
+        closed_at: u64,
+    },
     Notification(Box<ServerNotification>),
     // Facts that do not naturally exist on the app-server protocol surface, or
     // would require non-trivial protocol reshaping on this branch.
@@ -566,6 +620,7 @@ pub(crate) enum CustomAnalyticsFact {
     SubAgentThreadStarted(SubAgentThreadStartedInput),
     Compaction(Box<CodexCompactionEvent>),
     Goal(Box<CodexGoalEvent>),
+    ThreadHintStatus(Box<crate::thread_hint::ThreadHintStatusEvent>),
     GuardianReview(Box<GuardianReviewEventParams>),
     GuardianV2(Box<GuardianV2Event>),
     TurnResolvedConfig(Box<TurnResolvedConfigFact>),
@@ -576,6 +631,7 @@ pub(crate) enum CustomAnalyticsFact {
     SkillInvoked(SkillInvokedInput),
     AppMentioned(AppMentionedInput),
     AppUsed(AppUsedInput),
+    McpToolCallElicitation(McpToolCallElicitation),
     HookRun(HookRunInput),
     PluginUsed(PluginUsedInput),
     PluginInstallRequested(PluginInstallRequestedInput),
@@ -603,6 +659,9 @@ pub struct PluginMeasurementsInput {
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
+    pub originator: String,
+    pub model_slug: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub plugin_id: String,
     pub execution_id: String,
     pub operation: String,
@@ -622,6 +681,7 @@ pub(crate) struct AppMentionedInput {
 pub(crate) struct AppUsedInput {
     pub tracking: TrackEventsContext,
     pub app: AppInvocation,
+    pub elicitation_type: Option<ElicitationType>,
 }
 
 pub(crate) struct HookRunInput {

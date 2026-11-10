@@ -30,8 +30,6 @@ use std::sync::Weak;
 use std::time::Duration;
 
 use codex_network_proxy::NetworkProxy;
-use codex_protocol::models::AdditionalPermissionProfile;
-use codex_tools::UnifiedExecShellMode;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_path_uri::PathUri;
 use rand::Rng;
@@ -39,21 +37,20 @@ use rand::rng;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
-use crate::session::turn_context::TurnEnvironment;
-use crate::shell::ShellType;
+use crate::tools::handlers::unified_exec::preparation::PreparedExecCommand;
 use crate::tools::network_approval::DeferredNetworkApproval;
 use codex_core_plugins::PluginMetricsSidecar;
 
 mod async_watcher;
 mod errors;
-mod head_tail_buffer;
 mod oneshot;
+pub(crate) mod output;
 mod process;
 mod process_manager;
+pub(crate) use process_manager::exec_env_policy_from_shell_policy;
 mod process_state;
 mod shell_snapshot;
 mod stdin_approval;
@@ -63,10 +60,6 @@ pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
 }
 
 pub(crate) use errors::UnifiedExecError;
-pub(crate) use process::NoopSpawnLifecycle;
-#[cfg(unix)]
-pub(crate) use process::SpawnLifecycle;
-pub(crate) use process::SpawnLifecycleHandle;
 pub(crate) use process::UnifiedExecProcess;
 pub(crate) use stdin_approval::TerminalPermissions;
 pub(crate) use stdin_approval::TerminalSandboxSource;
@@ -95,6 +88,12 @@ pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
 pub(crate) const MAX_UNIFIED_EXEC_PROCESSES: usize = 64;
 
+const MAX_TRACE_ID_BYTES: usize = 256;
+
+fn trace_id(id: &str) -> Option<&str> {
+    (!id.is_empty() && id.len() <= MAX_TRACE_ID_BYTES).then_some(id)
+}
+
 pub(crate) struct UnifiedExecContext {
     pub session: Arc<Session>,
     pub step_context: Arc<StepContext>,
@@ -120,28 +119,23 @@ impl UnifiedExecContext {
 
 #[derive(Debug)]
 pub(crate) struct ExecCommandRequest {
-    pub command: Vec<String>,
-    pub shell_type: ShellType,
-    pub hook_command: String,
+    pub prepared: PreparedExecCommand,
     pub process_id: i32,
-    pub yield_time_ms: u64,
-    pub max_output_tokens: Option<usize>,
-    pub cwd: PathUri,
-    pub sandbox_cwd: PathUri,
-    pub turn_environment: TurnEnvironment,
-    pub shell_mode: UnifiedExecShellMode,
     pub network: Option<NetworkProxy>,
-    pub tty: bool,
-    pub sandbox_permissions: SandboxPermissions,
-    pub additional_permissions: Option<AdditionalPermissionProfile>,
-    pub additional_permissions_preapproved: bool,
-    pub justification: Option<String>,
-    pub prefix_rule: Option<Vec<String>>,
+}
+
+/// The process and environment behind a terminal session ID at the time of lookup.
+#[derive(Clone, Debug)]
+pub(crate) struct TerminalSession {
+    pub(crate) process_id: i32,
+    process: Arc<UnifiedExecProcess>,
+    call_id: String,
+    pub(crate) environment_id: String,
 }
 
 #[derive(Debug)]
 pub(crate) struct WriteStdinRequest<'a> {
-    pub process_id: i32,
+    pub terminal: &'a TerminalSession,
     pub input: &'a str,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
@@ -168,7 +162,9 @@ pub(crate) struct ProcessStore {
 
 impl ProcessStore {
     fn remove(&mut self, process_id: i32) -> Option<ProcessEntry> {
-        self.reserved_process_ids.remove(&process_id);
+        if !process_manager::should_use_deterministic_process_ids() {
+            self.reserved_process_ids.remove(&process_id);
+        }
         self.processes.remove(&process_id)
     }
 }
@@ -243,7 +239,11 @@ fn clamp_yield_time_with(policy: &byteask_output_reducers::Policy, yield_time_ms
 /// The first wait of an `exec_command`: [`clamp_yield_time`], raised to the wait floor
 /// ([`DEFAULT_FIRST_YIELD_MIN_MS`]) when the command runs without a TTY.
 pub(crate) fn exec_yield_time(yield_time_ms: u64, tty: bool) -> u64 {
-    exec_yield_time_with(&byteask_output_reducers::policy::active(), yield_time_ms, tty)
+    exec_yield_time_with(
+        &byteask_output_reducers::policy::active(),
+        yield_time_ms,
+        tty,
+    )
 }
 
 pub(crate) fn exec_yield_time_with(
@@ -291,10 +291,6 @@ pub(crate) fn wait_floor_note(wall_time: Duration) -> String {
 
 pub(crate) fn resolve_max_tokens(max_tokens: Option<usize>) -> usize {
     max_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
-}
-
-pub(crate) fn format_output_omission_marker(omitted_bytes: usize) -> String {
-    format!("... {omitted_bytes} bytes omitted ...")
 }
 
 pub(crate) fn generate_chunk_id() -> String {

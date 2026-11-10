@@ -37,7 +37,11 @@ pub struct RecordError {
 
 impl fmt::Display for RecordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "record {} ({}): {}", self.index, self.location, self.message)
+        write!(
+            f,
+            "record {} ({}): {}",
+            self.index, self.location, self.message
+        )
     }
 }
 
@@ -110,14 +114,14 @@ impl<R: BufRead> Iterator for JsonLines<R> {
             return None;
         }
         loop {
-            let (n, too_long) = match read_capped_line(&mut self.reader, &mut self.buf, self.max_line)
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    self.line += 1;
-                    return self.fail(format!("read failed: {e}"));
-                }
-            };
+            let (n, too_long) =
+                match read_capped_line(&mut self.reader, &mut self.buf, self.max_line) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.line += 1;
+                        return self.fail(format!("read failed: {e}"));
+                    }
+                };
             if n == 0 {
                 self.done = true;
                 return None;
@@ -222,12 +226,12 @@ impl Framing {
     fn decode_len(self, header: &[u8]) -> u64 {
         match self {
             Framing::U16Be => u64::from(u16::from_be_bytes([header[0], header[1]])),
-            Framing::U32Be => {
-                u64::from(u32::from_be_bytes([header[0], header[1], header[2], header[3]]))
-            }
-            Framing::U32Le => {
-                u64::from(u32::from_le_bytes([header[0], header[1], header[2], header[3]]))
-            }
+            Framing::U32Be => u64::from(u32::from_be_bytes([
+                header[0], header[1], header[2], header[3],
+            ])),
+            Framing::U32Le => u64::from(u32::from_le_bytes([
+                header[0], header[1], header[2], header[3],
+            ])),
         }
     }
 }
@@ -317,7 +321,10 @@ impl<R: Read> Iterator for Frames<R> {
         if len > self.max_frame as u64 {
             return self.fail(
                 start,
-                format!("frame length {len} is larger than the {} byte limit", self.max_frame),
+                format!(
+                    "frame length {len} is larger than the {} byte limit",
+                    self.max_frame
+                ),
             );
         }
         let mut bytes = vec![0u8; len as usize];
@@ -396,7 +403,10 @@ mod tests {
         assert_eq!(got.len(), 2, "nothing after the bad line is read: {got:?}");
         let err = got[1].clone().expect_err("second item is the error");
         assert_eq!(err.index, 1, "one good record before it");
-        assert_eq!(err.location, "line 3", "blank lines still count for the line number");
+        assert_eq!(
+            err.location, "line 3",
+            "blank lines still count for the line number"
+        );
         assert!(err.message.contains("not valid JSON"), "{err}");
     }
 
@@ -408,11 +418,20 @@ mod tests {
         let exact = 44806.0f64 / 45.0;
         let got: Vec<_> = JsonLines::new("995.6888888888889\n".as_bytes()).collect();
         assert_eq!(got, vec![Ok(json!(exact))]);
-        assert_eq!(got[0].clone().ok().and_then(|v| v.as_f64()).map(f64::to_bits), Some(exact.to_bits()));
+        assert_eq!(
+            got[0]
+                .clone()
+                .ok()
+                .and_then(|v| v.as_f64())
+                .map(f64::to_bits),
+            Some(exact.to_bits())
+        );
         // And every double survives a write and a read unchanged.
         let mut x = 0x3ff0_0000_0000_0001u64;
         for _ in 0..20_000 {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let f = f64::from_bits((x >> 2) | 0x3000_0000_0000_0000);
             let text = json!(f).to_string();
             let back: Value = serde_json::from_str(&text).expect("parse");
@@ -434,9 +453,17 @@ mod tests {
             .with_max_line(8)
             .collect();
         assert_eq!(got.len(), 1);
-        assert!(got[0].clone().expect_err("too long").message.contains("longer than 8"));
+        assert!(
+            got[0]
+                .clone()
+                .expect_err("too long")
+                .message
+                .contains("longer than 8")
+        );
         // Exactly at the limit is fine (the newline does not count).
-        let ok: Vec<_> = JsonLines::new("[1,2,33]\n".as_bytes()).with_max_line(8).collect();
+        let ok: Vec<_> = JsonLines::new("[1,2,33]\n".as_bytes())
+            .with_max_line(8)
+            .collect();
         assert_eq!(ok, vec![Ok(json!([1, 2, 33]))]);
     }
 
@@ -445,7 +472,12 @@ mod tests {
         let got: Vec<_> = TextLines::new("a\r\nb\n\nc".as_bytes()).collect();
         assert_eq!(
             got,
-            vec![Ok(json!("a\r")), Ok(json!("b")), Ok(json!("")), Ok(json!("c"))]
+            vec![
+                Ok(json!("a\r")),
+                Ok(json!("b")),
+                Ok(json!("")),
+                Ok(json!("c"))
+            ]
         );
         let bad: Vec<_> = TextLines::new(&b"ok\n\xff\xfe\n"[..]).collect();
         assert_eq!(bad.len(), 2);
@@ -466,7 +498,11 @@ mod tests {
             .collect();
         assert_eq!(
             got,
-            vec![(0, 0, b"AB".to_vec()), (1, 4, Vec::new()), (2, 6, b"XYZ".to_vec())]
+            vec![
+                (0, 0, b"AB".to_vec()),
+                (1, 4, Vec::new()),
+                (2, 6, b"XYZ".to_vec())
+            ]
         );
         let mut le32 = 3u32.to_le_bytes().to_vec();
         le32.extend_from_slice(b"abc");
@@ -492,7 +528,13 @@ mod tests {
         assert!(err.message.contains("3 of 5 bytes"), "{err}");
         // A half length header is truncation too.
         let got: Vec<_> = Frames::new(&[0u8][..], Framing::U16Be).collect();
-        assert!(got[0].clone().expect_err("half header").message.contains("truncated"));
+        assert!(
+            got[0]
+                .clone()
+                .expect_err("half header")
+                .message
+                .contains("truncated")
+        );
     }
 
     #[test]

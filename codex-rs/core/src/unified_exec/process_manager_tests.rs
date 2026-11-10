@@ -1,6 +1,10 @@
 use super::*;
+use crate::tools::handlers::unified_exec::preparation::ExecCommandLifetime;
+use crate::tools::handlers::unified_exec::preparation::ParsedExecCommand;
 use crate::unified_exec::clamp_yield_time;
+use codex_exec_server::ExecOutputStream;
 use codex_network_proxy::ManagedNetworkSandboxContext;
+use core_test_support::assert_regex_match;
 use pretty_assertions::assert_eq;
 use tokio::sync::Notify;
 use tokio::time::Duration;
@@ -47,12 +51,26 @@ async fn deterministic_process_ids_are_not_reused_after_release() {
     assert_eq!((first, second), (1000, 1001));
 }
 
+#[tokio::test]
+async fn deterministic_process_ids_are_not_reused_after_removal() {
+    let manager = UnifiedExecProcessManager::default();
+    let first = manager.allocate_process_id().await;
+    let _removed = manager.process_store.lock().await.remove(first);
+    let second = manager.allocate_process_id().await;
+
+    assert_eq!((first, second), (1000, 1001));
+}
+
 #[test]
 fn env_overlay_for_exec_server_keeps_runtime_changes_only() {
     let local_policy_env = HashMap::from([
         ("HOME".to_string(), "/client-home".to_string()),
         ("PATH".to_string(), "/client-path".to_string()),
         ("SHELL_SET".to_string(), "policy".to_string()),
+        (
+            CODEX_VERSION_ENV_VAR.to_string(),
+            "client-version".to_string(),
+        ),
         (
             CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
             "current-profile".to_string(),
@@ -68,6 +86,10 @@ fn env_overlay_for_exec_server_keeps_runtime_changes_only() {
         ("OpenAI_Federation_Rule_Id".to_string(), "rule".to_string()),
         ("SHELL_SET".to_string(), "policy".to_string()),
         ("CODEX_THREAD_ID".to_string(), "thread-1".to_string()),
+        (
+            CODEX_VERSION_ENV_VAR.to_string(),
+            "client-version".to_string(),
+        ),
         (
             CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
             "current-profile".to_string(),
@@ -88,6 +110,10 @@ fn env_overlay_for_exec_server_keeps_runtime_changes_only() {
             ("PATH".to_string(), "/sandbox-path".to_string()),
             ("CODEX_THREAD_ID".to_string(), "thread-1".to_string()),
             (
+                CODEX_VERSION_ENV_VAR.to_string(),
+                "client-version".to_string()
+            ),
+            (
                 CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
                 "current-profile".to_string(),
             ),
@@ -107,6 +133,7 @@ fn env_overlay_for_exec_server_keeps_runtime_changes_only() {
 fn exec_env_policy_excludes_non_inheritable_and_runtime_variables() {
     let policy = ShellEnvironmentPolicy {
         r#set: HashMap::from([
+            ("codex_version".to_string(), "stale-version".to_string()),
             (
                 "codex_permission_profile".to_string(),
                 "stale-profile".to_string(),
@@ -135,6 +162,7 @@ fn exec_env_policy_excludes_non_inheritable_and_runtime_variables() {
             ignore_default_excludes: policy.ignore_default_excludes,
             exclude: vec![
                 CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
+                CODEX_VERSION_ENV_VAR.to_string(),
                 codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
                 PLUGIN_METRICS_OUTPUT_ENV_VAR.to_string(),
             ],
@@ -154,6 +182,7 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
     let managed_network = ManagedNetworkSandboxContext {
         loopback_ports: vec![43123],
         allow_local_binding: false,
+        ..Default::default()
     };
     let mut request = ExecRequest {
         command: vec!["bash".to_string(), "-lc".to_string(), "true".to_string()],
@@ -203,7 +232,6 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
         windows_sandbox_policy_cwd: cwd.clone().into(),
         windows_sandbox_workspace_roots: vec![cwd],
         windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel::Disabled,
-        windows_sandbox_private_desktop: false,
         permission_profile: permission_profile.clone(),
         windows_sandbox_filesystem_overrides: None,
         arg0: None,
@@ -218,13 +246,19 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
         exec_server_params_for_request(
             /*process_id*/ 123,
             request,
+            /*tool_ctx*/ None,
             proxy_settings_mode,
             /*tty*/ true,
         )
     };
     let params = params_for_request(&request);
 
-    assert_eq!(params.process_id.as_str(), "123");
+    assert_regex_match(
+        r"^123-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+        params.process_id.as_str(),
+    );
+    assert_ne!(params.process_id, params_for_request(&request).process_id);
+    assert_eq!(params.metadata, None);
     assert_eq!(params.cwd, request.cwd);
     assert!(params.enforce_managed_network);
     assert_eq!(params.managed_network, Some(managed_network));
@@ -254,7 +288,10 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
     request.exec_server_shell_snapshot = None;
 
     request.exec_server_sandbox = Some(
-        codex_exec_server::FileSystemSandboxContext::from_permission_profile(permission_profile),
+        codex_exec_server::FileSystemSandboxContext::from_permission_profile(
+            permission_profile,
+            request.cwd.clone(),
+        ),
     );
     let first = params_for_request(&request);
     let second = params_for_request(&request);
@@ -307,7 +344,7 @@ fn initial_exec_yield_time_has_no_platform_floor() {
 #[tokio::test]
 async fn output_collection_stays_bounded_across_repeated_drains() {
     let chunks: [&[u8]; 4] = [b"01234567", b"89ABCDEF", b"ghijklmnopq", b"rs"];
-    let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::<10>::default()));
+    let output_buffer = Arc::new(tokio::sync::Mutex::new(OutputBuffers::<10>::default()));
     let output_notify = Arc::new(Notify::new());
     let output_closed = Arc::new(AtomicBool::new(false));
     let output_closed_notify = Arc::new(Notify::new());
@@ -318,6 +355,8 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         output_closed: Arc::clone(&output_closed),
         output_closed_notify: Arc::clone(&output_closed_notify),
         cancellation_token: cancellation_token.clone(),
+        collection_finished: CancellationToken::new(),
+        drain_policy: OutputDrainPolicy::BoundedAfterExit,
     };
 
     let collect = UnifiedExecProcessManager::collect_output_until_deadline(
@@ -327,11 +366,14 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
     );
     let produce = async {
         for chunk in chunks {
-            output_buffer.lock().await.push_chunk(chunk);
+            output_buffer
+                .lock()
+                .await
+                .push_chunk(ExecOutputStream::Stdout, chunk);
             output_notify.notify_one();
             tokio::time::timeout(Duration::from_secs(1), async {
                 loop {
-                    if output_buffer.lock().await.retained_bytes() == 0 {
+                    if output_buffer.lock().await.pending.retained_bytes() == 0 {
                         break;
                     }
                     tokio::task::yield_now().await;
@@ -353,13 +395,14 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         expected.push_chunk(chunk);
     }
     assert_eq!(collected, expected);
+    assert_eq!(output_buffer.lock().await.transcript, expected);
 }
 
 #[tokio::test]
 async fn output_collection_preserves_omissions_from_drained_buffer() {
-    let mut buffered_output = HeadTailBuffer::<10>::default();
-    buffered_output.push_chunk(&[b'a'; 10]);
-    buffered_output.push_chunk(b"overflow");
+    let mut buffered_output = OutputBuffers::<10>::default();
+    buffered_output.push_chunk(ExecOutputStream::Stdout, &[b'a'; 10]);
+    buffered_output.push_chunk(ExecOutputStream::Stdout, b"overflow");
     let mut expected = HeadTailBuffer::<10>::default();
     expected.push_chunk(&[b'a'; 10]);
     expected.push_chunk(b"overflow");
@@ -375,6 +418,8 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
         output_closed,
         output_closed_notify,
         cancellation_token,
+        collection_finished: CancellationToken::new(),
+        drain_policy: OutputDrainPolicy::BoundedAfterExit,
     };
 
     let collected = UnifiedExecProcessManager::collect_output_until_deadline(
@@ -418,47 +463,39 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         tokio_util::sync::CancellationToken::new(),
         "call-unified-denied".to_string(),
     );
+    let environment = turn
+        .initial_environments
+        .primary()
+        .expect("primary environment");
+    let prepared = ParsedExecCommand::parse(
+        r#"{"cmd":"echo before"}"#,
+        &session,
+        &context.step_context,
+        environment,
+    )
+    .expect("parse command")
+    .prepare(ExecCommandLifetime::Interactive)
+    .expect("prepare command");
     let request = ExecCommandRequest {
-        command: vec![
-            "sh".to_string(),
-            "-lc".to_string(),
-            "echo before".to_string(),
-        ],
-        shell_type: crate::shell::ShellType::Sh,
-        hook_command: "echo before".to_string(),
+        prepared,
         process_id: 123,
-        yield_time_ms: 1000,
-        max_output_tokens: None,
-        #[allow(deprecated)]
-        cwd: turn.cwd.clone().into(),
-        #[allow(deprecated)]
-        sandbox_cwd: turn.cwd.clone().into(),
-        turn_environment: turn
-            .environments
-            .primary()
-            .cloned()
-            .expect("primary environment"),
-        shell_mode: codex_tools::UnifiedExecShellMode::Direct,
         network: None,
-        tty: true,
-        sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
-        additional_permissions: None,
-        additional_permissions_preapproved: false,
-        justification: None,
-        prefix_rule: None,
     };
 
-    let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
-    transcript.lock().await.push_chunk(b"PARTIAL_TRANSCRIPT");
+    let output_buffer = Arc::new(tokio::sync::Mutex::new(OutputBuffers::default()));
+    output_buffer
+        .lock()
+        .await
+        .push_chunk(ExecOutputStream::Stdout, b"PARTIAL_TRANSCRIPT");
 
     emit_failed_initial_exec_end_if_unstored(
-        /*process_started_alive*/ false,
+        /*process_stored*/ false,
+        Some(codex_protocol::sandbox::SandboxType::WindowsMxc),
         &context,
         &request,
-        #[allow(deprecated)]
-        turn.cwd.clone().into(),
+        request.prepared.cwd.clone(),
         /*plugin_attribution*/ None,
-        transcript,
+        output_buffer,
         "PRE_DENIAL_MARKER".to_string(),
         "Network access denied".to_string(),
         Duration::from_millis(7),
@@ -476,6 +513,10 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
         panic!("expected CommandExecution item");
     };
     assert_eq!(item.id, "call-unified-denied");
+    assert_eq!(
+        item.sandbox_type,
+        Some(codex_protocol::sandbox::SandboxType::WindowsMxc)
+    );
     assert_eq!(
         item.status,
         codex_protocol::items::CommandExecutionStatus::Failed
@@ -602,7 +643,9 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                 tty: false,
                 environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
                 permissions: super::super::TerminalPermissions::for_launch(
-                    turn.environments.primary().expect("turn environment"),
+                    turn.initial_environments
+                        .primary()
+                        .expect("turn environment"),
                     &turn,
                     super::super::TerminalSandboxSource::Native,
                     crate::sandboxing::SandboxPermissions::UseDefault,
@@ -636,10 +679,16 @@ fn a_poll_without_a_tty_waits_at_least_three_minutes_by_default() {
     use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
     use crate::unified_exec::empty_poll_floor_ms_with;
     let default = byteask_output_reducers::Policy::default();
-    assert_eq!(empty_poll_floor_ms_with(&default, /*tty*/ false), DEFAULT_EMPTY_POLL_MIN_MS);
+    assert_eq!(
+        empty_poll_floor_ms_with(&default, /*tty*/ false),
+        DEFAULT_EMPTY_POLL_MIN_MS
+    );
     assert_eq!(DEFAULT_EMPTY_POLL_MIN_MS, 180_000);
     // A TTY session may be an interactive program: upstream's floor stays.
-    assert_eq!(empty_poll_floor_ms_with(&default, /*tty*/ true), MIN_EMPTY_YIELD_TIME_MS);
+    assert_eq!(
+        empty_poll_floor_ms_with(&default, /*tty*/ true),
+        MIN_EMPTY_YIELD_TIME_MS
+    );
     // The served policy tunes it; the brake restores upstream's behaviour.
     let tuned = byteask_output_reducers::Policy::from_catalog_json(
         r#"{"byteask_efficiency":{"numbers":{"empty_poll_min_ms":120000}}}"#,
@@ -648,7 +697,10 @@ fn a_poll_without_a_tty_waits_at_least_three_minutes_by_default() {
     let braked = byteask_output_reducers::Policy::from_catalog_json(
         r#"{"byteask_efficiency":{"brake":true,"numbers":{"empty_poll_min_ms":120000}}}"#,
     );
-    assert_eq!(empty_poll_floor_ms_with(&braked, /*tty*/ false), MIN_EMPTY_YIELD_TIME_MS);
+    assert_eq!(
+        empty_poll_floor_ms_with(&braked, /*tty*/ false),
+        MIN_EMPTY_YIELD_TIME_MS
+    );
 }
 
 #[test]
@@ -658,7 +710,10 @@ fn a_first_wait_without_a_tty_is_at_least_thirty_seconds_by_default() {
     let default = byteask_output_reducers::Policy::default();
     assert_eq!(DEFAULT_FIRST_YIELD_MIN_MS, 30_000);
     assert_eq!(exec_yield_time_with(&default, 1_000, /*tty*/ false), 30_000);
-    assert_eq!(exec_yield_time_with(&default, 20_000, /*tty*/ false), 30_000);
+    assert_eq!(
+        exec_yield_time_with(&default, 20_000, /*tty*/ false),
+        30_000
+    );
     // Never above the cap: upstream's 30 s, or the policy's first_yield_ms.
     assert_eq!(
         exec_yield_time_with(&default, 999_999, /*tty*/ false),

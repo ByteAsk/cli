@@ -113,7 +113,9 @@ pub fn detect_recipe(root: &Path, jobs: usize) -> Option<Recipe> {
             build: format!(
                 "cmake -S . -B _byteask_build -DCMAKE_BUILD_TYPE=Debug >/dev/null && cmake --build _byteask_build -- -j{jobs}"
             ),
-            test: Some(format!("cd _byteask_build && ctest --output-on-failure -j{jobs}")),
+            test: Some(format!(
+                "cd _byteask_build && ctest --output-on-failure -j{jobs}"
+            )),
             source: "detected: CMakeLists.txt".to_string(),
         });
     }
@@ -169,7 +171,9 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             cancel.cancel();
         });
-        let out = ctx.step("sleep 30", dir.path(), Duration::from_secs(60)).await;
+        let out = ctx
+            .step("sleep 30", dir.path(), Duration::from_secs(60))
+            .await;
         assert!(out.is_none());
         assert!(started.elapsed() < Duration::from_secs(10));
     }

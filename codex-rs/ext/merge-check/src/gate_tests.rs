@@ -97,9 +97,16 @@ fn approval(reviewer: &str, head: &str, at_ms: u64) -> Approval {
 #[tokio::test]
 async fn all_pass_for_the_same_content_key_allows_the_merge() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
+    let head = world
+        .fixture
+        .branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
     let report = world.run(&head).await;
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "run.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "run.json",
+    );
     let decision = world.gate(&head, &[]).await;
     assert!(decision.allowed, "{decision:?}");
     assert_eq!(decision.verdict, Verdict::Pass);
@@ -110,26 +117,55 @@ async fn all_pass_for_the_same_content_key_allows_the_merge() {
 #[tokio::test]
 async fn a_fail_blocks_the_merge() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("red", |repo| testing::write(repo, "build-fails", ""));
+    let head = world
+        .fixture
+        .branch("red", |repo| testing::write(repo, "build-fails", ""));
     let report = world.run(&head).await;
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "run.json");
-    let decision = world.gate(&head, &[approval("alice", &head, u64::MAX)]).await;
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "run.json",
+    );
+    let decision = world
+        .gate(&head, &[approval("alice", &head, u64::MAX)])
+        .await;
     assert!(!decision.allowed);
     assert_eq!(decision.verdict, Verdict::Fail);
-    assert!(decision.summary.starts_with("FAIL: build"), "{}", decision.summary);
+    assert!(
+        decision.summary.starts_with("FAIL: build"),
+        "{}",
+        decision.summary
+    );
 }
 
 /// NOT RUN blocks; a repository with no profile shows NOT RUN (no build profile).
 #[tokio::test]
 async fn not_run_blocks_and_no_profile_is_not_run_no_build_profile() {
     let world = World::new(Fixture::with_profile(None));
-    let head = world.fixture.branch("f", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
+    let head = world
+        .fixture
+        .branch("f", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
     let report = world.run(&head).await;
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "run.json");
-    let decision = world.gate(&head, &[approval("alice", &head, u64::MAX)]).await;
-    assert!(!decision.allowed, "no profile: a reviewer cannot approve it by default");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "run.json",
+    );
+    let decision = world
+        .gate(&head, &[approval("alice", &head, u64::MAX)])
+        .await;
+    assert!(
+        !decision.allowed,
+        "no profile: a reviewer cannot approve it by default"
+    );
     assert_eq!(decision.verdict, Verdict::NotRun);
-    assert!(decision.summary.starts_with("NOT RUN (no build profile)"), "{}", decision.summary);
+    assert!(
+        decision.summary.starts_with("NOT RUN (no build profile)"),
+        "{}",
+        decision.summary
+    );
 }
 
 /// A NOT RUN reason the profile lets a reviewer approve goes through only with a
@@ -137,18 +173,35 @@ async fn not_run_blocks_and_no_profile_is_not_run_no_build_profile() {
 #[tokio::test]
 async fn an_approvable_not_run_needs_a_person_approving_this_exact_version() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("docs", |repo| testing::write(repo, "README.md", "# more\n"));
+    let head = world
+        .fixture
+        .branch("docs", |repo| testing::write(repo, "README.md", "# more\n"));
     let report = world.run(&head).await;
-    let signed = world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "run.json");
+    let signed = world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "run.json",
+    );
     let at = signed.signed_ms;
 
     let blocked = world.gate(&head, &[]).await;
     assert!(!blocked.allowed);
-    assert!(blocked.summary.contains("A reviewer may approve"), "{}", blocked.summary);
+    assert!(
+        blocked.summary.contains("A reviewer may approve"),
+        "{}",
+        blocked.summary
+    );
 
     let not_counting = [
-        Approval { is_bot: true, ..approval("ci-bot[bot]", &head, at + 1) },
-        Approval { is_author: true, ..approval("author", &head, at + 1) },
+        Approval {
+            is_bot: true,
+            ..approval("ci-bot[bot]", &head, at + 1)
+        },
+        Approval {
+            is_author: true,
+            ..approval("author", &head, at + 1)
+        },
         approval("alice", "0000000000000000000000000000000000000000", at + 1),
         approval("alice", &head, at - 1),
     ];
@@ -159,9 +212,15 @@ async fn an_approvable_not_run_needs_a_person_approving_this_exact_version() {
 
     let decision = world.gate(&head, &[approval("alice", &head, at + 1)]).await;
     assert!(decision.allowed);
-    assert_eq!(decision.verdict, Verdict::NotRun, "approved, but never PASS");
+    assert_eq!(
+        decision.verdict,
+        Verdict::NotRun,
+        "approved, but never PASS"
+    );
     assert_eq!(decision.approved_by.as_deref(), Some("alice"));
-    assert!(decision.summary.contains("approved by alice") && decision.summary.contains("Not a pass"));
+    assert!(
+        decision.summary.contains("approved by alice") && decision.summary.contains("Not a pass")
+    );
 }
 
 /// Nothing local or unsigned counts. With only forged results the merge check finds
@@ -169,7 +228,9 @@ async fn an_approvable_not_run_needs_a_person_approving_this_exact_version() {
 #[tokio::test]
 async fn tampered_unsigned_and_local_results_are_ignored() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("bad", |repo| testing::write(repo, "build-fails", ""));
+    let head = world
+        .fixture
+        .branch("bad", |repo| testing::write(repo, "build-fails", ""));
     let report = world.run(&head).await;
     assert_eq!(report.results[0].verdict, Verdict::Fail);
     // The AI or the developer edits the real FAIL into a PASS after signing.
@@ -177,12 +238,20 @@ async fn tampered_unsigned_and_local_results_are_ignored() {
     for result in &mut forged.results {
         *result = CheckResult::pass(&result.check, "forged").with_content_key(&report.content_key);
     }
-    let mut envelope = world.ci.sign(RunnerKind::Ci, serde_json::to_string(&report).unwrap(), world.tick());
+    let mut envelope = world.ci.sign(
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        world.tick(),
+    );
     world.server.record(&envelope);
     envelope.payload = serde_json::to_string(&forged).unwrap();
     world.file("edited.json", &envelope);
     // An unsigned report, and a laptop's local results-store entry for the same key.
-    std::fs::write(world.evidence.join("unsigned.json"), serde_json::to_string(&forged).unwrap()).unwrap();
+    std::fs::write(
+        world.evidence.join("unsigned.json"),
+        serde_json::to_string(&forged).unwrap(),
+    )
+    .unwrap();
     std::fs::write(
         world.evidence.join("index.json"),
         serde_json::json!({"entries": [{"result": forged.results[0], "root": "/home/dev/repo", "at": 1,
@@ -192,16 +261,33 @@ async fn tampered_unsigned_and_local_results_are_ignored() {
     .unwrap();
     // Signed by a key nobody enrolled.
     let stranger = RunnerKey::from_seed([66u8; 32]);
-    let envelope = stranger.sign(RunnerKind::Ci, serde_json::to_string(&forged).unwrap(), world.tick());
+    let envelope = stranger.sign(
+        RunnerKind::Ci,
+        serde_json::to_string(&forged).unwrap(),
+        world.tick(),
+    );
     world.file("stranger.json", &envelope);
     // Signed by the bench key (enrolled, wrong kind).
-    let envelope = world.bench.sign(RunnerKind::Ci, serde_json::to_string(&forged).unwrap(), world.tick());
+    let envelope = world.bench.sign(
+        RunnerKind::Ci,
+        serde_json::to_string(&forged).unwrap(),
+        world.tick(),
+    );
     world.file("bench-as-ci.json", &envelope);
 
-    let decision = world.gate(&head, &[approval("alice", &head, u64::MAX)]).await;
+    let decision = world
+        .gate(&head, &[approval("alice", &head, u64::MAX)])
+        .await;
     assert!(!decision.allowed);
     assert_eq!(decision.verdict, Verdict::NotRun);
-    assert!(decision.checks.iter().all(|c| c.reason == Some(NotRunReason::NotChecked)), "{:?}", decision.checks);
+    assert!(
+        decision
+            .checks
+            .iter()
+            .all(|c| c.reason == Some(NotRunReason::NotChecked)),
+        "{:?}",
+        decision.checks
+    );
     let ignored = decision.ignored.join("\n");
     for (file, why) in [
         ("edited.json", "signature does not verify"),
@@ -211,13 +297,20 @@ async fn tampered_unsigned_and_local_results_are_ignored() {
         ("bench-as-ci.json", "bench runner key"),
     ] {
         assert!(
-            ignored.lines().any(|line| line.contains(file) && line.contains(why)),
+            ignored
+                .lines()
+                .any(|line| line.contains(file) && line.contains(why)),
             "{file} should be ignored because {why}:\n{ignored}"
         );
     }
 
     // The real, signed FAIL counts.
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "real.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "real.json",
+    );
     let decision = world.gate(&head, &[]).await;
     assert_eq!(decision.verdict, Verdict::Fail);
 }
@@ -226,11 +319,16 @@ async fn tampered_unsigned_and_local_results_are_ignored() {
 #[tokio::test]
 async fn retirement_keeps_recorded_results_and_revocation_drops_all() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
+    let head = world
+        .fixture
+        .branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
     let report = serde_json::to_string(&world.run(&head).await).unwrap();
     world.sign(&world.ci, RunnerKind::Ci, report.clone(), "run.json");
     world.server.retire(&world.ci);
-    assert!(world.gate(&head, &[]).await.allowed, "recorded before retirement: still valid");
+    assert!(
+        world.gate(&head, &[]).await.allowed,
+        "recorded before retirement: still valid"
+    );
     // A signature the retired key makes afterwards does not count.
     std::fs::remove_file(world.evidence.join("run.json")).unwrap();
     let late = world.ci.sign(RunnerKind::Ci, report.clone(), world.tick());
@@ -245,20 +343,35 @@ async fn retirement_keeps_recorded_results_and_revocation_drops_all() {
     world.server.revoke(&other);
     let decision = world.gate(&head, &[]).await;
     assert!(!decision.allowed);
-    assert!(decision.ignored.join("\n").contains("revoked"), "{:?}", decision.ignored);
+    assert!(
+        decision.ignored.join("\n").contains("revoked"),
+        "{:?}",
+        decision.ignored
+    );
 }
 
 /// When the enterprise server cannot be asked, nothing counts (never accept on an error).
 #[tokio::test]
 async fn an_unreachable_verifier_accepts_nothing() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
+    let head = world
+        .fixture
+        .branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
     let report = world.run(&head).await;
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "run.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "run.json",
+    );
     *world.server.down.lock().unwrap() = true;
     let decision = world.gate(&head, &[]).await;
     assert!(!decision.allowed);
-    assert!(decision.ignored[0].contains("could not be checked"), "{:?}", decision.ignored);
+    assert!(
+        decision.ignored[0].contains("could not be checked"),
+        "{:?}",
+        decision.ignored
+    );
 }
 
 /// After a PASS, a base-only update makes a new merge candidate: the old PASS does not
@@ -266,21 +379,49 @@ async fn an_unreachable_verifier_accepts_nothing() {
 #[tokio::test]
 async fn a_base_only_update_after_pass_forces_a_rerun() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("feature", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
+    let head = world.fixture.branch("feature", |repo| {
+        testing::write(repo, "src/book.cpp", "v2\n")
+    });
     let report = world.run(&head).await;
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "run1.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "run1.json",
+    );
     assert!(world.gate(&head, &[]).await.allowed);
     assert_eq!(world.fixture.builds(), 1);
 
-    world.fixture.advance_main(|repo| testing::write(repo, "src/other.cpp", "base change\n"));
-    let stale = world.gate(&head, &[approval("alice", &head, u64::MAX)]).await;
+    world
+        .fixture
+        .advance_main(|repo| testing::write(repo, "src/other.cpp", "base change\n"));
+    let stale = world
+        .gate(&head, &[approval("alice", &head, u64::MAX)])
+        .await;
     assert!(!stale.allowed, "the earlier PASS was for the old base");
-    assert!(stale.checks.iter().all(|c| c.reason == Some(NotRunReason::NotChecked)));
-    assert!(stale.ignored.iter().any(|why| why.contains("another version")), "{:?}", stale.ignored);
+    assert!(
+        stale
+            .checks
+            .iter()
+            .all(|c| c.reason == Some(NotRunReason::NotChecked))
+    );
+    assert!(
+        stale
+            .ignored
+            .iter()
+            .any(|why| why.contains("another version")),
+        "{:?}",
+        stale.ignored
+    );
 
     let rerun = world.run(&head).await;
     assert_eq!(world.fixture.builds(), 2, "the checks ran again");
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&rerun).unwrap(), "run2.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&rerun).unwrap(),
+        "run2.json",
+    );
     let decision = world.gate(&head, &[]).await;
     assert!(decision.allowed && decision.verdict == Verdict::Pass);
 
@@ -311,12 +452,24 @@ fn ut_report(base: &str, head: &str, gate: &str, verdict: &str) -> serde_json::V
 #[tokio::test]
 async fn a_marked_change_needs_a_signed_bench_result_and_gets_a_perf_card() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("hot", |repo| testing::write(repo, "src/hot/feed.cpp", "fast\n"));
+    let head = world.fixture.branch("hot", |repo| {
+        testing::write(repo, "src/hot/feed.cpp", "fast\n")
+    });
     let report = world.run(&head).await;
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "run.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "run.json",
+    );
     let without = world.gate(&head, &[]).await;
     assert!(!without.allowed);
-    assert!(without.checks.iter().any(|c| c.check == "perf" && c.reason == Some(NotRunReason::NotChecked)));
+    assert!(
+        without
+            .checks
+            .iter()
+            .any(|c| c.check == "perf" && c.reason == Some(NotRunReason::NotChecked))
+    );
 
     let candidate = world.candidate(&head);
     let commit = crate::git::commit_tree(
@@ -327,11 +480,24 @@ async fn a_marked_change_needs_a_signed_bench_result_and_gets_a_perf_card() {
     .unwrap();
     let ut = ut_report(&candidate.binding.base_commit, &commit, "PASS", "NO_CLAIM");
     let repo = world.fixture.repo.clone();
-    let evidence = PerfEvidence::bind(ut, &candidate.binding, |c| crate::git::tree_of(&repo, c).ok()).unwrap();
+    let evidence = PerfEvidence::bind(ut, &candidate.binding, |c| {
+        crate::git::tree_of(&repo, c).ok()
+    })
+    .unwrap();
     // Signed by the CI key it does not count; by the bench key it does.
-    world.sign(&world.ci, RunnerKind::Bench, serde_json::to_string(&evidence).unwrap(), "perf-by-ci.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Bench,
+        serde_json::to_string(&evidence).unwrap(),
+        "perf-by-ci.json",
+    );
     assert!(!world.gate(&head, &[]).await.allowed);
-    world.sign(&world.bench, RunnerKind::Bench, serde_json::to_string(&evidence).unwrap(), "perf.json");
+    world.sign(
+        &world.bench,
+        RunnerKind::Bench,
+        serde_json::to_string(&evidence).unwrap(),
+        "perf.json",
+    );
     let decision = world.gate(&head, &[]).await;
     assert!(decision.allowed, "{decision:?}");
     assert_eq!(decision.verdict, Verdict::Pass);
@@ -345,7 +511,9 @@ async fn a_marked_change_needs_a_signed_bench_result_and_gets_a_perf_card() {
 #[tokio::test]
 async fn a_bench_result_for_an_older_base_does_not_count() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("hot", |repo| testing::write(repo, "src/hot/feed.cpp", "fast\n"));
+    let head = world.fixture.branch("hot", |repo| {
+        testing::write(repo, "src/hot/feed.cpp", "fast\n")
+    });
     let candidate = world.candidate(&head);
     let commit = crate::git::commit_tree(
         &world.fixture.repo,
@@ -355,16 +523,34 @@ async fn a_bench_result_for_an_older_base_does_not_count() {
     .unwrap();
     let ut = ut_report(&candidate.binding.base_commit, &commit, "PASS", "NO_CLAIM");
     let repo = world.fixture.repo.clone();
-    let old = PerfEvidence::bind(ut, &candidate.binding, |c| crate::git::tree_of(&repo, c).ok()).unwrap();
-    world.sign(&world.bench, RunnerKind::Bench, serde_json::to_string(&old).unwrap(), "perf-old.json");
-    world.fixture.advance_main(|repo| testing::write(repo, "src/other.cpp", "base moves\n"));
+    let old = PerfEvidence::bind(ut, &candidate.binding, |c| {
+        crate::git::tree_of(&repo, c).ok()
+    })
+    .unwrap();
+    world.sign(
+        &world.bench,
+        RunnerKind::Bench,
+        serde_json::to_string(&old).unwrap(),
+        "perf-old.json",
+    );
+    world
+        .fixture
+        .advance_main(|repo| testing::write(repo, "src/other.cpp", "base moves\n"));
     let report = world.run(&head).await;
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "run.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "run.json",
+    );
     let decision = world.gate(&head, &[]).await;
     assert!(!decision.allowed, "{decision:?}");
     assert!(decision.perf_card.is_none());
     assert!(
-        decision.ignored.iter().any(|why| why.contains("perf-old.json") && why.contains("another version")),
+        decision
+            .ignored
+            .iter()
+            .any(|why| why.contains("perf-old.json") && why.contains("another version")),
         "{:?}",
         decision.ignored
     );
@@ -375,12 +561,19 @@ async fn a_bench_result_for_an_older_base_does_not_count() {
 #[tokio::test]
 async fn a_signed_report_with_results_for_another_version_does_not_count() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
+    let head = world
+        .fixture
+        .branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
     let mut report = world.run(&head).await;
     for result in &mut report.results {
         result.content_key = Some("0".repeat(64));
     }
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "odd.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "odd.json",
+    );
     let decision = world.gate(&head, &[]).await;
     assert!(!decision.allowed);
     assert!(
@@ -397,7 +590,9 @@ async fn a_signed_report_with_results_for_another_version_does_not_count() {
 #[tokio::test]
 async fn the_run_jobs_build_environment_travels_with_its_report() {
     let world = World::new(Fixture::new());
-    let head = world.fixture.branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
+    let head = world
+        .fixture
+        .branch("good", |repo| testing::write(repo, "src/book.cpp", "v2\n"));
     let candidate = world.candidate(&head);
     let mut report = world.run(&head).await;
     // As if the run job had CC=clang-18 and the gate job nothing.
@@ -407,8 +602,16 @@ async fn the_run_jobs_build_environment_travels_with_its_report() {
         result.content_key = Some(report.content_key.clone());
     }
     assert_ne!(report.content_key, candidate.binding.content_key());
-    assert_eq!(report.binding.candidate_key(), candidate.binding.candidate_key());
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&report).unwrap(), "run.json");
+    assert_eq!(
+        report.binding.candidate_key(),
+        candidate.binding.candidate_key()
+    );
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&report).unwrap(),
+        "run.json",
+    );
     assert!(world.gate(&head, &[]).await.allowed);
 
     let mut lying = report.clone();
@@ -417,8 +620,20 @@ async fn the_run_jobs_build_environment_travels_with_its_report() {
         result.content_key = Some(lying.content_key.clone());
     }
     std::fs::remove_file(world.evidence.join("run.json")).unwrap();
-    world.sign(&world.ci, RunnerKind::Ci, serde_json::to_string(&lying).unwrap(), "lying.json");
+    world.sign(
+        &world.ci,
+        RunnerKind::Ci,
+        serde_json::to_string(&lying).unwrap(),
+        "lying.json",
+    );
     let decision = world.gate(&head, &[]).await;
     assert!(!decision.allowed);
-    assert!(decision.ignored.iter().any(|why| why.contains("lying.json")), "{:?}", decision.ignored);
+    assert!(
+        decision
+            .ignored
+            .iter()
+            .any(|why| why.contains("lying.json")),
+        "{:?}",
+        decision.ignored
+    );
 }

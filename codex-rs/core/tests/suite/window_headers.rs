@@ -1,4 +1,3 @@
-use super::compact::expect_turn_complete_without_compact_warning;
 use anyhow::Result;
 use codex_core::CodexThread;
 use codex_core::TurnInputRequest;
@@ -66,12 +65,10 @@ async fn window_id_advances_after_compact_persists_on_resume_and_resets_on_fork(
 
     let forked = resumed
         .thread_manager
-        .fork_thread(
+        .fork_legacy_thread(
             /*snapshot*/ 0usize,
-            resumed.config.clone(),
+            codex_core::StartThreadOptions::new(resumed.config.clone()),
             rollout_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await?;
     submit_user_turn(&forked.thread, "after fork").await?;
@@ -152,9 +149,7 @@ async fn submit_user_turn(codex: &Arc<CodexThread>, text: &str) -> Result<()> {
 
 async fn submit_compact_turn(codex: &Arc<CodexThread>) -> Result<()> {
     codex.submit(Op::Compact).await?;
-    // The first compaction in a window no longer warns (ByteAsk: the warning is for
-    // repeated compactions only); the turn must still complete normally.
-    expect_turn_complete_without_compact_warning(codex).await;
+    wait_for_event(codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     Ok(())
 }
 

@@ -282,14 +282,9 @@ g
 async fn strict_check(dir: &std::path::Path, body: &str) -> Result<(), String> {
     let args = parse_patch(&wrap_patch(body)).expect("patch parses");
     let cwd = PathUri::from_host_native_path(dir).expect("absolute test dir");
-    for mode in [
-        ApplyPatchFileUpdateMode::NormalizeToLf,
-        ApplyPatchFileUpdateMode::PreserveLineEndings,
-    ] {
-        crate::check_unambiguous_hunks(&args, &cwd, mode, LOCAL_FS.as_ref(), /*sandbox*/ None)
-            .await
-            .map_err(|err| err.to_string())?;
-    }
+    crate::check_unambiguous_hunks(&args, &cwd, LOCAL_FS.as_ref(), /*sandbox*/ None)
+        .await
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 

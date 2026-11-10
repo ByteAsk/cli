@@ -25,6 +25,7 @@ pub mod prompts;
 pub mod report;
 pub mod runner;
 pub mod settings;
+pub mod spawner;
 
 pub use extension::install;
 pub use extension::is_build_or_test_command;

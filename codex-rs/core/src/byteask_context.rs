@@ -673,9 +673,12 @@ async fn call_context_tool(
     timeout: Duration,
 ) -> Result<(bool, String), String> {
     let call = async {
-        let prepared = sess.prepare_mcp_call(server, tool).await.ok_or_else(|| {
-            "ByteAsk Context is not connected (byteask context connect)".to_string()
-        })?;
+        let prepared = sess
+            .prepare_mcp_call_by_name(server, tool)
+            .await
+            .ok_or_else(|| {
+                "ByteAsk Context is not connected (byteask context connect)".to_string()
+            })?;
         let result = prepared
             // The outer timeout below is the one that counts (and is reported as a timeout).
             .call(Some(JsonValue::Object(arguments)), None, None)
@@ -1043,7 +1046,13 @@ pub fn set_agent_command_hook(hook: AgentCommandHook) {
 
 /// The headless runner calls this for each of the agent's finished shell commands that builds or runs tests;
 /// nothing happens without a registered hook.
-pub fn note_agent_command(command: &str, builds: bool, tests: bool, exit_code: Option<i32>, output: &str) {
+pub fn note_agent_command(
+    command: &str,
+    builds: bool,
+    tests: bool,
+    exit_code: Option<i32>,
+    output: &str,
+) {
     if let Some(hook) = AGENT_COMMAND_HOOK.get() {
         hook(command, builds, tests, exit_code, output);
     }
@@ -1098,7 +1107,8 @@ fn register_related_changes(sess: &Arc<Session>, server: &str, top: &Path) {
                 .ok_or_else(|| "the session has ended".to_string())?;
             let arguments = change_arguments(RELATED_TOOL, input, &root).await;
             let (is_error, text) =
-                call_context_tool(&sess, &server, RELATED_TOOL, arguments, related_timeout()).await?;
+                call_context_tool(&sess, &server, RELATED_TOOL, arguments, related_timeout())
+                    .await?;
             if is_error {
                 return Err(first_line(&text));
             }

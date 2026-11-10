@@ -1,3 +1,4 @@
+use crate::context::CurrentTimeUnavailable;
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
@@ -8,6 +9,7 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use codex_extension_items::ExtensionItem;
 use codex_extension_items::sleep::SleepItem;
+use codex_features::Feature;
 use codex_protocol::items::TurnItem;
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiNamespace;
@@ -151,7 +153,7 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
                 .into_iter()
                 .map(|terminal| terminal.process_id)
                 .collect();
-            let sleep_result: Result<Woke, FunctionCallError> = if pending_activity.is_some() {
+            let sleep_result = if pending_activity.is_some() {
                 Ok(Woke::NewInput)
             } else {
                 let sleep = session
@@ -162,28 +164,30 @@ impl ToolExecutor<ToolInvocation> for SleepHandler {
                 let exited = background_exited(session.as_ref(), watched);
                 tokio::pin!(exited);
                 tokio::select! {
-                    result = &mut sleep => result
-                        .map(|()| Woke::Completed)
-                        .map_err(|err| {
-                            FunctionCallError::Fatal(format!("failed to sleep: {err:#}"))
-                        }),
+                    result = &mut sleep => result.map(|()| Woke::Completed),
                     result = activity_rx.changed() => {
                         if result.is_ok() {
                             Ok(Woke::NewInput)
                         } else {
-                            sleep
-                                .await
-                                .map(|()| Woke::Completed)
-                                .map_err(|err| {
-                                    FunctionCallError::Fatal(format!("failed to sleep: {err:#}"))
-                                })
+                            sleep.await.map(|()| Woke::Completed)
                         }
                     }
                     ids = &mut exited => Ok(Woke::BackgroundExited(ids)),
                 }
             };
             session.emit_turn_item_completed(turn.as_ref(), item).await;
-            let woke = sleep_result?;
+            let woke = sleep_result.map_err(|err| {
+                if turn.config.features.enabled(Feature::NonfatalClockReadErrors) {
+                    tracing::error!(
+                        thread_id = %session.thread_id,
+                        turn_id = %turn.sub_id,
+                        "failed to read current time for the sleep tool; the clock provider may be stalled"
+                    );
+                    FunctionCallError::RespondToModel(CurrentTimeUnavailable::MESSAGE.to_string())
+                } else {
+                    FunctionCallError::Fatal(format!("failed to sleep: {err:#}"))
+                }
+            })?;
 
             let message = match woke {
                 Woke::NewInput => "Sleep interrupted by new input.".to_string(),

@@ -316,7 +316,10 @@ pub fn set_relaxed(home: &Path, project: &Path, relaxed: bool) -> io::Result<Pat
     let wanted = project.to_string_lossy().into_owned();
     update(home, |doc| {
         // A `sandbox` that is not a table was already read as corrupt (all defaults).
-        if !doc.get("sandbox").is_some_and(toml_edit::Item::is_table_like) {
+        if !doc
+            .get("sandbox")
+            .is_some_and(toml_edit::Item::is_table_like)
+        {
             doc["sandbox"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
         let list = doc
@@ -465,8 +468,8 @@ pub use results_store::results_store_limits;
 
 mod network;
 mod sandbox_required;
-pub use sandbox_required::sandbox_required;
 pub use network::LOCAL_ONLY_FIX;
 pub use network::local_only;
 pub use network::local_only_summary;
 pub use network::set_local_only;
+pub use sandbox_required::sandbox_required;

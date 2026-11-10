@@ -9,11 +9,11 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use crate::spawner::AgentSpawner;
 use codex_core::NewThread;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
-use codex_extension_api::AgentSpawner;
 use codex_extension_api::ContextualUserFragment;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
@@ -84,7 +84,9 @@ pub struct SubagentsExtension<S> {
 
 fn child_label(source: &SessionSource) -> Option<&str> {
     match source {
-        SessionSource::SubAgent(SubAgentSource::Other(label)) if label.starts_with(CHILD_LABEL_PREFIX) => {
+        SessionSource::SubAgent(SubAgentSource::Other(label))
+            if label.starts_with(CHILD_LABEL_PREFIX) =>
+        {
             Some(label.as_str())
         }
         _ => None,
@@ -112,7 +114,8 @@ pub fn is_build_or_test_command(cmd: &str) -> bool {
         .filter(|tok| !tok.is_empty())
         .any(|tok| {
             let base = tok.rsplit('/').next().unwrap_or(tok);
-            TOOLS.contains(&base) || (base.contains("test") && (tok.starts_with("./") || tok.contains('/')))
+            TOOLS.contains(&base)
+                || (base.contains("test") && (tok.starts_with("./") || tok.contains('/')))
         })
 }
 
@@ -137,7 +140,10 @@ impl<S> ThreadLifecycleContributor<Config> for SubagentsExtension<S>
 where
     S: Send + Sync,
 {
-    fn on_thread_start<'a>(&'a self, input: ThreadStartInput<'a, Config>) -> ExtensionFuture<'a, ()> {
+    fn on_thread_start<'a>(
+        &'a self,
+        input: ThreadStartInput<'a, Config>,
+    ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if child_label(input.session_source).is_some() {
                 input.thread_store.insert(ChildMarker);
@@ -246,7 +252,8 @@ where
             match Orchestration::start(params, host, self.counters.clone()).await {
                 Ok(orch) => {
                     if run_attempts {
-                        orch.attempts.configure(state.attempts.0.clone(), state.attempts.1);
+                        orch.attempts
+                            .configure(state.attempts.0.clone(), state.attempts.1);
                     }
                     if let Ok(mut slot) = state.orchestration.lock() {
                         *slot = Some(orch);
@@ -314,7 +321,10 @@ where
                 self.counters.bump(thread_store.level_id());
                 let total = token_usage.total_token_usage.input_tokens
                     + token_usage.total_token_usage.output_tokens;
-                crate::attempts::meter::record(thread_store.level_id(), u64::try_from(total).unwrap_or(0));
+                crate::attempts::meter::record(
+                    thread_store.level_id(),
+                    u64::try_from(total).unwrap_or(0),
+                );
             }
         })
     }
@@ -326,7 +336,10 @@ where
 {
     /// Tier B observes (never adds anything): the root turn's id and its final message each
     /// time the model ends the turn; the last one before the turn ends is attempt 1's.
-    fn before_stop<'a>(&'a self, input: TurnGateInput<'a>) -> ExtensionFuture<'a, TurnGateFragments> {
+    fn before_stop<'a>(
+        &'a self,
+        input: TurnGateInput<'a>,
+    ) -> ExtensionFuture<'a, TurnGateFragments> {
         Box::pin(async move {
             if input.turn_store.get::<OrchestrationTurn>().is_some()
                 && let Some(orch) = input
@@ -334,7 +347,8 @@ where
                     .get::<RootState>()
                     .and_then(|s| s.orchestration.lock().ok().and_then(|o| o.clone()))
             {
-                orch.attempts.observe_turn_end(input.turn_id, input.last_agent_message);
+                orch.attempts
+                    .observe_turn_end(input.turn_id, input.last_agent_message);
             }
             Vec::new()
         })
@@ -362,7 +376,10 @@ where
                 && let Ok(mut held) = self.held.lock()
             {
                 held.insert(
-                    (input.thread_store.level_id().to_string(), input.call_id.to_string()),
+                    (
+                        input.thread_store.level_id().to_string(),
+                        input.call_id.to_string(),
+                    ),
                     permit,
                 );
             }
@@ -375,7 +392,10 @@ where
                 return;
             }
             if let Ok(mut held) = self.held.lock() {
-                held.remove(&(input.thread_store.level_id().to_string(), input.call_id.to_string()));
+                held.remove(&(
+                    input.thread_store.level_id().to_string(),
+                    input.call_id.to_string(),
+                ));
             }
         })
     }
@@ -424,7 +444,12 @@ mod tests {
         ] {
             assert!(is_build_or_test_command(cmd), "{cmd}");
         }
-        for cmd in ["ls -la", "grep -rn test src/", "cat tests/a.cpp", "git diff"] {
+        for cmd in [
+            "ls -la",
+            "grep -rn test src/",
+            "cat tests/a.cpp",
+            "git diff",
+        ] {
             assert!(!is_build_or_test_command(cmd), "{cmd}");
         }
     }

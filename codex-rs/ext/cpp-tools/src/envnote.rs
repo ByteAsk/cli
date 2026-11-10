@@ -209,7 +209,11 @@ fn render(facts: &Facts) -> String {
         out.push_str(&format!(" (project in {project}/)"));
     }
     if !facts.build_dirs.is_empty() {
-        let prefix = facts.project.as_ref().map(|p| format!("{p}/")).unwrap_or_default();
+        let prefix = facts
+            .project
+            .as_ref()
+            .map(|p| format!("{p}/"))
+            .unwrap_or_default();
         let dirs: Vec<String> = facts
             .build_dirs
             .iter()
