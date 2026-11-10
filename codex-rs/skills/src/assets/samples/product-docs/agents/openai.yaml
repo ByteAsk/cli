@@ -1,0 +1,4 @@
+interface:
+  display_name: "Product Docs"
+  short_description: "ByteAsk docs for models, plans, settings and setup; OpenAI API docs"
+  default_prompt: "Use Product Docs for questions about ByteAsk itself and its surfaces, and for official OpenAI API docs, model selection, model migration and prompt-upgrade work."

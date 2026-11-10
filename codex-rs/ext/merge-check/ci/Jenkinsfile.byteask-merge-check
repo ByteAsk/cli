@@ -1,0 +1,46 @@
+// ByteAsk merge check for Jenkins. Load this from the PROTECTED base branch (a
+// Jenkinsfile in a separate, trusted repository, or "Pipeline script from SCM" pinned to the
+// base branch), never from the branch being checked. Tested against local files only.
+//
+// run   - on an agent that runs the branch's code; no key.
+// sign  - on the `byteask-signer` agent, git plumbing only; the runner key is a credential.
+// gate  - verifies signed results; writes byteask-merge-check.md (summary) and
+//         byteask-merge-check.xml (JUnit: PASS passed, FAIL failed, NOT RUN skipped). The step's
+//         exit status blocks: 0 allowed, 1 blocked, 2 could not decide.
+pipeline {
+  agent none
+  stages {
+    stage('byteask run') {
+      agent { label 'byteask-ci' }
+      steps {
+        sh 'git fetch --no-tags origin "$CHANGE_TARGET"'
+        sh 'byteask checks run --base "origin/$CHANGE_TARGET" --head HEAD --out run.json'
+        stash name: 'byteask-run', includes: 'run.json'
+      }
+    }
+    stage('byteask sign') {
+      agent { label 'byteask-signer' }
+      steps {
+        unstash 'byteask-run'
+        sh 'git fetch --no-tags origin "$CHANGE_TARGET"'
+        withCredentials([file(credentialsId: 'byteask-runner-key', variable: 'KEY')]) {
+          sh 'byteask checks sign --base "origin/$CHANGE_TARGET" --head HEAD --report run.json --key "$KEY" --enterprise https://byteask.corp.example --cache /srv/byteask/merge-cache'
+        }
+      }
+    }
+    stage('byteask gate') {
+      agent { label 'byteask-signer' }
+      steps {
+        sh 'git fetch --no-tags origin "$CHANGE_TARGET"'
+        withCredentials([file(credentialsId: 'byteask-merge-check-token', variable: 'TOKEN')]) {
+          sh 'byteask checks gate --base "origin/$CHANGE_TARGET" --head HEAD --cache /srv/byteask/merge-cache --enterprise https://byteask.corp.example --token-file "$TOKEN" --jenkins-out byteask-report'
+        }
+      }
+      post {
+        always {
+          junit allowEmptyResults: false, testResults: 'byteask-report/byteask-merge-check.xml'
+        }
+      }
+    }
+  }
+}

@@ -79,7 +79,7 @@ _manifest_hash() {  # $1 = manifest file, $2 = asset name
 }
 
 # ---------------------------------------------------------------------------
-# D3a — the release marker.
+# The release marker.
 #
 # Records WHICH release asset produced the engine currently on disk: the asset
 # name plus the sha256 of the COMPRESSED asset, i.e. exactly the artifact
@@ -92,7 +92,7 @@ _manifest_hash() {  # $1 = manifest file, $2 = asset name
 MARKER="$BIN_DIR/.engine-release"
 
 # ---------------------------------------------------------------------------
-# D3c — the compressor ladder.
+# The compressor ladder.
 #
 # Measured on the real 324 MB linux-x86_64 engine (compress once at release,
 # decompress once per install):
@@ -124,7 +124,7 @@ _decompress() {  # $1 = variant, $2 = downloaded file, $3 = destination
 }
 
 # ---------------------------------------------------------------------------
-# D3b — SHA256SUMS policy: FAIL-CLOSED on a mismatch, FAIL-OPEN on absence.
+# SHA256SUMS policy: FAIL-CLOSED on a mismatch, FAIL-OPEN on absence.
 #
 #  * The manifest names an asset and the digest DISAGREES  -> refuse it outright,
 #    delete it, and drop to the next rung. Never install a binary the release
@@ -308,7 +308,11 @@ fi
 # Per-platform install beacon (fire-and-forget; never blocks or fails the run).
 # The engine now downloads from GitHub, so the gateway can't observe it directly —
 # this ping is the per-platform install/update signal. Best-effort, ≤3s, fail-open.
-curl -fsS -m 3 "$BUNDLE_URL/byteask/dl/$os-$arch" >/dev/null 2>&1 || true
+# BYTEASK_NO_TELEMETRY=1 (also true/yes, any case) skips it.
+case "$(printf '%s' "${BYTEASK_NO_TELEMETRY:-}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes) ;;
+  *) curl -fsS -m 3 "$BUNDLE_URL/byteask/dl/$os-$arch" >/dev/null 2>&1 || true ;;
+esac
 
 HOME_DIR="${BYTEASK_HOME:-$HOME/.byteask}"; mkdir -p "$HOME_DIR"
 printf '%s' "$GATEWAY_URL" > "$HOME_DIR/gateway"
@@ -427,10 +431,9 @@ $TOKEN_LINE
 x-openai-actor-authorization = "byteask"
 EOF
 
-# Two lines on the happy path (docs/terminal-surfaces-plan.md I2, § 4 rule 7).
-# What was here before named a competitor in our own success line (operating
-# rule 4), and "New here? Sign in first: byteask login
-# --email ..." which contradicts the wrapper: `byteask` signs you in on first run.
+# Two lines on the happy path. The success text names only ByteAsk and does not
+# say "New here? Sign in first: byteask login --email ...", which would
+# contradict the wrapper: `byteask` signs you in on first run.
 VER="$("$BIN_DIR/byteask" --version 2>/dev/null || true)"   # "byteask 0.1.11"
 VER="${VER##* }"
 case "$VER" in [0-9]*) ;; *) VER="" ;; esac                 # unknown -> just omit it

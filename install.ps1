@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
 Write-Host "[byteask] downloading the ByteAsk engine (windows/x86_64)..."
 $enginePath = Join-Path $BinDir 'byteask-engine.exe'
-# D3a - the release marker. Records WHICH release asset produced the engine on disk:
+# The release marker. Records WHICH release asset produced the engine on disk:
 # the asset name plus the sha256 of the COMPRESSED asset, i.e. exactly what
 # SHA256SUMS makes a claim about. Skip-if-current compares this marker to the
 # release manifest rather than hashing the installed binary, because the manifest
@@ -45,7 +45,7 @@ function Test-Engine($path) {
 function Get-Sha256($path) {
   try { return (Get-FileHash -Algorithm SHA256 -Path $path).Hash.ToLower() } catch { return '' }
 }
-# D3b - fetch the release manifest. Returns a name -> digest map, or $null when it
+# Fetch the release manifest. Returns a name -> digest map, or $null when it
 # is unreachable. See the policy note on Get-Engine below.
 function Get-Manifest($base) {
   $tmp = Join-Path $BinDir '.byteask-sha256sums.tmp'
@@ -75,7 +75,7 @@ function Test-EngineCurrent($man) {
   if (-not $man.ContainsKey($a)) { return $false }   # release doesn't list it -> can't claim current
   return ($man[$a] -eq $h)
 }
-# D3c - the compressor ladder. Measured on the real 324 MB linux-x86_64 engine:
+# The compressor ladder. Measured on the real 324 MB linux-x86_64 engine:
 # gzip-9 116.7 MB / 2.1 s to unpack, zstd-19 81.2 MB / 0.6 s, xz-6 75.1 MB / 4.8 s.
 # .gz is published FOREVER so wrappers installed today never break, and .NET's
 # GzipStream is built in - so on Windows .gz is always available, while .zst/.xz
@@ -103,7 +103,7 @@ function Expand-Variant($v, $src, $dst) {
   } catch { return $false }
   return $false
 }
-# D3b policy: FAIL-CLOSED on a mismatch, FAIL-OPEN on an absent manifest.
+# Checksum policy: FAIL-CLOSED on a mismatch, FAIL-OPEN on an absent manifest.
 #  * manifest lists the asset and the digest DISAGREES -> refuse it, delete it, drop
 #    to the next rung. Never install a binary the release says is not what we asked for.
 #  * manifest unreachable, or the asset is not listed -> install anyway, with a note,
@@ -203,7 +203,10 @@ if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
 # Per-platform install beacon (fire-and-forget; never blocks or fails the run). The
 # engine now downloads from GitHub, so the gateway can't observe it directly - this
 # ping is the per-platform install/update signal. Best-effort, fail-open.
-try { Invoke-WebRequest -Uri "$Bundle/byteask/dl/windows-x86_64" -UseBasicParsing -TimeoutSec 3 | Out-Null } catch {}
+# BYTEASK_NO_TELEMETRY=1 (also true/yes, any case) skips it.
+if ($env:BYTEASK_NO_TELEMETRY -notmatch '^(1|true|yes)$') {
+  try { Invoke-WebRequest -Uri "$Bundle/byteask/dl/windows-x86_64" -UseBasicParsing -TimeoutSec 3 | Out-Null } catch {}
+}
 
 # Wrapper + a byteask.cmd shim so `byteask` works from any shell (uses built-in
 # Windows PowerShell; -ExecutionPolicy Bypass avoids per-machine policy blocks).
@@ -322,9 +325,8 @@ if ($IsWin) {
   }
 }
 
-# Two lines, mirroring install.sh (docs/terminal-surfaces-plan.md I2/I3/I5). What
-# was here named a competitor in our own success line (operating rule 4),
-# and "New here? Sign in first" -- which contradicts the wrapper: `byteask` signs you
+# Two lines, mirroring install.sh. The success text names only ByteAsk and does not
+# say "New here? Sign in first", which would contradict the wrapper: `byteask` signs you
 # in on first run. The version is the WRAPPER's (what a release is numbered by), not
 # the engine's crate version, so it is probed the way install.sh probes it.
 $ver = ''

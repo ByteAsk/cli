@@ -1,0 +1,15 @@
+{
+  "tools": [
+    {
+      "description": "Optional check before you say a C/C++ change works: builds only the test programs the change since the session started reaches, with the project's own build system (CMake: incrementally, in a tree of its own outside the project; otherwise the existing build), runs exactly those tests and compares failures with the unmodified tree, within 90 seconds. The answer names the targets built, the test filter and `git diff --check`. Advisory: it answers PASS, FAIL or NOT RUN (with the reason) and the details, and never blocks finishing; it does not edit or delete any file. Report what it checked and what is still unverified. It runs the project's build, so it needs a trusted project.",
+      "name": "cpp_finish_check",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

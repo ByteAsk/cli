@@ -1,0 +1,30 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "byteask-hft-pack"
+version.workspace = true
+
+# HFT domain pack: decoders for public exchange feed specifications into the
+# normalized market events the port_check harness replays, plus reproducible fixtures that
+# decode under the shared replay library. Written from the public Nasdaq TotalView-ITCH 5.0
+# specification; no licensed document is shipped.
+
+[lib]
+name = "byteask_hft_pack"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "byteask-itch"
+path = "src/bin/byteask-itch.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+byteask-replay = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

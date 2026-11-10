@@ -1,0 +1,82 @@
+{
+ "content": [
+  {
+   "text": "{\"budget_tokens\": 600, \"check_result\": {\"check\": \"context_pack\", \"schema\": 1, \"summary\": \"answered from completed index snapshots\", \"verdict\": \"PASS\"}, \"commits\": [\"59a6a938513ea5004817383711ed35d32385d3ee\"], \"items\": [{\"approximate\": false, \"body\": true, \"end_line\": 146, \"layer\": \"committed\", \"name\": \"rigtorp::SPSCQueue::push\", \"path\": \"include/rigtorp/SPSCQueue.h\", \"settings\": [\"relwithdebinfo\"], \"start_line\": 142, \"why\": \"lexical match (file rank 1)\"}, {\"approximate\": false, \"body\": true, \"end_line\": 152, \"layer\": \"committed\", \"name\": \"rigtorp::SPSCQueue::push\", \"path\": \"include/rigtorp/SPSCQueue.h\", \"settings\": [\"relwithdebinfo\"], \"start_line\": 148, \"why\": \"lexical match (file rank 1)\"}, {\"approximate\": false, \"body\": false, \"end_line\": 229, \"layer\": \"committed\", \"name\": \"main\", \"path\": \"src/SPSCQueueTest.cpp\", \"settings\": [\"relwithdebinfo\"], \"start_line\": 67, \"why\": \"lexical match (file rank 2)\"}, {\"approximate\": false, \"body\": true, \"end_line\": 99, \"layer\": \"committed\", \"name\": \"main(int, char **)::Test::Test\", \"path\": \"src/SPSCQueueTest.cpp\", \"settings\": [\"relwithdebinfo\"], \"start_line\": 99, \"why\": \"lexical match (file rank 2)\"}], \"partition\": \"trial\", \"settings\": [\"relwithdebinfo\"], \"task\": \"why can push block when the queue is full\", \"text\": \"Context pack for: why can push block when the queue is full\\nsettings: relwithdebinfo | commit(s): 59a6a938513e\\n### include/rigtorp/SPSCQueue.h:142-146  rigtorp::SPSCQueue::push  [committed; settings: relwithdebinfo]\\nwhy: lexical match (file rank 1); compile line: context_compile_line(path='include/rigtorp/SPSCQueue.h')\\n```cpp\\n  void push(const T &v) noexcept(std::is_nothrow_copy_constructible<T>::value) {\\n    static_assert(std::is_copy_constructible<T>::value,\\n                  \\\"T must be copy constructible\\\");\\n    emplace(v);\\n  }\\n```\\n\\n### include/rigtorp/SPSCQueue.h:148-152  rigtorp::SPSCQueue::push  [committed; settings: relwithdebinfo]\\nwhy: lexical match (file rank 1); compile line: context_compile_line(path='include/rigtorp/SPSCQueue.h')\\n```cpp\\n  template <typename P, typename = typename std::enable_if<\\n                            std::is_constructible<T, P &&>::value>::type>\\n  void push(P &&v) noexcept(std::is_nothrow_constructible<T, P &&>::value) {\\n    emplace(std::forward<P>(v));\\n  }\\n```\\n\\n### src/SPSCQueueTest.cpp:67-229  int main(int argc, char *argv[])  [committed] (body omitted: budget)\\n\\n### src/SPSCQueueTest.cpp:99-99  main(int, char **)::Test::Test  [committed; settings: relwithdebinfo]\\nwhy: lexical match (file rank 2); compile line: context_compile_line(path='src/SPSCQueueTest.cpp')\\n```cpp\\n      Test() {}\\n```\\n\\ntemplate versions of rigtorp::SPSCQueue::push: relwithdebinfo: rigtorp::SPSCQueue<Test>::push, rigtorp::SPSCQueue<Test>::push<Test &, void>, rigtorp::SPSCQueue<std::unique_ptr<int>>::push<std::unique_ptr<int>, void>\\n\\n#if in include/rigtorp/SPSCQueue.h: line 38 #ifndef RIGTORP_NODISCARD: relwithdebinfo=skipped; line 80 #else : relwithdebinfo=skipped; line 213 #else : relwithdebinfo=skipped; line 225 #else : relwithdebinfo=skipped\\n\", \"used_tokens_est\": 593}",
+   "type": "text"
+  }
+ ],
+ "isError": false,
+ "structuredContent": {
+  "budget_tokens": 600,
+  "check_result": {
+   "check": "context_pack",
+   "schema": 1,
+   "summary": "answered from completed index snapshots",
+   "verdict": "PASS"
+  },
+  "commits": [
+   "59a6a938513ea5004817383711ed35d32385d3ee"
+  ],
+  "items": [
+   {
+    "approximate": false,
+    "body": true,
+    "end_line": 146,
+    "layer": "committed",
+    "name": "rigtorp::SPSCQueue::push",
+    "path": "include/rigtorp/SPSCQueue.h",
+    "settings": [
+     "relwithdebinfo"
+    ],
+    "start_line": 142,
+    "why": "lexical match (file rank 1)"
+   },
+   {
+    "approximate": false,
+    "body": true,
+    "end_line": 152,
+    "layer": "committed",
+    "name": "rigtorp::SPSCQueue::push",
+    "path": "include/rigtorp/SPSCQueue.h",
+    "settings": [
+     "relwithdebinfo"
+    ],
+    "start_line": 148,
+    "why": "lexical match (file rank 1)"
+   },
+   {
+    "approximate": false,
+    "body": false,
+    "end_line": 229,
+    "layer": "committed",
+    "name": "main",
+    "path": "src/SPSCQueueTest.cpp",
+    "settings": [
+     "relwithdebinfo"
+    ],
+    "start_line": 67,
+    "why": "lexical match (file rank 2)"
+   },
+   {
+    "approximate": false,
+    "body": true,
+    "end_line": 99,
+    "layer": "committed",
+    "name": "main(int, char **)::Test::Test",
+    "path": "src/SPSCQueueTest.cpp",
+    "settings": [
+     "relwithdebinfo"
+    ],
+    "start_line": 99,
+    "why": "lexical match (file rank 2)"
+   }
+  ],
+  "partition": "trial",
+  "settings": [
+   "relwithdebinfo"
+  ],
+  "task": "why can push block when the queue is full",
+  "text": "Context pack for: why can push block when the queue is full\nsettings: relwithdebinfo | commit(s): 59a6a938513e\n### include/rigtorp/SPSCQueue.h:142-146  rigtorp::SPSCQueue::push  [committed; settings: relwithdebinfo]\nwhy: lexical match (file rank 1); compile line: context_compile_line(path='include/rigtorp/SPSCQueue.h')\n```cpp\n  void push(const T &v) noexcept(std::is_nothrow_copy_constructible<T>::value) {\n    static_assert(std::is_copy_constructible<T>::value,\n                  \"T must be copy constructible\");\n    emplace(v);\n  }\n```\n\n### include/rigtorp/SPSCQueue.h:148-152  rigtorp::SPSCQueue::push  [committed; settings: relwithdebinfo]\nwhy: lexical match (file rank 1); compile line: context_compile_line(path='include/rigtorp/SPSCQueue.h')\n```cpp\n  template <typename P, typename = typename std::enable_if<\n                            std::is_constructible<T, P &&>::value>::type>\n  void push(P &&v) noexcept(std::is_nothrow_constructible<T, P &&>::value) {\n    emplace(std::forward<P>(v));\n  }\n```\n\n### src/SPSCQueueTest.cpp:67-229  int main(int argc, char *argv[])  [committed] (body omitted: budget)\n\n### src/SPSCQueueTest.cpp:99-99  main(int, char **)::Test::Test  [committed; settings: relwithdebinfo]\nwhy: lexical match (file rank 2); compile line: context_compile_line(path='src/SPSCQueueTest.cpp')\n```cpp\n      Test() {}\n```\n\ntemplate versions of rigtorp::SPSCQueue::push: relwithdebinfo: rigtorp::SPSCQueue<Test>::push, rigtorp::SPSCQueue<Test>::push<Test &, void>, rigtorp::SPSCQueue<std::unique_ptr<int>>::push<std::unique_ptr<int>, void>\n\n#if in include/rigtorp/SPSCQueue.h: line 38 #ifndef RIGTORP_NODISCARD: relwithdebinfo=skipped; line 80 #else : relwithdebinfo=skipped; line 213 #else : relwithdebinfo=skipped; line 225 #else : relwithdebinfo=skipped\n",
+  "used_tokens_est": 593
+ }
+}

@@ -1,0 +1,26 @@
+name: Install or update problem
+description: The installer, `byteask --update` or the first launch fails.
+labels: ["install"]
+body:
+  - type: dropdown
+    id: method
+    attributes:
+      label: Install method
+      options: [install.sh, install.ps1, pip, Built from source]
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Linux x86_64, Linux arm64, macOS (Apple silicon), Windows x86_64, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Installer output
+      description: The full output, with keys and tokens removed.
+      render: text
+    validations:
+      required: true

@@ -1,0 +1,145 @@
+{
+ "content": [
+  {
+   "text": "{\"answers\": [{\"approximate_line_share\": 0.0, \"commit\": \"59a6a938513ea5004817383711ed35d32385d3ee\", \"commits_behind\": 0, \"compiler\": \"gcc 12.2.0 (x86_64-linux-gnu)\", \"config_id\": \"cfg-5c644c7a5c6e2eec\", \"definitions\": [{\"col\": 8, \"in\": \"rigtorp::SPSCQueue::push\", \"layer\": \"committed\", \"line\": 150, \"path\": \"include/rigtorp/SPSCQueue.h\"}], \"layer\": \"committed\", \"not_shown\": 0, \"parser\": \"clang 21.1.8 (pinned)\", \"references\": [{\"col\": 7, \"in\": \"main\", \"layer\": \"committed\", \"line\": 108, \"path\": \"src/SPSCQueueTest.cpp\"}, {\"col\": 30, \"in\": \"main\", \"layer\": \"committed\", \"line\": 112, \"path\": \"src/SPSCQueueTest.cpp\"}, {\"col\": 7, \"in\": \"main\", \"layer\": \"committed\", \"line\": 133, \"path\": \"src/SPSCQueueTest.cpp\"}, {\"col\": 30, \"in\": \"main\", \"layer\": \"committed\", \"line\": 137, \"path\": \"src/SPSCQueueTest.cpp\"}, {\"col\": 7, \"in\": \"main\", \"layer\": \"committed\", \"line\": 158, \"path\": \"src/SPSCQueueTest.cpp\"}, {\"col\": 30, \"in\": \"main\", \"layer\": \"committed\", \"line\": 163, \"path\": \"src/SPSCQueueTest.cpp\"}], \"setting\": \"relwithdebinfo\", \"signature\": \"void push(P &&v) noexcept(std::is_nothrow_constructible<T, P &&>::value)\", \"snapshot\": 1, \"symbol\": \"cxx . . $ rigtorp/SPSCQueue#push(f00ecbacb92d13e4).\", \"truncated\": false, \"worktree_head\": \"59a6a938513ea5004817383711ed35d32385d3ee\"}, {\"approximate_line_share\": 0.0, \"commit\": \"59a6a938513ea5004817383711ed35d32385d3ee\", \"commits_behind\": 0, \"compiler\": \"gcc 12.2.0 (x86_64-linux-gnu)\", \"config_id\": \"cfg-5c644c7a5c6e2eec\", \"definitions\": [{\"col\": 8, \"in\": \"rigtorp::SPSCQueue::push\", \"layer\": \"committed\", \"line\": 142, \"path\": \"include/rigtorp/SPSCQueue.h\"}], \"layer\": \"committed\", \"not_shown\": 0, \"parser\": \"clang 21.1.8 (pinned)\", \"references\": [{\"col\": 7, \"in\": \"main\", \"layer\": \"committed\", \"line\": 115, \"path\": \"src/SPSCQueueTest.cpp\"}, {\"col\": 30, \"in\": \"main\", \"layer\": \"committed\", \"line\": 117, \"path\": \"src/SPSCQueueTest.cpp\"}, {\"col\": 7, \"in\": \"main\", \"layer\": \"committed\", \"line\": 140, \"path\": \"src/SPSCQueueTest.cpp\"}, {\"col\": 30, \"in\": \"main\", \"layer\": \"committed\", \"line\": 142, \"path\": \"src/SPSCQueueTest.cpp\"}], \"setting\": \"relwithdebinfo\", \"signature\": \"void push(const T &v) noexcept(std::is_nothrow_copy_constructible<T>::value)\", \"snapshot\": 1, \"symbol\": \"cxx . . $ rigtorp/SPSCQueue#push(fded34a0ee7f1bb7).\", \"truncated\": false, \"worktree_head\": \"59a6a938513ea5004817383711ed35d32385d3ee\"}], \"check_result\": {\"check\": \"context_symbol\", \"schema\": 1, \"summary\": \"answered from completed index snapshots\", \"verdict\": \"PASS\"}, \"partition\": \"trial\", \"query\": \"push\"}",
+   "type": "text"
+  }
+ ],
+ "isError": false,
+ "structuredContent": {
+  "answers": [
+   {
+    "approximate_line_share": 0.0,
+    "commit": "59a6a938513ea5004817383711ed35d32385d3ee",
+    "commits_behind": 0,
+    "compiler": "gcc 12.2.0 (x86_64-linux-gnu)",
+    "config_id": "cfg-5c644c7a5c6e2eec",
+    "definitions": [
+     {
+      "col": 8,
+      "in": "rigtorp::SPSCQueue::push",
+      "layer": "committed",
+      "line": 150,
+      "path": "include/rigtorp/SPSCQueue.h"
+     }
+    ],
+    "layer": "committed",
+    "not_shown": 0,
+    "parser": "clang 21.1.8 (pinned)",
+    "references": [
+     {
+      "col": 7,
+      "in": "main",
+      "layer": "committed",
+      "line": 108,
+      "path": "src/SPSCQueueTest.cpp"
+     },
+     {
+      "col": 30,
+      "in": "main",
+      "layer": "committed",
+      "line": 112,
+      "path": "src/SPSCQueueTest.cpp"
+     },
+     {
+      "col": 7,
+      "in": "main",
+      "layer": "committed",
+      "line": 133,
+      "path": "src/SPSCQueueTest.cpp"
+     },
+     {
+      "col": 30,
+      "in": "main",
+      "layer": "committed",
+      "line": 137,
+      "path": "src/SPSCQueueTest.cpp"
+     },
+     {
+      "col": 7,
+      "in": "main",
+      "layer": "committed",
+      "line": 158,
+      "path": "src/SPSCQueueTest.cpp"
+     },
+     {
+      "col": 30,
+      "in": "main",
+      "layer": "committed",
+      "line": 163,
+      "path": "src/SPSCQueueTest.cpp"
+     }
+    ],
+    "setting": "relwithdebinfo",
+    "signature": "void push(P &&v) noexcept(std::is_nothrow_constructible<T, P &&>::value)",
+    "snapshot": 1,
+    "symbol": "cxx . . $ rigtorp/SPSCQueue#push(f00ecbacb92d13e4).",
+    "truncated": false,
+    "worktree_head": "59a6a938513ea5004817383711ed35d32385d3ee"
+   },
+   {
+    "approximate_line_share": 0.0,
+    "commit": "59a6a938513ea5004817383711ed35d32385d3ee",
+    "commits_behind": 0,
+    "compiler": "gcc 12.2.0 (x86_64-linux-gnu)",
+    "config_id": "cfg-5c644c7a5c6e2eec",
+    "definitions": [
+     {
+      "col": 8,
+      "in": "rigtorp::SPSCQueue::push",
+      "layer": "committed",
+      "line": 142,
+      "path": "include/rigtorp/SPSCQueue.h"
+     }
+    ],
+    "layer": "committed",
+    "not_shown": 0,
+    "parser": "clang 21.1.8 (pinned)",
+    "references": [
+     {
+      "col": 7,
+      "in": "main",
+      "layer": "committed",
+      "line": 115,
+      "path": "src/SPSCQueueTest.cpp"
+     },
+     {
+      "col": 30,
+      "in": "main",
+      "layer": "committed",
+      "line": 117,
+      "path": "src/SPSCQueueTest.cpp"
+     },
+     {
+      "col": 7,
+      "in": "main",
+      "layer": "committed",
+      "line": 140,
+      "path": "src/SPSCQueueTest.cpp"
+     },
+     {
+      "col": 30,
+      "in": "main",
+      "layer": "committed",
+      "line": 142,
+      "path": "src/SPSCQueueTest.cpp"
+     }
+    ],
+    "setting": "relwithdebinfo",
+    "signature": "void push(const T &v) noexcept(std::is_nothrow_copy_constructible<T>::value)",
+    "snapshot": 1,
+    "symbol": "cxx . . $ rigtorp/SPSCQueue#push(fded34a0ee7f1bb7).",
+    "truncated": false,
+    "worktree_head": "59a6a938513ea5004817383711ed35d32385d3ee"
+   }
+  ],
+  "check_result": {
+   "check": "context_symbol",
+   "schema": 1,
+   "summary": "answered from completed index snapshots",
+   "verdict": "PASS"
+  },
+  "partition": "trial",
+  "query": "push"
+ }
+}

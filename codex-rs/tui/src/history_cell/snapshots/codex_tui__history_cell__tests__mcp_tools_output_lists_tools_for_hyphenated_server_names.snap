@@ -1,0 +1,15 @@
+---
+source: tui/src/history_cell/tests.rs
+expression: rendered
+---
+/mcp
+
+🔌  MCP Tools
+
+  • some-server
+    • Status: enabled
+    • Auth: Unsupported
+    • Command: docs-server --stdio
+    • Tools: lookup
+    • Resources: (none)
+    • Resource templates: (none)

@@ -1,0 +1,34 @@
+{
+ "content": [
+  {
+   "text": "{\"answers\": [{\"approximate_line_share\": 0.0, \"commit\": \"59a6a938513ea5004817383711ed35d32385d3ee\", \"commits_behind\": 0, \"compiler\": \"gcc 12.2.0 (x86_64-linux-gnu)\", \"config_id\": \"cfg-5c644c7a5c6e2eec\", \"hits\": [], \"layer\": \"committed\", \"parser\": \"clang 21.1.8 (pinned)\", \"setting\": \"relwithdebinfo\", \"snapshot\": 1, \"worktree_head\": \"59a6a938513ea5004817383711ed35d32385d3ee\"}], \"check_result\": {\"check\": \"context_search\", \"schema\": 1, \"summary\": \"nothing in the index matches\", \"verdict\": \"NO_CLAIM\"}, \"partition\": \"trial\", \"query\": \"zzqqxxnotthere\"}",
+   "type": "text"
+  }
+ ],
+ "isError": false,
+ "structuredContent": {
+  "answers": [
+   {
+    "approximate_line_share": 0.0,
+    "commit": "59a6a938513ea5004817383711ed35d32385d3ee",
+    "commits_behind": 0,
+    "compiler": "gcc 12.2.0 (x86_64-linux-gnu)",
+    "config_id": "cfg-5c644c7a5c6e2eec",
+    "hits": [],
+    "layer": "committed",
+    "parser": "clang 21.1.8 (pinned)",
+    "setting": "relwithdebinfo",
+    "snapshot": 1,
+    "worktree_head": "59a6a938513ea5004817383711ed35d32385d3ee"
+   }
+  ],
+  "check_result": {
+   "check": "context_search",
+   "schema": 1,
+   "summary": "nothing in the index matches",
+   "verdict": "NO_CLAIM"
+  },
+  "partition": "trial",
+  "query": "zzqqxxnotthere"
+ }
+}

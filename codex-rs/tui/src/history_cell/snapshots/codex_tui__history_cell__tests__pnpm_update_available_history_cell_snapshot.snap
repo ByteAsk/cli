@@ -1,0 +1,6 @@
+---
+source: tui/src/history_cell/tests.rs
+assertion_line: 1238
+expression: rendered
+---
+ByteAsk 9.9.9 is available · run byteask --update

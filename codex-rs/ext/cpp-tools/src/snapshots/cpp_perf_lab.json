@@ -1,0 +1,67 @@
+{
+  "description": "Measure a C/C++ change on the perf lab: builds base and candidate on a dedicated bench host, refuses to measure if the host is mis-tuned (frequency, isolation, interrupts, SMT sibling, other load), runs interleaved A/B rounds pinned to an isolated core, and answers FASTER / SLOWER / NO CLAIM / MIXED / REJECTED with a confidence interval, p50/p99/p99.9 and throughput, plus TMA of the hot loop. Use it before claiming a speedup or approving a performance-sensitive change; NO CLAIM means the difference is inside the noise, not a win.",
+  "name": "cpp_perf_lab",
+  "parameters": {
+    "additionalProperties": false,
+    "properties": {
+      "action": {
+        "description": "\"compare\" (default): base vs candidate. \"aa\": the base against itself, to show the lab's noise (must answer NO CLAIM). \"preflight\": only check the bench host is fit to measure.",
+        "type": "string"
+      },
+      "base": {
+        "description": "Git ref to compare against (default \"HEAD\").",
+        "type": "string"
+      },
+      "bench": {
+        "description": "Benchmark command relative to the checkout root, e.g. \"build/prod/bench --feed /data/feed.cap\" (run directly, not through a shell). For tail latency it should print one line `PERFLAB {\"p50_ns\": …, \"p99_ns\": …, \"p999_ns\": …, \"throughput\": …}`; for TMA of its hot loop it should accept `--perf-ctl <ctl-fifo> <ack-fifo>` and write enable/disable around the loop. Required for compare and aa.",
+        "type": "string"
+      },
+      "build": {
+        "description": "Shell command that builds the benchmark, run in each ref's own checkout on the bench host, e.g. \"cmake --preset prod && cmake --build --preset prod --target bench\". Required for compare and aa.",
+        "type": "string"
+      },
+      "candidate": {
+        "description": "Git ref of the change, or \"WORKTREE\" (default) for the working tree as it is now, uncommitted edits included (untracked files are not).",
+        "type": "string"
+      },
+      "check": {
+        "description": "Shell command run in both checkouts whose output must be identical (e.g. a replay test); a difference is REJECTED with the first differing line.",
+        "type": "string"
+      },
+      "confidence": {
+        "description": "Confidence level (default 0.95; use 0.99 for a merge decision).",
+        "type": "number"
+      },
+      "floor_pct": {
+        "description": "Minimum effect in percent: a smaller change is never FASTER/SLOWER (default 2).",
+        "type": "number"
+      },
+      "guards": {
+        "description": "Metrics that must not increase, e.g. [\"allocs_per_msg\"]; an increase is REJECTED.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "primary": {
+        "description": "Metric that sets the verdict (default p50_ns when the benchmark reports it).",
+        "type": "string"
+      },
+      "rounds": {
+        "description": "Interleaved A/B rounds (default 12; at least 6, or 8 at 0.99 confidence).",
+        "type": "integer"
+      },
+      "timeout_sec": {
+        "description": "Cap for the whole call, builds included (default 1800).",
+        "type": "integer"
+      },
+      "tma": {
+        "description": "Top-down (TMA) level 1+2 of the hot loop before and after (default true).",
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  },
+  "strict": false,
+  "type": "function"
+}

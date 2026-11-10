@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "checks.schema.json",
+  "title": "checks.json: what the harness built and tested, and how it went",
+  "description": "Written by the harness (the harness owns build and test). mode agent = written by `byteask-engine exec` at BYTEASK_CHECKS_OUT; baseline/verify = written by `byteask-engine verify`. verify --checks re-runs the same commands with the same ids, so tests compare by id. Cross-field rules in validate.py SEMANTIC.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "mode", "generated_by", "repo", "commands", "tests", "summary"],
+  "properties": {
+    "version": {"const": 1},
+    "mode": {"type": "string", "enum": ["baseline", "agent", "verify"]},
+    "generated_by": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tool", "version"],
+      "properties": {
+        "tool": {"type": "string", "enum": ["byteask-engine"]},
+        "version": {"$ref": "common.schema.json#/$defs/version"}
+      }
+    },
+    "repo": {
+      "type": "object", "additionalProperties": false,
+      "required": ["base_sha", "tree_sha"],
+      "properties": {
+        "base_sha": {"$ref": "common.schema.json#/$defs/sha1"},
+        "tree_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$", "description": "git write-tree of the working tree the checks ran on (null in agent mode if not computed)"}
+      }
+    },
+    "commands": {
+      "type": "array", "maxItems": 50,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "purpose", "cmd", "cwd", "exit_code", "timed_out", "duration_s", "log_tail"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"},
+          "purpose": {"type": "string", "enum": ["configure", "build", "test", "lint", "other"]},
+          "cmd": {"type": "string", "minLength": 1, "maxLength": 4000},
+          "cwd": {"$ref": "common.schema.json#/$defs/relpath"},
+          "exit_code": {"type": ["integer", "null"], "description": "null when it did not finish (timed out or killed)"},
+          "timed_out": {"type": "boolean"},
+          "duration_s": {"type": "number", "minimum": 0, "maximum": 86400},
+          "log_tail": {"$ref": "common.schema.json#/$defs/log_tail"},
+          "junit": {"type": "array", "maxItems": 10, "items": {"$ref": "common.schema.json#/$defs/relpath"}}
+        }
+      }
+    },
+    "tests": {
+      "type": "array", "maxItems": 20000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "status", "command_id"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 1024, "description": "Stable id, e.g. JUnit classname::name"},
+          "status": {"type": "string", "enum": ["pass", "fail", "skip", "error"]},
+          "command_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"}
+        }
+      }
+    },
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["build_ok", "tests_total", "tests_failed", "tests_skipped"],
+      "properties": {
+        "build_ok": {"type": "boolean", "description": "Every configure and build command exited 0"},
+        "tests_total": {"type": "integer", "minimum": 0},
+        "tests_failed": {"type": "integer", "minimum": 0, "description": "fail + error"},
+        "tests_skipped": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

@@ -1,0 +1,45 @@
+# Fixed defaults for packaged Codex clients.
+include_permissions_instructions = true
+include_apps_instructions = true
+include_collaboration_mode_instructions = true
+include_environment_context = true
+cli_auth_credentials_store = "file"
+mcp_oauth_credentials_store = "auto"
+project_doc_max_bytes = 32768
+project_doc_fallback_filenames = []
+background_terminal_max_timeout = 300000
+file_opener = "vscode"
+hide_agent_reasoning = false
+chatgpt_base_url = "https://chatgpt.com/backend-api/"
+project_root_markers = [".git"]
+
+[history]
+persistence = "save-all"
+
+# ByteAsk harness defaults (0.2.4). Every key can be set back in config.toml
+# or with `-c byteask_harness.<key>=...` / `-c byteask_cpp.<key>=...`.
+[byteask_harness]
+# With ByteAsk Context: keep the usual tool prefix (no Context-specific deferral) and give the
+# instruction below instead of the built-in one.
+context_keep_prefix = true
+context_instructions = """ByteAsk Context gave you, with the task, the code of the places the change most likely belongs, the build facts and the tests that exercise them. Use it as a starting point, not the whole answer: before you edit, find every site the change needs (other overloads and template specializations, the declaration and the definition, sibling functions that follow the same pattern, other callers of anything whose behaviour you change). Before you finish, build and run the nearest tests (cpp_finish_check, or the tests Context named) and fix any failure your change introduced."""
+# Wait up to 120 s for Context's turn-0 pack (large indexes answer in about a minute).
+context_pack_timeout_secs = 120
+# A top-level CMakeLists.txt, meson.build, configure.ac, ... marks a C/C++ repository.
+context_build_markers = true
+# Wait at most 15 s for the local check line after the pack.
+context_check_timeout_secs = 15
+# cpp_finish_check also lists the related places Context finds for the change.
+finish_related = true
+# Headless sessions (exec, the Cloud Agent) with ByteAsk Context leave out the tools in
+# byteask_harness::CONTEXT_HEADLESS_DISABLED_TOOLS (debuggers, performance and binary tools, MCP
+# resource browsing, the interactive tools); interactive sessions keep every tool.
+context_lean_tools = true
+
+[byteask_cpp]
+# C/C++ tools whose program is not installed are not offered.
+hide_missing_tools = true
+# One build owner per build tree: the engine's background build yields to another build there.
+tree_owner = true
+# A turn that ends with an unchecked C/C++ change gets cpp_finish_check's answer once.
+finish_review = true

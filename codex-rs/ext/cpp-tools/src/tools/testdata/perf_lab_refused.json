@@ -1,0 +1,186 @@
+{
+ "schema": "byteask.perflab.compare/1",
+ "mode": "compare",
+ "verdict": "NOT_RUN",
+ "verdict_reason": "host refused: other_load: the housekeeping CPUs were 49% busy (limit 30%): another job shares the L3 and memory bandwidth (fix: wait for builds or other jobs to finish (uptime, top))",
+ "summary": [
+  "NOT RUN: host refused: other_load: the housekeeping CPUs were 49% busy (limit 30%): another job shares the L3 and memory bandwidth (fix: wait for builds or other jobs to finish (uptime, top))",
+  "TMA: NOT RUN (not reached)",
+  "cpu 2 isolated, 3.09 GHz pinned; preflight 14/17 PASS; 0 rounds"
+ ],
+ "primary_metric": null,
+ "confidence": 0.95,
+ "floor_pct": 2.0,
+ "rounds": 0,
+ "host": {
+  "hostname": "bench-host-1",
+  "cpu_model": "INTEL(R) XEON(R) PLATINUM 8581C CPU @ 2.30GHz",
+  "kernel": "7.0.0-1014-generic",
+  "measured_cpu": 2,
+  "sibling_cpu": 6,
+  "housekeeping_cpus": "0,4",
+  "freq_ghz": 3.0851670161414995
+ },
+ "preflight": {
+  "ok": false,
+  "checks": [
+   {
+    "name": "root",
+    "status": "PASS",
+    "detail": "running as root (needed to place the job on the isolated CPU)",
+    "fix": null
+   },
+   {
+    "name": "lab_config",
+    "status": "PASS",
+    "detail": "measure cpu 2, SMT sibling 6, housekeeping 0,4",
+    "fix": null
+   },
+   {
+    "name": "isolated_cpu",
+    "status": "PASS",
+    "detail": "cpu 2 (and its SMT sibling) isolated; other tasks confined to 0,4",
+    "fix": null
+   },
+   {
+    "name": "irq_affinity",
+    "status": "PASS",
+    "detail": "no device interrupt is delivered to the measured core",
+    "fix": null
+   },
+   {
+    "name": "irqbalance",
+    "status": "PASS",
+    "detail": "not running",
+    "fix": null
+   },
+   {
+    "name": "cpu_governor",
+    "status": "NOT_APPLICABLE",
+    "detail": "cpufreq is not exposed (virtual machine); the frequency is verified by measurement instead",
+    "fix": null
+   },
+   {
+    "name": "turbo",
+    "status": "NOT_APPLICABLE",
+    "detail": "not controllable from the guest (on GCP C4 the all-core turbo is pinned by the host); verified by measured frequency",
+    "fix": null
+   },
+   {
+    "name": "frequency",
+    "status": "PASS",
+    "detail": "3.085 GHz, 0.06% spread over 5 runs",
+    "fix": null
+   },
+   {
+    "name": "timer_source",
+    "status": "PASS",
+    "detail": "tsc (constant, nonstop)",
+    "fix": null
+   },
+   {
+    "name": "nmi_watchdog",
+    "status": "PASS",
+    "detail": "off",
+    "fix": null
+   },
+   {
+    "name": "perf_counters",
+    "status": "PASS",
+    "detail": "perf_event_paranoid=1",
+    "fix": null
+   },
+   {
+    "name": "transparent_hugepages",
+    "status": "PASS",
+    "detail": "THP=madvise",
+    "fix": null
+   },
+   {
+    "name": "swap",
+    "status": "PASS",
+    "detail": "no swap in use",
+    "fix": null
+   },
+   {
+    "name": "memory",
+    "status": "PASS",
+    "detail": "28 GiB available",
+    "fix": null
+   },
+   {
+    "name": "smt_sibling_idle",
+    "status": "PASS",
+    "detail": "cpu 6 idle (0.0% busy)",
+    "fix": null
+   },
+   {
+    "name": "other_load",
+    "status": "FAIL",
+    "detail": "the housekeeping CPUs were 49% busy (limit 30%): another job shares the L3 and memory bandwidth",
+    "fix": "wait for builds or other jobs to finish (uptime, top)"
+   },
+   {
+    "name": "steal_time",
+    "status": "PASS",
+    "detail": "no steal time on the measured CPU",
+    "fix": null
+   }
+  ],
+  "freq_ghz": 3.0851670161414995
+ },
+ "a": {
+  "label": "base",
+  "ref": null,
+  "commit": null,
+  "command": [
+   "./bench"
+  ],
+  "cwd": "/work/bench-demo",
+  "build": null
+ },
+ "b": {
+  "label": "planted +5%",
+  "ref": null,
+  "commit": null,
+  "command": [
+   "./bench",
+   "--slowdown-pct",
+   "5"
+  ],
+  "cwd": "/work/bench-demo",
+  "build": null
+ },
+ "metrics": [],
+ "regressions": [],
+ "guards": [],
+ "check": {
+  "ran": false,
+  "command": null,
+  "ok": null,
+  "first_diff_line": null,
+  "a": null,
+  "b": null,
+  "detail": null
+ },
+ "tma": {
+  "status": "NOT_RUN",
+  "reason": "not reached",
+  "region": "perf-ctl",
+  "runs_per_side": 0,
+  "a": {},
+  "b": {},
+  "delta_pp": {},
+  "a_headline": null,
+  "b_headline": null,
+  "multiplexed": false,
+  "level2_available": false
+ },
+ "rounds_detail": [],
+ "order_seed": 0,
+ "measure_lock": "took /var/lock/perf-lab-measure after waiting",
+ "notes": [],
+ "started_utc": "2026-10-18T17:12:27Z",
+ "finished_utc": "2026-10-18T17:12:49Z",
+ "runner_version": "0.1.0"
+}

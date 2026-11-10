@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.schema.json",
+  "title": "Shared definitions for Cloud Agent contracts v1",
+  "$defs": {
+    "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$", "description": "Git object id (lowercase hex)"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "task_id": {"type": "string", "pattern": "^t_[0-9A-HJKMNP-TV-Z]{26}$", "description": "t_ + ULID (Crockford base32)"},
+    "lease_id": {"type": "string", "pattern": "^l_[0-9A-HJKMNP-TV-Z]{26}$", "description": "l_ + ULID; unique per attempt"},
+    "runner_id": {"type": "string", "pattern": "^r_[a-z0-9-]{1,40}$"},
+    "org_id": {"type": "string", "pattern": "^gh:[0-9]{1,20}$", "description": "GitHub organization or user id, same as the Context team"},
+    "github_login": {"type": "string", "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$"},
+    "repo_full_name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"},
+    "https_url": {"type": "string", "pattern": "^https://[^\\s]{1,2000}$"},
+    "internal_url": {"type": "string", "pattern": "^https?://[^\\s]{1,2000}$", "description": "May be plain http on a private network"},
+    "timestamp": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?Z$", "description": "RFC 3339, UTC, Z suffix"},
+    "git_ref": {"type": "string", "pattern": "^[A-Za-z0-9._/-]{1,255}$"},
+    "relpath": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00\\n]{1,512}$", "description": "Path relative to the repo root; no leading slash, no .. segments"},
+    "image_digest_ref": {"type": "string", "pattern": "^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$", "description": "Registry image pinned by digest"},
+    "image_any_ref": {"type": "string", "pattern": "^([a-z0-9.-]+(:[0-9]+)?/)?[a-z0-9._/-]+(:[A-Za-z0-9._-]{1,128})?(@sha256:[0-9a-f]{64})?$", "description": "Image by tag or digest; the runner records the resolved digest"},
+    "version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+([-.][0-9A-Za-z.]+)?$"},
+    "model": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,63}$"},
+    "opaque_token": {"type": "string", "minLength": 16, "maxLength": 4096, "pattern": "^[\\x21-\\x7e]+$", "description": "Bearer secret; never logged, never placed in a task container"},
+    "usd": {"type": "number", "minimum": 0, "maximum": 1000},
+    "phase": {"type": "string", "enum": ["setup", "baseline", "agent", "verify"]},
+    "result_status": {
+      "type": "string",
+      "enum": ["ok", "no_change", "env_failed", "build_failed", "agent_failed", "verify_failed", "timed_out", "budget_exhausted", "cancelled"],
+      "description": "build_failed = baseline build broken before the agent ran; verify_failed = clean verify did not pass"
+    },
+    "task_state": {
+      "type": "string",
+      "enum": ["received", "rejected", "queued", "claimed", "running", "verified", "publishing", "published", "no_pr", "failed", "cancelled"],
+      "description": "Control-plane task states (listed here so status messages and admin views agree)"
+    },
+    "short_text": {"type": "string", "maxLength": 2000},
+    "log_tail": {"type": "string", "maxLength": 8192, "description": "Last lines of output, secrets already redacted by the producer"}
+  }
+}

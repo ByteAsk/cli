@@ -1,0 +1,178 @@
+{
+  "tools": [
+    {
+      "description": "Check a C++ port of a Python trading strategy against the original by replaying recorded market data through BOTH under one deterministic harness: the same initial book, market clock, seed, simulated fills and rejects, and event order. The Python version runs twice with different hash seeds and must reproduce itself exactly before anything is claimed; then the C++ version must send the same orders, cancels and timers and make the same decisions at every step, and end with the same positions and cash. Only `diag` numbers may differ, and only within `diag_tolerance`; orders and decisions are always exact. The C++ version also runs a second time with new heap memory filled with a pattern, to catch reads of uninitialised memory.\n\nReturns PASS, FAIL (the first step that differs, the field, both values and both rows), NOT RUN (with the reason, e.g. the Python version is not reproducible, a version could not start or timed out, the recording is inconsistent) or NO CLAIM (nothing traded, so nothing about order logic was checked). Only PASS is success.\n\nBoth versions must be built on the port_harness adapters (Python: port_harness.py, C++: port_harness.hpp, header-only C++17); get them with `byteask-port-check adapters DIR`. Build the C++ binary first; this tool runs it, it does not compile it. Prices and quantities are integers. The recording is JSON Lines of add/cancel/delete/exec/replace/trade events with integer `ts` nanoseconds, or a Nasdaq TotalView-ITCH 5.0 capture (`recording_format` itch50). A PASS covers this recording and these harness settings only, and is not a speed result.",
+      "name": "port_check",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "cpp": {
+            "additionalProperties": false,
+            "properties": {
+              "argv": {
+                "description": "Command and arguments, e.g. [\"python3\", \"strategy_main.py\"] or [\"./build/strategy\"].",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "env": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra environment (the rest is cleared; PATH is kept). PYTHONPATH must reach port_harness.py.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "argv"
+            ],
+            "type": "object"
+          },
+          "cpp_runs": {
+            "type": "integer"
+          },
+          "diag_tolerance": {
+            "additionalProperties": false,
+            "properties": {
+              "abs": {
+                "type": "number"
+              },
+              "rel": {
+                "type": "number"
+              },
+              "ulps": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "harness": {
+            "additionalProperties": false,
+            "properties": {
+              "depth": {
+                "type": "integer"
+              },
+              "latency_ns": {
+                "type": "integer"
+              },
+              "max_order_qty": {
+                "type": "integer"
+              },
+              "max_position": {
+                "type": "integer"
+              },
+              "params": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "price_band": {
+                "type": "integer"
+              },
+              "reject_every": {
+                "type": "integer"
+              },
+              "reject_ppm": {
+                "type": "integer"
+              },
+              "seed": {
+                "type": "integer"
+              },
+              "strict_book": {
+                "type": "boolean"
+              },
+              "tick": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "initial_book": {
+            "description": "JSON Lines of `add` records resting before the first event.",
+            "type": "string"
+          },
+          "limits": {
+            "additionalProperties": false,
+            "properties": {
+              "first_response_timeout_ms": {
+                "type": "integer"
+              },
+              "max_steps": {
+                "type": "integer"
+              },
+              "max_steps_per_ts": {
+                "type": "integer"
+              },
+              "response_timeout_ms": {
+                "type": "integer"
+              },
+              "run_timeout_ms": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "python": {
+            "additionalProperties": false,
+            "properties": {
+              "argv": {
+                "description": "Command and arguments, e.g. [\"python3\", \"strategy_main.py\"] or [\"./build/strategy\"].",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "env": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra environment (the rest is cleared; PATH is kept). PYTHONPATH must reach port_harness.py.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "argv"
+            ],
+            "type": "object"
+          },
+          "python_runs": {
+            "type": "integer"
+          },
+          "recording": {
+            "description": "Path to the JSON Lines recording.",
+            "type": "string"
+          },
+          "recording_format": {
+            "description": "events_jsonl (default) or itch50: a Nasdaq TotalView-ITCH 5.0 capture with a 2-byte length before every message.",
+            "enum": [
+              "events_jsonl",
+              "itch50"
+            ],
+            "type": "string"
+          },
+          "workdir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "recording",
+          "python",
+          "cpp"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ]
+}

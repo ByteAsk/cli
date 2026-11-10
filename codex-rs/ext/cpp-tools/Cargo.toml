@@ -1,0 +1,45 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "codex-cpp-tools"
+version.workspace = true
+
+[lib]
+name = "codex_cpp_tools"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-byteask-policy = { workspace = true }
+byteask-port-check = { workspace = true }
+codex-check-result = { workspace = true }
+codex-checks-profile = { workspace = true }
+codex-core = { workspace = true }
+codex-extension-api = { workspace = true }
+codex-features = { workspace = true }
+codex-login = { workspace = true }
+codex-utils-redacted-string = { workspace = true }
+codex-protocol = { workspace = true }
+codex-results-store = { workspace = true }
+codex-sandboxing = { workspace = true }
+codex-tools = { workspace = true }
+codex-utils-absolute-path = { workspace = true }
+libc = { workspace = true }
+regex-lite = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+shlex = { workspace = true }
+tokio = { workspace = true, features = ["macros", "process", "rt", "io-util", "net", "sync", "time"] }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+codex-ref-tools = { workspace = true }
+codex-utils-output-truncation = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

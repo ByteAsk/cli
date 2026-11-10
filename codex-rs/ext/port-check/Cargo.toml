@@ -1,0 +1,37 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "byteask-port-check"
+version.workspace = true
+
+# port_check: replay recorded market data through a Python
+# strategy and its C++ port under ONE deterministic harness (fixed initial
+# book, clock, seed, simulated fills/rejects and event ordering), require the
+# Python version to reproduce itself exactly first, then require the same
+# orders and decisions from the C++ version. Built on byteask-replay.
+# A library function plus a JSON-in/JSON-out CLI; the toolbox registers it.
+
+[lib]
+name = "byteask_port_check"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "byteask-port-check"
+path = "src/bin/byteask-port-check.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+byteask-hft-pack = { workspace = true }
+byteask-replay = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }

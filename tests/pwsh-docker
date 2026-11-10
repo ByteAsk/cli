@@ -1,0 +1,21 @@
+#!/bin/sh
+# A `pwsh` for a machine that has Docker but no PowerShell installed.
+#
+# Without a real PowerShell a .ps1 change can only be static-checked (ASCII +
+# brace balance) and stays runtime-untested. A container removes that
+# limitation for anything platform-agnostic:
+#
+#   sh tests/win-client.sh   BYTEASK_PWSH=tests/pwsh-docker
+#
+# Caveats, both real: this is PowerShell 7 on Linux, while users run Windows
+# PowerShell 5.1 on Windows. It catches syntax errors and logic bugs; it cannot
+# catch a 5.1-only parse difference or anything touching the Windows registry,
+# COM or the Windows console. Those still need a real Windows box.
+#
+# Env is forwarded explicitly because the suites set variables inline
+# (`VAR=x "$PWSH" ...`), and a container inherits nothing.
+exec docker run --rm -i --network host -v /tmp:/tmp \
+  -u "$(id -u):$(id -g)" \
+  -e BYTEASK_HOME -e BYTEASK_GATEWAY -e BYTEASK_NO_UPDATE_CHECK -e BYTEASK_BRAND \
+  -e BYOK_ASSUME_TTY -e HOME \
+  mcr.microsoft.com/powershell:latest pwsh "$@"

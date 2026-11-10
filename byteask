@@ -81,8 +81,8 @@ version_gt() {
 # /version, bad data) is swallowed so the engine always launches. Opt out with
 # BYTEASK_NO_UPDATE_CHECK=1.
 #
-# An interactive TUI launch ASKS, before the TUI starts: "Update now? [Y/n]" (owner,
-# 2026-09-23). Enter or y runs the same updater as `byteask --update` and relaunches the
+# An interactive TUI launch ASKS, before the TUI starts: "Update now? [Y/n]".
+# Enter or y runs the same updater as `byteask --update` and relaunches the
 # fresh wrapper with the original args; anything else continues on this version and the
 # question comes back next launch. The engine's own in-session notice alone was too
 # easy to miss and lagged a release by up to a day (it caches /version.json for 20 h).
@@ -207,9 +207,9 @@ _models_access_fetch() {
   [ -f "$BYTEASK_HOME/models-catalog.json" ] || return 0
   command -v curl >/dev/null 2>&1 || return 0
   # The engine's own credential first: it is what every turn authenticates with, so it
-  # is the one known to be live. byok-config.json's `jwt` can be stale (2026-10-09: a
-  # signed-in Mac got 401 here on every launch while its turns worked, so it never got
-  # its overlay and saw every model). Fall back to it only with no managed token (BYOK).
+  # is the one known to be live. byok-config.json's `jwt` can be stale: a signed-in
+  # machine then gets 401 here on every launch while its turns work, so it never gets
+  # its overlay and sees every model. Fall back to it only with no managed token (BYOK).
   _ma_tok="$(_managed_token 2>/dev/null)"
   [ -n "$_ma_tok" ] || _ma_tok="$(_byok_current_jwt 2>/dev/null)"
   [ -n "$_ma_tok" ] || return 0
@@ -246,7 +246,7 @@ _catalog_refresh() {
   rm -f "$_cr_tmp" 2>/dev/null || true
 }
 
-# The same refresh for a launch with NO ByteAsk sign-in (the anonymous trial). The
+# The same refresh for a launch with NO ByteAsk sign-in (own key or own model). The
 # authenticated `model-access` fetch above can never serve it, so a served catalog change,
 # a kill switch included, used to skip these launches entirely. A conditional GET against
 # the static catalog's ETag costs one small request per launch and downloads only when the
@@ -371,8 +371,8 @@ _byok_current_jwt() {
 # The managed credential, and ONLY that: the `experimental_bearer_token` line is
 # literally what the engine puts in the Authorization header. Keep this separate
 # from _byok_current_jwt -- that one answers "do we hold a JWT anywhere", which is
-# a different question, and reading byok-config.json first is what let a dead
-# managed token pass for a live session in the 2026-09-07 lockout.
+# a different question, and reading byok-config.json first would let a dead
+# managed token pass for a live session.
 _managed_token() {
   sed -n 's/^experimental_bearer_token = "\(.*\)"$/\1/p' "$BYTEASK_HOME/config.toml" 2>/dev/null | head -n1
 }
@@ -502,35 +502,9 @@ _email_is_new() {
 _cfg_model()   { sed -n 's/^model = "\(.*\)"$/\1/p' "$BYTEASK_HOME/config.toml" 2>/dev/null | head -n1; }
 _cfg_catalog() { grep -n '^model_catalog_json = ' "$BYTEASK_HOME/config.toml" 2>/dev/null | head -n1 | sed 's/^[0-9]*://'; }
 
-# A stable per-device token for the anonymous free trial. Minted once, persisted
-# 0600, sent as X-Anon-Id so the gateway can meter pre-login trial calls per device
-# (NOT per IP — a university shares one NAT). It's just a local file; resetting it
-# is possible and accepted for a short promo.
-# Is the anonymous free-trial promo currently on? Public gateway check; fail CLOSED
-# (any error / unreachable -> treat as OFF so we fall back to normal email onboarding).
-# BYTEASK_ANON_FORCE=1 forces on for tests without a live gateway.
-_anon_promo_on() {
-  [ "${BYTEASK_ANON_FORCE:-}" = 1 ] && return 0
-  _as=$(curl -fsS --max-time 4 "$(resolve_gateway)/byteask/anon-status" 2>/dev/null) || return 1
-  case "$_as" in *'"enabled":true'*|*'"enabled": true'*) return 0 ;; *) return 1 ;; esac
-}
-
-_anon_id_file() { echo "$BYTEASK_HOME/anon-id"; }
-_ensure_anon_id() {
-  _aif="$(_anon_id_file)"
-  if [ ! -s "$_aif" ]; then
-    _aid=$(python3 -c 'import secrets;print(secrets.token_hex(16))' 2>/dev/null \
-           || od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')
-    [ -n "$_aid" ] && { printf '%s' "$_aid" > "$_aif" 2>/dev/null; chmod 600 "$_aif" 2>/dev/null; }
-  fi
-  cat "$_aif" 2>/dev/null
-}
-
 # Managed config.toml (the today path). Shared by do_login, `byok off`, and do_logout.
 # An EMPTY token ($4) writes an UNSIGNED config (no experimental_bearer_token line at all,
 # not an empty one) so the launch-loop onboard check correctly sees "not signed in".
-# An unsigned config also carries an X-Anon-Id header so the gateway can meter the
-# anonymous free trial per device.
 # Returns NON-ZERO when the config was not persisted. Every caller must check:
 # this file holds the only credential the engine sends, so a write that quietly
 # fails turns into an unbreakable 401 loop that looks like a server outage.
@@ -582,10 +556,6 @@ requires_openai_auth = false
 EOF
     [ -n "$4" ] && printf 'experimental_bearer_token = "%s"\n' "$4"
     printf '\n[model_providers.byteask.http_headers]\nx-openai-actor-authorization = "byteask"\n'
-    # Unsigned config carries the anon-trial device token. `if` (not `&&`) so the
-    # function's exit status stays 0 when signed — a trailing false `&&` would make
-    # write_managed_config "fail" and the launch loop would re-onboard.
-    if [ -z "$4" ]; then printf 'X-Anon-Id = "%s"\n' "$(_ensure_anon_id)"; fi
     _cfg_features_block
   } > "$_wmc_tmp" || { rm -f "$_wmc_tmp" 2>/dev/null; _wmc_fail "$4"; return 1; }
   _install_config "$_wmc_tmp" || { _wmc_fail "$4"; return 1; }
@@ -602,7 +572,7 @@ EOF
 # place: a rename needs write permission on the DIRECTORY only, so it succeeds
 # when config.toml itself is unwritable -- the exact state (a root-owned
 # config.toml under a user-owned ~/.byteask, left behind by one `sudo byteask`)
-# that silently swallowed every sign-in in the 2026-09-07 lockout. It is also
+# in which every sign-in would otherwise be silently lost. It is also
 # crash-atomic: a half-written config can never be observed. The one exception
 # is a config.toml that is a SYMLINK (dotfile managers): a rename would replace
 # the link with a plain file and quietly detach the user's dotfiles, so there we
@@ -638,8 +608,8 @@ _set_managed_token() {   # $1 = new token
 }
 
 # One place to explain a failed credential write, because the user cannot act on
-# "Permission denied" alone and this is the failure that locked a real account out
-# for six weeks.
+# "Permission denied" alone, and a credential that silently fails to save locks the
+# account out with no visible cause.
 _wmc_fail() {   # $1 = token that failed to persist (empty = an unsigned write)
   {
     printf '\n'
@@ -657,7 +627,7 @@ _wmc_fail() {   # $1 = token that failed to persist (empty = an unsigned write)
 
 # BYOK config.toml: engine -> local sidecar, NO secret in the engine (JWT is in the
 # sidecar store). supports_websockets=false so the engine never sends previous_response_id
-# down a WS the local demux can't honor across providers (cross-model review).
+# down a WS the local demux can't honor across providers.
 write_byok_config() {  # $1=model $2=catalog_line $3=local_token
   # Written through a temp file + rename for the same reason as
   # write_managed_config: truncating config.toml in place fails outright when the
@@ -690,18 +660,30 @@ EOF
 # Ensure the loopback sidecar is running + current. Lazy shared singleton: health
 # probe; (re)start if down or if byok_sidecar.py is newer than our start marker
 # (picks up a `byteask --update`). Returns non-zero if it can't come up.
+# BYTEASK_NO_TELEMETRY=1 (also true/yes, any case) turns the usage ping off. The sidecar
+# reads it from its own environment when it starts, so a sidecar that was started
+# without it is restarted once; the marker file records "started with the opt-out".
+_no_telemetry() {
+  case "$(printf '%s' "${BYTEASK_NO_TELEMETRY:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes) return 0 ;;
+  esac
+  return 1
+}
 ensure_sidecar() {
   [ -n "${BYOK_SKIP_SIDECAR:-}" ] && return 0   # test seam: skip the real spawn
   [ -f "$BYOK_SIDECAR" ] || { echo "byteask: BYOK sidecar not installed; run 'byteask --update'." >&2; return 1; }
   _pidf="$BYTEASK_HOME/byok-sidecar.pid"
+  _notel="$BYTEASK_HOME/byok-sidecar.notelemetry"
   if curl -fsS "http://127.0.0.1:$BYOK_PORT/healthz" >/dev/null 2>&1; then
-    [ -f "$_pidf" ] && [ "$_pidf" -nt "$BYOK_SIDECAR" ] && return 0   # healthy + current
+    [ -f "$_pidf" ] && [ "$_pidf" -nt "$BYOK_SIDECAR" ] \
+      && { ! _no_telemetry || [ -f "$_notel" ]; } && return 0   # healthy + current
     kill "$(cat "$_pidf" 2>/dev/null)" 2>/dev/null || true            # stale -> restart
     sleep 1
   fi
   command -v python3 >/dev/null 2>&1 || { echo "byteask: BYOK needs python3 (not found on PATH)." >&2; return 1; }
   BYOK_SIDECAR_PORT="$BYOK_PORT" nohup python3 "$BYOK_SIDECAR" >"$BYTEASK_HOME/byok-sidecar.log" 2>&1 &
   echo $! > "$_pidf"
+  if _no_telemetry; then : > "$_notel"; else rm -f "$_notel"; fi
   _i=0; while [ "$_i" -lt 30 ]; do
     curl -fsS "http://127.0.0.1:$BYOK_PORT/healthz" >/dev/null 2>&1 && return 0
     sleep 0.1; _i=$((_i+1))
@@ -808,9 +790,9 @@ PY
 _is_signed_in() {
   # On the managed provider the engine sends config.toml's token and nothing else,
   # so that is the token whose expiry decides whether this machine has a session.
-  # Asking _byok_current_jwt here read byok-config.json FIRST, so a leftover BYOK
-  # jwt made an expired managed token report "signed in" forever -- the launch loop
-  # never re-onboarded and every turn 401'd (2026-09-07).
+  # Asking _byok_current_jwt here would read byok-config.json FIRST, so a leftover BYOK
+  # jwt would make an expired managed token report "signed in" forever -- the launch loop
+  # would never re-onboard and every turn would fail with 401.
   if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$BYTEASK_HOME/config.toml" 2>/dev/null | head -n1)" = byteask ]; then
     _si_jwt="$(_managed_token)"
   else
@@ -972,10 +954,10 @@ byok_off() {
 # engine picks the ChatGPT backend for AuthMode::Chatgpt), but the
 # [model_providers.byteask] block is RETAINED so the engine still knows the
 # ByteAsk account. The engine reads the JWT from that named block, not from the
-# active provider (I3, provider-independent identity), so /usage, the account
+# active provider (provider-independent identity), so /usage, the account
 # panes, cpp_intrinsic and tool-limit metering keep working in a subscription
 # session. Written through a temp file + rename (never a bare `cat >`): a
-# half-written or unwritable config.toml is the 2026-09-07 lockout class.
+# half-written or unwritable config.toml locks the account out.
 #
 #   config.toml
 #   ├── model_provider = "openai"        ← ACTIVE (ChatGPT backend, turns go here)
@@ -1038,7 +1020,7 @@ web_search = "live"
 $2
 EOF
     # Retained ByteAsk identity block. Omitted entirely when signed out (no
-    # identity to keep), so an anonymous subscription session writes no token.
+    # identity to keep), so a signed-out subscription session writes no token.
     if [ -n "$4" ]; then
       cat <<EOF
 
@@ -1067,7 +1049,7 @@ EOF
   return 0
 }
 
-# ChatGPT subscription (D13=A): a pure OpenAI-only session via the engine's own
+# ChatGPT subscription: a pure OpenAI-only session via the engine's own
 # login flow. Not the sidecar (its OAuth/refresh is engine-native).
 # Is this a session where the engine's browser-callback sign-in cannot work — a
 # remote/headless box with no local browser to open localhost:1455? SSH_CONNECTION
@@ -1082,14 +1064,6 @@ _subscription_is_headless() {
 # $1 (optional): "--device" forces device-code sign-in, "--browser" forces the
 # browser callback. Absent: auto — device-code on a headless/SSH box, browser
 # otherwise. Device-code is the path for a machine with no local browser.
-# The client-version floor from the last flags refresh, or empty. Re-validated on read:
-# the file is user-writable, and the value becomes an HTTP header.
-_subscription_version_floor() {
-  _svf="$(sed -n 's/^reported_version_floor=\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' \
-          "$BYTEASK_HOME/subscription-flags" 2>/dev/null | head -n1)"
-  printf '%s' "$_svf"
-}
-
 # The models a ChatGPT-subscription session may offer.
 #
 # A subscription session used to ship NO `model_catalog_json`, which made the engine fall
@@ -1113,9 +1087,9 @@ _subscription_version_floor() {
 #   NOT ENTITLED the whole gpt-5.4 family (incl. -mini/-nano), gpt-5.2, gpt-4.1, and
 #                every dedicated coding-model slug
 # A ChatGPT account gets the 5.6 family and astra, whatever an API key can reach. The
-# exact refused slugs are enumerated in byteask/test/byok.sh, which asserts none of them
+# exact refused slugs are enumerated in tests/byok.sh, which asserts none of them
 # can ever appear in the subscription catalog - they are named there rather than here
-# because this file ships to users and test/wrapper-env.sh polices its vocabulary.
+# because this file ships to users and tests/wrapper-env.sh polices its vocabulary.
 #
 # WARNING: measure, do not infer. The first version of this list carried gpt-5.4 as the
 # DEFAULT on the strength of an earlier note, and 5.4 is refused outright - so the very
@@ -1127,9 +1101,7 @@ _subscription_version_floor() {
 # (or with BYTEASK_REPORTED_VERSION=auto) or every 5.6 model reads as refused.
 # `auto` is excluded by nature -- it is a gateway-side fallback chain, and there is no
 # gateway on this path.
-# `@x.y.z` marks a model OpenAI hides below that client version; it is offered only
-# when the server-supplied floor reaches it (see _subscription_version_floor).
-BYTEASK_SUBSCRIPTION_MODELS="gpt-6-astra gpt-6-sol@0.155.0 gpt-6-luna@0.155.0 gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna"
+BYTEASK_SUBSCRIPTION_MODELS="gpt-6-astra gpt-6-sol gpt-6-luna gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna"
 
 # Write $1 = the managed catalog filtered to those models. Returns non-zero (leaving no
 # file) on any problem, and the caller then falls back to the previous behaviour rather
@@ -1139,19 +1111,11 @@ _write_subscription_catalog() {
   [ -f "$BYTEASK_HOME/models-catalog.json" ] || return 1
   # A quoted heredoc, not `python3 -c '...'`: the script contains quotes, and escaping
   # them into a single-quoted shell string is exactly how this broke the first time.
-  BK_SUB_MODELS="$BYTEASK_SUBSCRIPTION_MODELS" BK_SUB_FLOOR="$(_subscription_version_floor)" \
+  BK_SUB_MODELS="$BYTEASK_SUBSCRIPTION_MODELS" \
     python3 - "$BYTEASK_HOME/models-catalog.json" "$1" <<'SUBCAT' || return 1
 import copy, json, os, sys
 src, dest = sys.argv[1], sys.argv[2]
 
-def ver(v):
-    try:
-        a, b, c = (int(x) for x in v.split("."))
-        return (a, b, c)
-    except Exception:
-        return None
-
-floor = ver(os.environ.get("BK_SUB_FLOOR") or "")
 # Models OpenAI serves to a ChatGPT account that are not in our managed catalog, so
 # they are synthesized from gpt-6-astra (same schema, measured) plus the values that
 # differ, copied from OpenAI's own /models response. Starting from OUR astra entry is
@@ -1173,14 +1137,7 @@ SYNTH = {
 
 d = json.load(open(src, encoding="utf-8"))
 by_slug = {m.get("slug"): m for m in d.get("models") or []}
-wanted = []
-for tok in (os.environ.get("BK_SUB_MODELS") or "").split():
-    slug, _, minv = tok.partition("@")
-    # `@x.y.z`: OpenAI hides this model below that client version, so offering it
-    # without a floor that reaches it would put a model in the picker that 400s.
-    if minv and (floor is None or ver(minv) is None or floor < ver(minv)):
-        continue
-    wanted.append(slug)
+wanted = (os.environ.get("BK_SUB_MODELS") or "").split()
 
 models = []
 for slug in wanted:
@@ -1218,7 +1175,7 @@ SUBCAT
 }
 
 # Finish a sign-in the ENGINE already performed: the provider swap and nothing else.
-# Draws nothing, by design - `docs/settings-surface-plan.md` gives the engine every
+# Draws nothing, by design - the engine owns every
 # surface the user reads, and the wrapper only restart-owned work.
 byok_subscription_finish() {
   _sf_jwt="$(_byok_current_jwt)"
@@ -1241,7 +1198,7 @@ byok_subscription_finish() {
 }
 
 byok_subscription() {
-  # docs/DESIGN-TERMINAL.md §8: the shell stays silent on the healthy path. The
+  # Design rule: the shell stays silent on the healthy path. The
   # four-line preamble that used to print here (a title plus a "Note:" paragraph
   # that wrapped mid-sentence) said what the engine's own sign-in screen now says,
   # and said it before the user had done anything. The one fact worth keeping —
@@ -1253,7 +1210,7 @@ byok_subscription() {
   # are still valid afterwards — but capturing first is the safe order.
   _sub_jwt="$(_byok_current_jwt)"
   # Remember the MANAGED session we are leaving, so "Use ByteAsk managed" can put
-  # the user back on the exact model + catalog they had (owner decision: restore
+  # the user back on the exact model + catalog they had (restore
   # the previous model, not a default). Best-effort: a missing file just means the
   # restore falls back to the default model, never a failure to switch back.
   # ⚠️ Only record a session that is actually MANAGED. Switching subscription ->
@@ -1269,7 +1226,7 @@ byok_subscription() {
   # Deliberately EMPTY: do not carry a managed model into the ChatGPT catalog
   # (see write_subscription_config). The engine picks a valid default itself.
   _sub_model=""
-  # I5 said to drop model_catalog_json because OUR catalog carries Gemini/Kimi/Claude,
+  # The first design dropped model_catalog_json because OUR catalog carries Gemini/Kimi/Claude,
   # which would 400 on the ChatGPT backend. Still true of the FULL catalog - but dropping
   # it entirely handed the picker, the default AND the identity to upstream's bundled
   # list. Ship a filtered copy instead: OpenAI-only, measured-entitled, and carrying our
@@ -1323,7 +1280,7 @@ byok_subscription() {
   # that warning is invisible in the normal path because the TUI's alternate screen wipes
   # it the moment the engine launches.
   #
-  # Still a DENYLIST, not an allowlist (owner's call): an unknown plan string switches and
+  # Still a DENYLIST, not an allowlist: an unknown plan string switches and
   # warns, exactly as before. Only plans MEASURED to serve nothing are refused, and the
   # config is left untouched so the user keeps the working session they already had.
   case "$(_chatgpt_plan_type)" in
@@ -1360,7 +1317,7 @@ byok_subscription() {
 }
 
 # Claude subscription (Pro/Max): OAuth + a Responses<->Anthropic translation that
-# live INSIDE the engine binary (docs/subscription-auth-plan.md §L, I1/I6; T6/T7),
+# live INSIDE the engine binary,
 # so the user's Claude token goes DIRECT to api.anthropic.com and never touches
 # ByteAsk's server. Until that engine module ships, fail cleanly rather than write
 # a half-configured session — the `claude` kill switch is default-off, so this is
@@ -1373,8 +1330,8 @@ byok_subscription() {
 # OpenAI gives the GPT-5.6 family to Plus and above and omits Go from that table.
 #
 # Deliberately a WARNING, never a block, and a DENYLIST of plans known to be
-# insufficient — an allowlist would lock out any plan string we failed to predict,
-# which is the 2026-09-07 lockout class. Unknown/absent/unparseable => silent.
+# insufficient — an allowlist would lock out any plan string we failed to predict.
+# Unknown/absent/unparseable => silent.
 # The signed-in ChatGPT account's plan (`go`, `free`, `plus`, `pro`, ...), or empty
 # when it cannot be read. One definition, read by BOTH the sign-in gate and the
 # per-launch warning — a plan check that disagrees with itself is how a user ends up
@@ -1434,18 +1391,11 @@ try:
         sys.exit(0)
 except Exception:
     sys.exit(0)   # malformed -> leave the file alone (fail-safe)
-import re
 b = lambda x: "1" if x is True else "0"
-# The client-version floor that unlocks OpenAI's newer models. Written only when it
-# is a clean x.y.z: it ends up in an HTTP header, and anything else is dropped here.
-floor = d.get("reported_version_floor")
-floor = floor if isinstance(floor, str) and re.fullmatch(r"\d+\.\d+\.\d+", floor) else ""
 tmp = sys.argv[1] + ".tmp"
 with open(tmp, "w") as f:
     f.write("chatgpt=%s\nclaude=%s\nclaude_launcher=%s\n" % (
         b(d.get("chatgpt")), b(d.get("claude")), b(d.get("claude_launcher"))))
-    if floor:
-        f.write("reported_version_floor=%s\n" % floor)
 os.replace(tmp, sys.argv[1])   # atomic: the engine never sees a torn file
 PY
 }
@@ -1474,7 +1424,7 @@ Follow ByteAsk's engineering discipline:
 METHOD
 }
 
-# Launch the user's OWN, unmodified Claude Code (docs/claude-launcher-plan.md).
+# Launch the user's OWN, unmodified Claude Code.
 # Anthropic PERMITS running the unmodified binary on the user's own subscription;
 # ByteAsk never reads, stores, or handles the Claude credential — `claude` owns its
 # own sign-in. We only layer ByteAsk's C/C++ method in via claude's native
@@ -1530,7 +1480,7 @@ _self_hosted_howto() {
   _ui_gap
 }
 
-# True (silently) when the shared helper is new enough for preset subcommands (D13).
+# True (silently) when the shared helper is new enough for preset subcommands.
 _preset_helper_available() {
   _pha=$(python3 "$BYOK_MODELS" version 2>/dev/null || echo 0)
   case "$_pha" in ''|*[!0-9]*) return 1;; esac
@@ -1661,7 +1611,7 @@ $2"; shift 2;;
       MID=$(_pick_from_ids "$_ids")
     elif [ "$KIND" = cloud ]; then
       # A cloud provider lists many non-equivalent ids — never silently bind the first
-      # one in a script; make the caller name it (D10).
+      # one in a script; make the caller name it.
       echo "byteask models add: $PROVIDER lists many models — pass --model <id>. For example:" >&2
       printf '%s\n' "$_ids" | head -3 | sed 's/^/    /' >&2
       return 2
@@ -1703,14 +1653,14 @@ PY
   # go to the managed gateway. (_byok_enter preserves the endpoints we just wrote.)
   _byok_enter || echo "  (warning: couldn't start the local sidecar — run 'byteask' to retry)" >&2
   _models_merge
-  # Honest copy per endpoint kind (D8): a cloud provider is NOT "your compute".
+  # Honest copy per endpoint kind: a cloud provider is NOT "your compute".
   if [ "$KIND" = cloud ]; then
     echo "Added self/$_ma_alias  ($MID via $PROVIDER). Runs on $PROVIDER's cloud under YOUR key — they bill you; agent loops consume credits."
   else
     echo "Added self/$_ma_alias  ($MID, wire=$WIRE). Your compute — never billed by ByteAsk."
   fi
   echo "Pick it in /model, or run:  byteask --model self/$_ma_alias"
-  # Consented smoke test (D11): discovery listing ≠ a working chat turn.
+  # Consented smoke test: discovery listing ≠ a working chat turn.
   if [ -t 0 ] && [ -t 1 ]; then
     printf "  Run a quick test now (one request on your key)? [Y/n]: " >&2
     read -r _mt_ans </dev/tty 2>/dev/null || _mt_ans=""
@@ -1873,9 +1823,8 @@ _menu_pick() {
 # ==================== persistent settings screen ============================
 # ONE anchored region — header, breadcrumb, menu, status line, footer — that
 # repaints over itself every frame (relative cursor-up + clear-to-EOL on
-# /dev/tty), so nothing ever stacks in scrollback. Design + every locked
-# decision: docs/menu-redesign-plan.md (D2 anchored region, D3 wipe-confirm,
-# D5 arrows/Enter/Esc only, §3.5 hardening, §3.6 frames/copy/tokens).
+# /dev/tty), so nothing ever stacks in scrollback. The design rules: an anchored
+# region, a typed confirm before keys are wiped, and arrows/Enter/Esc only.
 #
 #   frame N     ByteAsk · Settings              (accent+bold)
 #               you@example.com · signed in     (dim)
@@ -1888,7 +1837,7 @@ _menu_pick() {
 #   frame N+1:  ESC[{lines}A then repaint every line with \r ESC[K
 #
 # Runs in the PARENT shell (results via _SCR_* globals — a $() subshell would
-# strand traps/state, §3.5#1). Falls back to the sequential numbered flow on
+# strand traps/state). Falls back to the sequential numbered flow on
 # ANY doubt: no tty, raw-mode failure, TERM=dumb, tiny window, or
 # BYTEASK_PLAIN_MENU=1 (the screen-reader-friendly linear path).
 _ESC=$(printf '\033'); _CR=$(printf '\rX'); _CR=${_CR%X}; _NL=$(printf '\nX'); _NL=${_NL%X}
@@ -1949,7 +1898,7 @@ _scr_cleanup() {   # idempotent: modes restored, cursor shown+below region
 _scr_done() { _scr_cleanup; trap - INT TERM EXIT; trap - WINCH 2>/dev/null || true; }
 # Hand-off to a sequential wizard (models add / sign-in): erase the drawn region (so
 # it doesn't sit stacked behind the wizard's own linear output) and leave a one-line
-# breadcrumb; resume draws a FRESH region after (§3.5 T16, revised 2026-07-23 §10.1).
+# breadcrumb; resume draws a FRESH region after.
 _scr_suspend() {
   if [ "$_SCR_DRAWN" -gt 0 ]; then
     printf '\033[%dA\033[0J' "$_SCR_DRAWN" >&4 2>/dev/null || true
@@ -1992,7 +1941,7 @@ _scr_line() {   # $1=style $2=text -> one region row (truncated, never wraps)
 
 _scr_provname() { case $1 in openai) echo OpenAI;; anthropic) echo Anthropic;; gemini) echo Gemini;; *) echo "$1";; esac; }
 
-# Content is computed ONCE per state change and cached (§3.2: arrow frames are
+# Content is computed ONCE per state change and cached (arrow frames are
 # pure string redraws — no python/subprocess per keystroke).
 _scr_data() {
   if _is_signed_in; then _D_SIGNED=1; else _D_SIGNED=''; fi
@@ -2024,7 +1973,7 @@ _scr_tag() { printf '%s\n' "$_SCR_OPTS" | sed -n "${1}p" | cut -d'|' -f1; }
 _scr_goto_keys() {
   _SCR_MSGK=none; _SCR_MSG=''
   _SCR_STATE=keys; _scr_data
-  # Managed first and marked recommended (owner, 2026-09-27): it is what almost every new
+  # Managed first and marked recommended: it is what almost every new
   # user should pick, so it leads the list and a first-run bare Enter takes it.
   _SCR_OPTS="managed|Use ByteAsk managed (recommended) $_G_DOT 20 models incl. GPT, Gemini & open models, 20% off API pricing
 openai|OpenAI      $_D_VOA your key
@@ -2037,7 +1986,7 @@ selfhost|Your own hosted model $_G_DOT vLLM, TGI, Ollama, LM Studio, DGX, or any
 done|Done"
   _SCR_NOPT=$(_scr_opts_count)
   # First run (no keys): the cursor starts on managed, so bare Enter proceeds on it. With
-  # keys: Done — managed would then remove them, and a stray Enter can never mutate (§3.6).
+  # keys: Done — managed would then remove them, and a stray Enter can never mutate.
   if [ "$_D_NKEYS" = 0 ]; then _SCR_CUR=1; else _SCR_CUR=$_SCR_NOPT; fi
 }
 _scr_goto_account() {
@@ -2180,7 +2129,7 @@ _scr_render() {
   _SCR_DRAWN=$_scr_n
 }
 
-# ---- input: arrows/Enter/Esc ONLY (D5). Paste bursts swallowed; CSI drained.
+# ---- input: arrows/Enter/Esc ONLY. Paste bursts swallowed; CSI drained.
 _scr_swallow() {   # consume a paste burst; $1 = already-read head
   _sw=$1; _sw_empty=0
   stty min 0 time 1 <&3 2>/dev/null || true
@@ -2206,7 +2155,7 @@ _scr_key() {   # PARENT-shell key read -> _KEY (+_KEY_N for repeats); never a su
   fi
   case $_b in
     "$_NL"|"$_CR"|' ')
-      # burst-Enter guard (§3.5#4): an Enter with bytes right behind it is a paste
+      # burst-Enter guard: an Enter with bytes right behind it is a paste
       stty min 0 time 1 <&3 2>/dev/null || true
       _p=$(dd bs=512 count=1 <&3 2>/dev/null || true; printf X); _p=${_p%X}
       stty min 1 time 0 <&3 2>/dev/null || true
@@ -2236,7 +2185,7 @@ _scr_key() {   # PARENT-shell key read -> _KEY (+_KEY_N for repeats); never a su
             [ "$_KEY_N" -lt 1 ] && _KEY_N=1;;
           '['*)
             # unknown CSI (modified arrows/Home/End/F-keys): drain to its final
-            # byte and drop — params must never leak as actions (§3.5, T19)
+            # byte and drop — params must never leak as actions
             _dr=0
             stty min 0 time 1 <&3 2>/dev/null || true
             while [ "$_dr" -lt 3 ]; do
@@ -2249,7 +2198,7 @@ _scr_key() {   # PARENT-shell key read -> _KEY (+_KEY_N for repeats); never a su
         esac
       fi;;
     *)
-      # printable: IGNORED in the raw menu (D5) — but a burst behind it means paste
+      # printable: IGNORED in the raw menu — but a burst behind it means paste
       stty min 0 time 1 <&3 2>/dev/null || true
       _p=$(dd bs=1024 count=1 <&3 2>/dev/null || true; printf X); _p=${_p%X}
       stty min 1 time 0 <&3 2>/dev/null || true
@@ -2257,7 +2206,7 @@ _scr_key() {   # PARENT-shell key read -> _KEY (+_KEY_N for repeats); never a su
   esac
 }
 
-# ---- actions (helpers run with output CAPTURED into the status line, §3.5#3)
+# ---- actions (helpers run with output CAPTURED into the status line)
 _scr_add_key() {   # $1 = provider — the PROMPT state, in-region, under our traps
   _prov=$1; _pn=$(_scr_provname "$_prov")
   if [ ! -f "$BYOK_SIDECAR" ]; then
@@ -2297,7 +2246,7 @@ _scr_add_key() {   # $1 = provider — the PROMPT state, in-region, under our tr
   fi
   # _scr_goto_keys clears _SCR_MSG internally — stash the result in temp vars
   # first, refresh the screen (needs the just-saved key reflected), THEN assign
-  # so the clear can't wipe it (§10.2, revised after menu.sh caught the ordering).
+  # so the clear can't wipe it (tests/menu.sh covers the ordering).
   _scr_goto_keys
   _SCR_MSGK=$_pend_k; _SCR_MSG=$_pend_m
 }
@@ -2311,13 +2260,13 @@ _scr_do_remove() {   # $1 = provider
     _SCR_MSGK=ok; _SCR_MSG="Removed your $_pn key"
   fi
 }
-_scr_do_managed() {   # D3: confirm (drain + typed y) ONLY when keys exist
+_scr_do_managed() {   # confirm (drain + typed y) ONLY when keys exist
   if [ "$_D_NKEYS" = 0 ]; then
     _out=$(byok_off 2>&1) || true
     _SCR_EXIT=1; return 0
   fi
   _SCR_STATE=confirm; _SCR_MSG=''; _SCR_MSGK=none
-  # drain any buffered input so a queued Enter can't blow through (§3.5#4)
+  # drain any buffered input so a queued Enter can't blow through
   stty min 0 time 1 <&3 2>/dev/null || true
   while _junk=$(dd bs=512 count=1 <&3 2>/dev/null || true; printf X); _junk=${_junk%X}; [ -n "$_junk" ]; do :; done
   stty min 1 time 0 <&3 2>/dev/null || true
@@ -2449,15 +2398,15 @@ _scr_settings() {   # $1 = entry screen (account|keys). 0 = ran (incl. fallback-
       *) : ;;
     esac
   done
-  # final frame stays in scrollback; summary printed once below it (§3.6)
+  # final frame stays in scrollback; summary printed once below it
   _scr_data 2>/dev/null || true
   _sum=''
   for _p in $_D_KEYED; do _sum="${_sum:+$_sum, }$(_scr_provname "$_p")"; done
   [ -n "$_sum" ] || _sum="all managed"
   # Print the summary on /dev/tty (fd 4) — the SAME channel the whole region drew
   # on — BEFORE _scr_done closes it, so it lands in scrollback below the final
-  # frame regardless of where stdout/stderr are redirected (T17). Truncated to the
-  # region width like every other row so it can't wrap on a narrow terminal (T22).
+  # frame regardless of where stdout/stderr are redirected. Truncated to the
+  # region width like every other row so it can't wrap on a narrow terminal.
   _sumline="ByteAsk settings $_G_DOT keys: $_sum $_G_DOT hosted models: $_D_NSELF.  /login reopens."
   _summax=$((_scr_cols - 2))
   if [ ${#_sumline} -gt "$_summax" ]; then
@@ -2471,7 +2420,7 @@ _scr_settings() {   # $1 = entry screen (account|keys). 0 = ran (incl. fallback-
 
 # ---- sequential fallback (piped stdin, tests, dumb terminals, PLAIN_MENU) ----
 # This is the pre-redesign flow, kept byte-compatible for scripts + byok.sh —
-# plus the D3 managed-wipe confirm for behavior parity with the screen. Its NUMBERS are
+# plus the managed-wipe confirm for behavior parity with the screen. Its NUMBERS are
 # the interface here, so managed keeps row 6 (only labelled recommended) while the
 # interactive screen lists it first.
 _source_menu_seq() {
@@ -2546,7 +2495,7 @@ do_account() {
     # Say WHY we're asking. _is_signed_in is the only expiry-aware check in the wrapper:
     # _current_email decodes the JWT's `sub` and ignores `exp`, so an expired user still
     # sees their address everywhere and reads a silent jump to a fresh magic link as
-    # "I'm already signed in — why am I logging in again?" (real report 2026-07-23).
+    # "I'm already signed in — why am I logging in again?".
     # A stored-but-rejected JWT means they WERE signed in; a missing one is a first run.
     if [ -n "$(_byok_current_jwt)" ]; then
       _ac_ex="$(_current_email)"
@@ -2572,7 +2521,7 @@ do_account() {
 #
 # The API key deliberately does NOT travel in the marker — that file is written
 # world-readable, and this project already refuses to pass keys through argv for the
-# same reason (providers-plan D3A). The engine stages it in an owner-only sibling
+# same reason. The engine stages it in an owner-only sibling
 # file; read it once, delete it, and hand it to models_add via BK_KEY.
 do_register_model() {
   _rm_p=${1%% *}; _rm_rest=${1#* }
@@ -2630,7 +2579,7 @@ do_add_model() {   # $1 = provider id, or "custom"
 do_login() {
   # Unconditional + safe under set -eu: _scr_tokens' first line defines every
   # _C_*/_G_* var before any conditional runs, and the color ladder itself is
-  # gated on [ -t 1 ] internally (§10.3, 2026-07-23) — never emits raw escapes
+  # gated on [ -t 1 ] internally — never emits raw escapes
   # on a non-interactive run (e.g. `byteask login --email x@y </dev/null`).
   _scr_tokens
   GATEWAY="$(resolve_gateway)"; EMAIL=""; MODEL="${BYTEASK_MODEL:-auto}"; AUTOCLICK=0; REF=""; EMAIL_HINT=0
@@ -2701,7 +2650,7 @@ do_login() {
     echo "$_err" >&2; exit 1
   done
   # The one actionable step in the whole wait — earns the strongest emphasis,
-  # not the weakest (§10.3, 2026-07-23).
+  # not the weakest.
   printf '  %b-> Check %s for a sign-in link and click it.%b\n' "${_C_A}${_C_B}" "$EMAIL" "$_C_R"
   [ -n "$link" ] && echo "  -> (dev) link: $link"
   # Dev mode (no email configured): the gateway returns the link, so complete sign-in automatically.
@@ -2744,12 +2693,12 @@ do_login() {
   # A sign-in is only real once the credential is on disk. write_managed_config
   # verifies that and returns non-zero otherwise; do NOT drop the check.
   #
-  # This is the whole 2026-09-07 lockout: the marker path calls do_login as
+  # The failure this guards against: the marker path calls do_login as
   # `( do_login ) || true`, and POSIX suppresses `set -e` for every command in an
-  # AND-OR list, so a failed config write did not abort anything. do_login sailed
-  # past it, printed "Signed in as ...", returned 0, and the launch loop restarted
-  # the engine on the OLD token. The user re-ran /login three times in 100 seconds,
-  # was congratulated every time, and stayed 401'd for six weeks.
+  # AND-OR list, so a failed config write does not abort anything. Without the check
+  # do_login sails past it, prints "Signed in as ...", returns 0, and the launch loop
+  # restarts the engine on the OLD token: every /login appears to succeed while the
+  # account stays signed out.
   if ! write_managed_config "$MODEL" "$CATALOG_LINE" "$GATEWAY" "$token"; then
     printf '%b%s%b Sign-in did NOT complete — your credential could not be saved.\n' \
       "$_C_E" "$_G_X" "$_C_R" >&2
@@ -2808,7 +2757,7 @@ do_logout() {
 
 # ---- Token efficiency is built in: there is no `byteask terse` any more -----------
 # It was a per-user style setting nobody used; efficiency now lives in the engine and the
-# gateway with no setting at all (docs/token-core-plan.md). Clean up what it left behind:
+# gateway with no setting at all. Clean up what it left behind:
 # the persist file, and the header line in an existing config.toml (the gateway ignores
 # and strips that header, so this is tidiness, not correctness).
 _retire_terse() {
@@ -2915,16 +2864,15 @@ case "${1:-}" in
     esac;;
   claude)
     # Run the user's OWN Claude Code on their own subscription (legal delegation;
-    # ByteAsk never touches the Claude credential). docs/claude-launcher-plan.md
+    # ByteAsk never touches the Claude credential).
     shift; _clc=0; do_claude_launcher "$@" || _clc=$?; exit "$_clc";;
   --help|-h)
-    # ONE help text (docs/terminal-surfaces-plan.md § 5.8, W-T5). This used to
-    # print a block and then `exec "$ENGINE" --help`, so `byteask --help` answered
-    # twice, in two styles -- and the engine's clap list advertises subcommands
-    # ByteAsk does not support plus an upstream cloud-tasks command, a brand
-    # leak into a user-facing surface (operating rule 4). Hiding those upstream
-    # subcommands is E-T9 and needs an engine rebuild; until then the wrapper
-    # answers and never hands off, which is why this exits instead of exec'ing.
+    # ONE help text. Printing a block and then running `exec "$ENGINE" --help`
+    # would answer `byteask --help` twice, in two styles -- and the engine's own
+    # list advertises subcommands ByteAsk does not support plus an upstream
+    # cloud-tasks command. Hiding those upstream subcommands needs an engine
+    # rebuild; until then the wrapper answers and never hands off, which is why
+    # this exits instead of exec'ing.
     cat >&2 <<EOF
 ByteAsk $VERSION — an AI coding agent for your terminal
 
@@ -3008,28 +2956,13 @@ while : ; do
   fi
 
   # Renew the session BEFORE launching, so an ordinary user never reaches `exp`.
-  # A ByteAsk token used to be a hard 30-day fuse with no renewal path anywhere,
-  # which is the whole reason a real account sat 401'd for six weeks (2026-09-07).
+  # Without renewal a ByteAsk token is a hard 30-day fuse: once it expires, every
+  # turn fails with 401 until the user signs in again.
   _refresh_session_if_due
 
-  if [ "$_launch_prov" = byteask ] && _managed_missing_token && [ ! -f "$BYTEASK_HOME/byok-config.json" ] \
-     && [ -t 0 ] && [ -t 1 ] && _anon_promo_on; then
-    # Managed provider, NO token at all, no BYOK, TTY, AND the free-trial promo is
-    # ON: launch an UNSIGNED auto-only session so the user can try before signing
-    # up. The gateway meters it per device and walls them (429 -> "type /login")
-    # when spent. Promo OFF (default) falls through to the normal email onboarding
-    # below, so nothing changes for existing/normal operation.
-    #
-    # The gate is _managed_missing_token, NOT `! _is_signed_in`: those differ for
-    # exactly one person, the signed-up user whose token went stale, and for them
-    # `! _is_signed_in` meant "delete the credential of a paying account and put
-    # them on the 5-query free trial, on `auto`, silently". Never downgrade someone
-    # who has an account; send them to sign-in instead.
-    write_managed_config "auto" "$(_cfg_catalog)" "$(resolve_gateway)" "" || true
-  elif _needs_byteask_signin && { ! _is_signed_in || _managed_missing_token; }; then
+  if _needs_byteask_signin && { ! _is_signed_in || _managed_missing_token; }; then
     # The active config needs a ByteAsk account (managed model, un-keyed cloud model, or
-    # `auto`) but there's no valid session: force sign-in; do NOT clobber them into the
-    # anonymous trial. A SELF-SERVED config (self/* or a cloud model the user has their
+    # `auto`) but there's no valid session: force sign-in. A SELF-SERVED config (self/* or a cloud model the user has their
     # own key for) skips this entirely and launches unsigned — its traffic never touches
     # us, so an account buys nothing. If they later switch to a managed model in /model,
     # the gateway's 401 login_required asks for sign-in on that request.
@@ -3137,8 +3070,8 @@ while : ; do
   fi
 
   # Subscription (openai) session: the ChatGPT backend gates its model list on the
-  # reported client version and rejects EVERYTHING at ByteAsk's baked 0.1.0 (proven
-  # live in T0, 2026-09-19 — empty list + "model not supported"). Report a real
+  # reported client version and rejects EVERYTHING at ByteAsk's baked 0.1.0 (measured
+  # live 2026-09-19 — empty list + "model not supported"). Report a real
   # upstream client version so the backend serves models. ⚠️ The accepted version changes
   # over time, so `auto` (the default) resolves IN THE ENGINE to the upstream client
   # version stamped into the binary at build time (from the merged rust-v* git tag)
@@ -3150,10 +3083,6 @@ while : ; do
   if [ "$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$CFG" 2>/dev/null | head -n1)" = openai ]; then
     : "${BYTEASK_REPORTED_VERSION:=auto}"
     export BYTEASK_REPORTED_VERSION
-    # The server-supplied FLOOR. The engine reports max(its own stamp, this) on the
-    # `auto` path only, so a later upstream merge is never downgraded by a stale value.
-    _rvf="$(_subscription_version_floor)"
-    if [ -n "$_rvf" ]; then BYTEASK_REPORTED_VERSION_FLOOR="$_rvf"; export BYTEASK_REPORTED_VERSION_FLOOR; fi
     _warn_chatgpt_plan
     # Re-derive the subscription catalog each launch so it tracks `_catalog_refresh`
     # (which rewrites models-catalog.json when the server bumps catalog_version).
@@ -3210,7 +3139,7 @@ while : ; do
         # `--email`. `--email` marks it non-re-promptable, so a refused address
         # (the .ac.in policy) would exit instead of asking for another one.
         'signin '*)       ( do_login --interactive --email-hint "${_detail#signin }" ) || true ;;
-        # Subscription sign-in from the in-TUI /login screen (T4). The engine
+        # Subscription sign-in from the in-TUI /login screen. The engine
         # already showed the consent screen; here we run the vendor OAuth + swap.
         # `|| true`: a refusal returns non-zero and must NOT end the session under
         # `set -eu` - the loop below relaunches the engine so the user lands back in

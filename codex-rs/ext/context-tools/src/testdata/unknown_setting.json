@@ -1,0 +1,19 @@
+{
+ "content": [
+  {
+   "text": "trial: index unavailable: no build setting named 'nosuch'",
+   "type": "text"
+  }
+ ],
+ "isError": true,
+ "structuredContent": {
+  "check_result": {
+   "check": "context_symbol",
+   "fix": "index the project: bctx --data <root> index <partition>",
+   "reason": "service_unavailable",
+   "schema": 1,
+   "summary": "trial: index unavailable: no build setting named 'nosuch'",
+   "verdict": "NOT_RUN"
+  }
+ }
+}

@@ -1,0 +1,74 @@
+# ByteAsk merge check for GitHub. Copy to .github/workflows/ on the PROTECTED base
+# branch, then make the check run "ByteAsk merge check" a required status check in the branch's
+# ruleset. Tested against a local fake GitHub only; adjust runner labels to your fleet.
+#
+# Three jobs, because the job that runs the branch's code must hold no signing key:
+#   run   - runs the branch's build and tests on your CI runner; no key, read-only cache.
+#   sign  - never runs branch code (git plumbing only); holds the runner key; signs and records.
+#   gate  - verifies every signed result with your enterprise server and posts the check run.
+#
+# `pull_request_target` runs THIS file from the base branch, so a branch cannot change these
+# jobs for its own checks. Never add a step to `sign` or `gate` that runs a script from
+# the checked-out branch. Restrict the `byteask-signer` runner group to this workflow.
+name: ByteAsk merge check
+on:
+  pull_request_target:
+  merge_group:
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: [self-hosted, byteask-ci]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - run: git fetch --no-tags origin "${{ github.base_ref || github.event.merge_group.base_ref }}"
+      - run: >
+          byteask checks run --base "origin/${{ github.base_ref || github.event.merge_group.base_ref }}"
+          --head HEAD --out run.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: byteask-run
+          path: run.json
+  sign:
+    needs: run
+    runs-on: [self-hosted, byteask-signer]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - run: git fetch --no-tags origin "${{ github.base_ref || github.event.merge_group.base_ref }}"
+      - uses: actions/download-artifact@v4
+        with:
+          name: byteask-run
+      - run: >
+          byteask checks sign --base "origin/${{ github.base_ref || github.event.merge_group.base_ref }}"
+          --head HEAD --report run.json --key /etc/byteask/runner.pem
+          --enterprise https://byteask.corp.example --cache /srv/byteask/merge-cache
+  gate:
+    needs: sign
+    runs-on: [self-hosted, byteask-signer]
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - run: git fetch --no-tags origin "${{ github.base_ref || github.event.merge_group.base_ref }}"
+      - run: >
+          byteask checks gate --base "origin/${{ github.base_ref || github.event.merge_group.base_ref }}"
+          --head HEAD --cache /srv/byteask/merge-cache
+          --enterprise https://byteask.corp.example --token-file /etc/byteask/merge-check.token
+          --github-repo "${{ github.repository }}" --github-api "${{ github.api_url }}"
+          ${{ github.event.pull_request.number && format('--github-pull {0}', github.event.pull_request.number) || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

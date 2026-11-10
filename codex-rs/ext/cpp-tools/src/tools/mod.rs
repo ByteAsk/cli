@@ -1,0 +1,90 @@
+mod bench;
+mod check_status;
+mod binary;
+mod clang_tidy;
+mod compile_db;
+mod core_triage;
+mod cppcheck;
+mod decompile;
+mod finish_check;
+mod own_tests;
+mod format;
+mod gdb;
+mod gdb_attach;
+mod gdb_session;
+mod impact;
+mod godbolt;
+mod insights;
+mod intrinsic;
+mod kdb;
+mod layout;
+mod nav;
+mod perf;
+mod perf_lab;
+// 0.2.0: port_check and cpp_spike_trace are unfinished and not registered; the code stays
+// (their pinned text is still checked by the runtime snapshot test).
+#[allow(dead_code)]
+mod port_check;
+mod record;
+mod repo_history;
+mod reverse;
+pub(crate) mod runtime_util;
+mod sanitizers;
+#[allow(dead_code)]
+mod spike_probe;
+mod symbolize;
+mod test_select;
+
+pub use bench::BenchTool;
+pub use check_status::CheckStatusTool;
+pub use binary::BinaryTool;
+pub use clang_tidy::ClangTidyTool;
+pub use compile_db::CompileDbTool;
+pub use core_triage::CoreTriageTool;
+pub use cppcheck::CppCheckTool;
+pub use decompile::DecompileTool;
+pub use finish_check::FinishCheckTool;
+pub(crate) use finish_check::FinishState;
+pub(crate) use finish_check::ENV_FINISH_REVIEW;
+pub(crate) use finish_check::FINISH_REVIEW_KEY;
+pub(crate) use finish_check::finish_review;
+pub(crate) use finish_check::finish_review_on;
+pub(crate) use finish_check::set_finish_review;
+pub use own_tests::note_agent_command;
+pub(crate) use own_tests::set_root_workflow;
+pub use format::FormatTool;
+pub use gdb::GdbTool;
+pub use gdb_attach::AttachState;
+pub use gdb_attach::GdbAttachTool;
+pub use gdb_session::GdbSessionTool;
+pub use impact::ImpactTool;
+pub use godbolt::GodboltTool;
+pub use insights::InsightsTool;
+pub use intrinsic::IntrinsicTool;
+pub use kdb::KdbTool;
+pub use layout::CppLayoutTool;
+pub use nav::ClangdNavTool;
+pub use perf::PerfTool;
+pub use perf_lab::LabTarget;
+pub use perf_lab::perf_lab_tool;
+#[cfg(test)]
+pub use port_check::PortCheckTool;
+pub use record::RecordTool;
+pub use repo_history::RepoHistoryTool;
+pub use reverse::ReverseTool;
+pub use sanitizers::SanitizeTool;
+#[cfg(test)]
+pub use spike_probe::SpikeTraceTool;
+pub use symbolize::SymbolizeTool;
+pub use test_select::TestSelectTool;
+
+pub(crate) use compile_db::find_compile_db;
+pub(crate) use sanitizers::binary_on_path;
+pub(crate) use sanitizers::Frame;
+pub(crate) use sanitizers::FrameOwner;
+pub(crate) use sanitizers::asan_bug_class;
+pub(crate) use sanitizers::frame_owner;
+pub(crate) use sanitizers::is_frame_line;
+pub(crate) use sanitizers::parse_frame;
+pub(crate) use sanitizers::sanitizer_runtime_env;
+pub(crate) use sanitizers::strip_pid_prefix;

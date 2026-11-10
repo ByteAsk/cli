@@ -1,0 +1,214 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::Weak;
+
+use codex_connectors::AppToolPolicyEvaluator;
+use codex_connectors::AppToolPolicyInput;
+use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::McpBinding;
+use codex_mcp::ToolInfo as McpToolInfo;
+use codex_mcp::tool_is_model_visible;
+use codex_tools::ToolExposure;
+use codex_tools::ToolName;
+use tracing::instrument;
+use tracing::warn;
+
+const MAX_AGENT_PLUGIN_MCP_SPEC_BYTES: usize = 8_000;
+const MAX_AGENT_PLUGIN_MCP_TOTAL_BYTES: usize = 64_000;
+
+use crate::config::Config;
+use crate::tools::handlers::McpHandler;
+use crate::tools::registry::ToolRegistry;
+
+#[derive(Default)]
+pub(crate) struct McpHandlerCache {
+    cached: Mutex<Option<CachedMcpHandlers>>,
+}
+
+struct CachedMcpHandlers {
+    binding: Weak<McpBinding>,
+    handlers: HashMap<ToolName, Arc<McpHandler>>,
+}
+
+impl McpHandlerCache {
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn append_mcp_tools(
+        &self,
+        binding: &Arc<McpBinding>,
+        config: &Config,
+        apps_enabled: bool,
+        mcp_server_catalog: &codex_mcp::ResolvedMcpCatalog,
+        search_tool_enabled: bool,
+        session_source: &codex_protocol::protocol::SessionSource,
+        registry: &mut ToolRegistry,
+    ) -> HashSet<ToolName> {
+        // ByteAsk Context: its tools without the identity arguments, and in exec without
+        // the ask-before-indexing instruction (the latter only under the gate).
+        let tools: std::borrow::Cow<'_, [McpToolInfo]> =
+            match crate::byteask_context::identity_server(config) {
+                Some(server) => {
+                    let headless = crate::byteask_context::gated(config)
+                        && crate::byteask_context::headless(session_source);
+                    std::borrow::Cow::Owned(
+                        binding
+                            .tools()
+                            .iter()
+                            .map(|tool| {
+                                if tool.server_name == server {
+                                    crate::byteask_context::model_tool_info(tool, headless)
+                                } else {
+                                    tool.clone()
+                                }
+                            })
+                            .collect(),
+                    )
+                }
+                None => std::borrow::Cow::Borrowed(binding.tools()),
+            };
+        let mut cached = self
+            .cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !cached
+            .as_ref()
+            .and_then(|cached| cached.binding.upgrade())
+            .is_some_and(|cached_binding| Arc::ptr_eq(&cached_binding, binding))
+        {
+            *cached = None;
+        }
+
+        let cached = cached.get_or_insert_with(|| CachedMcpHandlers {
+            binding: Arc::downgrade(binding),
+            handlers: HashMap::new(),
+        });
+        append_mcp_tools(
+            &tools,
+            config,
+            apps_enabled,
+            mcp_server_catalog,
+            search_tool_enabled,
+            &mut cached.handlers,
+            registry,
+        )
+    }
+}
+
+#[instrument(level = "trace", skip_all)]
+fn append_mcp_tools(
+    all_mcp_tools: &[McpToolInfo],
+    config: &Config,
+    apps_enabled: bool,
+    mcp_server_catalog: &codex_mcp::ResolvedMcpCatalog,
+    search_tool_enabled: bool,
+    handlers: &mut HashMap<ToolName, Arc<McpHandler>>,
+    registry: &mut ToolRegistry,
+) -> HashSet<ToolName> {
+    // Keep regular MCP tools first; Apps tools also require connector and policy checks.
+    let non_app_tools = filter_non_codex_apps_mcp_tools_only(all_mcp_tools);
+    let app_tools = apps_enabled
+        .then(|| filter_codex_apps_mcp_tools(all_mcp_tools, config))
+        .into_iter()
+        .flatten();
+    let exposure = if search_tool_enabled {
+        ToolExposure::Deferred
+    } else {
+        ToolExposure::Direct
+    };
+    let mut registered_tools = HashSet::new();
+    let mut agent_plugin_bytes = 0usize;
+    for tool in non_app_tools.chain(app_tools) {
+        let tool_name = tool.canonical_tool_name();
+        let agent_plugin = mcp_server_catalog
+            .server(&tool.server_name)
+            .is_some_and(|server| server.source().is_agent_plugin());
+        let handler = match handlers.entry(tool_name.clone()) {
+            Entry::Occupied(entry) => Arc::clone(entry.get()),
+            Entry::Vacant(entry) => {
+                let handler = if agent_plugin {
+                    McpHandler::new_agent_plugin(tool.clone())
+                } else {
+                    McpHandler::new(tool.clone())
+                };
+
+                match handler {
+                    Ok(handler) => Arc::clone(entry.insert(Arc::new(handler))),
+                    Err(err) => {
+                        warn!("Skipping MCP tool `{tool_name}`: failed to build tool spec: {err}");
+                        continue;
+                    }
+                }
+            }
+        };
+
+        let fits_agent_budget = if agent_plugin {
+            handler.model_spec_bytes().is_ok_and(|bytes| {
+                if bytes > MAX_AGENT_PLUGIN_MCP_SPEC_BYTES {
+                    return false;
+                }
+                let next = agent_plugin_bytes.saturating_add(bytes);
+                if next <= MAX_AGENT_PLUGIN_MCP_TOTAL_BYTES {
+                    agent_plugin_bytes = next;
+                    true
+                } else {
+                    false
+                }
+            })
+        } else {
+            true
+        };
+        let tool_exposure = if fits_agent_budget {
+            exposure
+        } else {
+            ToolExposure::Hidden
+        };
+        if registry.register_external_with_exposure(handler, tool_exposure) && fits_agent_budget {
+            registered_tools.insert(tool_name);
+        }
+    }
+    registered_tools
+}
+
+fn filter_non_codex_apps_mcp_tools_only(
+    mcp_tools: &[McpToolInfo],
+) -> impl Iterator<Item = &McpToolInfo> + '_ {
+    mcp_tools.iter().filter(|tool| {
+        tool.server_name != CODEX_APPS_MCP_SERVER_NAME && tool_is_model_visible(tool)
+    })
+}
+
+fn filter_codex_apps_mcp_tools<'a>(
+    mcp_tools: &'a [McpToolInfo],
+    config: &'a Config,
+) -> impl Iterator<Item = &'a McpToolInfo> + 'a {
+    let app_tool_policy = AppToolPolicyEvaluator::new(&config.config_layer_stack);
+
+    mcp_tools.iter().filter(move |tool| {
+        if tool.server_name != CODEX_APPS_MCP_SERVER_NAME {
+            return false;
+        }
+        if !tool_is_model_visible(tool) {
+            return false;
+        }
+        let Some(connector_id) = tool.connector_id.as_deref() else {
+            return false;
+        };
+        let annotations = tool.tool.annotations.as_ref();
+        app_tool_policy
+            .policy(AppToolPolicyInput {
+                connector_id: Some(connector_id),
+                link_id: None,
+                tool_name: &tool.tool.name,
+                tool_title: tool.tool.title.as_deref(),
+                destructive_hint: annotations.and_then(|annotations| annotations.destructive_hint),
+                open_world_hint: annotations.and_then(|annotations| annotations.open_world_hint),
+            })
+            .enabled
+    })
+}
+
+#[cfg(test)]
+#[path = "mcp_tool_exposure_test.rs"]
+mod tests;

@@ -6,7 +6,7 @@
 # onboarding, and the same /login|/logout launch loop (the TUI drops a marker; we
 # re-auth here and relaunch, since the engine can't hot-swap the startup-loaded token).
 #
-# Behavior parity with byteask/cli/byteask is intentional - keep them in sync.
+# Behavior parity with the sh wrapper (byteask) is intentional - keep them in sync.
 
 $VERSION = '0.2.4'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
@@ -23,7 +23,7 @@ $AUTH_REQ = Join-Path $BYTEASK_HOME '.byteask-auth-request'
 
 function Write-Err([string]$m) { [Console]::Error.WriteLine($m) }   # stderr, non-throwing
 
-# Legacy-engine shim (parity with _engine_compat in cli/byteask). Engines before the
+# Legacy-engine shim (parity with _engine_compat in the sh wrapper). Engines before the
 # BYTEASK_HOME rename read only the old variable names; given just BYTEASK_HOME they fall
 # back to a different home and look signed out, which an update that keeps the old engine
 # makes reachable. A new engine carries "BYTEASK_HOME points to " and no older one does.
@@ -73,11 +73,11 @@ function Set-EngineCompat {
   }
 }
 
-# Windows code integrity (2026-09-20). Smart App Control admits a binary signed by a
+# Windows code integrity. Smart App Control admits a binary signed by a
 # signer it trusts, or one Microsoft's reputation service already knows. Every ByteAsk
 # engine through 0.1.12 is unsigned, so under an ENFORCING policy the engine fails to
-# start and Windows explains it only in an event channel nobody reads - the user who
-# reported this had to correlate CodeIntegrity 3033/3077/3118 by hand. Say it here.
+# start and Windows explains it only in an event channel nobody reads (CodeIntegrity
+# events 3033/3077/3118, which have to be correlated by hand). Say it here.
 #
 # Presence, not validity: whether a chain is TRUSTED is Windows' call and it is about
 # to make it. Reading the PE certificate-table directory also avoids
@@ -272,7 +272,7 @@ function Invoke-CatalogRefresh {
   Remove-Item -Force $tmp -ErrorAction SilentlyContinue
 }
 
-# The same refresh for a launch with NO ByteAsk sign-in (the anonymous trial); parity with
+# The same refresh for a launch with NO ByteAsk sign-in (own key or own model); parity with
 # _catalog_refresh_unsigned in the sh launcher. The authenticated model-access fetch can
 # never serve it, so a served catalog change, a kill switch included, used to skip these
 # launches. A conditional GET against the static catalog's ETag: a 304 (which Windows
@@ -416,7 +416,7 @@ function Get-CfgLine([string]$pattern) {
   if ($m) { return $m.Matches[0].Groups[1].Value } else { return '' }
 }
 # Warn when the ACTIVE model is a self/<alias> that failed `byteask models test`'s tool
-# round-trip (parity with _warn_self_tools in cli/byteask). Such a model can hold a
+# round-trip (parity with _warn_self_tools in the sh wrapper). Such a model can hold a
 # conversation but never emits a structured tool call, so every file edit / shell command
 # / search silently no-ops, with nothing on screen explaining it. Absent (never tested)
 # stays silent rather than nagging. Once per process, never fatal.
@@ -536,7 +536,7 @@ function Test-EmailNew([string]$Email, [string]$Exists) {
 # Write config.toml through a temp file + Move-Item, then read back what landed.
 # Returns $false when the config was NOT persisted; every caller must check.
 #
-# Two reasons, both learned from the 2026-09-07 lockout on the POSIX side: writing
+# Two reasons, both shared with the sh wrapper: writing
 # in place fails outright when config.toml is owned by another account, and a write
 # whose result is never checked turns a failed sign-in into "Signed in as ..."
 # followed by an unbreakable 401 loop. A rename needs the DIRECTORY, not the file,
@@ -684,12 +684,18 @@ function Test-SidecarHealth {
   try { $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 "http://127.0.0.1:$BYOK_PORT/healthz"; return $true }
   catch { return $false }
 }
+# BYTEASK_NO_TELEMETRY=1 (also true/yes, any case) turns the usage ping off. The sidecar
+# reads it from its own environment when it starts, so a sidecar that was started
+# without it is restarted once; the marker file records "started with the opt-out".
 function Ensure-Sidecar {
   if ($env:BYOK_SKIP_SIDECAR) { return $true }
   if (-not (Test-Path $BYOK_SIDECAR)) { Write-Err "byteask: BYOK sidecar not installed; run 'byteask --update'."; return $false }
   $pidf = Join-Path $BYTEASK_HOME 'byok-sidecar.pid'
+  $notel = Join-Path $BYTEASK_HOME 'byok-sidecar.notelemetry'
+  $noTelemetry = $env:BYTEASK_NO_TELEMETRY -match '^(1|true|yes)$'
   if (Test-SidecarHealth) {
-    if ((Test-Path $pidf) -and ((Get-Item $pidf).LastWriteTime -gt (Get-Item $BYOK_SIDECAR).LastWriteTime)) { return $true }
+    if ((Test-Path $pidf) -and ((Get-Item $pidf).LastWriteTime -gt (Get-Item $BYOK_SIDECAR).LastWriteTime) `
+        -and ((-not $noTelemetry) -or (Test-Path $notel))) { return $true }
     try { Stop-Process -Id ([int](Get-Content $pidf -ErrorAction SilentlyContinue)) -ErrorAction SilentlyContinue } catch {}
     Start-Sleep -Milliseconds 500
   }
@@ -698,6 +704,7 @@ function Ensure-Sidecar {
   $env:BYOK_SIDECAR_PORT = $BYOK_PORT
   $p = Start-Process -FilePath $py -ArgumentList $BYOK_SIDECAR -WindowStyle Hidden -PassThru
   Set-Content -Path $pidf -Value $p.Id -NoNewline
+  if ($noTelemetry) { Set-Content -Path $notel -Value '' -NoNewline } else { Remove-Item -Force -ErrorAction SilentlyContinue $notel }
   for ($i = 0; $i -lt 30; $i++) { if (Test-SidecarHealth) { return $true }; Start-Sleep -Milliseconds 100 }
   Write-Err "byteask: BYOK sidecar didn't start."; return $false
 }
@@ -781,8 +788,8 @@ function Get-JwtTtlLeft([string]$jwt) {
 function Test-SignedIn {
   # On the managed provider the engine sends config.toml's token and nothing else,
   # so that is the token whose expiry decides whether this machine has a session.
-  # Get-CurrentJwt reads byok-config.json FIRST, so a leftover BYOK jwt made an
-  # expired managed token report "signed in" forever (2026-09-07).
+  # Get-CurrentJwt reads byok-config.json FIRST, so a leftover BYOK jwt would make an
+  # expired managed token report "signed in" forever.
   if ((Get-CfgLine '^model_provider = "(.*)"$') -eq 'byteask') {
     $jwt = Get-ManagedToken
   } else {
@@ -904,7 +911,7 @@ function Invoke-ByokOff {
 
 # Subscription config.toml: active provider = built-in openai (engine picks the
 # ChatGPT backend for AuthMode::Chatgpt), but the [model_providers.byteask] block
-# is RETAINED so the engine keeps the ByteAsk identity (I3: /usage, panes,
+# is RETAINED so the engine keeps the ByteAsk identity (/usage, panes,
 # cpp_intrinsic, metering read the JWT by name, not from the active provider).
 # Written through Save-ConfigToml (temp + Move-Item + readback), never in place.
 # Returns $false when nothing was persisted; the caller must check.
@@ -944,7 +951,7 @@ function Invoke-ByokSubscription([string]$transport) {
   # Capture identity + config BEFORE the rewrite so the retained block carries the account forward.
   $jwt = Get-CurrentJwt
   $model = Get-CfgLine '^model = "(.*)"$'; if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'auto' } }
-  # I5: subscription sessions use the ChatGPT backend's OWN model list, so drop
+  # Subscription sessions use the ChatGPT backend's OWN model list, so drop
   # model_catalog_json (our catalog would 400 there). Empty => engine fetches OpenAI's.
   $catalog = ''
   $gw = (Resolve-Gateway).TrimEnd('/')
@@ -981,7 +988,7 @@ Follow ByteAsk's engineering discipline:
   Set-Content -Path $dest -Value $m
 }
 
-# Launch the user's OWN, unmodified Claude Code (docs/claude-launcher-plan.md).
+# Launch the user's OWN, unmodified Claude Code.
 # Legal delegation: ByteAsk never reads/handles the Claude credential; claude does
 # its own OAuth. Interactive by default; --headless uses -p (metered credits).
 function Invoke-ClaudeLauncher([string[]]$rest) {
@@ -1044,7 +1051,7 @@ function Show-ModelsHelp {
   Write-Err "  byteask models remove <alias>"
   Write-Err "Then pick self/<alias> in /model."
 }
-# True (silently) when the shared helper is new enough for preset subcommands (D13).
+# True (silently) when the shared helper is new enough for preset subcommands.
 function Test-PresetHelper {
   $v = (Invoke-ModelsPy @('version'))
   if (-not $v -or $v.Count -lt 1) { return $false }
@@ -1332,9 +1339,9 @@ function Select-Menu([string[]]$Options, [int]$Start = 1) {
 }
 
 # ==================== persistent settings screen (PS port) ==================
-# Same anchored in-place region as the sh wrapper (docs/menu-redesign-plan.md):
+# Same anchored in-place region as the sh wrapper:
 # header, breadcrumb, menu, status line, footer repainted over themselves each
-# frame. All console I/O flows through the $script:ScrIO ADAPTER (D6#8) so the
+# frame. All console I/O flows through the $script:ScrIO ADAPTER so the
 # state machine + geometry run under a MOCK console in automated tests; only
 # the final visual pass needs a real Windows console. KEEP THIS FILE PURE ASCII.
 $script:ScrIO = @{
@@ -1352,7 +1359,7 @@ $script:ScrIO = @{
                   [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)) }
   ReadLine  = { Read-Host ' ' }
 }
-function Set-ScrIOMock([hashtable]$Mock) { $script:ScrIO = $Mock }   # test seam (T27)
+function Set-ScrIOMock([hashtable]$Mock) { $script:ScrIO = $Mock }   # test seam
 
 function Get-ScrGlyphs {
   # Unicode glyphs only where fonts are dependable (Windows Terminal); legacy
@@ -1405,7 +1412,7 @@ function Get-ScrProvName([string]$p) {
 
 function Enter-ScrKeys {
   $script:ScrState = 'keys'; Get-ScrData
-  # Managed first and marked recommended (owner, 2026-09-27); parity with _scr_goto_keys.
+  # Managed first and marked recommended; parity with _scr_goto_keys.
   $o = @()
   $o += ,@('managed',  ("Use ByteAsk managed (recommended) $($script:ScrG.dot) 20 models incl. GPT, Gemini & open models, 20% off API pricing"))
   $o += ,@('openai',    ("OpenAI      " + $script:ScrD.VOA + " your key"))
@@ -1524,7 +1531,7 @@ function Show-ScrFrame {
     if (-not $indent) { $txt = "  " + $txt }
     if ($txt.Length -gt $width) { $txt = $txt.Substring(0, $width) }
     $txt = $txt.PadRight($width)
-    & $script:ScrIO.WriteRow $txt $r[1] ($i -eq ($n - 1))   # last row -NoNewline (D6#9)
+    & $script:ScrIO.WriteRow $txt $r[1] ($i -eq ($n - 1))   # last row -NoNewline
   }
   # a shorter frame leaves orphan rows below: blank them, then reposition
   if ($n -lt $script:ScrDrawn) {
@@ -1552,7 +1559,7 @@ function Read-ScrKey {   # -> up|down|enter|esc|paste|ctrlc|eof|none
       return 'enter'
     }
     default {
-      # printable / other keys: DEAD in the raw menu (D5). A burst behind one
+      # printable / other keys: DEAD in the raw menu. A burst behind one
       # printable char means a paste - swallow it whole with an explanation.
       Start-Sleep -Milliseconds 25
       if (& $script:ScrIO.KeyAvail) { Clear-ScrBurst; return 'paste' }
@@ -1614,7 +1621,7 @@ function Invoke-ScrManaged {
     $script:ScrExit = $true; return
   }
   $script:ScrState = 'confirm'; $script:ScrMsg=''; $script:ScrMsgK='none'
-  Clear-ScrBurst                                    # drain queued Enters (S3.5#4)
+  Clear-ScrBurst                                    # drain queued Enters
   Show-ScrFrame
   $ck = $null
   try { $ck = & $script:ScrIO.ReadKey } catch {}
@@ -1658,7 +1665,7 @@ function Invoke-ScrSelfAddPreset([string]$pid) {   # name + optional key, provid
   $k = ''
   Complete-ScrSelfhostAdd $al $addArgs
 }
-function Invoke-ScrSelfAddCustom {   # name + URL + optional key, then hand-off to the wizard (T16)
+function Invoke-ScrSelfAddCustom {   # name + URL + optional key, then hand-off to the wizard
   & $script:ScrIO.WriteRow '' $null $false
   & $script:ScrIO.CtrlC $false
   $al = Read-ScrName
@@ -1713,7 +1720,7 @@ function Invoke-ScrSettings([string]$entry) {   # $true = the screen ran
   $script:ScrMsg = ''; $script:ScrMsgK = 'none'
   $script:ScrTop = $entry
   try {
-    & $script:ScrIO.CtrlC $true                     # Ctrl-C arrives as a KEY (S3.5)
+    & $script:ScrIO.CtrlC $true                     # Ctrl-C arrives as a KEY
     if ($entry -eq 'account') { Enter-ScrAccount } else { Enter-ScrKeys }
     while ($true) {
       Show-ScrFrame
@@ -1778,11 +1785,11 @@ function Show-SourceMenuSeq {
           if (@('openai','anthropic','gemini') -contains $rp) { Invoke-ByokRemove @($rp) } else { Write-Host "  (unknown provider)" } }
       5 { Show-SelfHostedHowto }   # self-hosted models: show the how-to, keep the menu open
       6 { $nk = Get-ByokKeyCount
-          if ($nk -ne 0) {   # D3 parity: confirm before wiping saved keys
+          if ($nk -ne 0) {   # parity with the sh wrapper: confirm before wiping saved keys
             $cf = Read-Host "This removes your $nk saved key(s). Type y to confirm"
             if ("$cf".ToLower() -eq 'y') { Invoke-ByokOff; return } else { Write-Host "  (cancelled)" }
           } else { Invoke-ByokOff; return } }
-      default { return }   # 7 (Done) or 0 (cancel); ChatGPT-subscription dropped from menu 2026-07-12
+      default { return }   # 7 (Done) or 0 (cancel); the ChatGPT subscription is not in this menu
     }
   }
 }
@@ -2007,8 +2014,8 @@ experimental_bearer_token = "$token"
 x-openai-actor-authorization = "byteask"
 "@
   # A sign-in is only real once the credential is on disk. Never announce success
-  # on an unverified write: that is precisely how a real account stayed 401'd for
-  # six weeks while every /login reported "Signed in as ..." (2026-09-07).
+  # on an unverified write: that turns a failed sign-in into "Signed in as ..." on
+  # every /login while the account stays signed out.
   if (-not (Save-ConfigToml $cfg $token)) {
     Write-Err "Sign-in did NOT complete - your credential could not be saved."
     exit 1
@@ -2027,8 +2034,8 @@ x-openai-actor-authorization = "byteask"
   }
 }
 
-# Hourly, fail-open update check (mirrors check_for_update in cli/byteask). An interactive
-# TUI launch ASKS before the TUI starts: "Update now? [Y/n]" (owner, 2026-09-23). Enter or
+# Hourly, fail-open update check (mirrors check_for_update in the sh wrapper). An interactive
+# TUI launch ASKS before the TUI starts: "Update now? [Y/n]". Enter or
 # y runs install.ps1 and relaunches with the original args; anything else continues and
 # the question comes back next launch. A headless run (exec, redirected, CI) never blocks
 # on a question, so it keeps ONE stderr line.
@@ -2085,8 +2092,8 @@ function Invoke-UpdateCheck {
   Write-Err "ByteAsk $latest is available (you have $VERSION). Run: byteask --update"
 }
 
-# Test seam: `BYTEASK_PS_TEST=1` lets test/menu.tests.ps1 dot-source every
-# function above WITHOUT running the launcher below (T27 adapter-mock tests).
+# Test seam: `BYTEASK_PS_TEST=1` lets tests/menu.tests.ps1 dot-source every
+# function above WITHOUT running the launcher below (adapter-mock tests).
 if ($env:BYTEASK_PS_TEST) { return }
 
 # ---- command dispatch (mirrors the sh case) --------------------------------
@@ -2144,7 +2151,7 @@ switch -Regex ($cmd) {
   }
   '^context$' {
     # ByteAsk Context (hosted code index) is its own service, reached as a remote MCP
-    # server. Opt-in: `connect` adds it and signs in (browser). Mirrors cli/byteask.
+    # server. Opt-in: `connect` adds it and signs in (browser). Mirrors the sh wrapper.
     $ctxName = 'byteask-context'; $ctxUrl = 'https://context.byteask.ai/mcp'
     $sub = if ($args.Count -gt 1) { [string]$args[1] } else { '' }
     switch ($sub) {
@@ -2167,15 +2174,15 @@ switch -Regex ($cmd) {
   }
   '^claude$' {
     # Run the user's OWN Claude Code on their own subscription (legal delegation;
-    # ByteAsk never touches the Claude credential). docs/claude-launcher-plan.md
+    # ByteAsk never touches the Claude credential).
     $rest = @($args | Select-Object -Skip 1)
     exit (Invoke-ClaudeLauncher $rest)
   }
   '^(--help|-h)$' {
-    # ONE help text, mirroring cli/byteask (docs/terminal-surfaces-plan.md sec 5.8,
-    # W-T5): the wrapper answers and never hands off to the engine's clap help,
-    # which answered a second time in a second style and advertised upstream-only
-    # subcommands incl. an upstream cloud-tasks command (operating rule 4).
+    # ONE help text, mirroring the sh wrapper: the wrapper answers and never hands
+    # off to the engine's own help, which would answer a second time in a second
+    # style and advertise upstream-only subcommands incl. an upstream cloud-tasks
+    # command.
     # This file must stay PURE ASCII (PowerShell 5.1 reads a no-BOM .ps1 as cp1252
     # and an em-dash mis-decodes into a quote that terminates a string), so the
     # documented fallbacks apply: `-` for both the em-dash and the `.` separator.
@@ -2305,7 +2312,7 @@ while ($true) {
   }
 
   # Subscription (openai) session: the ChatGPT backend rejects everything at
-  # ByteAsk's baked 0.1.0 (T0), so report a real upstream client version. 'auto' resolves in
+  # ByteAsk's baked 0.1.0, so report a real upstream client version. 'auto' resolves in
   # the engine to the real upstream client version stamped into the binary at build
   # time (from the merged rust-v* git tag), so it tracks upstream on every rebuild
   # with nothing to bump. A user-set concrete value still wins as a manual escape hatch.

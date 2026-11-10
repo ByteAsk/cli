@@ -1,0 +1,6 @@
+---
+source: tui/src/chatwidget/tests/app_server.rs
+expression: blob
+---
+• You ran python3 -c 'print("Hello, world!")'
+  └ Hello, world!

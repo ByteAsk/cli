@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Secrets, repository rules and syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan the change for secrets
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          curl -fsSL -o gl.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o gl.sums "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz\$" gl.sums | sed "s/ gitleaks_.*/  gl.tgz/" | sha256sum -c -
+          tar -xzf gl.tgz gitleaks
+          range="HEAD~1..HEAD"
+          case "$BASE" in ""|0000000000000000000000000000000000000000) ;; *) range="$BASE..HEAD";; esac
+          ./gitleaks git --redact --no-banner --log-opts="$range" .
+      - name: Check repository rules
+        run: python3 scripts/check_repo_rules.py --base "${{ github.event.pull_request.base.sha || github.event.before }}"
+      - name: Launcher syntax
+        run: |
+          for f in byteask install.sh; do sh -n "$f"; done
+          python3 -m py_compile helpers/*.py

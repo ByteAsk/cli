@@ -1,0 +1,7 @@
+---
+source: tui/src/app/tests/background_exit_tests.rs
+expression: output
+---
+Disconnected from this task. Any running work continues.
+Reconnect: codex resume THREAD_ID
+Stop the current turn: run codex agents, select this task, and press f10.

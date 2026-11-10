@@ -1,0 +1,1 @@
+{"ok": false, "error": "the project has no CMake target named 'NoSuchTarget'", "fix": "pass --target with one of: SPSCQueueBenchmark, SPSCQueueExample, SPSCQueueExampleHugepages, SPSCQueueTest"}
