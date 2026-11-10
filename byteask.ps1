@@ -1261,7 +1261,9 @@ function Remove-Model([string[]]$rest) {
   if ($cur -eq "self/$a") {
     $def = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'auto' }
     $cfgp = Join-Path $BYTEASK_HOME 'config.toml'
-    (Get-Content $cfgp) -replace "^model = ""self/$a""$", "model = ""$def""" | Set-Content $cfgp
+    # Exact match: the alias may contain regex metacharacters (`.`, `+`, `(`...).
+    $old = "model = ""self/$a"""
+    (Get-Content $cfgp) | ForEach-Object { if ($_ -eq $old) { "model = ""$def""" } else { $_ } } | Set-Content $cfgp
     Write-Host "  (was your active model; switched to $def)"
   }
   Invoke-ModelsMerge
