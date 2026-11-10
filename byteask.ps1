@@ -8,7 +8,7 @@
 #
 # Behavior parity with byteask/cli/byteask is intentional - keep them in sync.
 
-$VERSION = '0.2.3'
+$VERSION = '0.2.4'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
 
 $BYTEASK_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }

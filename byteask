@@ -3,7 +3,7 @@
 # Thin wrapper over the engine so the client surface is fully ByteAsk-branded.
 set -eu
 
-VERSION="0.2.3"
+VERSION="0.2.4"
 DEFAULT_GATEWAY="https://code.byteask.ai"
 export BYTEASK_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
 export BYTEASK_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
