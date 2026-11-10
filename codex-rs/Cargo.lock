@@ -5598,7 +5598,6 @@ version = "0.1.0"
 dependencies = [
  "byteask-output-reducers",
  "pretty_assertions",
- "tempfile",
 ]
 
 [[package]]
