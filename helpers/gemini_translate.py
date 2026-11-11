@@ -811,6 +811,80 @@ def translate_request(body):
     return out
 
 
+# ==== a reply the model's output limit cut off ============================= #
+# ⚠️ This block is deliberately duplicated in anthropic_translate.py, gemini_translate.py and
+# openai_compat_translate.py (each helper file is installed on its own; there is no shared module).
+# A model that stops at its output limit (Anthropic stop_reason max_tokens, Gemini finishReason
+# MAX_TOKENS, Chat Completions finish_reason length, Responses response.incomplete max_output_tokens)
+# has NOT finished the agent's turn. Reporting it as finished stopped the agent mid-task (users typed
+# "continue" over and over), and a tool call cut off mid-arguments went out with no arguments at all.
+# Now a cut-off tool call is dropped (it would only fail and be repeated), one assistant note says the
+# reply was cut off (the user sees it; the model reads it and splits its work), and the response
+# completes with end_turn false, so the engine sends the next request at once. After
+# CUTOFF_MAX_IN_A_ROW cut-offs in a row (counted from these notes in the request's input since the
+# user's last message) the note says so and the turn ends: a model that keeps hitting the limit
+# cannot loop on the user's money.
+CUTOFF_MARK = "[Output limit reached"
+CUTOFF_MAX_IN_A_ROW = 3
+
+
+def _item_text(item):
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(p.get("text") or "" for p in content if isinstance(p, dict))
+    return ""
+
+
+def prior_cutoffs(body):
+    """How many output-limit notes the request's input holds since the user's last message."""
+    items = body.get("input") if isinstance(body, dict) else None
+    if not isinstance(items, list):
+        return 0
+    n = 0
+    for item in reversed(items):
+        if not isinstance(item, dict) or item.get("type", "message") != "message":
+            continue
+        if item.get("role") == "user":
+            break
+        if item.get("role") == "assistant" and _item_text(item).lstrip().startswith(CUTOFF_MARK):
+            n += 1
+    return n
+
+
+def cutoff_note(prior):
+    """(the note's text, whether the turn goes on) for a reply cut off after `prior` cut-offs in a row."""
+    if prior + 1 >= CUTOFF_MAX_IN_A_ROW:
+        return (CUTOFF_MARK + " %d times in a row, so I stopped here. Say \"continue\" to go on; large edits "
+                "and long outputs go in smaller steps.]" % (prior + 1)), False
+    return (CUTOFF_MARK + ": my reply was cut off, so I am continuing. I will split large edits and long "
+            "outputs into smaller steps.]"), True
+
+
+def cutoff_item(text):
+    return {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}
+
+
+def _cutoff_frames(text):
+    """The note as Responses stream events: added, its text, done."""
+    return [_frame("response.output_item.added",
+                   {"item": {"type": "message", "role": "assistant", "content": []}}),
+            _frame("response.output_text.delta", {"delta": text}),
+            _frame("response.output_item.done", {"item": cutoff_item(text)})]
+
+
+def _args_complete(args):
+    """Whether a tool call's arguments are whole JSON (a call the output limit cut off has partial JSON)."""
+    if not isinstance(args, str) or not args.strip():
+        return True
+    try:
+        json.loads(args)
+        return True
+    except ValueError:
+        return False
+
+
 # ==== response: Gemini SSE -> Responses SSE ================================ #
 def _frame(event_type, payload):
     payload = dict(payload, type=event_type)
@@ -821,7 +895,8 @@ class Transducer:
     """Stateful Gemini-SSE -> Responses-SSE transducer. Feed parsed Gemini chunks
     (GenerateContentResponse dicts); guarantees a terminal so the engine never hangs."""
 
-    def __init__(self, model, name_map=None):
+    def __init__(self, model, name_map=None, prior_cutoffs=0):
+        self.prior_cutoffs = prior_cutoffs  # output-limit cut-offs in a row before this request (prior_cutoffs())
         self.model = model
         self.name_map = name_map  # NameMap from translate_request: wire name -> engine (namespace, name)
         self.response_id = "resp_gemini"
@@ -861,7 +936,7 @@ class Transducer:
         self.output_items.append(item)
         return [_frame("response.output_item.done", {"item": item})]
 
-    def _completed(self):
+    def _completed(self, end_turn=None):
         self.done = True
         total_in = self.usage["input"]           # promptTokenCount already includes cached
         usage = {
@@ -872,7 +947,8 @@ class Transducer:
             "cache_write_tokens": 0,             # Gemini implicit caching has no per-token write
         }
         return _frame("response.completed", {"response": {
-            "id": self.response_id, "usage": usage, "end_turn": not self.had_tool_use}})
+            "id": self.response_id, "usage": usage,
+            "end_turn": (not self.had_tool_use) if end_turn is None else end_turn}})
 
     def _failed(self, code, message):
         self.done = True
@@ -954,7 +1030,12 @@ class Transducer:
             frames.append(self._created())
         self._flush_thought()
         frames += self._close_text()
-        if self.finish_reason or self.produced:
+        if self.finish_reason == "MAX_TOKENS":
+            text, keep_going = cutoff_note(self.prior_cutoffs)  # cut off by the output limit: say so, go on
+            frames += _cutoff_frames(text)
+            self.output_items.append(cutoff_item(text))
+            frames.append(self._completed(end_turn=not keep_going))
+        elif self.finish_reason or self.produced:
             frames.append(self._completed())
         else:
             frames.append(self._failed("stream_interrupted",
