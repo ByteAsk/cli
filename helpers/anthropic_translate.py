@@ -74,10 +74,13 @@ MODEL_MAP = {
 # listed here — their real max-output limits weren't in the pricing data this was
 # built from, so (same as claude-fable-5 before them) they fall back to
 # MAX_OUTPUT_DEFAULT below rather than guess a number.
-MAX_OUTPUT_TOKENS = {"claude-opus-4-8": 32000, "claude-opus-5": 32000, "claude-opus-4-7": 32000,
+# Every model listed takes up to 128K output tokens (Haiku 4.5: 64K) per Anthropic's model table (2026-11-11): 64K
+# leaves room for thinking and a long reply inside the 1M-token context, and a reply that still reaches it continues
+# (the output-limit block below). Haiku 4.5 (200K context) gets 32K, so a long prompt plus the cap fits its window.
+MAX_OUTPUT_TOKENS = {"claude-opus-4-8": 64000, "claude-opus-5": 64000, "claude-opus-4-7": 64000,
                      "claude-sonnet-5": 64000, "claude-sonnet-4-6": 64000,
-                     # 5.5 accepts up to 128000 (probed 2026-09-30); same caps as predecessors.
-                     "claude-opus-5-5": 32000, "claude-sonnet-5-5": 64000}
+                     "claude-opus-5-5": 64000, "claude-sonnet-5-5": 64000, "claude-haiku-5-5": 64000,
+                     "claude-fable-5": 64000, "claude-fable-5-1": 64000, "claude-haiku-4-5": 32000}
 # Models that reject BOTH `output_config.effort` ("does not support the effort
 # parameter") and `thinking:{adaptive}` ("adaptive thinking is not supported").
 # PROBED LIVE 2026-09-30 on claude-haiku-4-5; every other served Claude accepts both.
@@ -741,6 +744,80 @@ def translate_request(body):
     return out
 
 
+# ==== a reply the model's output limit cut off ============================= #
+# ⚠️ This block is deliberately duplicated in anthropic_translate.py, gemini_translate.py and
+# openai_compat_translate.py (each helper file is installed on its own; there is no shared module).
+# A model that stops at its output limit (Anthropic stop_reason max_tokens, Gemini finishReason
+# MAX_TOKENS, Chat Completions finish_reason length, Responses response.incomplete max_output_tokens)
+# has NOT finished the agent's turn. Reporting it as finished stopped the agent mid-task (users typed
+# "continue" over and over), and a tool call cut off mid-arguments went out with no arguments at all.
+# Now a cut-off tool call is dropped (it would only fail and be repeated), one assistant note says the
+# reply was cut off (the user sees it; the model reads it and splits its work), and the response
+# completes with end_turn false, so the engine sends the next request at once. After
+# CUTOFF_MAX_IN_A_ROW cut-offs in a row (counted from these notes in the request's input since the
+# user's last message) the note says so and the turn ends: a model that keeps hitting the limit
+# cannot loop on the user's money.
+CUTOFF_MARK = "[Output limit reached"
+CUTOFF_MAX_IN_A_ROW = 3
+
+
+def _item_text(item):
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(p.get("text") or "" for p in content if isinstance(p, dict))
+    return ""
+
+
+def prior_cutoffs(body):
+    """How many output-limit notes the request's input holds since the user's last message."""
+    items = body.get("input") if isinstance(body, dict) else None
+    if not isinstance(items, list):
+        return 0
+    n = 0
+    for item in reversed(items):
+        if not isinstance(item, dict) or item.get("type", "message") != "message":
+            continue
+        if item.get("role") == "user":
+            break
+        if item.get("role") == "assistant" and _item_text(item).lstrip().startswith(CUTOFF_MARK):
+            n += 1
+    return n
+
+
+def cutoff_note(prior):
+    """(the note's text, whether the turn goes on) for a reply cut off after `prior` cut-offs in a row."""
+    if prior + 1 >= CUTOFF_MAX_IN_A_ROW:
+        return (CUTOFF_MARK + " %d times in a row, so I stopped here. Say \"continue\" to go on; large edits "
+                "and long outputs go in smaller steps.]" % (prior + 1)), False
+    return (CUTOFF_MARK + ": my reply was cut off, so I am continuing. I will split large edits and long "
+            "outputs into smaller steps.]"), True
+
+
+def cutoff_item(text):
+    return {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}
+
+
+def _cutoff_frames(text):
+    """The note as Responses stream events: added, its text, done."""
+    return [_frame("response.output_item.added",
+                   {"item": {"type": "message", "role": "assistant", "content": []}}),
+            _frame("response.output_text.delta", {"delta": text}),
+            _frame("response.output_item.done", {"item": cutoff_item(text)})]
+
+
+def _args_complete(args):
+    """Whether a tool call's arguments are whole JSON (a call the output limit cut off has partial JSON)."""
+    if not isinstance(args, str) or not args.strip():
+        return True
+    try:
+        json.loads(args)
+        return True
+    except ValueError:
+        return False
+
+
 # ==== response: Anthropic SSE -> Responses SSE ============================= #
 def _frame(event_type, payload):
     """One Responses SSE frame. The engine dispatches on the JSON ``type`` (the
@@ -765,9 +842,11 @@ class Transducer:
     event dicts; get back Responses SSE frame strings. Guarantees a terminal
     (response.completed or response.failed) so the engine never hangs."""
 
-    def __init__(self, model, name_map=None):
+    def __init__(self, model, name_map=None, prior_cutoffs=0):
         self.model = model
         self.name_map = name_map  # NameMap from translate_request: wire name -> engine (namespace, name)
+        self.prior_cutoffs = prior_cutoffs  # output-limit cut-offs in a row before this request (prior_cutoffs())
+        self.cut_call = False     # a tool call whose arguments the output limit cut off (dropped)
         self.response_id = "resp_pending"
         self.blocks = {}          # index -> {"kind","text"|"id"/"name"/"json"}
         self.usage = {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0}
@@ -782,7 +861,7 @@ class Transducer:
         self.created = True
         return _frame("response.created", {"response": {"id": self.response_id}})
 
-    def _completed(self):
+    def _completed(self, end_turn=None):
         self.done = True
         total_input = (self.usage["input"] + self.usage["cache_read"]
                        + self.usage["cache_write"])
@@ -799,7 +878,7 @@ class Transducer:
         }
         return _frame("response.completed", {"response": {
             "id": self.response_id, "usage": usage,
-            "end_turn": not self.had_tool_use}})
+            "end_turn": (not self.had_tool_use) if end_turn is None else end_turn}})
 
     def _failed(self, code, message):
         self.done = True
@@ -829,6 +908,12 @@ class Transducer:
             frames = []
             if not self.created:
                 frames.append(self._created())
+            if self.stop_reason == "max_tokens" or self.cut_call:
+                text, keep_going = cutoff_note(self.prior_cutoffs)  # cut off by the output limit: say so, go on
+                frames += _cutoff_frames(text)
+                self.output_items.append(cutoff_item(text))
+                frames.append(self._completed(end_turn=not keep_going))
+                return frames
             frames.append(self._completed())
             return frames
         if t == "error":
@@ -904,11 +989,10 @@ class Transducer:
             self.output_items.append(item)
             return [_frame("response.output_item.done", {"item": item})]
         if blk["kind"] == "tool_use":
+            if not _args_complete(blk["json"]):
+                self.cut_call = True  # arguments cut off by the output limit: never run a half-written call
+                return []
             args = blk["json"] if blk["json"].strip() else "{}"
-            try:
-                json.loads(args)  # validate; keep as string (Responses arguments is a str)
-            except Exception:
-                args = "{}"
             item = _call_item(self.name_map, blk["name"], args, blk["id"])
             self.output_items.append(item)
             return [_frame("response.output_item.done", {"item": item})]

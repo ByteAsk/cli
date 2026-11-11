@@ -481,8 +481,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # translated.name_map maps wire tool names back to the engine's (namespace, name)
         # (MCP / sub-agent tools loaded by tool_search); an older translator has none.
         name_map = getattr(translated, "name_map", None)
-        transducer = (mod.Transducer(model, name_map=name_map) if name_map is not None
-                      else mod.Transducer(model))
+        prior = mod.prior_cutoffs(req)  # output-limit cut-offs in a row: a cut-off reply continues, up to a limit
+        transducer = (mod.Transducer(model, name_map=name_map, prior_cutoffs=prior) if name_map is not None
+                      else mod.Transducer(model, prior_cutoffs=prior))
         try:
             for ev in mod.iter_sse(iter(lambda: resp.read(2048), b"")):
                 for frame in transducer.feed(ev):
@@ -523,19 +524,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._upstream_status_fault("OpenAI", resp.status, err, own_key=True)
 
         self._sse_headers()
+        try:
+            prior = openai_compat_translate.prior_cutoffs(json.loads(body or b"{}"))
+        except Exception:
+            prior = 0
+        rw = openai_compat_translate.IncompleteRewriter(prior)  # a reply the output limit cut off continues
         acc, usage = [""], None
         try:
             while True:
                 chunk = resp.read(2048)
                 if not chunk:
                     break
-                self._emit(chunk)
+                out = rw.feed(chunk)
+                if out:  # never an empty chunk: that is the chunked-encoding end marker
+                    self._emit(out)
                 try:
                     found = _scan_completed_usage(chunk.decode("utf-8", "replace"), acc)
                     if found:
                         usage = found
                 except Exception:
                     pass
+            tail = rw.flush()
+            if tail:
+                self._emit(tail)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -589,7 +600,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         e, urllib.parse.urlparse(base).netloc, f"your endpoint '{alias}'")
                 conn = resp = None                          # auto: fall through to chat
             if resp is not None and resp.status == 200:
-                return self._relay_responses(cfg, alias, ep, conn, resp)
+                return self._relay_responses(cfg, alias, ep, conn, resp,
+                                             prior=openai_compat_translate.prior_cutoffs(req))
             if resp is not None:
                 err = resp.read()
                 conn.close()
@@ -606,21 +618,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                      body=json.dumps(out).encode(), headers=_endpoint_headers(ep))
         return conn, conn.getresponse()
 
-    def _relay_responses(self, cfg, alias, ep, conn, resp):
+    def _relay_responses(self, cfg, alias, ep, conn, resp, prior=0):
         self._sse_headers()
+        rw = openai_compat_translate.IncompleteRewriter(prior)  # a reply the output limit cut off continues
         acc, usage = [""], None
         try:
             while True:
                 chunk = resp.read(2048)
                 if not chunk:
                     break
-                self._emit(chunk)
+                out = rw.feed(chunk)
+                if out:  # never an empty chunk: that is the chunked-encoding end marker
+                    self._emit(out)
                 try:
                     found = _scan_completed_usage(chunk.decode("utf-8", "replace"), acc)
                     if found:
                         usage = found
                 except Exception:
                     pass
+            tail = rw.flush()
+            if tail:
+                self._emit(tail)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -664,7 +682,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         transducer = openai_compat_translate.Transducer(
             model_id, name_map,
             known_tools={t["function"]["name"] for t in chat_body.get("tools") or []},
-            custom_tools=openai_compat_translate.custom_tool_names(req.get("tools")))
+            custom_tools=openai_compat_translate.custom_tool_names(req.get("tools")),
+            prior_cutoffs=openai_compat_translate.prior_cutoffs(req))
         try:
             for ev in openai_compat_translate.iter_sse(iter(lambda: resp.read(2048), b"")):
                 for frame in transducer.feed(ev):

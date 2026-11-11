@@ -805,6 +805,141 @@ def translate_request(body, model_id):
     return chat, name_map
 
 
+# ==== a reply the model's output limit cut off ============================= #
+# ⚠️ This block is deliberately duplicated in anthropic_translate.py, gemini_translate.py and
+# openai_compat_translate.py (each helper file is installed on its own; there is no shared module).
+# A model that stops at its output limit (Anthropic stop_reason max_tokens, Gemini finishReason
+# MAX_TOKENS, Chat Completions finish_reason length, Responses response.incomplete max_output_tokens)
+# has NOT finished the agent's turn. Reporting it as finished stopped the agent mid-task (users typed
+# "continue" over and over), and a tool call cut off mid-arguments went out with no arguments at all.
+# Now a cut-off tool call is dropped (it would only fail and be repeated), one assistant note says the
+# reply was cut off (the user sees it; the model reads it and splits its work), and the response
+# completes with end_turn false, so the engine sends the next request at once. After
+# CUTOFF_MAX_IN_A_ROW cut-offs in a row (counted from these notes in the request's input since the
+# user's last message) the note says so and the turn ends: a model that keeps hitting the limit
+# cannot loop on the user's money.
+CUTOFF_MARK = "[Output limit reached"
+CUTOFF_MAX_IN_A_ROW = 3
+
+
+def _item_text(item):
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(p.get("text") or "" for p in content if isinstance(p, dict))
+    return ""
+
+
+def prior_cutoffs(body):
+    """How many output-limit notes the request's input holds since the user's last message."""
+    items = body.get("input") if isinstance(body, dict) else None
+    if not isinstance(items, list):
+        return 0
+    n = 0
+    for item in reversed(items):
+        if not isinstance(item, dict) or item.get("type", "message") != "message":
+            continue
+        if item.get("role") == "user":
+            break
+        if item.get("role") == "assistant" and _item_text(item).lstrip().startswith(CUTOFF_MARK):
+            n += 1
+    return n
+
+
+def cutoff_note(prior):
+    """(the note's text, whether the turn goes on) for a reply cut off after `prior` cut-offs in a row."""
+    if prior + 1 >= CUTOFF_MAX_IN_A_ROW:
+        return (CUTOFF_MARK + " %d times in a row, so I stopped here. Say \"continue\" to go on; large edits "
+                "and long outputs go in smaller steps.]" % (prior + 1)), False
+    return (CUTOFF_MARK + ": my reply was cut off, so I am continuing. I will split large edits and long "
+            "outputs into smaller steps.]"), True
+
+
+def cutoff_item(text):
+    return {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}
+
+
+def _cutoff_frames(text):
+    """The note as Responses stream events: added, its text, done."""
+    return [_frame("response.output_item.added",
+                   {"item": {"type": "message", "role": "assistant", "content": []}}),
+            _frame("response.output_text.delta", {"delta": text}),
+            _frame("response.output_item.done", {"item": cutoff_item(text)})]
+
+
+def _args_complete(args):
+    """Whether a tool call's arguments are whole JSON (a call the output limit cut off has partial JSON)."""
+    if not isinstance(args, str) or not args.strip():
+        return True
+    try:
+        json.loads(args)
+        return True
+    except ValueError:
+        return False
+
+
+def rewrite_incomplete_line(line, prior):
+    """For one SSE line of a native Responses stream: the bytes to send instead when it is a response.incomplete for
+    the output limit, else None. That event becomes the note's events and a response.completed (status completed,
+    end_turn false unless the cut-offs in a row reached CUTOFF_MAX_IN_A_ROW); an output item the limit cut off is
+    left out. The engine reads each event's JSON type, so the event line already sent for the old event does not
+    matter."""
+    if b"response.incomplete" not in line or b"max_output_tokens" not in line:
+        return None
+    s = line.strip()
+    if not s.startswith(b"data:"):
+        return None
+    try:
+        obj = json.loads(s[5:].strip())
+    except ValueError:
+        return None
+    resp = obj.get("response") if isinstance(obj, dict) else None
+    if obj.get("type") != "response.incomplete" or not isinstance(resp, dict) \
+            or (resp.get("incomplete_details") or {}).get("reason") != "max_output_tokens":
+        return None
+    text, keep_going = cutoff_note(prior)
+    done = dict(resp, status="completed", incomplete_details=None, end_turn=not keep_going)
+    if isinstance(done.get("output"), list):
+        done["output"] = [i for i in done["output"] if not (isinstance(i, dict) and i.get("status") == "incomplete")]
+        done["output"].append(cutoff_item(text))
+    added = {"type": "response.output_item.added", "item": {"type": "message", "role": "assistant", "content": []}}
+    return ("data: " + json.dumps(added) + "\n\n" + "".join(_cutoff_frames(text)[1:])
+            + _frame("response.completed", {"response": done})).encode()
+
+
+class IncompleteRewriter:
+    """A native Responses byte stream, line-aligned, with its output-limit response.incomplete rewritten
+    (rewrite_incomplete_line). feed() returns what to send now; flush() the rest at the end."""
+
+    def __init__(self, prior):
+        self.prior, self.buf = prior, b""
+
+    def feed(self, chunk):
+        self.buf += chunk
+        nl = self.buf.rfind(b"\n")
+        if nl < 0:
+            # hold a partial line, but never more than 16 MB (the terminal line holds the whole response)
+            if len(self.buf) > 16 << 20:
+                out, self.buf = self.buf, b""
+                return out
+            return b""
+        head, self.buf = self.buf[:nl + 1], self.buf[nl + 1:]
+        return self._rewrite(head)
+
+    def flush(self):
+        out, self.buf = self._rewrite(self.buf), b""
+        return out
+
+    def _rewrite(self, data):
+        if b"response.incomplete" not in data:
+            return data
+        try:
+            return b"".join(rewrite_incomplete_line(ln, self.prior) or ln for ln in data.splitlines(keepends=True))
+        except Exception:  # the stream as it came, never a broken one
+            return data
+
+
 # --------------------------------------------------------------------------- #
 # response: Chat Completions SSE -> Responses SSE                             #
 # --------------------------------------------------------------------------- #
@@ -830,8 +965,10 @@ class Transducer:
         apply_patch) come back as `custom_tool_call` items carrying the raw
         ``input`` string — the shape the engine expects for them."""
 
-    def __init__(self, model, name_map=None, known_tools=None, custom_tools=None):
+    def __init__(self, model, name_map=None, known_tools=None, custom_tools=None, prior_cutoffs=0):
         self.model = model
+        self.prior_cutoffs = prior_cutoffs  # output-limit cut-offs in a row before this request (prior_cutoffs())
+        self.cut_call = False               # a tool call the output limit cut off (dropped)
         # `is not None`, not `or`: an all-plain NameMap is empty (falsy) but still carries .search
         self.name_map = name_map if name_map is not None else {}
         self.custom_tools = set(custom_tools or ())
@@ -1045,6 +1182,9 @@ class Transducer:
             tc = self.tool_calls.get(idx) or {}
             wire = tc.get("name") or "tool"
             args = tc.get("args") or ""
+            if self.finish_reason == "length" and not _args_complete(args):
+                self.cut_call = True  # arguments cut off by the output limit: never run a half-written call
+                continue
             if not (args.strip().startswith("{") or args.strip().startswith("[")):
                 args = args or "{}"
             frames.append(self._emit_call_item(wire, args, tc.get("id") or f"call_{idx}"))
@@ -1063,6 +1203,9 @@ class Transducer:
         self.done = True
         had_tool = (self.finish_reason in ("tool_calls", "function_call")
                     or self._recovered_any)
+        end_turn = not had_tool
+        if self.finish_reason == "length":  # cut off by the output limit: its note went out first (_limit_note)
+            end_turn = not cutoff_note(self.prior_cutoffs)[1]
         usage = {
             "input_tokens": self.usage["input"],
             "input_tokens_details": {"cached_tokens": self.usage["cached"]},
@@ -1071,7 +1214,15 @@ class Transducer:
             "cache_write_tokens": 0,
         }
         return _frame("response.completed", {"response": {
-            "id": self.response_id, "usage": usage, "end_turn": not had_tool}})
+            "id": self.response_id, "usage": usage, "end_turn": end_turn}})
+
+    def _limit_note(self):
+        """The output-limit note's events, before the terminal event of a reply the limit cut off."""
+        if self.finish_reason != "length":
+            return []
+        text, _ = cutoff_note(self.prior_cutoffs)
+        self.output_items.append(cutoff_item(text))
+        return _cutoff_frames(text)
 
     def _failed(self, code, message):
         self._flush_reasoning()   # capture partial CoT even on a failed stream
@@ -1146,6 +1297,7 @@ class Transducer:
             frames += self._finalize_text_pipeline()
             frames += self._close_text()
             frames += self._flush_calls()
+            frames += self._limit_note()
             frames.append(self._completed())
         return frames
 
@@ -1170,6 +1322,7 @@ class Transducer:
         frames += self._close_text()
         frames += self._flush_calls()
         if self.finish_reason or self.produced:
+            frames += self._limit_note()
             frames.append(self._completed())
         else:
             frames.append(self._failed("stream_interrupted",
