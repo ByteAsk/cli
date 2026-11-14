@@ -2,6 +2,7 @@
 
 use super::*;
 use pretty_assertions::assert_eq;
+use ratatui::style::Color;
 
 fn rows() -> Vec<SearchResult> {
     let mut rows = (0..10)
