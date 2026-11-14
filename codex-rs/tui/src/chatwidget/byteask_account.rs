@@ -922,7 +922,7 @@ fn gateway_origin(base: &str) -> String {
 const USAGE_SIGNED_OUT: &str = "Sign in with /login for plan limits.";
 const REFERRAL_SIGNED_OUT: &str = "Sign in with /login to get a referral code.";
 const UPGRADE_SIGNED_OUT: &str = "Sign in with /login to upgrade.";
-const UPGRADE_SCREEN_READER: &str = "Run /upgrade pro or /upgrade max for a payment link.";
+const UPGRADE_SCREEN_READER: &str = "Run /upgrade pro, /upgrade max or /upgrade ultra for a link to finish on app.byteask.ai with Stripe.";
 const VOUCHER_SIGNED_OUT: &str = "Sign in with /login to redeem a voucher.";
 const SESSION_EXPIRED: &str = "Your session expired. Sign in with /login.";
 const UNREACHABLE: &str = "Couldn't reach ByteAsk";
@@ -1289,14 +1289,12 @@ fn referral_spec(info: &ReferralInfo, animations: bool) -> InfoPaneSpec {
 
 // --- /upgrade --------------------------------------------------------------
 
-/// The picker body is 8 rows: four choices (Pro, Max, Ultra, Redeem a code), one blank,
-/// and three wrapped note lines. The loading pane reserves exactly this many so the
+/// The picker body is 7 rows: four choices (Pro, Max, Ultra, Redeem a code), one blank,
+/// and two wrapped note lines. The loading pane reserves exactly this many so the
 /// frame does not jump when the plan probe resolves, which means the number is
 /// arithmetic over `UPGRADE_NOTE`, not a guess -- `upgrade_reserved_rows_matches_body`
 /// fails if either the note or the row count changes without it.
-const UPGRADE_RESERVED_ROWS: u16 = 8;
-/// The term the product actually sells (the gateway's payment term is 30 days).
-const UPGRADE_TERM_DAYS: u32 = 30;
+const UPGRADE_RESERVED_ROWS: u16 = 7;
 /// `$4 per 5h, $8 per week`: the plan's real limits (see [`plan_limits`]).
 fn limits_label(plan: &str) -> String {
     let (h5, week) = plan_limits(plan);
@@ -1304,17 +1302,17 @@ fn limits_label(plan: &str) -> String {
 }
 /// ⚠️ Every claim in this sentence must match what the gateway does and what
 /// `byteask.ai/pricing` says:
-///   * "One payment for 30 days" -- the gateway's payment term is 30 days and there is no
-///     recurring product, so "monthly subscription" would be false.
-///   * "Renewing extends" -- the gateway refuses only a strictly LOWER
-///     plan, and extends a same-rank purchase from
-///     max(now, expiry).
-///   * "the higher plan runs first" -- an upgrade demotes the displaced term into the
-///     fallback slot instead of destroying it, so the remaining days resume when
-///     the higher plan lapses.
+///   * "Billed monthly through Stripe" -- the link `/upgrade` hands out opens the plan
+///     page on app.byteask.ai, which sends the person to Stripe Checkout for a monthly
+///     subscription at the price on the plan's row.
+///   * "Renews automatically; cancel anytime at app.byteask.ai" -- the subscription
+///     renews each month until the person cancels it in Plan & usage on app.byteask.ai.
+///   * "One plan covers the CLI, Context and Cloud Agent" -- the plan is bought once for
+///     the person's app.byteask.ai account, and the gateway gives the buyer the CLI plan
+///     of the same name, with the limits shown on its row.
 const UPGRADE_NOTE: &str = concat!(
-    "One payment for 30 days. No auto-renew. Renewing extends the plan you are on. ",
-    "Moving up runs the higher plan first, then your remaining days resume.",
+    "Billed monthly through Stripe. Renews automatically; cancel anytime at app.byteask.ai. ",
+    "One plan covers the CLI, Context and Cloud Agent.",
 );
 
 fn upgrade_title() -> Vec<Span<'static>> {
@@ -1331,7 +1329,7 @@ fn upgrade_loading_spec(animations: bool) -> InfoPaneSpec {
 
 fn upgrade_link_loading_spec(animations: bool) -> InfoPaneSpec {
     let mut spec = InfoPaneSpec::new(ByteAskPane::Upgrade, upgrade_title());
-    spec.body = vec![BodyRow::Loading("Creating your payment link".to_string())];
+    spec.body = vec![BodyRow::Loading("Preparing your plan page".to_string())];
     spec.reserve_rows = UPGRADE_RESERVED_ROWS;
     spec.animations = animations;
     spec
@@ -1344,9 +1342,9 @@ fn upgrade_signed_out_spec(animations: bool) -> InfoPaneSpec {
     spec
 }
 
-/// The plan picker. On Pro or Max the current row renews and the cursor starts on the
-/// next plan up, so `enter` never renews by reflex (a lower plan is not offered: the
-/// gateway refuses it); on Ultra the pane is one line, because there is nothing to sell.
+/// The plan picker. On Pro or Max the current plan's row stays selectable and the cursor
+/// starts on the next plan up, so `enter` never picks the current plan by reflex (a lower
+/// plan is not offered); on Ultra the pane is one line, because there is nothing to sell.
 fn upgrade_options_spec(current_plan: &str, animations: bool) -> InfoPaneSpec {
     let mut spec = InfoPaneSpec::new(ByteAskPane::Upgrade, upgrade_title());
     spec.animations = animations;
@@ -1381,7 +1379,7 @@ fn upgrade_options_spec(current_plan: &str, animations: bool) -> InfoPaneSpec {
     for line in wrap_note(UPGRADE_NOTE) {
         spec.body.push(BodyRow::Text(Line::from(line)));
     }
-    spec.footer = vec!["enter to get a payment link".to_string(), close_hint()];
+    spec.footer = vec!["enter to get your plan page link".to_string(), close_hint()];
     spec.primary = Primary::Choose;
     if on_pro || on_max {
         spec.cursor = 1; // the next plan up, among the selectable choices
@@ -1393,16 +1391,16 @@ fn upgrade_options_spec(current_plan: &str, animations: bool) -> InfoPaneSpec {
 /// never be mistaken for one by `request_byteask_upgrade`.
 const UPGRADE_REDEEM_ID: &str = "redeem-code";
 
-/// `Pro    $20 · 30 days     $4 per 5h, $8 per week`. The price column is padded
+/// `Pro    $20 a month       $4 per 5h, $8 per week`. The price column is padded
 /// to a fixed width so `$20` and `$100` do not step the last column sideways.
 fn upgrade_choice_row(plan: &str, current: bool) -> BodyRow {
     let (label, price) = plan_label_price(plan);
-    let price = format!("${price} {} {UPGRADE_TERM_DAYS} days", glyph("·"));
-    // The current plan stays selectable: the gateway sells a same-plan renewal
-    // (it extends from max(now, expiry)), and an unselectable row left a Pro user
-    // with one choice, which made Up/Down do nothing.
+    let price = format!("${price} a month");
+    // The current plan stays selectable: the plan page decides what choosing it
+    // means, and an unselectable row left a Pro user with one choice, which made
+    // Up/Down do nothing. It does not say "renew": a subscription renews by itself.
     let trailing = if current {
-        format!("current plan {} renew", glyph("·"))
+        "current plan".to_string()
     } else {
         limits_label(plan)
     };
@@ -1457,23 +1455,19 @@ fn upgrade_result_spec(
     }
 }
 
-/// The payment link, rendered verbatim as the gateway sent it (the URL is a
+/// The plan page link, rendered verbatim as the gateway sent it (the URL is a
 /// ByteAsk one, so no payment provider's domain reaches the user).
 fn upgrade_link_spec(plan: &str, pay_url: &str, animations: bool) -> InfoPaneSpec {
     let (label, price) = plan_label_price(plan);
     let mut spec = InfoPaneSpec::new(
         ByteAskPane::Upgrade,
-        vec![
-            format!(
-                "Upgrade to {label} {} ${price} for {UPGRADE_TERM_DAYS} days",
-                glyph("·")
-            )
-            .bold(),
-        ],
+        vec![format!("Upgrade to {label} {} ${price} a month", glyph("·")).bold()],
     );
     spec.animations = animations;
     spec.body = vec![
-        BodyRow::Text(Line::from("Open this link to pay:")),
+        BodyRow::Text(Line::from(
+            "Open this link to finish on app.byteask.ai with Stripe:",
+        )),
         BodyRow::Text(Line::from(pay_url.to_string().fg(accent_color()))),
         BodyRow::Blank,
         BodyRow::Text(Line::from(
@@ -1682,7 +1676,7 @@ fn upgrade_label(plan: &str, result: &Fetched<UpgradeInfo>) -> String {
     let (label, price) = plan_label_price(plan);
     match result {
         Fetched::Ok(info) => format!(
-            "{label} ${price} for {UPGRADE_TERM_DAYS} days {} {}",
+            "{label} ${price} a month {} {}",
             glyph("·"),
             info.pay_url.trim()
         ),
@@ -2286,17 +2280,16 @@ mod tests {
             vec![
                 title_row("Upgrade your plan", "Free plan", FRAME_WIDTH as usize),
                 "".to_string(),
-                "› Pro    $20 · 30 days     $4 per 5h, $8 per week".to_string(),
-                "  Max    $100 · 30 days    $10 per 5h, $30 per week".to_string(),
-                "  Ultra  $200 · 30 days    $20 per 5h, $60 per week".to_string(),
+                "› Pro    $20 a month       $4 per 5h, $8 per week".to_string(),
+                "  Max    $100 a month      $10 per 5h, $30 per week".to_string(),
+                "  Ultra  $200 a month      $20 per 5h, $60 per week".to_string(),
                 "  Redeem a code            partner and campus deals".to_string(),
                 "".to_string(),
-                "  One payment for 30 days. No auto-renew. Renewing extends the plan you"
+                "  Billed monthly through Stripe. Renews automatically; cancel anytime".to_string(),
+                "  at app.byteask.ai. One plan covers the CLI, Context and Cloud Agent."
                     .to_string(),
-                "  are on. Moving up runs the higher plan first, then your remaining".to_string(),
-                "  days resume.".to_string(),
                 "".to_string(),
-                "enter to get a payment link · esc to close".to_string(),
+                "enter to get your plan page link · esc to close".to_string(),
             ]
         );
     }
@@ -2305,10 +2298,10 @@ mod tests {
     fn upgrade_picker_on_pro_marks_the_current_plan_and_starts_on_max() {
         let spec = upgrade_options_spec("Pro", false);
         let rows = frame(spec, FRAME_WIDTH);
-        assert_eq!(rows[2], "  Pro    $20 · 30 days     current plan · renew");
+        assert_eq!(rows[2], "  Pro    $20 a month       current plan");
         assert_eq!(
             rows[3],
-            "› Max    $100 · 30 days    $10 per 5h, $30 per week"
+            "› Max    $100 a month      $10 per 5h, $30 per week"
         );
     }
 
@@ -2357,16 +2350,20 @@ mod tests {
     #[test]
     fn upgrade_link_frame_renders_the_gateway_url_verbatim() {
         let rows = frame(
-            upgrade_link_spec("pro", "https://code.byteask.ai/pay/example1", false),
+            upgrade_link_spec(
+                "pro",
+                "https://app.byteask.ai/account/upgrade?plan=pro&from=cli&h=example1",
+                false,
+            ),
             FRAME_WIDTH,
         );
         assert_eq!(
             rows,
             vec![
-                "Upgrade to Pro · $20 for 30 days",
+                "Upgrade to Pro · $20 a month",
                 "",
-                "  Open this link to pay:",
-                "  https://code.byteask.ai/pay/example1",
+                "  Open this link to finish on app.byteask.ai with Stripe:",
+                "  https://app.byteask.ai/account/upgrade?plan=pro&from=cli&h=example1",
                 "",
                 "  This pane updates as soon as your payment lands.",
                 "",
@@ -2717,6 +2714,16 @@ mod tests {
                 })
             ),
             "GIFT5 added $5.00 of credit. Extra balance: $12.00."
+        );
+        assert_eq!(
+            upgrade_label(
+                "max",
+                &Fetched::Ok(UpgradeInfo {
+                    pay_url: "https://app.byteask.ai/account/upgrade?plan=max&from=cli&h=x"
+                        .to_string(),
+                })
+            ),
+            "Max $100 a month · https://app.byteask.ai/account/upgrade?plan=max&from=cli&h=x"
         );
     }
 
