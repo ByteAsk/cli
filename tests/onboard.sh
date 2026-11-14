@@ -124,14 +124,19 @@ python3 "$TMP/stub.py" & SRV_PID=$!
 sleep 1
 printf '%s' "$GW" > "$HOME_BX/gateway"
 
-# run bare byteask on a pty. Feeds: email (onboarding prompt), a blank (referral
-# prompt), and 'q' (the post-login source menu -> cancel = Done, stay managed).
+# run bare byteask on a pty. Feeds: Enter (the first-run choice: its default row is the
+# ByteAsk account), email (onboarding prompt), a blank (referral prompt), and 'q' (left
+# over for anything that still asks).
 tty_run() { # $1=extra gateway override, $2..=byteask args
   _gw="$1"; shift
-  printf 'dev@x.com\n\nq\n' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$_gw' BYTEASK_NO_UPDATE_CHECK=1 '$BIN/byteask' $*" /dev/null 2>&1 || true
+  printf '\ndev@x.com\n\nq\n' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$_gw' BYTEASK_NO_UPDATE_CHECK=1 '$BIN/byteask' $*" /dev/null 2>&1 || true
 }
-# like tty_run but with a caller-chosen email (feeds: email, blank, 'q').
+# like tty_run but with a caller-chosen email (feeds: Enter, email, blank, 'q').
 tty_run_email() { # $1=gateway $2=email
+  printf '\n%s\n\nq\n' "$2" | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$1' BYTEASK_NO_UPDATE_CHECK=1 BYTEASK_NO_REFRESH=1 '$BIN/byteask'" /dev/null 2>&1 || true
+}
+# an EXPIRED session skips the first-run choice and goes straight to the email.
+tty_run_expired() { # $1=gateway $2=email
   printf '%s\n\nq\n' "$2" | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$1' BYTEASK_NO_UPDATE_CHECK=1 BYTEASK_NO_REFRESH=1 '$BIN/byteask'" /dev/null 2>&1 || true
 }
 # run non-interactively (stdin /dev/null -> not a TTY)
@@ -331,7 +336,7 @@ if [ "$HAVE_PTY" = 1 ]; then
   rm -f "$HOME_BX/.known-emails"; seed_unsigned
   # feed: a blocked email (must be rejected + re-asked), then a good NEW email,
   # then blank (referral skip for the good email), then 'q' (post-login source menu).
-  OUT=$(printf 'x@blocked.example\ngood@x.com\n\nq\n' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$GW' BYTEASK_NO_UPDATE_CHECK=1 '$BIN/byteask'" /dev/null 2>&1 || true)
+  OUT=$(printf '\nx@blocked.example\ngood@x.com\n\nq\n' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$GW' BYTEASK_NO_UPDATE_CHECK=1 '$BIN/byteask'" /dev/null 2>&1 || true)
   has   "not supported"                         "$OUT" "P1 unsupported email shows the gateway message"
   hasnt "Signing in to ByteAsk as x@blocked.example" "$OUT" "P2 blocked email never reached the sign-in attempt (validated up front)"
   has   "Signing in to ByteAsk as good@x.com"   "$OUT" "P3 re-prompted + proceeded with a different email (session did NOT close)"
@@ -420,7 +425,7 @@ if [ "$HAVE_PTY" = 1 ] && command -v python3 >/dev/null 2>&1; then
   # outruns the input feed and hangs the suite — that is why this reads as a plain run.)
   rm -f "$HOME_BX/.stub-emit"
   seed_signed "$(mk_jwt stale@x.com 1000000000)"   # exp = 2001 -> long expired
-  OUT=$(tty_run_email "$GW" stale@x.com)
+  OUT=$(tty_run_expired "$GW" stale@x.com)
   has "session for stale@x.com has expired" "$OUT" "U1 expired session is named and explained"
   # A genuine first run must NOT claim an expiry (no stored JWT at all).
   seed_unsigned
@@ -641,7 +646,7 @@ if [ "$HAVE_PTY" = 1 ]; then
   ! grep -q '^experimental_bearer_token = ' "$HOME_BX/config.toml" \
     && bad "X4 an expired account was left signed out" \
     || ok "X4 an account with a stale token is never left signed out"
-  has "Welcome to ByteAsk" "$OUT" "X4b it asks them to sign in instead"
+  has "Email:" "$OUT" "X4b it asks them to sign in instead"
 else printf '  SKIP X4 (no pty)\n'; fi
 
 # X5/X6: renewal. A session inside its last week is traded for a fresh token at

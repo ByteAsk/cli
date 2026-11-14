@@ -32,6 +32,11 @@ if [ -f "$BYTEASK_HOME/.stub-emit" ]; then
   _m=$(cat "$BYTEASK_HOME/.stub-emit"); rm -f "$BYTEASK_HOME/.stub-emit"
   printf '%s\n' "$_m" > "$BYTEASK_HOME/.byteask-auth-request"
 fi
+# ChatGPT sign-in: install the auth.json the test staged; logout removes it.
+case "${1:-}" in
+  login)  cp "$BYTEASK_HOME/auth.json.next" "$BYTEASK_HOME/auth.json"; echo "ENGINE_LOGIN"; exit 0;;
+  logout) rm -f "$BYTEASK_HOME/auth.json"; exit 0;;
+esac
 echo "ENGINE_LAUNCHED $*"
 ENGINE_EOF
 chmod +x "$BIN/byteask-engine.exe"
@@ -61,6 +66,10 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/version"): return self._s(200,"0.1.1","text/plain")
         if self.path.startswith("/auth/verify"): return self._s(200,"ok","text/plain")
+        if self.path.startswith("/byteask/v1/usage"):
+            return self._s(200,json.dumps({"plan":"pro","credit_left_usd":12.5}))
+        if self.path.startswith("/byteask/v1/subscription-flags"):
+            return self._s(200,json.dumps({"chatgpt":True}))
         return self._s(404,"{}")
     def do_POST(self):
         if self.path=="/auth/start":
@@ -116,6 +125,47 @@ OUT=$(printf 'dev@x.com\n' | BYTEASK_HOME="$HOME_BX" BYTEASK_GATEWAY="$GW" BYTEA
 grep -q 'experimental_bearer_token = "WINTOKEN123"' "$HOME_BX/config.toml" && ok "H1 /login wrote new token" || bad "H1 new token not written"
 has "ENGINE_LAUNCHED" "$OUT" "H2 relaunched after /login"
 [ -f "$HOME_BX/.byteask-auth-request" ] && bad "H3 marker not consumed" || ok "H3 marker consumed"
+
+echo "== M. first run: the question comes before any email =="
+# Drives the function directly: the launch loop only reaches it on a real console.
+cat > "$TMP/fr.ps1" <<'PS'
+$env:BYTEASK_PS_TEST = '1'
+. (Join-Path $args[0] 'byteask.ps1')
+Invoke-FirstRun
+Write-Host "FIRSTRUN_RETURNED"
+PS
+frrun() { printf "$1" | BYTEASK_HOME="$HOME_BX" BYTEASK_GATEWAY="$GW" BYTEASK_NO_UPDATE_CHECK=1 BYOK_ASSUME_TTY=1 "$PWSH" -NoProfile -File "$TMP/fr.ps1" "$BIN" 2>&1; }
+seed_unsigned
+OUT=$(frrun '0\n'); rc=$?
+has   "How do you want to run ByteAsk?" "$OUT" "M1 asks the question"
+_order=$(printf '%s\n' "$OUT" | grep -o 'ByteAsk account\|Your own API key\|Your ChatGPT plan\|Your own server' | tr '\n' '|')
+[ "$_order" = "ByteAsk account|Your own API key|Your ChatGPT plan|Your own server|" ] \
+  && ok "M2 order: account, own key, ChatGPT, own server" || bad "M2 wrong order: $_order"
+has   'Free, $5 of credit a month. Same account as app.byteask.ai' "$OUT" "M3 the account row says free, credit, same account"
+hasnt "Email"                 "$OUT" "M4 cancelling never asks for an email"
+has   "Nothing was set up"    "$OUT" "M5 cancelling says nothing was set up"
+[ "$rc" = 1 ] && ok "M6 cancelling exits 1" || bad "M6 exit $rc"
+seed_unsigned
+OUT=$(frrun '1\ndev@x.com\n\n')
+has "We email you a sign-in link" "$OUT" "M7 the account row says what happens next"
+grep -q 'experimental_bearer_token = "WINTOKEN123"' "$HOME_BX/config.toml" && ok "M8 the account row signs in" || bad "M8 token not written"
+has "FIRSTRUN_RETURNED" "$OUT" "M9 returns to launch"
+
+echo "== N. first run, ChatGPT: Go is refused and offered the rest; Plus is used =="
+mk_auth() { python3 -c 'import base64,json,sys; p=base64.urlsafe_b64encode(json.dumps({"https://api.openai.com/auth":{"chatgpt_plan_type":sys.argv[1]}}).encode()).decode().rstrip("="); print(json.dumps({"tokens":{"id_token":"h.%s.s" % p}}))' "$1" > "$HOME_BX/auth.json.next"; }
+seed_unsigned; mk_auth go; CFG_BEFORE=$(cat "$HOME_BX/config.toml")
+OUT=$(frrun '3\n0\n')
+has   'is on the "go" plan'                     "$OUT" "N1 the refusal names the plan"
+has   "Choose another way to run ByteAsk below" "$OUT" "N2 it points at the other choices"
+[ "$(printf '%s' "$OUT" | grep -c 'How do you want to run ByteAsk')" -ge 2 ] && ok "N3 the choices are shown again" || bad "N3 choices not shown again"
+[ "$CFG_BEFORE" = "$(cat "$HOME_BX/config.toml")" ] && ok "N4 config.toml unchanged" || bad "N4 config.toml rewritten"
+[ -f "$HOME_BX/auth.json" ] && bad "N5 the refused credential was kept" || ok "N5 the refused credential is removed"
+seed_unsigned; mk_auth plus
+OUT=$(frrun '3\n')
+has "Using your ChatGPT subscription" "$OUT" "N6 Plus is used"
+grep -q '^model_provider = "openai"$' "$HOME_BX/config.toml" && ok "N7 provider is the ChatGPT session" || bad "N7 provider not switched"
+grep -q '^model = ' "$HOME_BX/config.toml" && bad "N8 a managed model was carried into the ChatGPT session" || ok "N8 no managed model carried over"
+rm -f "$HOME_BX/auth.json" "$HOME_BX/auth.json.next"
 
 echo
 echo "== $PASS passed, $FAIL failed =="

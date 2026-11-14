@@ -727,6 +727,54 @@ PY
   return 0
 }
 
+# The model an own-key setup starts on when there is no ByteAsk session: the first
+# listed model of that provider in the local catalog (the catalog lists models best
+# first). The fallbacks cover a machine whose catalog download failed.
+_own_key_model() {   # $1 = openai|anthropic|gemini -> stdout slug
+  _okm=""
+  if command -v python3 >/dev/null 2>&1 && [ -f "$BYTEASK_HOME/models-catalog.json" ]; then
+    _okm=$(python3 - "$BYTEASK_HOME/models-catalog.json" "$1" <<'PY' 2>/dev/null || true
+import json, sys
+def provider(slug):
+    if slug.startswith("claude"): return "anthropic"
+    if slug.startswith("gemini"): return "gemini"
+    if slug.startswith("gpt-"):   return "openai"
+    return ""
+try:
+    models = json.load(open(sys.argv[1])).get("models") or []
+except Exception:
+    models = []
+rows = [m for m in models if isinstance(m, dict) and m.get("visibility", "list") == "list"
+        and provider(str(m.get("slug") or "")) == sys.argv[2]]
+rows.sort(key=lambda m: m.get("priority", 999))
+if rows:
+    print(rows[0]["slug"])
+PY
+)
+  fi
+  if [ -z "$_okm" ]; then
+    case "$1" in
+      openai) _okm="gpt-5.4" ;; anthropic) _okm="claude-sonnet-5-5" ;; gemini) _okm="gemini-3.8-flash" ;;
+    esac
+  fi
+  printf '%s\n' "$_okm"
+}
+
+# Without a ByteAsk session a saved key only helps if the active model is one that key
+# serves: `auto` and other providers' models go through the ByteAsk gateway, so the
+# next launch would ask for an account after all. Point the config at the key's
+# provider. A signed-in user keeps the model they chose. Sets _OWN_MODEL ("" = unchanged).
+_own_key_select_model() {   # $1 = provider
+  _OWN_MODEL=""
+  _is_signed_in && return 0
+  _needs_byteask_signin || return 0
+  _OWN_MODEL="$(_own_key_model "$1")"
+  [ -n "$_OWN_MODEL" ] || return 0
+  if ! write_byok_config "$_OWN_MODEL" "$(_cfg_catalog)" "$(_byok_field local_token)"; then
+    _OWN_MODEL=""; return 1
+  fi
+}
+
 # Prompt (hidden) + validate + store + activate ONE provider key. Returns 0/1 (NO
 # exit) so the source menu can loop on failure. Reused by `byok set` (CLI) + the menu.
 _byok_add_key() {   # $1=provider
@@ -757,7 +805,11 @@ _byok_add_key() {   # $1=provider
   validate_key "$_prov" "$_KEY" || { _KEY=""; return 1; }
   _byok_merge "keys.$_prov=$_KEY"; _KEY=""   # drop from shell memory
   _byok_enter || return 1
+  _own_key_select_model "$_prov" || true
   echo "Saved your $_prov key."
+  if [ -n "$_OWN_MODEL" ]; then
+    echo "Using $_OWN_MODEL with your own key. No account needed; pick another model with /model."
+  fi
   return 0
 }
 
@@ -899,7 +951,8 @@ byok_set() {   # $1=provider — the scriptable CLI command (exits on error)
   if [ "$_prov" = openai ] && { [ "${2:-}" = "--subscription" ] || [ "${2:-}" = "--sub" ]; }; then
     byok_subscription "${3:-}"; return; fi
   _byok_add_key "$_prov" || exit 1
-  echo "Keyed providers bill to your account; other models use ByteAsk managed (counts toward your usage)."
+  [ -n "$_OWN_MODEL" ] || \
+    echo "Keyed providers bill to your account; other models use ByteAsk managed (counts toward your usage)."
   echo "Relaunching..."; return 0
 }
 
@@ -1289,8 +1342,13 @@ byok_subscription() {
       printf '\n  Signed in, but this ChatGPT account is on the "%s" plan.\n' "$_sub_plan" >&2
       printf '  OpenAI serves no model to ByteAsk on that plan - every model was refused\n' >&2
       printf '  when we checked, so the session would fail on your first message.\n\n' >&2
-      printf '  Your ByteAsk session is unchanged. To use your subscription, upgrade to\n' >&2
-      printf '  ChatGPT Plus or higher and run /login again.\n\n' >&2
+      if [ -n "${_SUB_FIRST_RUN:-}" ]; then
+        printf '  Nothing was changed. Choose another way to run ByteAsk below, or upgrade\n' >&2
+        printf '  to ChatGPT Plus or Pro and choose this again.\n\n' >&2
+      else
+        printf '  Your ByteAsk session is unchanged. To use your subscription, upgrade to\n' >&2
+        printf '  ChatGPT Plus or higher and run /login again.\n\n' >&2
+      fi
       # Put back whatever credential was there before. `login` already replaced it, so a
       # bare `logout` here destroyed a WORKING subscription session just because the user
       # tried a second account - which is how a Plus login was lost to a Go sign-in.
@@ -1312,6 +1370,10 @@ byok_subscription() {
     return 1
   fi
   rm -f "$_sub_auth_bak" 2>/dev/null || true
+  if [ -n "${_SUB_FIRST_RUN:-}" ]; then
+    echo "Using your ChatGPT subscription (OpenAI models only). No account needed."
+    return 0
+  fi
   echo "Switched to your ChatGPT subscription (OpenAI models only)."
   echo "Run /login and choose \"Use ByteAsk managed\" to switch back."
 }
@@ -2232,10 +2294,12 @@ _scr_add_key() {   # $1 = provider — the PROMPT state, in-region, under our tr
   if _vout=$(validate_key "$_prov" "$_KEYIN" 2>&1); then
     _byok_merge "keys.$_prov=$_KEYIN"; _KEYIN=''
     if _eout=$(_byok_enter 2>&1); then
+      _own_key_select_model "$_prov" >/dev/null 2>&1 || true
       case $_vout in
         *"saving it anyway"*) _pend_k=err; _pend_m="Couldn't verify the key right now $_G_DOT saved it anyway";;
         *) _pend_k=ok; _pend_m="Saved your $_pn key";;
       esac
+      [ -n "$_OWN_MODEL" ] && _pend_m="$_pend_m $_G_DOT using $_OWN_MODEL, no account needed"
     else
       _pend_k=err; _pend_m="Couldn't start the local helper $_G_DOT run 'byteask --update'"
     fi
@@ -2475,6 +2539,109 @@ do_source_menu() {
   _source_menu_seq
 }
 
+# ---- first run: how do you want to run ByteAsk? -----------------------------------
+# A first launch with no session anywhere asks this BEFORE any email, so someone who
+# brings their own key or their own server never creates an account. The account is
+# the first row and the default, so a bare Enter keeps the old path. Rows are ASCII and
+# cut to the terminal width: _menu_pick redraws one line per row.
+_first_run_row() {   # $1 = tag -> the row text
+  case "$1" in
+    account) _frr='ByteAsk account    Free, $5 of credit a month. Same account as app.byteask.ai' ;;
+    key)     _frr='Your own API key   OpenAI, Anthropic or Gemini. No account needed' ;;
+    chatgpt) _frr='Your ChatGPT plan  Use your Plus or Pro subscription. No account needed' ;;
+    server)  _frr='Your own server    vLLM, Ollama and others. No account needed' ;;
+  esac
+  _fr_cols=$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2)
+  case "$_fr_cols" in ''|*[!0-9]*) _fr_cols=0 ;; esac
+  # An unknown width (0, as some pseudo-terminals report) is left uncut.
+  if [ "$_fr_cols" -ge 20 ]; then printf '%s\n' "$_frr" | cut -c1-"$((_fr_cols - 3))"
+  else printf '%s\n' "$_frr"; fi
+}
+
+# The ChatGPT row follows the same server-side switch as /login's subscription row
+# (subscription-flags, default off). A first run has no cached copy yet, so fetch it
+# once here; offline or unreadable means the row is not offered.
+_chatgpt_offered() {
+  [ -f "$BYTEASK_HOME/subscription-flags" ] || _refresh_subscription_flags
+  grep -qx 'chatgpt=1' "$BYTEASK_HOME/subscription-flags" 2>/dev/null
+}
+
+_first_run_chatgpt() {
+  _SUB_FIRST_RUN=1
+  _fc_rc=0; byok_subscription || _fc_rc=$?
+  _SUB_FIRST_RUN=""
+  return "$_fc_rc"
+}
+
+_first_run_own_key() {
+  _ui_title "Which provider is your key for?"
+  _ui_note "Requests go from this machine to the provider, who bills you."
+  _ui_gap
+  case "$(_menu_pick "OpenAI" "Anthropic" "Gemini")" in
+    1) _fk_p=openai ;; 2) _fk_p=anthropic ;; 3) _fk_p=gemini ;; *) return 1 ;;
+  esac
+  _byok_add_key "$_fk_p" || return 1
+  if _needs_byteask_signin; then
+    echo "byteask: your key is saved, but the settings could not be updated. Choose again to retry." >&2
+    return 1
+  fi
+  return 0
+}
+
+_first_run_own_server() {
+  _ui_title "Your own server"
+  _ui_note "Any OpenAI-compatible server: vLLM, Ollama, LM Studio, TGI. Requests never reach ByteAsk."
+  _ui_gap
+  printf '  Server URL (Ollama: http://localhost:11434): '
+  IFS= read -r _fs_u || _fs_u=''
+  _fs_u=$(printf '%s' "$_fs_u" | tr -d '[:space:]')
+  [ -n "$_fs_u" ] || return 1
+  printf '  Name it (Enter for my-server): '
+  IFS= read -r _fs_al || _fs_al=''
+  _fs_al=$(printf '%s' "$_fs_al" | tr -d '[:space:]')
+  [ -n "$_fs_al" ] || _fs_al=my-server
+  printf '  API key, if your server needs one (Enter to skip; input hidden): '
+  stty -echo 2>/dev/null || true
+  IFS= read -r _fs_k || _fs_k=''
+  stty echo 2>/dev/null || true
+  printf '\n'
+  _fs_k=$(printf '%s' "$_fs_k" | tr -d '[:space:]')
+  # BK_KEY, never argv: /proc/<pid>/cmdline is world-readable.
+  _fs_rc=0
+  BK_KEY="$_fs_k" models_add "$_fs_al" --url "$_fs_u" || _fs_rc=$?
+  _fs_k=''
+  [ "$_fs_rc" = 0 ] || return 1
+  write_byok_config "self/$_fs_al" "$(_cfg_catalog)" "$(_byok_field local_token)" || return 1
+  echo "Using self/$_fs_al. No account needed."
+  return 0
+}
+
+# 0 = set up, launch the engine. Cancelling (q, Esc, end of input) exits: nothing to run.
+do_first_run() {
+  echo "Welcome to ByteAsk."
+  _fr_tags="account key server"
+  _chatgpt_offered && _fr_tags="account key chatgpt server"
+  while : ; do
+    set --
+    for _fr_t in $_fr_tags; do set -- "$@" "$(_first_run_row "$_fr_t")"; done
+    _ui_title "How do you want to run ByteAsk?"
+    _ui_note "Up/Down and Enter, or type 1-$#"
+    _ui_gap
+    _fr_pick=$(_menu_pick "$@")
+    case "$_fr_pick" in ''|*[!0-9]*) _fr_pick=0 ;; esac
+    _fr_tag=""
+    [ "$_fr_pick" -gt 0 ] && _fr_tag=$(printf '%s\n' $_fr_tags | sed -n "${_fr_pick}p")
+    case "$_fr_tag" in
+      account) _ui_note "We email you a sign-in link. New here? It creates your free account."
+               do_login --interactive; return 0 ;;
+      key)     _first_run_own_key && return 0 ;;
+      chatgpt) _first_run_chatgpt && return 0 ;;
+      server)  _first_run_own_server && return 0 ;;
+      *) echo "Nothing was set up. Run byteask again when you are ready." >&2; exit 1 ;;
+    esac
+  done
+}
+
 # `/login` + `byteask login`: EMAIL is compulsory (identity, every user), THEN the
 # settings screen. A signed-in user starts on the Account screen.
 do_account() {
@@ -2674,7 +2841,7 @@ do_login() {
   if [ -z "$token" ]; then
     echo "sign-in timed out (no confirmation after 10 minutes)." >&2
     echo "  - If the email was slow, run 'byteask login' to send a fresh link." >&2
-    echo "  - Or skip email: 'byteask login --with-api-key' to use your own API key." >&2
+    echo "  - Or use your own key, no account: byteask byok set openai (or anthropic, gemini)" >&2
     exit 1
   fi
   mkdir -p "$BYTEASK_HOME"; printf '%s' "$GATEWAY" > "$BYTEASK_HOME/gateway"
@@ -2876,7 +3043,7 @@ case "${1:-}" in
     cat >&2 <<EOF
 ByteAsk $VERSION — an AI coding agent for your terminal
 
-  byteask                           start (signs you in on first run)
+  byteask                           start (the first run sets you up)
   byteask "<prompt>"                start with a prompt
   byteask exec "<prompt>"           one answer, no UI — scripts and CI
   byteask review                    review the working tree
@@ -2977,10 +3144,12 @@ while : ; do
         echo "  Fix the permissions above and run: byteask login" >&2
         exit 1
       fi
-      echo "Welcome to ByteAsk — let's get you signed in (one time)."
+      # No session stored anywhere: a first run (or after `byteask logout`) asks how to
+      # run ByteAsk before any email. A stored but expired session goes straight back to
+      # sign-in, and do_account says why.
       # `--interactive` (a no-op flag) forces a WITH-args call so do_login does NOT
       # inherit this script's "$@" (e.g. a `byteask "prompt"`); "$@" is preserved.
-      do_account
+      if [ -z "$(_byok_current_jwt)" ]; then do_first_run; else do_account; fi
     else
       echo "You're not signed in to ByteAsk. Run:  byteask login --email you@company.com" >&2
       exit 1
