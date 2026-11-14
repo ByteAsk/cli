@@ -111,6 +111,15 @@ OUT=$(notty_install "$P_HAVE")
 hasnt "Changed: ~/.gdbinit" "$OUT" "E3 an update that changes nothing says nothing"
 [ "$(grep -c 'ByteAsk GDB bridge (added' "$H/.gdbinit")" = 1 ] && ok "E4 the block is added once" || bad "E4 the block was added twice"
 
+echo "== G. Git Bash, MSYS2 and Cygwin get the PowerShell installer =="
+mkdir -p "$TMP/p-win"
+printf '#!/bin/sh\n[ "${1:-}" = -s ] && echo MINGW64_NT-10.0-26100 || echo x86_64\n' > "$TMP/p-win/uname"; chmod +x "$TMP/p-win/uname"
+fresh; OUT=$(env PATH="$TMP/p-win:$P_HAVE" HOME="$H" PREFIX="$BIN" sh "$INSTALL" </dev/null 2>&1); rc=$?
+[ "$rc" = 1 ] && ok "G1 stops (exit 1)" || bad "G1 exit $rc"
+has   "irm https://code.byteask.ai/install.ps1 | iex" "$OUT" "G2 gives the PowerShell command"
+has   "pip install byteask"                           "$OUT" "G3 mentions pip"
+hasnt "unsupported OS"                                "$OUT" "G4 not a bare 'unsupported OS'"
+
 echo
 echo "install-prompts: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

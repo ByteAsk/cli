@@ -28,6 +28,12 @@ arch="$(uname -m 2>/dev/null || echo unknown)"
 case "$os" in
   Linux)  os=linux ;;
   Darwin) os=darwin ;;
+  MINGW*|MSYS*|CYGWIN*)
+    # Git Bash, MSYS2 and Cygwin on Windows: the native Windows build is the one to use.
+    echo "[byteask] This installer is for macOS and Linux. On Windows, run this in PowerShell:" >&2
+    echo "            irm https://code.byteask.ai/install.ps1 | iex" >&2
+    echo "          or: pip install byteask. Inside WSL, this script works as it is." >&2
+    exit 1 ;;
   *) echo "[byteask] unsupported OS: $os (Linux/macOS supported; Windows: use WSL)" >&2; exit 1 ;;
 esac
 case "$arch" in
