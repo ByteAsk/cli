@@ -2341,7 +2341,7 @@ if ($env:BYTEASK_PS_TEST) { return }
 $script:LaunchArgs = @($args)
 $cmd = if ($args.Count -gt 0) { "$($args[0])" } else { '' }
 # Every path below may start the engine except --version/--help, which never do.
-if ($cmd -notmatch '^(--version|-V|version|--help|-h)$') { Set-EngineCompat }
+if ($cmd -notmatch '^(--version|-V|version|--help|-h|help)$') { Set-EngineCompat }
 
 switch -Regex ($cmd) {
   '^(--version|-V|version)$' { Write-Host "byteask $VERSION"; exit 0 }
@@ -2352,6 +2352,12 @@ switch -Regex ($cmd) {
     Write-Err "  Update the ByteAsk CLI:  byteask --update"
     Write-Err "  Change your plan:        /upgrade inside byteask, or $ACCOUNT_URL"
     exit 1
+  }
+  '^(doctor|completion|mcp)$' {
+    # Local commands that never send a request to a model, so they need no account.
+    # `doctor` above all: it is what someone whose sign-in is broken runs first.
+    & $ENGINE @args
+    exit $LASTEXITCODE
   }
   '^(--update|update)$' {
     Write-Host "Updating ByteAsk CLI..."
@@ -2427,7 +2433,7 @@ switch -Regex ($cmd) {
     $rest = @($args | Select-Object -Skip 1)
     exit (Invoke-ClaudeLauncher $rest)
   }
-  '^(--help|-h)$' {
+  '^(--help|-h|help)$' {
     # ONE help text, mirroring the sh wrapper: the wrapper answers and never hands
     # off to the engine's own help, which would answer a second time in a second
     # style and advertise upstream-only subcommands incl. an upstream cloud-tasks

@@ -139,6 +139,15 @@ has   "byteask --update"         "$OUT" "J2 points at the software update"
 has   "/upgrade inside byteask"  "$OUT" "J3 points at the plan"
 hasnt "Updating ByteAsk"         "$OUT" "J4 never runs the updater"
 
+echo "== K. doctor and mcp work signed out =="
+seed_unsigned
+OUT=$(psrun doctor); rc=$?
+[ "$rc" = 0 ] && ok "K1 doctor exits 0 signed out" || bad "K1 doctor exit $rc"
+has   "ENGINE_LAUNCHED doctor" "$OUT" "K2 doctor reaches the engine"
+hasnt "not signed in"          "$OUT" "K3 no sign-in nudge"
+has   "ENGINE_LAUNCHED mcp list" "$(psrun mcp list)" "K4 mcp list reaches the engine"
+[ "$(psrun help)" = "$(psrun --help)" ] && ok "K5 'byteask help' prints the launcher's help" || bad "K5 'byteask help' differs"
+
 echo "== L. the sign-in line: plan, credit, the account site =="
 seed_unsigned
 OUT=$(printf 'dev@x.com\n' | BYTEASK_HOME="$HOME_BX" BYTEASK_GATEWAY="$GW" BYTEASK_NO_UPDATE_CHECK=1 "$PWSH" -NoProfile -File "$BIN/byteask.ps1" login 2>&1)

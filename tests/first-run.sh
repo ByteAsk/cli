@@ -280,6 +280,23 @@ has   "No account needed" "$OUT" "K2 says no account is needed"
 has   "ENGINE_LAUNCHED"   "$OUT" "K3 launches"
 hasnt "not signed in"     "$OUT" "K4 no sign-in nudge"
 
+echo "== L. local commands work signed out =="
+seed_fresh
+for c in doctor "completion zsh" "mcp list"; do
+  # shellcheck disable=SC2086 -- $c is a command and its arguments
+  OUT=$(nt_run $c); rc=$?
+  [ "$rc" = 0 ] && ok "L ${c%% *}: exits 0 signed out" || bad "L ${c%% *}: exit $rc"
+  hasnt "not signed in" "$OUT" "L ${c%% *}: no sign-in nudge"
+done
+has "DOCTOR_RAN" "$(nt_run doctor)" "L1 doctor reaches the engine"
+has "MCP_RAN mcp list" "$(nt_run mcp list)" "L2 mcp list reaches the engine"
+OUT=$(printf '' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$GW' BYTEASK_NO_UPDATE_CHECK=1 '$BIN/byteask' doctor" /dev/null 2>&1 || true)
+has   "DOCTOR_RAN"                      "$OUT" "L3 doctor on a terminal reaches the engine"
+hasnt "How do you want to run ByteAsk?" "$OUT" "L4 doctor on a terminal does not start the first-run screen"
+OUT=$(nt_run help); rc=$?
+[ "$rc" = 0 ] && ok "L5 'byteask help' exits 0 signed out" || bad "L5 'byteask help' exit $rc"
+[ "$OUT" = "$(nt_run --help)" ] && ok "L6 'byteask help' prints the launcher's help" || bad "L6 'byteask help' differs from --help"
+
 echo "== M. --help ends with docs, account and support links =="
 OUT=$(nt_run --help); rc=$?
 [ "$rc" = 0 ] && ok "M1 --help exits 0 signed out" || bad "M1 --help exit $rc"
