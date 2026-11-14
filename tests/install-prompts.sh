@@ -111,6 +111,19 @@ OUT=$(notty_install "$P_HAVE")
 hasnt "Changed: ~/.gdbinit" "$OUT" "E3 an update that changes nothing says nothing"
 [ "$(grep -c 'ByteAsk GDB bridge (added' "$H/.gdbinit")" = 1 ] && ok "E4 the block is added once" || bad "E4 the block was added twice"
 
+echo "== F. an own-key or ChatGPT setup survives an update =="
+fresh; mkdir -p "$H/.byteask"
+printf 'model = "claude-fable-5.1"\nmodel_provider = "byok-local"\n\n[model_providers.byok-local]\nbase_url = "http://127.0.0.1:8799/byteask/v1"\n' > "$H/.byteask/config.toml"
+BEFORE=$(cat "$H/.byteask/config.toml"); notty_install "$P_HAVE" >/dev/null
+[ "$BEFORE" = "$(cat "$H/.byteask/config.toml")" ] && ok "F1 own-key config kept as it was" || bad "F1 own-key config rewritten: $(cat "$H/.byteask/config.toml")"
+printf 'model_provider = "openai"\nweb_search = "live"\n' > "$H/.byteask/config.toml"
+BEFORE=$(cat "$H/.byteask/config.toml"); notty_install "$P_HAVE" >/dev/null
+[ "$BEFORE" = "$(cat "$H/.byteask/config.toml")" ] && ok "F2 ChatGPT config kept as it was" || bad "F2 ChatGPT config rewritten"
+printf 'model = "auto"\nmodel_provider = "byteask"\n[model_providers.byteask]\nexperimental_bearer_token = "KEEPME"\n' > "$H/.byteask/config.toml"
+notty_install "$P_HAVE" >/dev/null
+grep -q "base_url = \"$URL/byteask/v1\"" "$H/.byteask/config.toml" && ok "F3 a ByteAsk-models config is still rewritten" || bad "F3 managed config not refreshed"
+grep -q 'experimental_bearer_token = "KEEPME"' "$H/.byteask/config.toml" && ok "F4 and keeps its session" || bad "F4 session lost"
+
 echo "== G. Git Bash, MSYS2 and Cygwin get the PowerShell installer =="
 mkdir -p "$TMP/p-win"
 printf '#!/bin/sh\n[ "${1:-}" = -s ] && echo MINGW64_NT-10.0-26100 || echo x86_64\n' > "$TMP/p-win/uname"; chmod +x "$TMP/p-win/uname"

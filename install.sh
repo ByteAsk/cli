@@ -441,7 +441,17 @@ for _sk in compress; do
   fi
 done
 
-cat > "$HOME_DIR/config.toml" <<EOF
+# Own key, own server and ChatGPT setups are written by the launcher itself (provider
+# byok-local or openai). Rewriting them here made every update a silent switch back to
+# ByteAsk's models, and for someone without an account that meant a sign-in prompt.
+# Only a missing or a ByteAsk-models config is (re)written.
+PREV_PROVIDER=""
+if [ -f "$HOME_DIR/config.toml" ]; then
+  PREV_PROVIDER="$(sed -n 's/^model_provider = "\(.*\)"$/\1/p' "$HOME_DIR/config.toml" | head -n1)"
+fi
+case "$PREV_PROVIDER" in
+  byok-local|openai) : ;;
+  *) cat > "$HOME_DIR/config.toml" <<EOF
 model = "$MODEL"
 model_provider = "byteask"
 web_search = "live"
@@ -457,6 +467,8 @@ $TOKEN_LINE
 [model_providers.byteask.http_headers]
 x-openai-actor-authorization = "byteask"
 EOF
+     ;;
+esac
 
 # Two lines on the happy path. The success text names only ByteAsk and does not
 # say "New here? Sign in first: byteask login --email ...", which would
