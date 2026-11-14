@@ -45,11 +45,13 @@ cd your-project
 byteask
 ```
 
-On first run ByteAsk asks how you want to run models:
+On first run ByteAsk asks how you want to run models, before it asks for anything else:
 
-- **ByteAsk account:** sign in with your email address; models run through the ByteAsk gateway.
-- **Your own provider key:** OpenAI, Anthropic or Gemini; requests go from your machine to the provider.
-- **Your own hosted model:** any OpenAI-compatible endpoint, for example vLLM or Ollama.
+- **ByteAsk account:** sign in with your email address; models run through the ByteAsk gateway. It is the
+  same account as [app.byteask.ai](https://app.byteask.ai), where you manage your plan.
+- **Your own provider key:** OpenAI, Anthropic or Gemini; requests go from your machine to the provider. No account.
+- **Your ChatGPT plan:** sign in with a ChatGPT Plus or Pro subscription; OpenAI models only. No account.
+- **Your own hosted model:** any OpenAI-compatible endpoint, for example vLLM or Ollama. No account.
 
 Then describe the task. ByteAsk reads the code, runs commands in a sandbox, and shows each change for approval.
 

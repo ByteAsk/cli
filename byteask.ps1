@@ -10,6 +10,8 @@
 
 $VERSION = '0.2.4'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
+# One ByteAsk account for every product: plan, credit and billing are managed here.
+$ACCOUNT_URL = 'https://app.byteask.ai'
 
 $BYTEASK_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
 $env:BYTEASK_HOME = $BYTEASK_HOME
@@ -735,9 +737,54 @@ function Invoke-ByokEnter {
   return $true
 }
 
+# The model an own-key setup starts on when there is no ByteAsk session: the first
+# listed model of that provider in the local catalog (the catalog lists models best
+# first). The fallbacks cover a machine whose catalog download failed. Mirrors the sh
+# _own_key_model.
+function Get-OwnKeyModel([string]$prov) {
+  $code = @'
+import json, sys
+def provider(slug):
+    if slug.startswith("claude"): return "anthropic"
+    if slug.startswith("gemini"): return "gemini"
+    if slug.startswith("gpt-"):   return "openai"
+    return ""
+try:
+    models = json.load(open(sys.argv[1])).get("models") or []
+except Exception:
+    models = []
+rows = [m for m in models if isinstance(m, dict) and m.get("visibility", "list") == "list"
+        and provider(str(m.get("slug") or "")) == sys.argv[2]]
+rows.sort(key=lambda m: m.get("priority", 999))
+if rows:
+    print(rows[0]["slug"])
+'@
+  $cat = Join-Path $BYTEASK_HOME 'models-catalog.json'
+  $m = ''
+  if (Test-Path $cat) { $m = ("$(Invoke-Py $code @($cat, $prov))").Trim() }
+  if (-not $m) {
+    $m = switch ($prov) { 'openai' { 'gpt-5.4' } 'anthropic' { 'claude-sonnet-5-5' } 'gemini' { 'gemini-3.8-flash' } default { '' } }
+  }
+  return $m
+}
+
+# Without a ByteAsk session a saved key only helps if the active model is one that key
+# serves: `auto` and other providers' models go through the ByteAsk gateway, so the next
+# launch would ask for an account after all. Point the config at the key's provider. A
+# signed-in user keeps the model they chose. Returns the model set ('' = unchanged).
+function Select-OwnKeyModel([string]$prov) {
+  if (Test-SignedIn) { return '' }
+  if (-not (Test-NeedsSignin)) { return '' }
+  $m = Get-OwnKeyModel $prov
+  if (-not $m) { return '' }
+  if (-not (Write-ByokConfig $m (Get-CfgLine '^(model_catalog_json = .*)$') (Get-ByokField 'local_token'))) { return '' }
+  return $m
+}
+
 # Prompt (masked) + validate + store + activate ONE provider key. Returns $true/$false
 # (no exit) so the source menu can loop. Reused by `byok set` (CLI) + the menu.
 function Add-ByokKey([string]$prov) {
+  $script:OwnModel = ''
   if (-not (Test-Path $BYOK_SIDECAR)) { Write-Err "byteask: BYOK needs the sidecar; run 'byteask --update' first."; return $false }
   if (-not (Get-PyExe)) { Write-Err "byteask: BYOK needs python (not found)."; return $false }
   $sec = Read-Host -AsSecureString "Paste your $prov API key (hidden, never shown)"
@@ -746,7 +793,11 @@ function Add-ByokKey([string]$prov) {
   if (-not (Test-ProviderKey $prov $key)) { return $false }
   Invoke-ByokMerge @("keys.$prov=$key")
   if (-not (Invoke-ByokEnter)) { return $false }
+  $script:OwnModel = Select-OwnKeyModel $prov
   Write-Host "Saved your $prov key."
+  if ($script:OwnModel) {
+    Write-Host "Using $($script:OwnModel) with your own key. No account needed; pick another model with /model."
+  }
   return $true
 }
 
@@ -863,7 +914,9 @@ function Invoke-ByokSet([string[]]$rest) {
     $transport = if ($rest -contains '--device') { '--device' } elseif ($rest -contains '--browser') { '--browser' } else { '' }
     Invoke-ByokSubscription $transport; return }
   if (-not (Add-ByokKey $prov)) { exit 1 }
-  Write-Host "Keyed providers bill to your account; other models use ByteAsk managed (counts toward your usage)."
+  if (-not $script:OwnModel) {
+    Write-Host "Keyed providers bill to your account; other models use ByteAsk managed (counts toward your usage)."
+  }
   Write-Host "Relaunching..."
 }
 
@@ -932,8 +985,10 @@ experimental_bearer_token = "$jwt"
 x-openai-actor-authorization = "byteask"
 "@
   }
-  $cfg = @"
-model = "$model"
+  # An empty model leaves the line out, so the engine picks a default from the ChatGPT
+  # backend's own list (a managed model such as `auto` fails every turn there).
+  $modelLine = if ($model) { "model = `"$model`"`n" } else { '' }
+  $cfg = $modelLine + @"
 model_provider = "openai"
 web_search = "live"
 $catalog$idBlock
@@ -945,12 +1000,33 @@ $catalog$idBlock
   return $true
 }
 
-function Invoke-ByokSubscription([string]$transport) {
+# The signed-in ChatGPT account's plan (go, free, plus, pro, ...) from auth.json's
+# id_token, or '' when it cannot be read. Mirrors the sh _chatgpt_plan_type.
+function Get-ChatgptPlanType {
+  $auth = Join-Path $BYTEASK_HOME 'auth.json'
+  if (-not (Test-Path $auth)) { return '' }
+  try {
+    $tok = (Get-Content -Raw $auth | ConvertFrom-Json).tokens.id_token
+    $seg = $tok.Split('.')[1].Replace('-','+').Replace('_','/')
+    switch ($seg.Length % 4) { 2 { $seg += '==' } 3 { $seg += '=' } }
+    $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($seg))
+    return ([regex]::Match($json, '"chatgpt_plan_type"\s*:\s*"([^"]*)"').Groups[1].Value)
+  } catch { return '' }
+}
+
+# $FirstRun: called from the first-run choice, which offers the other choices again on a
+# refusal, so every failure returns instead of exiting. The result is $script:SubscriptionOk
+# (not a return value: the engine's own output would join a function's output stream).
+function Invoke-ByokSubscription([string]$transport, [bool]$FirstRun = $false) {
+  $script:SubscriptionOk = $false
   Write-Host "Sign in with your ChatGPT subscription (Plus/Pro/Business)."
+  Write-Host "Requires ChatGPT Plus or higher. Free and Go accounts are not supported."
   Write-Host "Note: OpenAI's own sign-in screen appears; Anthropic/Gemini keys don't mix into a subscription session."
   # Capture identity + config BEFORE the rewrite so the retained block carries the account forward.
   $jwt = Get-CurrentJwt
-  $model = Get-CfgLine '^model = "(.*)"$'; if (-not $model) { $model = if ($env:BYTEASK_MODEL) { $env:BYTEASK_MODEL } else { 'auto' } }
+  # Empty: the ChatGPT backend serves its own models, so a managed model is never carried
+  # over (mirrors the sh byok_subscription).
+  $model = ''
   # Subscription sessions use the ChatGPT backend's OWN model list, so drop
   # model_catalog_json (our catalog would 400 there). Empty => engine fetches OpenAI's.
   $catalog = ''
@@ -959,14 +1035,50 @@ function Invoke-ByokSubscription([string]$transport) {
   # (SSH/headless); it needs enabling once in the user's ChatGPT security settings.
   $headless = (-not $env:DISPLAY) -and ($env:SSH_CONNECTION -or $env:SSH_TTY)
   $loginArg = switch ($transport) { '--device' { '--device-auth' } '--browser' { '' } default { if ($headless) { '--device-auth' } else { '' } } }
+  # `login` replaces auth.json before the plan can be read, so keep the old credential
+  # and put it back if the new account is refused.
+  $auth = Join-Path $BYTEASK_HOME 'auth.json'; $authBak = "$auth.presub"
+  $hadAuth = $false
+  if (Test-Path $auth) { try { Copy-Item -Force $auth $authBak; $hadAuth = $true } catch {} }
   if ($loginArg) {
     Write-Host "No local browser detected - using device-code sign-in. Enable it once in your ChatGPT security settings if this is your first device-code login."
     & $ENGINE login $loginArg
   } else { & $ENGINE login }
-  if ($LASTEXITCODE -ne 0) { Write-Err "ChatGPT sign-in failed."; exit 1 }
+  if ($LASTEXITCODE -ne 0) {
+    Write-Err "ChatGPT sign-in failed."
+    if ($hadAuth) { Move-Item -Force $authBak $auth -ErrorAction SilentlyContinue }
+    if ($FirstRun) { return }; exit 1
+  }
+  # Refuse a plan that OpenAI serves no model to (measured on go and free accounts):
+  # the session would fail on the first message.
+  $plan = Get-ChatgptPlanType
+  if (@('go','free') -contains $plan) {
+    Write-Err ""
+    Write-Err "  Signed in, but this ChatGPT account is on the `"$plan`" plan."
+    Write-Err "  OpenAI serves no model to ByteAsk on that plan, so the session would fail"
+    Write-Err "  on your first message."
+    if ($FirstRun) {
+      Write-Err "  Nothing was changed. Choose another way to run ByteAsk below, or upgrade"
+      Write-Err "  to ChatGPT Plus or Pro and choose this again."
+    } else {
+      Write-Err "  Your ByteAsk session is unchanged. To use your subscription, upgrade to"
+      Write-Err "  ChatGPT Plus or higher and run /login again."
+    }
+    Write-Err ""
+    & $ENGINE logout *> $null
+    if ($hadAuth) { Move-Item -Force $authBak $auth -ErrorAction SilentlyContinue }
+    else { Remove-Item -Force -ErrorAction SilentlyContinue $auth }
+    if ($FirstRun) { return }; exit 1
+  }
+  Remove-Item -Force -ErrorAction SilentlyContinue $authBak
   if (-not (Write-SubscriptionConfig $model $catalog $gw $jwt)) {
     Write-Err "byteask: ChatGPT sign-in succeeded, but the config could not be saved."
-    exit 1
+    if ($FirstRun) { return }; exit 1
+  }
+  if ($FirstRun) {
+    Write-Host "Using your ChatGPT subscription (OpenAI models only). No account needed."
+    $script:SubscriptionOk = $true
+    return
   }
   Write-Host "ChatGPT subscription active (OpenAI-only session). 'byteask byok off' to return to managed."
 }
@@ -1414,7 +1526,7 @@ function Enter-ScrKeys {
   $script:ScrState = 'keys'; Get-ScrData
   # Managed first and marked recommended; parity with _scr_goto_keys.
   $o = @()
-  $o += ,@('managed',  ("Use ByteAsk managed (recommended) $($script:ScrG.dot) 20 models incl. GPT, Gemini & open models, 20% off API pricing"))
+  $o += ,@('managed',  ("Use ByteAsk managed (recommended) $($script:ScrG.dot) GPT, Claude, Gemini and open models, paid from your credit"))
   $o += ,@('openai',    ("OpenAI      " + $script:ScrD.VOA + " your key"))
   $o += ,@('anthropic', ("Anthropic   " + $script:ScrD.VAN + " your key"))
   $o += ,@('gemini',    ("Gemini      " + $script:ScrD.VGE + " your key"))
@@ -1599,7 +1711,10 @@ function Invoke-ScrAddKey([string]$prov) {
     Invoke-ByokMerge @("keys.$prov=$key"); $key = ''
     $entered = $false
     try { $entered = (Invoke-ByokEnter 6>$null 2>$null) } catch { $entered = $false }
-    if ($entered) { $script:ScrMsgK='ok'; $script:ScrMsg="Saved your $pn key" }
+    $own = ''
+    if ($entered) { try { $own = (Select-OwnKeyModel $prov 6>$null 2>$null) } catch { $own = '' } }
+    if ($entered -and $own) { $script:ScrMsgK='ok'; $script:ScrMsg="Saved your $pn key $($script:ScrG.dot) using $own, no account needed" }
+    elseif ($entered) { $script:ScrMsgK='ok'; $script:ScrMsg="Saved your $pn key" }
     else { $script:ScrMsgK='err'; $script:ScrMsg="Couldn't start the local helper $($script:ScrG.dot) run 'byteask --update'" }
   } else {
     $key = ''
@@ -1775,7 +1890,7 @@ function Show-SourceMenuSeq {
       "Gemini     - $($v[2]) key",
       "Remove one of your keys",
       "Use your own hosted model - vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server",
-      "Use ByteAsk managed (recommended) - 20 models incl. GPT, Gemini & open models, 20% off API pricing",
+      "Use ByteAsk managed (recommended) - GPT, Claude, Gemini and open models, paid from your credit",
       "Done") $start
     switch ($c) {
       1 { [void](Add-ByokKey 'openai') }
@@ -1875,6 +1990,106 @@ function Invoke-AddModel([string]$ProviderId) {
   if (-not $okAdd) { Write-Err "byteask: couldn't add that model - details above." }
 }
 
+# ---- first run: how do you want to run ByteAsk? (mirrors the sh do_first_run) -------
+# A first launch with no session anywhere asks this BEFORE any email, so someone who
+# brings their own key or their own server never creates an account. The account is the
+# first row and the default.
+function Get-FirstRunRow([string]$tag) {
+  $r = switch ($tag) {
+    'account' { 'ByteAsk account    Start with $50 of credit, then $5 every month. No card.' }
+    'key'     { 'Your own API key   OpenAI, Anthropic or Gemini. No account needed' }
+    'chatgpt' { 'Your ChatGPT plan  Use your Plus or Pro subscription. No account needed' }
+    'server'  { 'Your own server    vLLM, Ollama and others. No account needed' }
+  }
+  $w = 0; try { $w = [Console]::WindowWidth } catch { $w = 0 }
+  if ($w -ge 20 -and $r.Length -gt ($w - 3)) { $r = $r.Substring(0, $w - 3) }
+  return $r
+}
+
+# The ChatGPT row follows the server-side switch behind /login's subscription row
+# (default off). Offline or unreadable means the row is not offered.
+function Test-ChatgptOffered {
+  try {
+    $gw = (Resolve-Gateway).TrimEnd('/')
+    $f = Invoke-RestMethod -Uri "$gw/byteask/v1/subscription-flags" -TimeoutSec 3 -ErrorAction Stop
+    return ($f.chatgpt -eq $true)
+  } catch { return $false }
+}
+
+function Invoke-FirstRunOwnKey {
+  Write-Host ""
+  Write-Host "Which provider is your key for? Requests go from this machine to the provider, who bills you."
+  $c = Select-Menu @('OpenAI', 'Anthropic', 'Gemini')
+  $prov = switch ($c) { 1 { 'openai' } 2 { 'anthropic' } 3 { 'gemini' } default { '' } }
+  if (-not $prov) { return $false }
+  if (-not (Add-ByokKey $prov)) { return $false }
+  if (Test-NeedsSignin) {
+    Write-Err "byteask: your key is saved, but the settings could not be updated. Choose again to retry."
+    return $false
+  }
+  return $true
+}
+
+function Invoke-FirstRunOwnServer {
+  Write-Host ""
+  Write-Host "Any OpenAI-compatible server: vLLM, Ollama, LM Studio, TGI. Requests never reach ByteAsk."
+  $u = ("$(Read-Host 'Server URL (Ollama: http://localhost:11434)')").Trim()
+  if (-not $u) { return $false }
+  $al = ("$(Read-Host 'Name it (Enter for my-server)')").Trim()
+  if (-not $al) { $al = 'my-server' }
+  $k = ''
+  try {
+    $sec = Read-Host -AsSecureString 'API key, if your server needs one (Enter to skip; input hidden)'
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    try { $k = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+  } catch { $k = '' }
+  $k = "$k".Trim()
+  # BK_KEY, never argv: a command line is readable by other processes.
+  $prev = $env:BK_KEY
+  try {
+    if ($k) { $env:BK_KEY = $k }
+    $okAdd = [bool](Add-Model @($al, '--url', $u))
+  } finally {
+    if ($null -eq $prev) { Remove-Item Env:BK_KEY -ErrorAction SilentlyContinue } else { $env:BK_KEY = $prev }
+    $k = ''
+  }
+  if (-not $okAdd) { return $false }
+  if (-not (Write-ByokConfig "self/$al" (Get-CfgLine '^(model_catalog_json = .*)$') (Get-ByokField 'local_token'))) { return $false }
+  Write-Host "Using self/$al. No account needed."
+  return $true
+}
+
+# Returns when set up (launch the engine). Cancelling exits: there is nothing to run.
+function Invoke-FirstRun {
+  Write-Host "Welcome to ByteAsk."
+  $tags = @('account', 'key', 'server')
+  if (Test-ChatgptOffered) { $tags = @('account', 'key', 'chatgpt', 'server') }
+  while ($true) {
+    Write-Host ""
+    Write-Host "How do you want to run ByteAsk?"
+    Write-Host ("Up/Down and Enter, or type 1-" + $tags.Count)
+    Write-Host ""
+    $rows = @($tags | ForEach-Object { Get-FirstRunRow $_ })
+    $c = Select-Menu $rows
+    $tag = if ($c -ge 1 -and $c -le $tags.Count) { $tags[$c - 1] } else { '' }
+    switch ($tag) {
+      'account' {
+        Write-Host "We email you a sign-in link. New here? It creates your account, the same one as app.byteask.ai."
+        Invoke-Login '' ''
+        return
+      }
+      'key'     { if (Invoke-FirstRunOwnKey) { return } }
+      'chatgpt' { Invoke-ByokSubscription '' $true; if ($script:SubscriptionOk) { return } }
+      'server'  { if (Invoke-FirstRunOwnServer) { return } }
+      default {
+        Write-Err "Nothing was set up. Run byteask again when you are ready."
+        exit 1
+      }
+    }
+  }
+}
+
 function Invoke-Account {
   if (Test-SignedIn) {
     if (-not (Test-MenuTty)) { return }   # signed in + non-interactive: nothing to do
@@ -1905,6 +2120,59 @@ function Invoke-Account {
     Invoke-Login '' ''   # email first (compulsory); writes managed config + JWT
     Show-SourceMenu      # then choose source (no-op if non-interactive)
   }
+}
+
+# The line printed after a sign-in: who, which plan, the credit, and where the plan is
+# managed (the same account as app.byteask.ai). Mirrors the sh _signin_line. It all comes
+# from the gateway's /usage in one short request; on any failure those parts are left
+# out, never the sign-in. credit_left_usd is null for a member of a team workspace, who
+# sees credit_state (ok | low | out) and who pays instead of dollars; the welcome credit
+# (welcome_usd, welcome_until) is read at the top level or inside `credit`. Remote values
+# are cut to plain ASCII.
+function Format-Usd($v) {
+  $c = [Math]::Max(0.0, [double]"$v")
+  return ($c.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture) -replace '\.00$', '')
+}
+function Get-SigninLine([string]$gateway, [string]$token, [string]$email) {
+  $dot = if ($env:WT_SESSION -or $env:TERM_PROGRAM) { [string][char]0x00B7 } else { '-' }
+  $num = '^-?[0-9]+(\.[0-9]+)?$'
+  $line = "Signed in as $email"; $extra = ''
+  try {
+    $u = Invoke-RestMethod -Uri "$gateway/byteask/v1/usage" -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 4 -ErrorAction Stop
+    $cr = $u.credit
+    # `label` is the plan's display name; older answers only carry the `plan` key.
+    $plan = if ($cr -and $cr.label) { "$($cr.label)" } else { "$($u.plan)" }
+    $plan = ($plan -replace '[^A-Za-z0-9 ]', '')
+    if ($plan.Length -gt 24) { $plan = $plan.Substring(0, 24) }
+    if ($plan) { $line += " $dot " + $plan.Substring(0, 1).ToUpper() + $plan.Substring(1) + " plan" }
+    $ws = ("$($u.paying_workspace)" -replace '[^A-Za-z0-9 ._-]', '')
+    if ($ws.Length -gt 40) { $ws = $ws.Substring(0, 40) }
+    $kind = if ($cr) { "$($cr.kind)" } else { '' }
+    $credit = $u.credit_left_usd
+    $state = "$($u.credit_state)"
+    if ($null -ne $credit -and "$credit" -match $num) {
+      $line += " $dot `$$(Format-Usd $credit) of credit left"
+      # A personal workspace needs no name; a team workspace does.
+      if ($ws -and $kind -and $kind -ne 'personal') { $line += " on $ws" }
+      $wel = if ($null -ne $u.welcome_usd) { $u.welcome_usd } elseif ($cr) { $cr.welcome_usd } else { $null }
+      $until = if ($null -ne $u.welcome_until) { $u.welcome_until } elseif ($cr) { $cr.welcome_until } else { $null }
+      if ($null -ne $wel -and "$wel" -match $num -and [double]"$wel" -gt 0) {
+        $extra = "  Includes `$$(Format-Usd $wel) of welcome credit"
+        if ($null -ne $until -and "$until" -match '^[0-9]+$') {
+          $day = [DateTimeOffset]::FromUnixTimeSeconds([long]"$until").UtcDateTime.ToString('MMM d', [Globalization.CultureInfo]::InvariantCulture)
+          $extra += ", usable until $day"
+        }
+        $extra += '.'
+      }
+    } elseif (@('ok', 'low', 'out') -contains $state) {
+      $line += " $dot Credit: " + @{ ok = 'OK'; low = 'low'; out = 'out' }[$state]
+      if ($ws) { $line += ", paid by $ws" }
+      if ($state -eq 'out') { $line += ' (ask an admin to add credit)' }
+    }
+  } catch { }
+  $line = "$line $dot Plan and billing: $ACCOUNT_URL (same account)"
+  if ($extra) { $line += "`n$extra" }
+  return $line
 }
 
 # $EmailIsHint: the address came from the engine's in-TUI sign-in form rather than an
@@ -1979,7 +2247,7 @@ function Invoke-Login([string]$Email, [string]$Ref, [bool]$EmailIsHint = $false)
   if (-not $token) {
     Write-Err "sign-in timed out (no confirmation after 10 minutes)."
     Write-Err "  - If the email was slow, run 'byteask login' to send a fresh link."
-    Write-Err "  - Or skip email: 'byteask login --with-api-key' to use your own API key."
+    Write-Err "  - Or use your own key, no account: byteask byok set openai (or anthropic, gemini)"
     exit 1
   }
   New-Item -ItemType Directory -Force -Path $BYTEASK_HOME | Out-Null
@@ -2022,7 +2290,7 @@ x-openai-actor-authorization = "byteask"
   }
   Remove-Item -Force -ErrorAction SilentlyContinue $refFile     # one-shot referral
   Add-KnownEmail $Email                                         # so a future re-login skips the referral prompt
-  Write-Host "Signed in as $Email. You're ready: byteask `"...`""
+  Write-Host (Get-SigninLine $gateway $token $Email)
   # A deal redeemed elsewhere switches on HERE, and this is the only moment the
   # person is watching. Strip anything but printable ASCII: the value crosses the
   # network, and a console is where trusting a remote string gets you escape
@@ -2049,13 +2317,14 @@ function Test-LaunchesTui([object[]]$LaunchArgs) {
 }
 function Invoke-UpdateCheck {
   if ($env:BYTEASK_NO_UPDATE_CHECK) { return }
-  $latest = ''; $last = 0
+  $latest = ''; $last = 0; $skipped = ''
   if (Test-Path $UPDATE_STATE) {
     foreach ($line in Get-Content $UPDATE_STATE) {
       $kv = $line -split '=', 2
       if ($kv.Count -eq 2) {
         if ($kv[0] -eq 'last_check') { [void][int]::TryParse($kv[1], [ref]$last) }
         elseif ($kv[0] -eq 'latest') { $latest = $kv[1] }
+        elseif ($kv[0] -eq 'skipped' -and $kv[1] -match '^[0-9.]+$') { $skipped = $kv[1] }
       }
     }
   }
@@ -2067,15 +2336,23 @@ function Invoke-UpdateCheck {
       if ($fetched -match '^[0-9]+(\.[0-9]+)+$') {
         $latest = $fetched; $last = $now
         New-Item -ItemType Directory -Force -Path $BYTEASK_HOME | Out-Null
-        Set-Content -Path $UPDATE_STATE -Value "last_check=$last`nlatest=$latest"
+        Set-Content -Path $UPDATE_STATE -Value "last_check=$last`nlatest=$latest`nskipped=$skipped"
       }
     } catch { }   # fail-open
   }
   if (-not $latest) { return }
   if (-not (Test-VersionGt $latest $VERSION)) { return }
+  if ($latest -eq $skipped) { return }   # the user skipped this one
   if ((Test-Interactive) -and (Test-LaunchesTui $script:LaunchArgs)) {
-    Write-Host -NoNewline "ByteAsk $latest is available (you have $VERSION). Update now? [Y/n] "
+    Write-Host "ByteAsk $latest is available (you have $VERSION)."
+    Write-Host "What's new: https://github.com/ByteAsk/cli/releases/tag/v$latest"
+    Write-Host -NoNewline "Update now? [Y]es / [n]ot now / [s]kip this version: "
     $ans = Read-Host
+    if ($ans -match '^[sS]') {
+      Set-Content -Path $UPDATE_STATE -Value "last_check=$last`nlatest=$latest`nskipped=$latest"
+      Write-Host "Skipped $latest. byteask --update installs it any time."
+      return
+    }
     if ($ans -eq '' -or $ans -match '^[yY]') {   # Enter (default) or y -> update
       $gw = (Resolve-Gateway).TrimEnd('/')
       Write-Host "Updating ByteAsk to $latest ..."
@@ -2100,11 +2377,25 @@ if ($env:BYTEASK_PS_TEST) { return }
 $script:LaunchArgs = @($args)
 $cmd = if ($args.Count -gt 0) { "$($args[0])" } else { '' }
 # Every path below may start the engine except --version/--help, which never do.
-if ($cmd -notmatch '^(--version|-V|version|--help|-h)$') { Set-EngineCompat }
+if ($cmd -notmatch '^(--version|-V|version|--help|-h|help)$') { Set-EngineCompat }
 
 switch -Regex ($cmd) {
   '^(--version|-V|version)$' { Write-Host "byteask $VERSION"; exit 0 }
-  '^(--update|update|upgrade)$' {
+  '^upgrade$' {
+    # Inside byteask, /upgrade changes the plan; out here `upgrade` used to reinstall the
+    # software, so someone after a bigger plan got an update instead. Name both.
+    Write-Err "byteask upgrade is not a command. Did you mean:"
+    Write-Err "  Update the ByteAsk CLI:  byteask --update"
+    Write-Err "  Change your plan:        /upgrade inside byteask, or $ACCOUNT_URL"
+    exit 1
+  }
+  '^(doctor|completion|mcp)$' {
+    # Local commands that never send a request to a model, so they need no account.
+    # `doctor` above all: it is what someone whose sign-in is broken runs first.
+    & $ENGINE @args
+    exit $LASTEXITCODE
+  }
+  '^(--update|update)$' {
     Write-Host "Updating ByteAsk CLI..."
     $gw = (Resolve-Gateway).TrimEnd('/')
     $env:PREFIX = $SELF_DIR
@@ -2178,7 +2469,7 @@ switch -Regex ($cmd) {
     $rest = @($args | Select-Object -Skip 1)
     exit (Invoke-ClaudeLauncher $rest)
   }
-  '^(--help|-h)$' {
+  '^(--help|-h|help)$' {
     # ONE help text, mirroring the sh wrapper: the wrapper answers and never hands
     # off to the engine's own help, which would answer a second time in a second
     # style and advertise upstream-only subcommands incl. an upstream cloud-tasks
@@ -2188,7 +2479,7 @@ switch -Regex ($cmd) {
     # documented fallbacks apply: `-` for both the em-dash and the `.` separator.
     [Console]::Error.WriteLine("ByteAsk $VERSION - an AI coding agent for your terminal")
     [Console]::Error.WriteLine('')
-    [Console]::Error.WriteLine('  byteask                           start (signs you in on first run)')
+    [Console]::Error.WriteLine('  byteask                           start (the first run sets you up)')
     [Console]::Error.WriteLine('  byteask "<prompt>"                start with a prompt')
     [Console]::Error.WriteLine('  byteask exec "<prompt>"           one answer, no UI - scripts and CI')
     [Console]::Error.WriteLine('  byteask review                    review the working tree')
@@ -2205,6 +2496,10 @@ switch -Regex ($cmd) {
     [Console]::Error.WriteLine('  byteask --update                  update ByteAsk')
     [Console]::Error.WriteLine('')
     [Console]::Error.WriteLine('Options: -m <model>  --effort <low|medium|high|xhigh>  -C <dir>')
+    [Console]::Error.WriteLine('')
+    [Console]::Error.WriteLine('Docs:              https://byteask.ai/docs')
+    [Console]::Error.WriteLine("Account and plan:  $ACCOUNT_URL")
+    [Console]::Error.WriteLine('Help:              support@byteask.ai')
     exit 0
   }
 }
@@ -2261,8 +2556,10 @@ while ($true) {
   # never touches us. If they later pick a managed model, the gateway's 401 asks then.
   if ((Test-NeedsSignin) -and ((-not (Test-SignedIn)) -or (Test-ManagedMissingToken))) {
     if (Test-Interactive) {
-      Write-Host "Welcome to ByteAsk - let's get you signed in (one time)."
-      Invoke-Account
+      # No session stored anywhere: a first run (or after `byteask logout`) asks how to
+      # run ByteAsk before any email. A stored but expired session goes straight back to
+      # sign-in, and Invoke-Account says why.
+      if (-not (Get-CurrentJwt)) { Invoke-FirstRun } else { Invoke-Account }
     } else {
       Write-Err "You're not signed in to ByteAsk. Run:  byteask login --email you@company.com"
       exit 1

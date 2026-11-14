@@ -312,7 +312,16 @@ $tokenLine
 [model_providers.byteask.http_headers]
 x-openai-actor-authorization = "byteask"
 "@
-Set-Content -Path $cfgPath -Value $cfg
+# Own key, own server and ChatGPT setups are written by the launcher itself (provider
+# byok-local or openai). Rewriting them here made every update a silent switch back to
+# ByteAsk's models, and for someone without an account that meant a sign-in prompt.
+# Only a missing or a ByteAsk-models config is (re)written. Mirrors install.sh.
+$prevProvider = ''
+if (Test-Path $cfgPath) {
+  $pm = Select-String -Path $cfgPath -Pattern '^model_provider = "(.*)"$' | Select-Object -First 1
+  if ($pm) { $prevProvider = $pm.Matches[0].Groups[1].Value }
+}
+if (@('byok-local', 'openai') -notcontains $prevProvider) { Set-Content -Path $cfgPath -Value $cfg }
 
 # Add BinDir to the user PATH (Windows only; registry-backed, persists).
 $pathNote = ''
