@@ -263,46 +263,65 @@ else
   exit 1
 fi
 
-# The engine sandboxes model-run shell commands with bubblewrap (`bwrap`) on LINUX
-# (macOS uses a native sandbox — nothing to install). This build ships no working
-# bundled bwrap, so install the OS package: without it the sandbox can't start, every
-# command fails, and the model spins trying to "fix bubblewrap". Best-effort (needs
-# sudo). If it can't be installed, the `byteask` wrapper falls back to running WITHOUT
-# the sandbox (a runtime `--sandbox danger-full-access`) so the user is never blocked;
-# a later manual `apt/dnf/... install bubblewrap` is picked up automatically.
+# Two OS packages make ByteAsk work well:
+#   bubblewrap (`bwrap`, Linux only)  the sandbox for the shell commands the model runs
+#       (macOS has a native one). This build ships no working bundled bwrap. Without it
+#       the `byteask` launcher runs commands WITHOUT the sandbox (approval prompts still
+#       gate them) and says so; a later install is picked up automatically.
+#   ripgrep (`rg`)  fast code search. Without it search falls back to find/grep, which is
+#       slower and costs the model extra turns.
+# Installing them usually needs sudo, and a bare password prompt with no reason given is
+# exactly what a careful user should refuse. So: name the packages and why, show the
+# command, and ask (Enter = yes). Root and Homebrew need no sudo and just install. With
+# no terminal to ask on (CI, Docker) only passwordless sudo is tried (`sudo -n`), so it
+# can never stop at a prompt. Never fatal: a missing package is reported below.
+_pkgs=""; _why=""
 if [ "$os" = linux ] && ! command -v bwrap >/dev/null 2>&1; then
-  echo "[byteask] installing the Linux sandbox helper (bubblewrap)…"
-  _sudo=""; [ "$(id -u 2>/dev/null || echo 0)" = 0 ] || _sudo="sudo"
-  if   command -v apt-get >/dev/null 2>&1; then $_sudo apt-get install -y bubblewrap >/dev/null 2>&1 || true
-  elif command -v dnf     >/dev/null 2>&1; then $_sudo dnf install -y bubblewrap     >/dev/null 2>&1 || true
-  elif command -v yum     >/dev/null 2>&1; then $_sudo yum install -y bubblewrap     >/dev/null 2>&1 || true
-  elif command -v pacman  >/dev/null 2>&1; then $_sudo pacman -S --noconfirm bubblewrap >/dev/null 2>&1 || true
-  elif command -v zypper  >/dev/null 2>&1; then $_sudo zypper install -y bubblewrap  >/dev/null 2>&1 || true
-  elif command -v apk     >/dev/null 2>&1; then $_sudo apk add bubblewrap            >/dev/null 2>&1 || true
-  fi
-  command -v bwrap >/dev/null 2>&1 \
-    || echo "[byteask] note: couldn't install bubblewrap — running WITHOUT the shell sandbox until you install it (e.g. 'sudo apt install bubblewrap')."
+  _pkgs="bubblewrap"; _why="bubblewrap (a sandbox for the commands it runs)"
 fi
-
-# ripgrep (`rg`): the model uses it for fast code search. Without it, searches fall back
-# to slower `find`/`grep` and the model wastes agent turns (and tokens) on the fallback.
-# Best-effort (needs sudo on Linux); never fatal — a missing rg only slows search.
 if ! command -v rg >/dev/null 2>&1; then
-  echo "[byteask] installing ripgrep (rg) for fast code search…"
-  _sudo=""; [ "$(id -u 2>/dev/null || echo 0)" = 0 ] || _sudo="sudo"
-  if   command -v apt-get >/dev/null 2>&1; then $_sudo apt-get install -y ripgrep >/dev/null 2>&1 || true
-  elif command -v dnf     >/dev/null 2>&1; then $_sudo dnf install -y ripgrep     >/dev/null 2>&1 || true
-  elif command -v yum     >/dev/null 2>&1; then $_sudo yum install -y ripgrep     >/dev/null 2>&1 || true
-  elif command -v pacman  >/dev/null 2>&1; then $_sudo pacman -S --noconfirm ripgrep >/dev/null 2>&1 || true
-  elif command -v zypper  >/dev/null 2>&1; then $_sudo zypper install -y ripgrep  >/dev/null 2>&1 || true
-  elif command -v apk     >/dev/null 2>&1; then $_sudo apk add ripgrep            >/dev/null 2>&1 || true
-  elif command -v brew    >/dev/null 2>&1; then brew install ripgrep >/dev/null 2>&1 || true
+  _pkgs="${_pkgs:+$_pkgs }ripgrep"; _why="${_why:+$_why and }ripgrep (fast code search)"
+fi
+_pm=""
+if   command -v apt-get >/dev/null 2>&1; then _pm="apt-get install -y"
+elif command -v dnf     >/dev/null 2>&1; then _pm="dnf install -y"
+elif command -v yum     >/dev/null 2>&1; then _pm="yum install -y"
+elif command -v pacman  >/dev/null 2>&1; then _pm="pacman -S --noconfirm"
+elif command -v zypper  >/dev/null 2>&1; then _pm="zypper install -y"
+elif command -v apk     >/dev/null 2>&1; then _pm="apk add"
+elif command -v brew    >/dev/null 2>&1; then _pm="brew install"
+fi
+# Homebrew has no bubblewrap; on a Linux box that only has brew, install ripgrep alone.
+[ "$_pm" = "brew install" ] && case " $_pkgs " in *" ripgrep "*) _pkgs="ripgrep";; *) _pkgs="";; esac
+if [ -n "$_pkgs" ] && [ -n "$_pm" ]; then
+  # shellcheck disable=SC2086 -- $_pm and $_pkgs are word lists built above
+  if [ "$(id -u 2>/dev/null || echo 0)" = 0 ] || [ "$_pm" = "brew install" ]; then
+    echo "[byteask] installing $_why…"
+    $_pm $_pkgs >/dev/null 2>&1 || true
+  elif ( : </dev/tty ) 2>/dev/null; then
+    echo "[byteask] ByteAsk uses $_why."
+    echo "[byteask] This needs: sudo $_pm $_pkgs"
+    printf '[byteask] Run it now with sudo? [Y/n] '
+    read -r _ans </dev/tty || _ans=n
+    case "$_ans" in
+      ""|[yY]*) sudo $_pm $_pkgs >/dev/null || true ;;
+      *) echo "[byteask] Skipped. Nothing was installed with sudo." ;;
+    esac
+  else
+    sudo -n $_pm $_pkgs >/dev/null 2>&1 || true
   fi
-  # Every arm above swallows its exit code, so "installing…" printed a moment ago
-  # is not evidence it worked (no sudo, unknown distro, package not in the repo).
-  # Say so plainly instead of leaving the user to wonder why search is slow later.
-  command -v rg >/dev/null 2>&1 \
-    || echo "[byteask] note: couldn't install ripgrep — code search will fall back to find/grep (slower). Install it later with your package manager: https://github.com/BurntSushi/ripgrep#installation"
+fi
+case "$_pm" in
+  "")             _bw_hint="your package manager's bubblewrap package"
+                  _rg_hint="https://github.com/BurntSushi/ripgrep#installation" ;;
+  "brew install") _bw_hint="your package manager's bubblewrap package"; _rg_hint="brew install ripgrep" ;;
+  *)              _bw_hint="sudo $_pm bubblewrap"; _rg_hint="sudo $_pm ripgrep" ;;
+esac
+if [ "$os" = linux ] && ! command -v bwrap >/dev/null 2>&1; then
+  echo "[byteask] note: bubblewrap is not installed, so ByteAsk runs commands WITHOUT its sandbox until you install it: $_bw_hint"
+fi
+if ! command -v rg >/dev/null 2>&1; then
+  echo "[byteask] note: ripgrep is not installed, so code search falls back to find/grep (slower). Install it: $_rg_hint"
 fi
 
 # Per-platform install beacon (fire-and-forget; never blocks or fails the run).
@@ -327,7 +346,9 @@ fi
 # user runs it. Existence-guarded + fail-open so it can never break the user's gdb.
 GDBINIT="$HOME/.gdbinit"
 GDB_MARKER="# ===== ByteAsk GDB bridge (added by the byteask installer) ====="
+GDB_CHANGED=0   # reported in the summary: a file of the user's that this run edited
 if ! { [ -f "$GDBINIT" ] && grep -qF "$GDB_MARKER" "$GDBINIT" 2>/dev/null; }; then
+  GDB_CHANGED=1
   cat >> "$GDBINIT" <<'GDBINIT_BLOCK'
 # ===== ByteAsk GDB bridge (added by the byteask installer) =====
 # Defines the `byteask-bridge` command so the `byteask` AI assistant can attach to
@@ -438,6 +459,10 @@ VER="$("$BIN_DIR/byteask" --version 2>/dev/null || true)"   # "byteask 0.1.11"
 VER="${VER##* }"
 case "$VER" in [0-9]*) ;; *) VER="" ;; esac                 # unknown -> just omit it
 printf '\n  \033[1;38;2;134;174;165m✓\033[0m ByteAsk %sinstalled\n' "${VER:+$VER }"
+# Say which of the user's own files this run edited (clig.dev: if you change state, say so).
+if [ "$GDB_CHANGED" = 1 ]; then
+  printf '  Changed: ~/.gdbinit (adds the byteask-bridge gdb command; undo: byteask --uninstall-gdb-bridge)\n'
+fi
 printf '  Run:  \033[1;38;2;134;174;165mbyteask\033[0m\n'
 # The one failure worth two extra lines: `command not found` in the first minute.
 case ":$PATH:" in
