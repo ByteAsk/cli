@@ -288,6 +288,13 @@ has "Docs:              https://byteask.ai/docs" "$_tail" "M2 docs link"
 has "Account and plan:  https://app.byteask.ai"  "$_tail" "M3 account link"
 has "Help:              support@byteask.ai"      "$_tail" "M4 support address"
 
+echo "== N. byteask upgrade names both meanings and changes nothing =="
+OUT=$(nt_run upgrade); rc=$?
+[ "$rc" = 1 ] && ok "N1 exits 1 (nothing done)" || bad "N1 exit $rc"
+has   "byteask --update"            "$OUT" "N2 points at the software update"
+has   "/upgrade inside byteask, or https://app.byteask.ai" "$OUT" "N3 points at the plan"
+hasnt "Updating ByteAsk"            "$OUT" "N4 never runs the updater"
+
 echo "== O. the sign-in timeout points at the own-key command =="
 grep -q "Or skip email: 'byteask login --with-api-key'" "$WRAP" "$HERE/../byteask.ps1" && bad "O1 the timeout still suggests login --with-api-key" || ok "O1 no login --with-api-key hint"
 grep -q 'use your own key, no account: byteask byok set openai' "$WRAP" && ok "O2 the timeout suggests byteask byok set" || bad "O2 own-key hint missing"

@@ -2345,7 +2345,15 @@ if ($cmd -notmatch '^(--version|-V|version|--help|-h)$') { Set-EngineCompat }
 
 switch -Regex ($cmd) {
   '^(--version|-V|version)$' { Write-Host "byteask $VERSION"; exit 0 }
-  '^(--update|update|upgrade)$' {
+  '^upgrade$' {
+    # Inside byteask, /upgrade changes the plan; out here `upgrade` used to reinstall the
+    # software, so someone after a bigger plan got an update instead. Name both.
+    Write-Err "byteask upgrade is not a command. Did you mean:"
+    Write-Err "  Update the ByteAsk CLI:  byteask --update"
+    Write-Err "  Change your plan:        /upgrade inside byteask, or $ACCOUNT_URL"
+    exit 1
+  }
+  '^(--update|update)$' {
     Write-Host "Updating ByteAsk CLI..."
     $gw = (Resolve-Gateway).TrimEnd('/')
     $env:PREFIX = $SELF_DIR

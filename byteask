@@ -2986,7 +2986,14 @@ case "${1:-}" in --version|-V|version|--help|-h) : ;; *) _engine_compat ;; esac
 
 case "${1:-}" in
   --version|-V|version) echo "byteask $VERSION"; exit 0;;
-  --update|update|upgrade)
+  upgrade)
+    # Inside byteask, /upgrade changes the plan; out here `upgrade` used to reinstall the
+    # software, so someone after a bigger plan got an update instead. Name both.
+    echo "byteask upgrade is not a command. Did you mean:" >&2
+    echo "  Update the ByteAsk CLI:  byteask --update" >&2
+    echo "  Change your plan:        /upgrade inside byteask, or $ACCOUNT_URL" >&2
+    exit 1;;
+  --update|update)
     echo "Updating ByteAsk CLI..."
     _gw="$(resolve_gateway)"; _gw="${_gw%/}"
     exec sh -c "curl -fsSL '$_gw/install.sh' | PREFIX='$SELF_DIR' sh";;

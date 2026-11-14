@@ -132,6 +132,13 @@ has "Docs:              https://byteask.ai/docs" "$OUT" "I1 docs link"
 has "Account and plan:  https://app.byteask.ai"  "$OUT" "I2 account link"
 has "Help:              support@byteask.ai"      "$OUT" "I3 support address"
 
+echo "== J. byteask upgrade names both meanings and changes nothing =="
+OUT=$(psrun upgrade); rc=$?
+[ "$rc" = 1 ] && ok "J1 exits 1" || bad "J1 exit $rc"
+has   "byteask --update"         "$OUT" "J2 points at the software update"
+has   "/upgrade inside byteask"  "$OUT" "J3 points at the plan"
+hasnt "Updating ByteAsk"         "$OUT" "J4 never runs the updater"
+
 echo "== L. the sign-in line: plan, credit, the account site =="
 seed_unsigned
 OUT=$(printf 'dev@x.com\n' | BYTEASK_HOME="$HOME_BX" BYTEASK_GATEWAY="$GW" BYTEASK_NO_UPDATE_CHECK=1 "$PWSH" -NoProfile -File "$BIN/byteask.ps1" login 2>&1)
