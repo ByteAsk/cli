@@ -451,13 +451,24 @@ def _args_object(raw):
     return {}
 
 
+def _output_images(output):
+    if not isinstance(output, list):
+        return []
+    return [p for p in _parts_from_message(output) if "text" not in p]
+
+
 def _response_object(output):
-    """functionResponse.response must be an OBJECT. Wrap Responses' string/array."""
+    """functionResponse.response must be an OBJECT. Wrap Responses' string/array.
+    Only Gemini 3 takes media inside it, so images follow as separate parts."""
     if isinstance(output, str):
         return {"output": output}
     if isinstance(output, list):
         text = "".join(c.get("text", "") for c in output
                        if isinstance(c, dict) and c.get("type") == "input_text")
+        n = len(_output_images(output))
+        if n:
+            note = f"[{n} image{'' if n == 1 else 's'} attached after the tool results]"
+            text = f"{text}\n{note}" if text else note
         return {"output": text}
     return {"output": ""}
 
@@ -505,6 +516,9 @@ def _translate_item(item, contents, call_names, wire_for=None):
         if call_id:
             fr["id"] = call_id
         _append(contents, "user", {"functionResponse": fr})
+        # Must follow every functionResponse of the turn; _repair_tool_pairs reorders.
+        for part in _output_images(item.get("output")):
+            _append(contents, "user", part)
     elif t in ("tool_search_call",):
         call_id = item.get("call_id") or item.get("id") or ""
         call_names[call_id] = "tool_search"
