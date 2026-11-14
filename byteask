@@ -2039,7 +2039,7 @@ _scr_goto_keys() {
   _SCR_STATE=keys; _scr_data
   # Managed first and marked recommended: it is what almost every new
   # user should pick, so it leads the list and a first-run bare Enter takes it.
-  _SCR_OPTS="managed|Use ByteAsk managed (recommended) $_G_DOT 20 models incl. GPT, Gemini & open models, 20% off API pricing
+  _SCR_OPTS="managed|Use ByteAsk managed (recommended) $_G_DOT GPT, Claude, Gemini and open models, paid from your credit
 openai|OpenAI      $_D_VOA your key
 anthropic|Anthropic   $_D_VAN your key
 gemini|Gemini      $_D_VGE your key"
@@ -2504,7 +2504,7 @@ _source_menu_seq() {
       "Gemini     - $_v_ge key" \
       "Remove a key" \
       "Use your own hosted model - vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server" \
-      "Use ByteAsk managed (recommended) - 20 models incl. GPT, Gemini & open models, 20% off API pricing" \
+      "Use ByteAsk managed (recommended) - GPT, Claude, Gemini and open models, paid from your credit" \
       "Done")
     case "$_choice" in
       1) _byok_add_key openai    || true ;;

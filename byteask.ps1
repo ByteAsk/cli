@@ -1526,7 +1526,7 @@ function Enter-ScrKeys {
   $script:ScrState = 'keys'; Get-ScrData
   # Managed first and marked recommended; parity with _scr_goto_keys.
   $o = @()
-  $o += ,@('managed',  ("Use ByteAsk managed (recommended) $($script:ScrG.dot) 20 models incl. GPT, Gemini & open models, 20% off API pricing"))
+  $o += ,@('managed',  ("Use ByteAsk managed (recommended) $($script:ScrG.dot) GPT, Claude, Gemini and open models, paid from your credit"))
   $o += ,@('openai',    ("OpenAI      " + $script:ScrD.VOA + " your key"))
   $o += ,@('anthropic', ("Anthropic   " + $script:ScrD.VAN + " your key"))
   $o += ,@('gemini',    ("Gemini      " + $script:ScrD.VGE + " your key"))
@@ -1890,7 +1890,7 @@ function Show-SourceMenuSeq {
       "Gemini     - $($v[2]) key",
       "Remove one of your keys",
       "Use your own hosted model - vLLM, TGI, Ollama, LM Studio, DGX, or any OpenAI-compatible server",
-      "Use ByteAsk managed (recommended) - 20 models incl. GPT, Gemini & open models, 20% off API pricing",
+      "Use ByteAsk managed (recommended) - GPT, Claude, Gemini and open models, paid from your credit",
       "Done") $start
     switch ($c) {
       1 { [void](Add-ByokKey 'openai') }

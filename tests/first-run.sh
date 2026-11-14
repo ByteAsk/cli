@@ -285,6 +285,10 @@ grep -q "Or skip email: 'byteask login --with-api-key'" "$WRAP" "$HERE/../byteas
 grep -q 'use your own key, no account: byteask byok set openai' "$WRAP" && ok "O2 the timeout suggests byteask byok set" || bad "O2 own-key hint missing"
 grep -q 'use your own key, no account: byteask byok set openai' "$HERE/../byteask.ps1" && ok "O3 byteask.ps1 says the same" || bad "O3 own-key hint missing in byteask.ps1"
 
+echo "== P. no price claim on the models row =="
+grep -q '20% off' "$WRAP" "$HERE/../byteask.ps1" && bad "P1 '20% off' is still in a launcher" || ok "P1 no '20% off' in either launcher"
+grep -q 'GPT, Claude, Gemini and open models, paid from your credit' "$WRAP" && ok "P2 the row says what pays for it" || bad "P2 new row text missing"
+
 echo
 echo "first-run: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
