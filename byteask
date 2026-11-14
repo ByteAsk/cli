@@ -5,6 +5,8 @@ set -eu
 
 VERSION="0.2.4"
 DEFAULT_GATEWAY="https://code.byteask.ai"
+# One ByteAsk account for every product: plan, credit and billing are managed here.
+ACCOUNT_URL="https://app.byteask.ai"
 export BYTEASK_HOME="${BYTEASK_HOME:-$HOME/.byteask}"     # engine's config/home dir
 export BYTEASK_BRAND="${BYTEASK_BRAND:-ByteAsk}"          # in-app banner brand
 export BYTEASK_CLIENT_VERSION="$VERSION"                # engine displays THIS (not its crate ver)
@@ -2743,6 +2745,34 @@ do_add_model() {   # $1 = provider id, or "custom"
   models_add "$@" || echo "byteask: couldn't add that model - details above." >&2
 }
 
+# The one line printed after a sign-in: who, which plan, the credit left, and where the
+# plan is managed (the same account as app.byteask.ai). Plan and credit come from the
+# gateway's /usage in one short request; on any failure they are left out, never the
+# sign-in. Values cross the network, so only plain characters reach the terminal.
+#
+# Credit: the gateway's /usage does not send dollars yet. The line reads the field
+# `credit_left_usd` (a number: dollars of credit left this month, plan and top-ups
+# together) and shows "$N of credit left" once the gateway sends it.
+_json_num() { grep -o "\"$1\"[[:space:]]*:[[:space:]]*-\{0,1\}[0-9][0-9.]*" | head -1 | sed 's/.*:[[:space:]]*//'; }
+_signin_line() {   # $1 = gateway  $2 = token  $3 = email
+  _sl_plan=""; _sl_credit=""
+  _sl_u=$(curl -fsS --max-time 4 -H "Authorization: Bearer $2" "$1/byteask/v1/usage" 2>/dev/null || true)
+  if [ -n "$_sl_u" ]; then
+    _sl_plan=$(printf '%s' "$_sl_u" | _json plan | LC_ALL=C tr -cd 'A-Za-z0-9 ' | cut -c1-24)
+    _sl_credit=$(printf '%s' "$_sl_u" | _json_num credit_left_usd)
+  fi
+  _sl="Signed in as $3"
+  if [ -n "$_sl_plan" ]; then
+    _sl_first=$(printf '%s' "$_sl_plan" | cut -c1 | tr '[:lower:]' '[:upper:]')
+    _sl="$_sl $_G_DOT $_sl_first$(printf '%s' "$_sl_plan" | cut -c2-) plan"
+  fi
+  if [ -n "$_sl_credit" ]; then
+    _sl_credit=$(awk -v v="$_sl_credit" 'BEGIN { if (v < 0) v = 0; s = sprintf("%.2f", v); sub(/\.00$/, "", s); print s }')
+    _sl="$_sl $_G_DOT \$$_sl_credit of credit left"
+  fi
+  printf '%s %s Plan and billing: %s (same account)\n' "$_sl" "$_G_DOT" "$ACCOUNT_URL"
+}
+
 do_login() {
   # Unconditional + safe under set -eu: _scr_tokens' first line defines every
   # _C_*/_G_* var before any conditional runs, and the color ladder itself is
@@ -2873,7 +2903,7 @@ do_login() {
   fi
   rm -f "$BYTEASK_HOME/referral" 2>/dev/null || true   # one-shot: only the first signup is credited
   _email_remember "$EMAIL"                           # so a future re-login skips the referral prompt
-  printf '%b%s%b Signed in as %s. You'"'"'re ready: byteask "..."\n' "$_C_A" "$_G_OK" "$_C_R" "$EMAIL"
+  printf '%b%s%b %s\n' "$_C_A" "$_G_OK" "$_C_R" "$(_signin_line "$GATEWAY" "$token" "$EMAIL")"
   # A deal redeemed elsewhere (YC, a campus programme) switches on HERE, and this is
   # the only moment the person is watching. Without it they are told "sign in and your
   # plan switches on", see nothing, and have to type /usage to find out it worked.

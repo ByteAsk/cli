@@ -126,6 +126,11 @@ grep -q 'experimental_bearer_token = "WINTOKEN123"' "$HOME_BX/config.toml" && ok
 has "ENGINE_LAUNCHED" "$OUT" "H2 relaunched after /login"
 [ -f "$HOME_BX/.byteask-auth-request" ] && bad "H3 marker not consumed" || ok "H3 marker consumed"
 
+echo "== L. the sign-in line: plan, credit, the account site =="
+seed_unsigned
+OUT=$(printf 'dev@x.com\n' | BYTEASK_HOME="$HOME_BX" BYTEASK_GATEWAY="$GW" BYTEASK_NO_UPDATE_CHECK=1 "$PWSH" -NoProfile -File "$BIN/byteask.ps1" login 2>&1)
+has "Signed in as dev@x.com - Pro plan - \$12.50 of credit left - Plan and billing: https://app.byteask.ai (same account)" "$OUT" "L1 the full line"
+
 echo "== M. first run: the question comes before any email =="
 # Drives the function directly: the launch loop only reaches it on a real console.
 cat > "$TMP/fr.ps1" <<'PS'

@@ -10,6 +10,8 @@
 
 $VERSION = '0.2.4'
 $DEFAULT_GATEWAY = 'https://code.byteask.ai'
+# One ByteAsk account for every product: plan, credit and billing are managed here.
+$ACCOUNT_URL = 'https://app.byteask.ai'
 
 $BYTEASK_HOME = if ($env:BYTEASK_HOME) { $env:BYTEASK_HOME } else { Join-Path $HOME '.byteask' }
 $env:BYTEASK_HOME = $BYTEASK_HOME
@@ -2120,6 +2122,32 @@ function Invoke-Account {
   }
 }
 
+# The one line printed after a sign-in: who, which plan, the credit left, and where the
+# plan is managed (the same account as app.byteask.ai). Mirrors the sh _signin_line.
+# Plan and credit come from the gateway's /usage in one short request; on any failure
+# they are left out, never the sign-in. Remote values are cut to plain ASCII.
+#
+# Credit: the gateway's /usage does not send dollars yet. The line reads the field
+# `credit_left_usd` (a number: dollars of credit left this month, plan and top-ups
+# together) and shows "$N of credit left" once the gateway sends it.
+function Get-SigninLine([string]$gateway, [string]$token, [string]$email) {
+  $dot = if ($env:WT_SESSION -or $env:TERM_PROGRAM) { [string][char]0x00B7 } else { '-' }
+  $line = "Signed in as $email"
+  try {
+    $u = Invoke-RestMethod -Uri "$gateway/byteask/v1/usage" -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 4 -ErrorAction Stop
+    $plan = ("$($u.plan)" -replace '[^A-Za-z0-9 ]', '')
+    if ($plan.Length -gt 24) { $plan = $plan.Substring(0, 24) }
+    if ($plan) { $line += " $dot " + $plan.Substring(0, 1).ToUpper() + $plan.Substring(1) + " plan" }
+    $credit = $u.credit_left_usd
+    if ($null -ne $credit -and "$credit" -match '^-?[0-9]+(\.[0-9]+)?$') {
+      $c = [Math]::Max(0.0, [double]"$credit")
+      $s = $c.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture) -replace '\.00$', ''
+      $line += " $dot `$$s of credit left"
+    }
+  } catch { }
+  return "$line $dot Plan and billing: $ACCOUNT_URL (same account)"
+}
+
 # $EmailIsHint: the address came from the engine's in-TUI sign-in form rather than an
 # explicit --email. It is still re-promptable, so a refused address (the .ac.in policy)
 # asks for a different one instead of exiting the way an explicit --email must.
@@ -2235,7 +2263,7 @@ x-openai-actor-authorization = "byteask"
   }
   Remove-Item -Force -ErrorAction SilentlyContinue $refFile     # one-shot referral
   Add-KnownEmail $Email                                         # so a future re-login skips the referral prompt
-  Write-Host "Signed in as $Email. You're ready: byteask `"...`""
+  Write-Host (Get-SigninLine $gateway $token $Email)
   # A deal redeemed elsewhere switches on HERE, and this is the only moment the
   # person is watching. Strip anything but printable ASCII: the value crosses the
   # network, and a console is where trusting a remote string gets you escape

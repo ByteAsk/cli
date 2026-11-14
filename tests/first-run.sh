@@ -217,6 +217,27 @@ _q=$(printf '%s' "$OUT" | grep -n 'How do you want to run ByteAsk' | head -1 | c
 _e=$(printf '%s' "$OUT" | grep -n 'Email:' | head -1 | cut -d: -f1)
 [ -n "$_q" ] && [ -n "$_e" ] && [ "$_q" -lt "$_e" ] && ok "E10 the question comes before the email prompt" || bad "E10 question/email order ($_q/$_e)"
 
+echo "== F. after sign-in: one line with the plan, the credit and the account site =="
+seed_fresh; printf '{"plan": "free", "used_5h_pct": 3}' > "$USAGE_FILE"
+OUT=$(fr_run '\ndev@x.com\n\n')
+has   "Signed in as dev@x.com · Free plan · Plan and billing: https://app.byteask.ai (same account)" "$OUT" "F0 names the plan and the account site, and says it is the same account"
+hasnt "credit left" "$OUT" "F0b no credit figure while the gateway sends none"
+# Call the real function; the wrapper's test seam loads it without running anything.
+sl() {   # $1 = /usage body
+  printf '%s' "$1" > "$USAGE_FILE"
+  BYTEASK_SOURCE_ONLY=1 BYTEASK_HOME="$HOME_BX" LANG=C.UTF-8 LC_ALL=C.UTF-8 sh -c '. "$1"; _scr_tokens; _signin_line "$2" tok you@x.com' sh "$BIN/byteask" "$GW" 2>&1
+}
+OUT=$(sl '{"plan": "pro", "credit_left_usd": 3.1}')
+has "Signed in as you@x.com · Pro plan · \$3.10 of credit left · Plan and billing: https://app.byteask.ai (same account)" "$OUT" "F1 the full line with credit"
+has '$5 of credit left'  "$(sl '{"plan": "free", "credit_left_usd": 5}')"    "F2 whole dollars print without cents"
+has '$0 of credit left'  "$(sl '{"plan": "free", "credit_left_usd": -2.5}')" "F3 a negative balance prints as \$0"
+OUT=$(sl "$(printf '{"plan": "pro\033[2J"}')")
+hasnt "$(printf '\033')" "$OUT" "F4 a control character from the gateway never reaches the terminal"
+has   "Pro2J plan"       "$OUT" "F4b only the plain characters are kept"
+: > "$USAGE_FILE"
+OUT=$(sl '')
+has "Signed in as you@x.com · Plan and billing: https://app.byteask.ai (same account)" "$OUT" "F5 no /usage answer: the line still names the account site"
+
 echo "== G. your ChatGPT Plus plan: no email, an OpenAI session =="
 seed_fresh; printf '{"chatgpt": true}' > "$FLAGS_FILE"
 OUT=$(fr_run '3' "STUB_PLAN=plus")
