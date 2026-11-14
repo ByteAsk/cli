@@ -55,7 +55,7 @@ seed_signed()     { seed_unsigned; printf 'experimental_bearer_token = "%s"\n' "
 signed()          { grep -q 'experimental_bearer_token' "$HOME_BX/config.toml" 2>/dev/null; }
 
 cat > "$TMP/stub.py" <<PY
-import json
+import json, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT=$PORT
 class H(BaseHTTPRequestHandler):
@@ -67,7 +67,9 @@ class H(BaseHTTPRequestHandler):
         if self.path.startswith("/version"): return self._s(200,"0.1.1","text/plain")
         if self.path.startswith("/auth/verify"): return self._s(200,"ok","text/plain")
         if self.path.startswith("/byteask/v1/usage"):
-            return self._s(200,json.dumps({"plan":"pro","credit_left_usd":12.5}))
+            # A test may stage the answer in usage.json next to the stub; else an owner's.
+            try: return self._s(200,open(os.path.join(os.path.dirname(__file__),"usage.json")).read())
+            except OSError: return self._s(200,json.dumps({"plan":"pro","credit_left_usd":12.5}))
         if self.path.startswith("/byteask/v1/subscription-flags"):
             return self._s(200,json.dumps({"chatgpt":True}))
         return self._s(404,"{}")
@@ -152,6 +154,16 @@ echo "== L. the sign-in line: plan, credit, the account site =="
 seed_unsigned
 OUT=$(printf 'dev@x.com\n' | BYTEASK_HOME="$HOME_BX" BYTEASK_GATEWAY="$GW" BYTEASK_NO_UPDATE_CHECK=1 "$PWSH" -NoProfile -File "$BIN/byteask.ps1" login 2>&1)
 has "Signed in as dev@x.com - Pro plan - \$12.50 of credit left - Plan and billing: https://app.byteask.ai (same account)" "$OUT" "L1 the full line"
+pslogin() { printf 'dev@x.com\n' | BYTEASK_HOME="$HOME_BX" BYTEASK_GATEWAY="$GW" BYTEASK_NO_UPDATE_CHECK=1 "$PWSH" -NoProfile -File "$BIN/byteask.ps1" login 2>&1; }
+printf '%s' '{"plan":"free","credit_left_usd":55.0,"credit_state":"ok","paying_workspace":"Personal workspace","credit":{"kind":"personal","label":"Free","welcome_usd":50.0,"welcome_until":1766000000}}' > "$TMP/usage.json"
+seed_unsigned; OUT=$(pslogin)
+has "Free plan - \$55 of credit left - Plan and billing" "$OUT" "L2 owner: dollars, no name for a personal workspace"
+has "Includes \$50 of welcome credit, usable until Dec 17." "$OUT" "L3 the welcome credit and its end date"
+printf '%s' '{"plan":"pro","credit_left_usd":null,"credit_state":"out","paying_workspace":"acme-robotics","credit":{"kind":"team","label":"Pro"}}' > "$TMP/usage.json"
+seed_unsigned; OUT=$(pslogin)
+has "Pro plan - Credit: out, paid by acme-robotics (ask an admin to add credit) - Plan and billing" "$OUT" "L4 member: credit state and who pays"
+hasnt "credit left" "$OUT" "L5 member: no dollar figure"
+rm -f "$TMP/usage.json"
 
 echo "== M. first run: the question comes before any email =="
 # Drives the function directly: the launch loop only reaches it on a real console.
@@ -168,7 +180,7 @@ has   "How do you want to run ByteAsk?" "$OUT" "M1 asks the question"
 _order=$(printf '%s\n' "$OUT" | grep -o 'ByteAsk account\|Your own API key\|Your ChatGPT plan\|Your own server' | tr '\n' '|')
 [ "$_order" = "ByteAsk account|Your own API key|Your ChatGPT plan|Your own server|" ] \
   && ok "M2 order: account, own key, ChatGPT, own server" || bad "M2 wrong order: $_order"
-has   'Free, $5 of credit a month. Same account as app.byteask.ai' "$OUT" "M3 the account row says free, credit, same account"
+has   'ByteAsk account    Start with $50 of credit, then $5 every month. No card.' "$OUT" "M3 the account row: welcome credit, monthly credit, no card"
 hasnt "Email"                 "$OUT" "M4 cancelling never asks for an email"
 has   "Nothing was set up"    "$OUT" "M5 cancelling says nothing was set up"
 [ "$rc" = 1 ] && ok "M6 cancelling exits 1" || bad "M6 exit $rc"

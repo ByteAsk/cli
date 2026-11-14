@@ -1996,7 +1996,7 @@ function Invoke-AddModel([string]$ProviderId) {
 # first row and the default.
 function Get-FirstRunRow([string]$tag) {
   $r = switch ($tag) {
-    'account' { 'ByteAsk account    Free, $5 of credit a month. Same account as app.byteask.ai' }
+    'account' { 'ByteAsk account    Start with $50 of credit, then $5 every month. No card.' }
     'key'     { 'Your own API key   OpenAI, Anthropic or Gemini. No account needed' }
     'chatgpt' { 'Your ChatGPT plan  Use your Plus or Pro subscription. No account needed' }
     'server'  { 'Your own server    vLLM, Ollama and others. No account needed' }
@@ -2075,7 +2075,7 @@ function Invoke-FirstRun {
     $tag = if ($c -ge 1 -and $c -le $tags.Count) { $tags[$c - 1] } else { '' }
     switch ($tag) {
       'account' {
-        Write-Host "We email you a sign-in link. New here? It creates your free account."
+        Write-Host "We email you a sign-in link. New here? It creates your account, the same one as app.byteask.ai."
         Invoke-Login '' ''
         return
       }
@@ -2122,30 +2122,57 @@ function Invoke-Account {
   }
 }
 
-# The one line printed after a sign-in: who, which plan, the credit left, and where the
-# plan is managed (the same account as app.byteask.ai). Mirrors the sh _signin_line.
-# Plan and credit come from the gateway's /usage in one short request; on any failure
-# they are left out, never the sign-in. Remote values are cut to plain ASCII.
-#
-# Credit: the gateway's /usage does not send dollars yet. The line reads the field
-# `credit_left_usd` (a number: dollars of credit left this month, plan and top-ups
-# together) and shows "$N of credit left" once the gateway sends it.
+# The line printed after a sign-in: who, which plan, the credit, and where the plan is
+# managed (the same account as app.byteask.ai). Mirrors the sh _signin_line. It all comes
+# from the gateway's /usage in one short request; on any failure those parts are left
+# out, never the sign-in. credit_left_usd is null for a member of a team workspace, who
+# sees credit_state (ok | low | out) and who pays instead of dollars; the welcome credit
+# (welcome_usd, welcome_until) is read at the top level or inside `credit`. Remote values
+# are cut to plain ASCII.
+function Format-Usd($v) {
+  $c = [Math]::Max(0.0, [double]"$v")
+  return ($c.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture) -replace '\.00$', '')
+}
 function Get-SigninLine([string]$gateway, [string]$token, [string]$email) {
   $dot = if ($env:WT_SESSION -or $env:TERM_PROGRAM) { [string][char]0x00B7 } else { '-' }
-  $line = "Signed in as $email"
+  $num = '^-?[0-9]+(\.[0-9]+)?$'
+  $line = "Signed in as $email"; $extra = ''
   try {
     $u = Invoke-RestMethod -Uri "$gateway/byteask/v1/usage" -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 4 -ErrorAction Stop
-    $plan = ("$($u.plan)" -replace '[^A-Za-z0-9 ]', '')
+    $cr = $u.credit
+    # `label` is the plan's display name; older answers only carry the `plan` key.
+    $plan = if ($cr -and $cr.label) { "$($cr.label)" } else { "$($u.plan)" }
+    $plan = ($plan -replace '[^A-Za-z0-9 ]', '')
     if ($plan.Length -gt 24) { $plan = $plan.Substring(0, 24) }
     if ($plan) { $line += " $dot " + $plan.Substring(0, 1).ToUpper() + $plan.Substring(1) + " plan" }
+    $ws = ("$($u.paying_workspace)" -replace '[^A-Za-z0-9 ._-]', '')
+    if ($ws.Length -gt 40) { $ws = $ws.Substring(0, 40) }
+    $kind = if ($cr) { "$($cr.kind)" } else { '' }
     $credit = $u.credit_left_usd
-    if ($null -ne $credit -and "$credit" -match '^-?[0-9]+(\.[0-9]+)?$') {
-      $c = [Math]::Max(0.0, [double]"$credit")
-      $s = $c.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture) -replace '\.00$', ''
-      $line += " $dot `$$s of credit left"
+    $state = "$($u.credit_state)"
+    if ($null -ne $credit -and "$credit" -match $num) {
+      $line += " $dot `$$(Format-Usd $credit) of credit left"
+      # A personal workspace needs no name; a team workspace does.
+      if ($ws -and $kind -and $kind -ne 'personal') { $line += " on $ws" }
+      $wel = if ($null -ne $u.welcome_usd) { $u.welcome_usd } elseif ($cr) { $cr.welcome_usd } else { $null }
+      $until = if ($null -ne $u.welcome_until) { $u.welcome_until } elseif ($cr) { $cr.welcome_until } else { $null }
+      if ($null -ne $wel -and "$wel" -match $num -and [double]"$wel" -gt 0) {
+        $extra = "  Includes `$$(Format-Usd $wel) of welcome credit"
+        if ($null -ne $until -and "$until" -match '^[0-9]+$') {
+          $day = [DateTimeOffset]::FromUnixTimeSeconds([long]"$until").UtcDateTime.ToString('MMM d', [Globalization.CultureInfo]::InvariantCulture)
+          $extra += ", usable until $day"
+        }
+        $extra += '.'
+      }
+    } elseif (@('ok', 'low', 'out') -contains $state) {
+      $line += " $dot Credit: " + @{ ok = 'OK'; low = 'low'; out = 'out' }[$state]
+      if ($ws) { $line += ", paid by $ws" }
+      if ($state -eq 'out') { $line += ' (ask an admin to add credit)' }
     }
   } catch { }
-  return "$line $dot Plan and billing: $ACCOUNT_URL (same account)"
+  $line = "$line $dot Plan and billing: $ACCOUNT_URL (same account)"
+  if ($extra) { $line += "`n$extra" }
+  return $line
 }
 
 # $EmailIsHint: the address came from the engine's in-TUI sign-in form rather than an

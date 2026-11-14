@@ -164,7 +164,7 @@ seed_fresh; CFG_BEFORE=$(cat "$HOME_BX/config.toml")
 OUT=$(fr_run 'q')
 has   "How do you want to run ByteAsk?"   "$OUT" "A1 asks the question"
 has   "ByteAsk account"                   "$OUT" "A2 offers the ByteAsk account"
-has   'Free, $5 of credit a month. Same account as app.byteask.ai' "$OUT" "A3 says the account is free, its credit, and that it is the app.byteask.ai account"
+has   'ByteAsk account    Start with $50 of credit, then $5 every month. No card.' "$OUT" "A3 the account row: welcome credit, monthly credit, no card"
 has   "Your own API key"                  "$OUT" "A4 offers your own API key"
 has   "Your own server"                   "$OUT" "A5 offers your own server"
 hasnt "Email:"                            "$OUT" "A6 no email prompt before a choice"
@@ -207,7 +207,7 @@ hasnt "Email:" "$OUT" "D2 never asks for an email"
 echo "== E. the ByteAsk account: the question, then the email =="
 seed_fresh
 OUT=$(fr_run '\ndev@x.com\n\n')
-has   "We email you a sign-in link"   "$OUT" "E1 says what happens next"
+has   "We email you a sign-in link. New here? It creates your account, the same one as app.byteask.ai." "$OUT" "E1 says what happens next, and that it is the app.byteask.ai account"
 has   "Email:"                        "$OUT" "E2 asks for the email after the choice"
 has   "Signed in as dev@x.com"        "$OUT" "E3 confirms the sign-in"
 has   "ENGINE_LAUNCHED"               "$OUT" "E7 the engine starts"
@@ -237,6 +237,24 @@ has   "Pro2J plan"       "$OUT" "F4b only the plain characters are kept"
 : > "$USAGE_FILE"
 OUT=$(sl '')
 has "Signed in as you@x.com · Plan and billing: https://app.byteask.ai (same account)" "$OUT" "F5 no /usage answer: the line still names the account site"
+# The answer the gateway gives today (L6): flat keys for the line, the status in `credit`.
+OUT=$(sl '{"plan": "free", "credit_left_usd": 55.0, "credit_state": "ok", "paying_workspace": "Personal workspace", "credit": {"kind": "personal", "label": "Free", "welcome_usd": 50.0, "welcome_until": 1766000000}}')
+has   "Signed in as you@x.com · Free plan · \$55 of credit left · Plan and billing: https://app.byteask.ai (same account)" "$OUT" "F6 owner: dollars, and no name for a personal workspace"
+has   "  Includes \$50 of welcome credit, usable until Dec 17." "$OUT" "F7 the welcome credit and its end date, on a second line"
+OUT=$(sl '{"plan": "free", "credit_left_usd": 50, "welcome_usd": 48.8, "welcome_until": 1766000000}')
+has   "Includes \$48.80 of welcome credit, usable until Dec 17." "$OUT" "F8 welcome keys at the top level work too"
+OUT=$(sl '{"plan": "max", "credit_left_usd": 420.5, "credit_state": "ok", "paying_workspace": "acme-robotics", "credit": {"kind": "team", "label": "Max", "welcome_usd": null}}')
+has   "Max plan · \$420.50 of credit left on acme-robotics · Plan" "$OUT" "F9 team owner: names the workspace that pays"
+hasnt "welcome credit" "$OUT" "F10 no welcome line without a welcome credit"
+OUT=$(sl '{"plan": "pro", "credit_left_usd": null, "credit_state": "low", "paying_workspace": "acme-robotics", "credit": {"kind": "team", "label": "Pro"}}')
+has   "Pro plan · Credit: low, paid by acme-robotics · Plan and billing" "$OUT" "F11 member: the credit state and who pays, never dollars"
+hasnt '$' "$OUT" "F12 member: no dollar figure"
+OUT=$(sl '{"plan": "pro", "credit_left_usd": null, "credit_state": "out", "paying_workspace": "acme-robotics"}')
+has   "Credit: out, paid by acme-robotics (ask an admin to add credit)" "$OUT" "F13 member out of credit: says who can fix it"
+OUT=$(sl '{"plan": "pro", "credit_left_usd": null, "credit_state": "ok", "paying_workspace": "acme"}')
+has   "Credit: OK, paid by acme" "$OUT" "F14 member with credit"
+OUT=$(sl "$(printf '{"plan": "pro", "credit_left_usd": null, "credit_state": "ok", "paying_workspace": "ac\033[2Jme"}')")
+hasnt "$(printf '\033')" "$OUT" "F15 a workspace name cannot carry a control character"
 
 echo "== G. your ChatGPT Plus plan: no email, an OpenAI session =="
 seed_fresh; printf '{"chatgpt": true}' > "$FLAGS_FILE"
@@ -318,7 +336,9 @@ grep -q 'use your own key, no account: byteask byok set openai' "$WRAP" && ok "O
 grep -q 'use your own key, no account: byteask byok set openai' "$HERE/../byteask.ps1" && ok "O3 byteask.ps1 says the same" || bad "O3 own-key hint missing in byteask.ps1"
 
 echo "== P. no price claim on the models row =="
-grep -q '20% off' "$WRAP" "$HERE/../byteask.ps1" && bad "P1 '20% off' is still in a launcher" || ok "P1 no '20% off' in either launcher"
+if grep -nE '20 ?%' "$WRAP" "$HERE/../byteask.ps1" "$HERE/../install.sh" "$HERE/../install.ps1" "$HERE/../README.md"; then
+  bad "P1 a 20% price claim is still in a launcher, an installer or the README"
+else ok "P1 no 20% price claim in the launchers, installers or README"; fi
 grep -q 'GPT, Claude, Gemini and open models, paid from your credit' "$WRAP" && ok "P2 the row says what pays for it" || bad "P2 new row text missing"
 
 echo

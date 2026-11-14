@@ -2559,7 +2559,7 @@ do_source_menu() {
 # cut to the terminal width: _menu_pick redraws one line per row.
 _first_run_row() {   # $1 = tag -> the row text
   case "$1" in
-    account) _frr='ByteAsk account    Free, $5 of credit a month. Same account as app.byteask.ai' ;;
+    account) _frr='ByteAsk account    Start with $50 of credit, then $5 every month. No card.' ;;
     key)     _frr='Your own API key   OpenAI, Anthropic or Gemini. No account needed' ;;
     chatgpt) _frr='Your ChatGPT plan  Use your Plus or Pro subscription. No account needed' ;;
     server)  _frr='Your own server    vLLM, Ollama and others. No account needed' ;;
@@ -2645,7 +2645,7 @@ do_first_run() {
     _fr_tag=""
     [ "$_fr_pick" -gt 0 ] && _fr_tag=$(printf '%s\n' $_fr_tags | sed -n "${_fr_pick}p")
     case "$_fr_tag" in
-      account) _ui_note "We email you a sign-in link. New here? It creates your free account."
+      account) _ui_note "We email you a sign-in link. New here? It creates your account, the same one as app.byteask.ai."
                do_login --interactive; return 0 ;;
       key)     _first_run_own_key && return 0 ;;
       chatgpt) _first_run_chatgpt && return 0 ;;
@@ -2756,21 +2756,31 @@ do_add_model() {   # $1 = provider id, or "custom"
   models_add "$@" || echo "byteask: couldn't add that model - details above." >&2
 }
 
-# The one line printed after a sign-in: who, which plan, the credit left, and where the
-# plan is managed (the same account as app.byteask.ai). Plan and credit come from the
-# gateway's /usage in one short request; on any failure they are left out, never the
-# sign-in. Values cross the network, so only plain characters reach the terminal.
-#
-# Credit: the gateway's /usage does not send dollars yet. The line reads the field
-# `credit_left_usd` (a number: dollars of credit left this month, plan and top-ups
-# together) and shows "$N of credit left" once the gateway sends it.
+# The line printed after a sign-in: who, which plan, the credit, and where the plan is
+# managed (the same account as app.byteask.ai). It all comes from the gateway's /usage in
+# one short request; on any failure those parts are left out, never the sign-in.
+#   credit_left_usd   dollars of usable credit on the paying workspace (month, top-ups and
+#                     welcome credit together); null for a member of a team workspace,
+#                     who sees only credit_state (ok | low | out) and who pays
+#   paying_workspace  the workspace that pays; named for a team workspace
+#   welcome_usd, welcome_until  the one-time welcome credit left and when it ends; read
+#                     wherever they appear in the answer (top level or inside `credit`)
+# Values cross the network, so only plain characters reach the terminal.
 _json_num() { grep -o "\"$1\"[[:space:]]*:[[:space:]]*-\{0,1\}[0-9][0-9.]*" | head -1 | sed 's/.*:[[:space:]]*//'; }
+_usd() { awk -v v="$1" 'BEGIN { if (v < 0) v = 0; s = sprintf("%.2f", v); sub(/\.00$/, "", s); print s }'; }
 _signin_line() {   # $1 = gateway  $2 = token  $3 = email
-  _sl_plan=""; _sl_credit=""
+  _sl_plan=""; _sl_credit=""; _sl_state=""; _sl_ws=""; _sl_kind=""; _sl_wel=""; _sl_until=""
   _sl_u=$(curl -fsS --max-time 4 -H "Authorization: Bearer $2" "$1/byteask/v1/usage" 2>/dev/null || true)
   if [ -n "$_sl_u" ]; then
-    _sl_plan=$(printf '%s' "$_sl_u" | _json plan | LC_ALL=C tr -cd 'A-Za-z0-9 ' | cut -c1-24)
+    # `label` is the plan's display name; older answers only carry the `plan` key.
+    _sl_plan=$(printf '%s' "$_sl_u" | _json label | LC_ALL=C tr -cd 'A-Za-z0-9 ' | cut -c1-24)
+    [ -n "$_sl_plan" ] || _sl_plan=$(printf '%s' "$_sl_u" | _json plan | LC_ALL=C tr -cd 'A-Za-z0-9 ' | cut -c1-24)
     _sl_credit=$(printf '%s' "$_sl_u" | _json_num credit_left_usd)
+    _sl_state=$(printf '%s' "$_sl_u" | _json credit_state | LC_ALL=C tr -cd 'a-z')
+    _sl_ws=$(printf '%s' "$_sl_u" | _json paying_workspace | LC_ALL=C tr -cd 'A-Za-z0-9 ._-' | cut -c1-40)
+    _sl_kind=$(printf '%s' "$_sl_u" | _json kind | LC_ALL=C tr -cd 'a-z')
+    _sl_wel=$(printf '%s' "$_sl_u" | _json_num welcome_usd)
+    _sl_until=$(printf '%s' "$_sl_u" | _json_num welcome_until | tr -cd '0-9')
   fi
   _sl="Signed in as $3"
   if [ -n "$_sl_plan" ]; then
@@ -2778,10 +2788,34 @@ _signin_line() {   # $1 = gateway  $2 = token  $3 = email
     _sl="$_sl $_G_DOT $_sl_first$(printf '%s' "$_sl_plan" | cut -c2-) plan"
   fi
   if [ -n "$_sl_credit" ]; then
-    _sl_credit=$(awk -v v="$_sl_credit" 'BEGIN { if (v < 0) v = 0; s = sprintf("%.2f", v); sub(/\.00$/, "", s); print s }')
-    _sl="$_sl $_G_DOT \$$_sl_credit of credit left"
+    _sl="$_sl $_G_DOT \$$(_usd "$_sl_credit") of credit left"
+    # A personal workspace needs no name; a team workspace does (one person can be in several).
+    if [ -n "$_sl_ws" ] && [ -n "$_sl_kind" ] && [ "$_sl_kind" != personal ]; then _sl="$_sl on $_sl_ws"; fi
+  elif [ -n "$_sl_state" ]; then
+    case "$_sl_state" in
+      ok)  _sl="$_sl $_G_DOT Credit: OK" ;;
+      low) _sl="$_sl $_G_DOT Credit: low" ;;
+      out) _sl="$_sl $_G_DOT Credit: out" ;;
+      *)   _sl_state="" ;;
+    esac
+    if [ -n "$_sl_state" ] && [ -n "$_sl_ws" ]; then _sl="$_sl, paid by $_sl_ws"; fi
+    if [ "$_sl_state" = out ]; then _sl="$_sl (ask an admin to add credit)"; fi
   fi
   printf '%s %s Plan and billing: %s (same account)\n' "$_sl" "$_G_DOT" "$ACCOUNT_URL"
+  # The welcome credit is part of the credit above; say so, and until when.
+  if [ -n "$_sl_credit" ] && [ -n "$_sl_wel" ] && awk -v v="$_sl_wel" 'BEGIN { exit !(v > 0) }'; then
+    _sl_day=""
+    if [ -n "$_sl_until" ]; then
+      # GNU date first, then BSD/macOS; English month names whatever the locale.
+      _sl_day=$(LC_ALL=C date -u -d "@$_sl_until" '+%b %-d' 2>/dev/null \
+                || LC_ALL=C date -u -r "$_sl_until" '+%b %e' 2>/dev/null | tr -s ' ' || true)
+    fi
+    if [ -n "$_sl_day" ]; then
+      printf '  Includes $%s of welcome credit, usable until %s.\n' "$(_usd "$_sl_wel")" "$_sl_day"
+    else
+      printf '  Includes $%s of welcome credit.\n' "$(_usd "$_sl_wel")"
+    fi
+  fi
 }
 
 do_login() {
