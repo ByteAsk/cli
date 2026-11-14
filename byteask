@@ -57,9 +57,9 @@ resolve_gateway() {
 }
 
 # ---- auto-update check: cached ~hourly, fail-open, never blocks launch ----
-# State file holds:  last_check=<epoch>  latest=<ver>
-# No "dismissed" memory: a declined update is re-offered on every launch, so a
-# freshly published version keeps nudging until the user takes it.
+# State file holds:  last_check=<epoch>  latest=<ver>  skipped=<ver>
+# "Not now" keeps no memory: the update is offered again on the next launch. "Skip this
+# version" records it, and only a newer release is offered after that.
 UPDATE_STATE="$BYTEASK_HOME/update-check"
 
 # version_gt A B  -> returns 0 if A > B (numeric, dot-separated), else 1.
@@ -91,15 +91,17 @@ version_gt() {
 # A headless run (exec, a pipe, CI) never blocks on a question, so it keeps ONE line.
 check_for_update() {
   if [ -n "${BYTEASK_NO_UPDATE_CHECK:-}" ]; then return 0; fi
-  _uc_latest=""; _uc_last=0
+  _uc_latest=""; _uc_last=0; _uc_skipped=""
   if [ -f "$UPDATE_STATE" ]; then
     while IFS='=' read -r _k _v; do
       case "$_k" in
         last_check) _uc_last=$_v;;
         latest) _uc_latest=$_v;;
+        skipped) _uc_skipped=$_v;;
       esac
     done < "$UPDATE_STATE"
   fi
+  case "$_uc_skipped" in *[!0-9.]*) _uc_skipped="";; esac
   case "$_uc_last" in ''|*[!0-9]*) _uc_last=0;; esac
   _uc_now=$(date +%s 2>/dev/null || echo 0)
   # Hit the network at most once per hour; cache the result. Fail-open. The
@@ -110,15 +112,24 @@ check_for_update() {
     if printf '%s' "$_uc_fetched" | grep -qE '^[0-9]+(\.[0-9]+)+$'; then
       _uc_latest="$_uc_fetched"; _uc_last="$_uc_now"
       mkdir -p "$BYTEASK_HOME" 2>/dev/null || true
-      printf 'last_check=%s\nlatest=%s\n' "$_uc_last" "$_uc_latest" > "$UPDATE_STATE" 2>/dev/null || true
+      printf 'last_check=%s\nlatest=%s\nskipped=%s\n' "$_uc_last" "$_uc_latest" "$_uc_skipped" \
+        > "$UPDATE_STATE" 2>/dev/null || true
     fi
   fi
   if [ -z "$_uc_latest" ]; then return 0; fi
   if ! version_gt "$_uc_latest" "$VERSION"; then return 0; fi   # not newer than installed
+  [ "$_uc_latest" = "$_uc_skipped" ] && return 0                # the user skipped this one
   if [ -t 0 ] && [ -t 1 ] && _launches_tui "$@"; then
-    printf 'ByteAsk %s is available (you have %s). Update now? [Y/n] ' "$_uc_latest" "$VERSION" >&2
+    printf 'ByteAsk %s is available (you have %s).\n' "$_uc_latest" "$VERSION" >&2
+    printf "What's new: https://github.com/ByteAsk/cli/releases/tag/v%s\n" "$_uc_latest" >&2
+    printf 'Update now? [Y]es / [n]ot now / [s]kip this version: ' >&2
     read -r _uc_ans </dev/tty 2>/dev/null || _uc_ans=""
     case "$_uc_ans" in
+      [sS]*)
+        printf 'last_check=%s\nlatest=%s\nskipped=%s\n' "$_uc_last" "$_uc_latest" "$_uc_latest" \
+          > "$UPDATE_STATE" 2>/dev/null || true
+        printf 'Skipped %s. byteask --update installs it any time.\n' "$_uc_latest" >&2
+        ;;
       ""|[yY]*)   # Enter (default) or y -> update
         _uc_gw="$(resolve_gateway)"; _uc_gw="${_uc_gw%/}"
         printf 'Updating ByteAsk to %s ...\n' "$_uc_latest" >&2

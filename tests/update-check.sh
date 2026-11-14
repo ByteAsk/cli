@@ -114,7 +114,8 @@ if command -v script >/dev/null 2>&1; then
   # 9. interactive TUI launch -> the [Y/n] prompt. "y" runs the
   #    updater, then relaunches the fresh wrapper, which launches the engine.
   OUT=$(printf 'y\n' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$GW' '$BIN/byteask'" /dev/null 2>&1 || true)
-  has   "Update now? [Y/n]" "$OUT" "9 interactive TUI: asks [Y/n]"
+  has   "Update now? [Y]es / [n]ot now / [s]kip this version" "$OUT" "9 interactive TUI: asks yes / not now / skip"
+  has   "What's new: https://github.com/ByteAsk/cli/releases/tag/v$NEW" "$OUT" "9 interactive TUI: links the release notes"
   has   "UPDATER_RAN"       "$OUT" "9 interactive TUI: y runs the updater"
   has   "ENGINE_LAUNCHED"   "$OUT" "9 interactive TUI: engine launches after the update"
 
@@ -126,9 +127,33 @@ if command -v script >/dev/null 2>&1; then
   # 9-no. "n" continues on this version, without the updater.
   set_version "$NEW"; reset_state
   OUT=$(printf 'n\n' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$GW' '$BIN/byteask'" /dev/null 2>&1 || true)
-  has   "Update now? [Y/n]" "$OUT" "9-no: asks"
+  has   "Update now?"       "$OUT" "9-no: asks"
   hasnt "UPDATER_RAN"       "$OUT" "9-no: n does not update"
   has   "ENGINE_LAUNCHED"   "$OUT" "9-no: engine launches on the current version"
+  # "Not now" keeps no memory: the next launch asks again.
+  OUT=$(printf 'n\n' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$GW' '$BIN/byteask'" /dev/null 2>&1 || true)
+  has   "Update now?"       "$OUT" "9-no: the next launch asks again"
+
+  # 9-skip. "s" skips this version: no updater, and no question or notice for it again.
+  set_version "$NEW"; reset_state
+  OUT=$(printf 's\n' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$GW' '$BIN/byteask'" /dev/null 2>&1 || true)
+  hasnt "UPDATER_RAN"       "$OUT" "9-skip: s does not update"
+  has   "Skipped $NEW"      "$OUT" "9-skip: confirms the skip"
+  has   "ENGINE_LAUNCHED"   "$OUT" "9-skip: engine launches on the current version"
+  OUT=$(printf 'y\n' | script -qec "BYTEASK_HOME='$HOME_BX' BYTEASK_GATEWAY='$GW' '$BIN/byteask'" /dev/null 2>&1 || true)
+  hasnt "Update now?"       "$OUT" "9-skip: the skipped version is not offered again"
+  hasnt "UPDATER_RAN"       "$OUT" "9-skip: and nothing updates"
+  OUT=$(run)
+  hasnt "is available"      "$OUT" "9-skip: no one-line notice for it either"
+  # The skip outlives the hourly re-check, and a NEWER release is offered again.
+  printf 'last_check=0\nlatest=%s\nskipped=%s\n' "$NEW" "$NEW" > "$HOME_BX/update-check"
+  OUT=$(run)
+  hasnt "is available"      "$OUT" "9-skip: survives the hourly re-check"
+  grep -q "^skipped=$NEW\$" "$HOME_BX/update-check" && ok "9-skip: the re-check keeps the skip" || bad "9-skip: the re-check dropped the skip"
+  set_version "99.0.0"
+  printf 'last_check=0\nlatest=%s\nskipped=%s\n' "$NEW" "$NEW" > "$HOME_BX/update-check"
+  OUT=$(run)
+  has   "99.0.0 is available" "$OUT" "9-skip: a newer release is offered again"
 
   # 9b. a terminal, but a non-TUI subcommand (exec): the engine shows no TUI notice there,
   #     so the wrapper keeps its ONE line -- and never a [Y/n] prompt.

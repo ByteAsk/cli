@@ -2290,13 +2290,14 @@ function Test-LaunchesTui([object[]]$LaunchArgs) {
 }
 function Invoke-UpdateCheck {
   if ($env:BYTEASK_NO_UPDATE_CHECK) { return }
-  $latest = ''; $last = 0
+  $latest = ''; $last = 0; $skipped = ''
   if (Test-Path $UPDATE_STATE) {
     foreach ($line in Get-Content $UPDATE_STATE) {
       $kv = $line -split '=', 2
       if ($kv.Count -eq 2) {
         if ($kv[0] -eq 'last_check') { [void][int]::TryParse($kv[1], [ref]$last) }
         elseif ($kv[0] -eq 'latest') { $latest = $kv[1] }
+        elseif ($kv[0] -eq 'skipped' -and $kv[1] -match '^[0-9.]+$') { $skipped = $kv[1] }
       }
     }
   }
@@ -2308,15 +2309,23 @@ function Invoke-UpdateCheck {
       if ($fetched -match '^[0-9]+(\.[0-9]+)+$') {
         $latest = $fetched; $last = $now
         New-Item -ItemType Directory -Force -Path $BYTEASK_HOME | Out-Null
-        Set-Content -Path $UPDATE_STATE -Value "last_check=$last`nlatest=$latest"
+        Set-Content -Path $UPDATE_STATE -Value "last_check=$last`nlatest=$latest`nskipped=$skipped"
       }
     } catch { }   # fail-open
   }
   if (-not $latest) { return }
   if (-not (Test-VersionGt $latest $VERSION)) { return }
+  if ($latest -eq $skipped) { return }   # the user skipped this one
   if ((Test-Interactive) -and (Test-LaunchesTui $script:LaunchArgs)) {
-    Write-Host -NoNewline "ByteAsk $latest is available (you have $VERSION). Update now? [Y/n] "
+    Write-Host "ByteAsk $latest is available (you have $VERSION)."
+    Write-Host "What's new: https://github.com/ByteAsk/cli/releases/tag/v$latest"
+    Write-Host -NoNewline "Update now? [Y]es / [n]ot now / [s]kip this version: "
     $ans = Read-Host
+    if ($ans -match '^[sS]') {
+      Set-Content -Path $UPDATE_STATE -Value "last_check=$last`nlatest=$latest`nskipped=$latest"
+      Write-Host "Skipped $latest. byteask --update installs it any time."
+      return
+    }
     if ($ans -eq '' -or $ans -match '^[yY]') {   # Enter (default) or y -> update
       $gw = (Resolve-Gateway).TrimEnd('/')
       Write-Host "Updating ByteAsk to $latest ..."
