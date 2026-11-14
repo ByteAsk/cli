@@ -122,6 +122,12 @@ class Anthropic(unittest.TestCase):
         for m in ("claude-haiku-5-5", "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"):
             self.assertGreaterEqual(A.MAX_OUTPUT_TOKENS[m], 64000, m)
 
+    def test_the_request_after_a_cut_off_ends_on_a_user_turn(self):
+        # Anthropic rejects a conversation that ends on an assistant turn (prefill) once thinking is on
+        req = A.translate_request({"model": "claude-opus-5-5", "reasoning": {"effort": "high"},
+                                   "input": [user("write it"), note_msg()]})
+        self.assertEqual(req["messages"][-1]["role"], "user")
+
 
 class Gemini(unittest.TestCase):
     def test_max_tokens_continues(self):

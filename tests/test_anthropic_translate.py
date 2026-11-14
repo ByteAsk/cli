@@ -81,7 +81,7 @@ class TestTranslateRequest(unittest.TestCase):
         r = self.base(input=[
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "q"}]},
             {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "a"}]}])
-        self.assertEqual([m["role"] for m in r["messages"]], ["user", "assistant"])
+        self.assertEqual([m["role"] for m in r["messages"]], ["user", "assistant", "user"])  # never ends on assistant
         self.assertEqual(r["messages"][0]["content"][0], {"type": "text", "text": "q",
                                                           **({"cache_control": EPH} if False else {})})
         self.assertEqual(r["messages"][1]["content"][0]["text"], "a")
