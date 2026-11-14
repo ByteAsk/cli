@@ -280,6 +280,14 @@ has   "No account needed" "$OUT" "K2 says no account is needed"
 has   "ENGINE_LAUNCHED"   "$OUT" "K3 launches"
 hasnt "not signed in"     "$OUT" "K4 no sign-in nudge"
 
+echo "== M. --help ends with docs, account and support links =="
+OUT=$(nt_run --help); rc=$?
+[ "$rc" = 0 ] && ok "M1 --help exits 0 signed out" || bad "M1 --help exit $rc"
+_tail=$(printf '%s\n' "$OUT" | tail -3)
+has "Docs:              https://byteask.ai/docs" "$_tail" "M2 docs link"
+has "Account and plan:  https://app.byteask.ai"  "$_tail" "M3 account link"
+has "Help:              support@byteask.ai"      "$_tail" "M4 support address"
+
 echo "== O. the sign-in timeout points at the own-key command =="
 grep -q "Or skip email: 'byteask login --with-api-key'" "$WRAP" "$HERE/../byteask.ps1" && bad "O1 the timeout still suggests login --with-api-key" || ok "O1 no login --with-api-key hint"
 grep -q 'use your own key, no account: byteask byok set openai' "$WRAP" && ok "O2 the timeout suggests byteask byok set" || bad "O2 own-key hint missing"

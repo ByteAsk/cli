@@ -3091,6 +3091,10 @@ ByteAsk $VERSION — an AI coding agent for your terminal
   byteask --update                  update ByteAsk
 
 Options: -m <model> · --effort <low|medium|high|xhigh> · -C <dir>
+
+Docs:              https://byteask.ai/docs
+Account and plan:  $ACCOUNT_URL
+Help:              support@byteask.ai
 EOF
     exit 0;;
   --uninstall-gdb-bridge)

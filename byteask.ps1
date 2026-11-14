@@ -2446,6 +2446,10 @@ switch -Regex ($cmd) {
     [Console]::Error.WriteLine('  byteask --update                  update ByteAsk')
     [Console]::Error.WriteLine('')
     [Console]::Error.WriteLine('Options: -m <model>  --effort <low|medium|high|xhigh>  -C <dir>')
+    [Console]::Error.WriteLine('')
+    [Console]::Error.WriteLine('Docs:              https://byteask.ai/docs')
+    [Console]::Error.WriteLine("Account and plan:  $ACCOUNT_URL")
+    [Console]::Error.WriteLine('Help:              support@byteask.ai')
     exit 0
   }
 }

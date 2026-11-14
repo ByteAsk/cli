@@ -126,6 +126,12 @@ grep -q 'experimental_bearer_token = "WINTOKEN123"' "$HOME_BX/config.toml" && ok
 has "ENGINE_LAUNCHED" "$OUT" "H2 relaunched after /login"
 [ -f "$HOME_BX/.byteask-auth-request" ] && bad "H3 marker not consumed" || ok "H3 marker consumed"
 
+echo "== I. --help ends with docs, account and support links =="
+OUT=$(psrun --help)
+has "Docs:              https://byteask.ai/docs" "$OUT" "I1 docs link"
+has "Account and plan:  https://app.byteask.ai"  "$OUT" "I2 account link"
+has "Help:              support@byteask.ai"      "$OUT" "I3 support address"
+
 echo "== L. the sign-in line: plan, credit, the account site =="
 seed_unsigned
 OUT=$(printf 'dev@x.com\n' | BYTEASK_HOME="$HOME_BX" BYTEASK_GATEWAY="$GW" BYTEASK_NO_UPDATE_CHECK=1 "$PWSH" -NoProfile -File "$BIN/byteask.ps1" login 2>&1)
