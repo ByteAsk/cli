@@ -85,6 +85,33 @@ class TestTranslateRequest(unittest.TestCase):
                 {"type": "input_text", "text": "a"}, {"type": "input_text", "text": "b"}]}])
         self.assertEqual(r["contents"][2]["parts"][0]["functionResponse"]["response"], {"output": "ab"})
 
+    def test_tool_result_image_is_sent_after_the_function_response(self):
+        r = self.base(input=[
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]},
+            {"type": "function_call", "name": "view_image", "arguments": "{}", "call_id": "c1"},
+            {"type": "function_call_output", "call_id": "c1", "output": [
+                {"type": "input_image", "image_url": "data:image/png;base64,QUJD"}]}])
+        parts = r["contents"][2]["parts"]
+        self.assertEqual(parts[0]["functionResponse"], {
+            "name": "view_image", "id": "c1",
+            "response": {"output": "[1 image attached after the tool results]"}})
+        self.assertEqual(parts[1:], [{"inlineData": {"mimeType": "image/png", "data": "QUJD"}}])
+
+    def test_tool_result_images_stay_behind_every_function_response(self):
+        r = self.base(input=[
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]},
+            {"type": "function_call", "name": "a", "arguments": "{}", "call_id": "c1"},
+            {"type": "function_call", "name": "b", "arguments": "{}", "call_id": "c2"},
+            {"type": "function_call_output", "call_id": "c1", "output": [
+                {"type": "input_text", "text": "shot"},
+                {"type": "input_image", "image_url": "data:image/jpeg;base64,QUJD"},
+                {"type": "input_image", "file_id": "file_1"}]},
+            {"type": "custom_tool_call_output", "call_id": "c2", "output": "r2"}])
+        parts = r["contents"][2]["parts"]
+        self.assertEqual([p["functionResponse"]["response"] for p in parts[:2]], [
+            {"output": "shot\n[1 image attached after the tool results]"}, {"output": "r2"}])
+        self.assertEqual(parts[2:], [{"inlineData": {"mimeType": "image/jpeg", "data": "QUJD"}}])
+
     def test_parallel_calls_and_outputs_merge(self):
         r = self.base(input=[
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]},
