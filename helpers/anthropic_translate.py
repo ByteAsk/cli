@@ -667,6 +667,9 @@ def translate_request(body):
     # Anthropic requires the first message to be a user turn.
     if not messages or messages[0]["role"] != "user":
         messages.insert(0, {"role": "user", "content": [{"type": "text", "text": "(continue)"}]})
+    # Nor may it end on an assistant turn (prefill): the request after an output-limit cut-off does.
+    if messages[-1]["role"] != "user":
+        messages.append({"role": "user", "content": [{"type": "text", "text": "(continue)"}]})
 
     tools = _translate_tools(specs)
     _place_cache_control(system_blocks, tools, messages)
