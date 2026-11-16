@@ -182,6 +182,16 @@ _order=$(printf '%s\n' "$OUT" | grep -o 'ByteAsk account\|Your own API key\|Your
 [ "$_order" = "ByteAsk account|Your own API key|Your ChatGPT plan|Your own server|" ] \
   && ok "B2 order: account, own key, ChatGPT, own server" || bad "B2 wrong order: $_order"
 has "type 1-4" "$OUT" "B3 the hint counts four rows"
+# An operator's pin of the switches (BYTEASK_SUBSCRIPTION_FLAGS_LOCAL=1, often left in a
+# shell profile) keeps a flags file that exists; on a fresh install there is none yet.
+seed_fresh
+OUT=$(fr_run 'q' "BYTEASK_SUBSCRIPTION_FLAGS_LOCAL=1")
+has "Your ChatGPT plan" "$OUT" "B4 a pin with no flags file yet still offers the ChatGPT row"
+grep -qx 'chatgpt=1' "$HOME_BX/subscription-flags" 2>/dev/null && ok "B5 the server's switches are stored once" || bad "B5 no flags file written"
+printf 'chatgpt=0\nclaude=0\nclaude_launcher=0\n' > "$HOME_BX/subscription-flags"
+OUT=$(fr_run 'q' "BYTEASK_SUBSCRIPTION_FLAGS_LOCAL=1")
+hasnt "Your ChatGPT plan" "$OUT" "B6 a pinned file that turns ChatGPT off is kept"
+grep -qx 'chatgpt=0' "$HOME_BX/subscription-flags" && ok "B7 the pinned file is not overwritten" || bad "B7 the pinned file was overwritten"
 
 echo "== C. your own OpenAI key: no email, no account, launches on an OpenAI model =="
 seed_fresh; : > "$FLAGS_FILE"

@@ -1454,7 +1454,12 @@ _refresh_subscription_flags() {
   # left exactly as it is, so an operator can enable a flag for themselves only.
   # Deliberately opt-in and env-only: nothing a normal launch can trip over, and the
   # server still wins by default.
-  [ "${BYTEASK_SUBSCRIPTION_FLAGS_LOCAL:-0}" = 1 ] && return 0
+  # The pin keeps a file that exists. A home with no file yet (a fresh install) still
+  # gets the server's switches once: with no file at all, a pin left in a shell profile
+  # turned every switch off, which hid the ChatGPT row on the first run.
+  if [ "${BYTEASK_SUBSCRIPTION_FLAGS_LOCAL:-0}" = 1 ] && [ -f "$BYTEASK_HOME/subscription-flags" ]; then
+    return 0
+  fi
   _rsf_gw="$(resolve_gateway)"; _rsf_gw="${_rsf_gw%/}"
   _rsf_json="$(curl -fsS --max-time 3 "$_rsf_gw/byteask/v1/subscription-flags" 2>/dev/null)" || return 0
   command -v python3 >/dev/null 2>&1 || return 0
