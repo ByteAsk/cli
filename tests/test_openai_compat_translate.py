@@ -63,6 +63,74 @@ class TestTranslateRequest(unittest.TestCase):
         self.assertEqual(asst["tool_calls"][0]["function"]["name"], "exec")
         self.assertEqual(chat["messages"][1], {"role": "tool", "tool_call_id": "c1", "content": "a.txt"})
 
+    def test_tool_result_image_not_stringified_as_text(self):
+        # view_image returns a bare content-items array with a base64 data URL.
+        # Stringifying it (json.dumps) put ~4.7M chars of base64 into a plain-text
+        # tool message; Fireworks tokenized it as text (~3.18M tokens) and 400'd.
+        # The image must survive as a native image part, never as tool-message text.
+        url = "data:image/png;base64," + ("A" * 4096)
+        chat, _ = T.translate_request({"input": [
+            {"type": "function_call", "call_id": "c1", "name": "view_image",
+             "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1",
+             "output": [{"type": "input_image", "image_url": url, "detail": "high"}]}]},
+            "deepseek-v4.1-flash")
+        tool = next(m for m in chat["messages"] if m["role"] == "tool")
+        # The tool message is plain text and does NOT carry the base64.
+        self.assertIsInstance(tool["content"], str)
+        self.assertNotIn("A" * 4096, tool["content"])
+        # The image travels as a native image_url part on a user message.
+        user = next(m for m in chat["messages"] if m["role"] == "user")
+        parts = user["content"]
+        self.assertEqual(parts[0]["type"], "text")
+        self.assertEqual(parts[1]["type"], "image_url")
+        self.assertEqual(parts[1]["image_url"]["url"], url)
+
+    def test_text_only_tool_result_unchanged(self):
+        # A plain-string tool result (shell stdout, file read) must stay exactly a
+        # text tool message -- no hoisting, no extra user turn.
+        chat, _ = T.translate_request({"input": [
+            {"type": "function_call", "call_id": "c1", "name": "exec",
+             "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "a.txt"}]}, "m")
+        self.assertEqual(chat["messages"][1],
+                         {"role": "tool", "tool_call_id": "c1", "content": "a.txt"})
+        self.assertFalse(any(m["role"] == "user" for m in chat["messages"]))
+
+    def test_text_only_content_items_tool_result_unchanged(self):
+        # A content-items array with NO image is still json.dumps'd (the historical
+        # behaviour): only image-bearing results take the new path.
+        chat, _ = T.translate_request({"input": [
+            {"type": "function_call", "call_id": "c1", "name": "exec",
+             "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1",
+             "output": [{"type": "input_text", "text": "done"}]}]}, "m")
+        tool = next(m for m in chat["messages"] if m["role"] == "tool")
+        self.assertIsInstance(tool["content"], str)
+        self.assertIn("done", tool["content"])
+        self.assertFalse(any(m["role"] == "user" for m in chat["messages"]))
+
+    def test_parallel_tool_run_keeps_tool_messages_contiguous(self):
+        # One assistant turn with two calls: an image result and a text result. Both
+        # `tool` messages must stay adjacent (a `user` turn may not slip between
+        # them); the image is hoisted to a single user message AFTER the run.
+        url = "data:image/png;base64," + ("A" * 256)
+        chat, _ = T.translate_request({"input": [
+            {"type": "function_call", "call_id": "c1", "name": "view_image",
+             "arguments": "{}"},
+            {"type": "function_call", "call_id": "c2", "name": "exec",
+             "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1",
+             "output": [{"type": "input_image", "image_url": url}]},
+            {"type": "function_call_output", "call_id": "c2", "output": "ok"}]}, "m")
+        roles = [m["role"] for m in chat["messages"]]
+        # assistant, tool, tool, user  -- the two tool messages are contiguous.
+        self.assertEqual(roles, ["assistant", "tool", "tool", "user"])
+        self.assertEqual([m["tool_call_id"] for m in chat["messages"] if m["role"] == "tool"],
+                         ["c1", "c2"])
+        user = chat["messages"][3]
+        self.assertEqual(user["content"][1]["type"], "image_url")
+
     def test_tools_schema_sanitized(self):
         chat, _ = T.translate_request({"input": [], "tools": [
             {"type": "function", "name": "t", "description": "d",
@@ -393,6 +461,67 @@ class TestEndToEnd(unittest.TestCase):
     def tearDown(self):
         self.srv.shutdown()
         self.srv.server_close()
+
+    def test_tool_result_image_in_serialized_request(self):
+        # The exact failing case: a view_image tool result carrying a base64 data
+        # URL. What goes on the wire must be a native image_url part, and no base64
+        # may appear inside a plain-text `tool` message (which Fireworks would
+        # tokenize as text and reject).
+        url = "data:image/png;base64," + ("QUJD" * 512)
+        req = {"input": [
+            {"type": "message", "role": "user",
+             "content": [{"type": "input_text", "text": "inspect frames/sheet_01.png"}]},
+            {"type": "function_call", "call_id": "c1", "name": "view_image",
+             "arguments": "{\"path\":\"frames/sheet_01.png\"}"},
+            {"type": "function_call_output", "call_id": "c1",
+             "output": [{"type": "input_image", "image_url": url, "detail": "high"}]}]}
+        chat_body, _ = T.translate_request(req, "deepseek-v4.1-flash")
+        wire = json.dumps(chat_body)
+        # The base64 is present exactly once, as an image_url on a user message.
+        self.assertEqual(wire.count("QUJD" * 512), 1)
+        tool = next(m for m in chat_body["messages"] if m["role"] == "tool")
+        self.assertIsInstance(tool["content"], str)
+        self.assertNotIn("QUJD" * 512, tool["content"])
+        user = next(m for m in chat_body["messages"]
+                    if m["role"] == "user" and isinstance(m["content"], list))
+        img = next(p for p in user["content"] if p["type"] == "image_url")
+        self.assertEqual(img["image_url"]["url"], url)
+
+    def test_tool_result_image_reaches_chat_server_as_native_part(self):
+        import http.client
+        received = []
+
+        class CaptureChatServer(_MockChatServer):
+            def do_POST(self):
+                received.append(json.loads(
+                    self.rfile.read(int(self.headers["Content-Length"]))))
+                super().do_POST()
+
+        self.srv.RequestHandlerClass = CaptureChatServer
+        url = "data:image/png;base64," + ("QUJD" * 512)
+        chat_body, _ = T.translate_request({"input": [
+            {"type": "function_call", "call_id": "c1", "name": "view_image",
+             "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1",
+             "output": [{"type": "input_image", "image_url": url}]}]}, "m")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request("POST", "/v1/chat/completions",
+                         body=json.dumps(chat_body).encode(),
+                         headers={"Content-Type": "application/json"})
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            response.read()
+        finally:
+            conn.close()
+        self.assertEqual(len(received), 1)
+        messages = received[0]["messages"]
+        self.assertEqual([m["role"] for m in messages], ["assistant", "tool", "user"])
+        self.assertIsInstance(messages[1]["content"], str)
+        self.assertNotIn(url, messages[1]["content"])
+        self.assertEqual(messages[2]["content"][1],
+                         {"type": "image_url", "image_url": {"url": url}})
+        self.assertEqual(json.dumps(received[0]).count(url), 1)
 
     def test_full_turn_translates_and_transduces(self):
         import http.client

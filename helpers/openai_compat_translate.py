@@ -558,6 +558,45 @@ def _content_parts(content):
     return "".join(texts)
 
 
+def _hoist_tool_images(messages):
+    """Move a tool result's images out of its `tool` message onto a following
+    `user` message.
+
+    A Chat Completions `tool` message carries text only, so an image-bearing
+    result (view_image, an MCP screenshot) cannot keep its images there. Send
+    them on a `user` message after the run of `tool` messages -- the proven shape
+    of the `--image` path, and what gemini_translate does (image part after the
+    functionResponse). Flushing only once the run ends keeps parallel tool
+    answers contiguous, which some servers require."""
+    out, pending = [], []
+
+    def flush():
+        if pending:
+            out.append({"role": "user", "content":
+                        [{"type": "text", "text": "[images from the tool result above]"}]
+                        + pending})
+            pending.clear()
+
+    for m in messages:
+        if m.get("role") != "tool":
+            flush()
+            out.append(m)
+            continue
+        parts = m.get("content")
+        images = ([p for p in parts if isinstance(p, dict) and p.get("type") == "image_url"]
+                  if isinstance(parts, list) else [])
+        if not images:
+            out.append(m)
+            continue
+        text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+        n = len(images)
+        note = f"[{n} image{'' if n == 1 else 's'} attached after the tool results]"
+        out.append({**m, "content": f"{text}\n{note}" if text else note})
+        pending.extend(images)
+    flush()
+    return out
+
+
 def _tool_args(raw):
     """Chat tool_calls carry `arguments` as a JSON STRING. Normalize whatever the
     Responses item gave us (string, dict, or freeform) into that."""
@@ -635,10 +674,18 @@ def _translate_item(item, messages, name_map, wire_for=None):
                             "function": {"name": safe, "arguments": _tool_args(raw)}}]})
     elif t in ("function_call_output", "custom_tool_call_output"):
         out = item.get("output")
+        call_id = item.get("call_id") or ""
         if not isinstance(out, str):
-            out = json.dumps(out)
-        messages.append({"role": "tool", "tool_call_id": item.get("call_id") or "",
-                         "content": out})
+            # A tool result is usually plain text. view_image / an MCP screenshot
+            # instead return a bare content-items array holding a multi-megabyte
+            # base64 image; json.dumps-ing it put the whole base64 in a text `tool`
+            # message, which Fireworks tokenized as text (~3.18M tokens) and 400'd on
+            # context length. Keep the image a native part (`_content_parts` returns
+            # a list only when an image is present); a `tool` message is text-only,
+            # so _hoist_tool_images moves the image onto a following user message.
+            parts = _content_parts(out) if isinstance(out, list) else None
+            out = parts if isinstance(parts, list) else json.dumps(out)
+        messages.append({"role": "tool", "tool_call_id": call_id, "content": out})
     else:
         _degrade(item, messages)                  # NEVER raise on unknown history
 
@@ -770,7 +817,8 @@ def translate_request(body, model_id):
     for item in body.get("input") or []:
         if isinstance(item, dict):
             _translate_item(item, messages, name_map, wire_for)
-    messages = _repair_tool_pairs(_merge_tool_call_runs(messages))
+    messages = _hoist_tool_images(
+        _repair_tool_pairs(_merge_tool_call_runs(messages)))
 
     chat = {"model": model_id, "messages": messages, "stream": True,
             "stream_options": {"include_usage": True}}
