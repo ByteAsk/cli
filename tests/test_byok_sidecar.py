@@ -385,5 +385,47 @@ class TestSecurityGates(SidecarBase):
         self.assertEqual(obj["protocol"], self.sc.PROTOCOL_VERSION)
 
 
+class TestMidStreamFault(SidecarBase):
+    # A fault after the SSE headers went out must end the response, not leave the
+    # connection open with an unterminated chunked body (the engine would
+    # wait on it until its idle timeout instead of retrying).
+
+    def test_upstream_drop_mid_stream_closes_the_connection(self):
+        self.write_config(keys={"anthropic": "sk-ant-USER"})
+        first = b"event: message_start\ndata: " + json.dumps(
+            {"type": "message_start", "message": {"id": "m", "usage": {}}}).encode() + b"\n\n"
+
+        class Drop(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                self.wfile.write(f"{len(first):X}\r\n".encode() + first + b"\r\n")
+            def log_message(self, *a):
+                pass
+        srv, port = _start(Drop)
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.sc.ANTHROPIC_URL = f"http://127.0.0.1:{port}"
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=2)
+        body = json.dumps({"model": "claude-opus-4-8", "input": [
+            {"type": "message", "role": "user",
+             "content": [{"type": "input_text", "text": "hi"}]}]})
+        conn.request("POST", "/byteask/v1/responses", body=body,
+                     headers={"Content-Type": "application/json", "X-BYOK-Token": "tok-xyz"})
+        resp = conn.getresponse()
+        try:
+            resp.read()
+        except http.client.IncompleteRead:
+            pass  
+        except TimeoutError:
+            self.fail("sidecar left the stream open after a mid-stream fault")
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()
