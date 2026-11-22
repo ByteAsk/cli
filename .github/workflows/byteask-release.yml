@@ -1,8 +1,11 @@
 name: byteask-release
 
 # Builds the ByteAsk engine (codex-cli, rebranded to ByteAsk in source) as a native
-# binary per target, packages it as byteask-engine-<os>-<arch>[.exe].gz, uploads it as
-# a workflow artifact, and (on a v* tag) attaches it to the GitHub Release.
+# binary per target, packages it as byteask-engine-<os>-<arch>[.exe].gz and uploads it as
+# a workflow artifact. It does not write to GitHub Releases: the maintainer downloads the
+# artifact, writes SHA256SUMS over every platform's files, uploads them to a draft release
+# and publishes it. Published releases are immutable, and a rebuild here would not match
+# the published checksums, so the job only needs read access to the repository.
 #
 # ACTIVE for Windows: the engine .exe can only be built on a real Windows runner
 # (v8/rusty_v8 prebuilts + the MSVC toolchain), so Windows lives here. Linux
@@ -18,7 +21,7 @@ on:
         default: ""
   push:
     tags:
-      - "v*"                # tagging v* also builds + attaches to the Release
+      - "v*"                # tagging v* also builds (workflow artifact only)
 
 # Each job asks for the permissions it needs; nothing is granted by default.
 # Actions are pinned to full commit SHAs (tag in the comment), so a moved tag
@@ -30,7 +33,7 @@ jobs:
     name: build ${{ matrix.asset }}
     runs-on: ${{ matrix.runner }}
     permissions:
-      contents: write
+      contents: read
       id-token: write    # Azure Trusted Signing logs in over OIDC (see the signing step)
     strategy:
       fail-fast: false
@@ -214,9 +217,3 @@ jobs:
           name: ${{ matrix.asset }}
           path: codex-rs/${{ matrix.asset }}.gz
           if-no-files-found: error
-
-      - name: Attach to GitHub Release
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          files: codex-rs/${{ matrix.asset }}.gz
